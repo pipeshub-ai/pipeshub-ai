@@ -16,7 +16,7 @@ PASSWORD = os.getenv("SERVICENOW_PASSWORD")
 
 
 def print_response(title, response):
-    print(f"\n{'='*80}\n{title}\n{'='*80}")
+    print(f"\n{'=' * 80}\n{title}\n{'=' * 80}")
     if response.success and response.data:
         print(json.dumps(response.data, indent=2, default=str))
     else:

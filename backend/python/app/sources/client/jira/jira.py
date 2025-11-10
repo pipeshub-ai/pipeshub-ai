@@ -1,6 +1,6 @@
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List
+from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
@@ -18,14 +18,16 @@ class JiraRESTClientViaUsernamePassword(HTTPClient):
         token_type: The type of token to use for authentication
     """
 
-    def __init__(self, base_url: str, username: str, password: str, token_type: str = "Basic") -> None:
+    def __init__(
+        self, base_url: str, username: str, password: str, token_type: str = "Basic"
+    ) -> None:
         self.base_url = base_url
-        #TODO: Implement
-        pass
+        # TODO: Implement
 
     def get_base_url(self) -> str:
         """Get the base URL"""
         return self.base_url
+
 
 class JiraRESTClientViaApiKey(HTTPClient):
     """JIRA REST client via API key
@@ -36,12 +38,12 @@ class JiraRESTClientViaApiKey(HTTPClient):
 
     def __init__(self, base_url: str, email: str, api_key: str) -> None:
         self.base_url = base_url
-        #TODO: Implement
-        pass
+        # TODO: Implement
 
     def get_base_url(self) -> str:
         """Get the base URL"""
         return self.base_url
+
 
 class JiraRESTClientViaToken(HTTPClient):
     def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
@@ -51,6 +53,7 @@ class JiraRESTClientViaToken(HTTPClient):
     def get_base_url(self) -> str:
         """Get the base URL"""
         return self.base_url
+
 
 @dataclass
 class JiraUsernamePasswordConfig:
@@ -68,11 +71,14 @@ class JiraUsernamePasswordConfig:
     ssl: bool = False
 
     def create_client(self) -> JiraRESTClientViaUsernamePassword:
-        return JiraRESTClientViaUsernamePassword(self.base_url, self.username, self.password, "Basic")
+        return JiraRESTClientViaUsernamePassword(
+            self.base_url, self.username, self.password, "Basic"
+        )
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
         return asdict(self)
+
 
 @dataclass
 class JiraTokenConfig:
@@ -93,6 +99,7 @@ class JiraTokenConfig:
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
         return asdict(self)
+
 
 @dataclass
 class JiraApiKeyConfig:
@@ -116,19 +123,31 @@ class JiraApiKeyConfig:
         """Convert the configuration to a dictionary"""
         return asdict(self)
 
+
 class JiraClient(IClient):
     """Builder class for JIRA clients with different construction methods"""
 
-    def __init__(self, client: JiraRESTClientViaUsernamePassword | JiraRESTClientViaApiKey | JiraRESTClientViaToken) -> None:
+    def __init__(
+        self,
+        client: JiraRESTClientViaUsernamePassword
+        | JiraRESTClientViaApiKey
+        | JiraRESTClientViaToken,
+    ) -> None:
         """Initialize with a JIRA client object"""
         self.client = client
 
-    def get_client(self) -> JiraRESTClientViaUsernamePassword | JiraRESTClientViaApiKey | JiraRESTClientViaToken:
+    def get_client(
+        self,
+    ) -> (
+        JiraRESTClientViaUsernamePassword
+        | JiraRESTClientViaApiKey
+        | JiraRESTClientViaToken
+    ):
         """Return the JIRA client object"""
         return self.client
 
     @staticmethod
-    async def get_accessible_resources(token: str) -> List[AtlassianCloudResource]:
+    async def get_accessible_resources(token: str) -> list[AtlassianCloudResource]:
         """Get list of Atlassian sites (Confluence/Jira instances) accessible to the user
         Args:
             token: The authentication token
@@ -144,7 +163,7 @@ class JiraClient(IClient):
         request = HTTPRequest(
             url=RESOURCE_URL,
             method="GET",
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
         )
 
         try:
@@ -152,17 +171,23 @@ class JiraClient(IClient):
 
             # Check if the response is successful
             if response.status != HttpStatusCode.SUCCESS.value:
-                raise Exception(f"API request failed with status {response.status}: {response.text}")
+                raise Exception(
+                    f"API request failed with status {response.status}: {response.text}"
+                )
 
             # Try to parse JSON response
             try:
                 response_data = response.json()
             except Exception as json_error:
-                raise Exception(f"Failed to parse JSON response: {json_error}. Response: {response.text}")
+                raise Exception(
+                    f"Failed to parse JSON response: {json_error}. Response: {response.text}"
+                )
 
             # Check if response_data is a list
             if not isinstance(response_data, list):
-                raise Exception(f"Expected list of resources, got {type(response_data)}: {response_data}")
+                raise Exception(
+                    f"Expected list of resources, got {type(response_data)}: {response_data}"
+                )
 
             return [
                 AtlassianCloudResource(
@@ -175,7 +200,7 @@ class JiraClient(IClient):
                 for resource in response_data
             ]
         except Exception as e:
-            raise Exception(f"Failed to fetch accessible resources: {str(e)}") from e
+            raise Exception(f"Failed to fetch accessible resources: {e!s}") from e
 
     @staticmethod
     async def get_cloud_id(token: str) -> str:
@@ -202,7 +227,9 @@ class JiraClient(IClient):
         return f"https://api.atlassian.com/ex/jira/{cloud_id}"
 
     @classmethod
-    def build_with_config(cls, config: JiraUsernamePasswordConfig | JiraTokenConfig | JiraApiKeyConfig) -> "JiraClient":
+    def build_with_config(
+        cls, config: JiraUsernamePasswordConfig | JiraTokenConfig | JiraApiKeyConfig
+    ) -> "JiraClient":
         """Build JiraClient with configuration (placeholder for future OAuth2/enterprise support)
 
         Args:
@@ -231,17 +258,22 @@ class JiraClient(IClient):
             config = await cls._get_connector_config(logger, config_service)
             if not config:
                 raise ValueError("Failed to get Jira connector configuration")
-            auth_config = config.get("auth",{}) or {}
+            auth_config = config.get("auth", {}) or {}
             if not auth_config:
-                raise ValueError("Auth configuration not found in Jira connector configuration")
+                raise ValueError(
+                    "Auth configuration not found in Jira connector configuration"
+                )
 
-            credentials_config = config.get("credentials",{}) or {}
+            credentials_config = config.get("credentials", {}) or {}
             if not credentials_config:
-                raise ValueError("Credentials configuration not found in Jira connector configuration")
+                raise ValueError(
+                    "Credentials configuration not found in Jira connector configuration"
+                )
 
             # Extract configuration values
-            auth_type = auth_config.get("authType", "BEARER_TOKEN")  # token, username_password, api_key
-
+            auth_type = auth_config.get(
+                "authType", "BEARER_TOKEN"
+            )  # token, username_password, api_key
 
             # Create appropriate client based on auth type
             # to be implemented
@@ -294,11 +326,13 @@ class JiraClient(IClient):
             return cls(client)
 
         except Exception as e:
-            logger.error(f"Failed to build Jira client from services: {str(e)}")
+            logger.error(f"Failed to build Jira client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(
+        logger: logging.Logger, config_service: ConfigurationService
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for Jira."""
         try:
             config = await config_service.get_config("/services/connectors/jira/config")

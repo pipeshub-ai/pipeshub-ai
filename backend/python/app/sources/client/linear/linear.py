@@ -1,7 +1,7 @@
 import logging
-from typing import Any, Dict, Union
+from typing import Any
 
-from pydantic import BaseModel, Field  #type: ignore
+from pydantic import BaseModel, Field  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.graphql.client import GraphQLClient
@@ -19,7 +19,7 @@ class LinearGraphQLClientViaToken(GraphQLClient):
         super().__init__(
             endpoint="https://api.linear.app/graphql",
             headers=headers,
-            timeout=timeout
+            timeout=timeout,
         )
         self.token = token
 
@@ -39,7 +39,7 @@ class LinearGraphQLClientViaOAuth(GraphQLClient):
         super().__init__(
             endpoint="https://api.linear.app/graphql",
             headers=headers,
-            timeout=timeout
+            timeout=timeout,
         )
         self.oauth_token = oauth_token
 
@@ -47,16 +47,22 @@ class LinearGraphQLClientViaOAuth(GraphQLClient):
         """Get the GraphQL endpoint."""
         return self.endpoint
 
+
 class LinearTokenConfig(BaseModel):
     """Configuration for Linear GraphQL client via API token.
+
     Args:
         token: Linear API token
         timeout: Request timeout in seconds
         endpoint: GraphQL endpoint (defaults to Linear's endpoint)
+
     """
+
     token: str = Field(..., description="Linear API token")
     timeout: int = Field(default=30, description="Request timeout in seconds", gt=0)
-    endpoint: str = Field(default="https://api.linear.app/graphql", description="GraphQL endpoint URL")
+    endpoint: str = Field(
+        default="https://api.linear.app/graphql", description="GraphQL endpoint URL"
+    )
 
     def create_client(self) -> LinearGraphQLClientViaToken:
         """Create a Linear GraphQL client."""
@@ -65,14 +71,19 @@ class LinearTokenConfig(BaseModel):
 
 class LinearOAuthConfig(BaseModel):
     """Configuration for Linear GraphQL client via OAuth token.
+
     Args:
         oauth_token: OAuth access token
         timeout: Request timeout in seconds
         endpoint: GraphQL endpoint (defaults to Linear's endpoint)
+
     """
+
     oauth_token: str = Field(..., description="OAuth access token")
     timeout: int = Field(default=30, description="Request timeout in seconds", gt=0)
-    endpoint: str = Field(default="https://api.linear.app/graphql", description="GraphQL endpoint URL")
+    endpoint: str = Field(
+        default="https://api.linear.app/graphql", description="GraphQL endpoint URL"
+    )
 
     def create_client(self) -> LinearGraphQLClientViaOAuth:
         """Create a Linear GraphQL client."""
@@ -84,19 +95,19 @@ class LinearClient(IClient):
 
     def __init__(
         self,
-        client: Union[LinearGraphQLClientViaToken, LinearGraphQLClientViaOAuth],
+        client: LinearGraphQLClientViaToken | LinearGraphQLClientViaOAuth,
     ) -> None:
         """Initialize with a Linear GraphQL client object."""
         self.client = client
 
-    def get_client(self) -> Union[LinearGraphQLClientViaToken, LinearGraphQLClientViaOAuth]:
+    def get_client(self) -> LinearGraphQLClientViaToken | LinearGraphQLClientViaOAuth:
         """Return the Linear GraphQL client object."""
         return self.client
 
     @classmethod
     def build_with_config(
         cls,
-        config: Union[LinearTokenConfig, LinearOAuthConfig],
+        config: LinearTokenConfig | LinearOAuthConfig,
     ) -> "LinearClient":
         """Build LinearClient with configuration.
 
@@ -104,6 +115,7 @@ class LinearClient(IClient):
             config: Linear configuration instance
         Returns:
             LinearClient instance
+
         """
         return cls(config.create_client())
 
@@ -149,16 +161,19 @@ class LinearClient(IClient):
             return cls(client)
 
         except Exception as e:
-            logger.error(f"Failed to build Linear client from services: {str(e)}")
+            logger.error(f"Failed to build Linear client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(
+        logger: logging.Logger, config_service: ConfigurationService
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for Linear."""
         try:
-            config = await config_service.get_config("/services/connectors/linear/config")
+            config = await config_service.get_config(
+                "/services/connectors/linear/config"
+            )
             return config or {}
         except Exception as e:
             logger.error(f"Failed to get Linear connector config: {e}")
             return {}
-

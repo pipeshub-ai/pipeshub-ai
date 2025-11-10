@@ -3,11 +3,13 @@
 Simple S3 API search example.
 No pagination, no complexity - just search and print results.
 """
+
 import asyncio
 import os
 
 from app.sources.client.s3.s3 import S3Client, S3AccessKeyConfig, S3Response
 from app.sources.external.s3.s3 import S3DataSource
+
 
 async def main():
     # S3 credentials
@@ -16,7 +18,12 @@ async def main():
     REGION = os.getenv("S3_REGION")
     BUCKET = os.getenv("S3_BUCKET_NAME")
     # Create client
-    config = S3AccessKeyConfig(access_key_id=ACCESS_KEY, secret_access_key=SECRET_KEY, region_name=REGION, bucket_name=BUCKET)
+    config = S3AccessKeyConfig(
+        access_key_id=ACCESS_KEY,
+        secret_access_key=SECRET_KEY,
+        region_name=REGION,
+        bucket_name=BUCKET,
+    )
 
     print("config", config)
     client = S3Client.build_with_config(config)

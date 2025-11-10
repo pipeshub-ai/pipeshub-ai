@@ -1,5 +1,5 @@
 import base64
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel, field_validator  # type: ignore
 
@@ -10,19 +10,21 @@ from app.sources.client.iclient import IClient
 
 class FreshDeskConfigurationError(Exception):
     """Custom exception for FreshDesk configuration errors"""
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None) -> None:
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.details = details or {}
 
 
 class FreshDeskResponse(BaseModel):
     """Standardized FreshDesk API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return self.model_dump()
 
@@ -39,6 +41,7 @@ class FreshDeskRESTClientViaApiKey(HTTPClient):
     Args:
         domain: The FreshDesk domain (e.g., 'company.FreshDesk.com')
         api_key: The API key to use for authentication
+
     """
 
     def __init__(self, domain: str, api_key: str) -> None:
@@ -69,12 +72,14 @@ class FreshDeskApiKeyConfig(BaseModel):
         domain: The FreshDesk domain (e.g., 'company.FreshDesk.com')
         api_key: The API key for authentication
         ssl: Whether to use SSL (default: True)
+
     """
+
     domain: str
     api_key: str
     ssl: bool = True
 
-    @field_validator('domain')
+    @field_validator("domain")
     @classmethod
     def validate_domain(cls, v: str) -> str:
         """Validate domain field"""
@@ -82,12 +87,12 @@ class FreshDeskApiKeyConfig(BaseModel):
             raise ValueError("domain cannot be empty or None")
 
         # Validate domain format - should not include protocol
-        if v.startswith(('http://', 'https://')):
+        if v.startswith(("http://", "https://")):
             raise ValueError("domain should not include protocol (http:// or https://)")
 
         return v
 
-    @field_validator('api_key')
+    @field_validator("api_key")
     @classmethod
     def validate_api_key(cls, v: str) -> str:
         """Validate api_key field"""
@@ -103,9 +108,9 @@ class FreshDeskApiKeyConfig(BaseModel):
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
         return {
-            'domain': self.domain,
-            'ssl': self.ssl,
-            'has_api_key': bool(self.api_key)
+            "domain": self.domain,
+            "ssl": self.ssl,
+            "has_api_key": bool(self.api_key),
         }
 
 
@@ -139,11 +144,14 @@ class FreshDeskClient(IClient):
             config: FreshDeskApiKeyConfig instance
         Returns:
             FreshDeskClient instance
+
         """
         return cls(config.create_client())
 
     @classmethod
-    def build_with_api_key_config(cls, config: FreshDeskApiKeyConfig) -> "FreshDeskClient":
+    def build_with_api_key_config(
+        cls, config: FreshDeskApiKeyConfig
+    ) -> "FreshDeskClient":
         """Build FreshDeskClient with API key configuration
 
         Args:
@@ -151,6 +159,7 @@ class FreshDeskClient(IClient):
 
         Returns:
             FreshDeskClient: Configured client instance
+
         """
         return cls.build_with_config(config)
 
@@ -159,7 +168,7 @@ class FreshDeskClient(IClient):
         cls,
         domain: str,
         api_key: str,
-        ssl: bool = True
+        ssl: bool = True,
     ) -> "FreshDeskClient":
         """Build FreshDeskClient with API key directly
 
@@ -170,11 +179,12 @@ class FreshDeskClient(IClient):
 
         Returns:
             FreshDeskClient: Configured client instance
+
         """
         config = FreshDeskApiKeyConfig(
             domain=domain,
             api_key=api_key,
-            ssl=ssl
+            ssl=ssl,
         )
         return cls.build_with_config(config)
 
@@ -194,6 +204,7 @@ class FreshDeskClient(IClient):
 
         Raises:
             NotImplementedError: This method needs to be implemented
+
         """
         config = await cls._get_connector_config(logger, config_service)
         if not config:
@@ -205,16 +216,22 @@ class FreshDeskClient(IClient):
             domain = auth_config.get("domain", "")
             if not api_key:
                 raise ValueError("API key required for API key auth type")
-            client = FreshDeskApiKeyConfig(domain=domain, api_key=api_key).create_client()
+            client = FreshDeskApiKeyConfig(
+                domain=domain, api_key=api_key
+            ).create_client()
         else:
             raise ValueError(f"Invalid auth type: {auth_type}")
         return cls(client)
 
     @staticmethod
-    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(
+        logger, config_service: ConfigurationService
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for FreshDesk."""
         try:
-            config = await config_service.get_config("/services/connectors/freshdesk/config")
+            config = await config_service.get_config(
+                "/services/connectors/freshdesk/config"
+            )
             return config or {}
         except Exception as e:
             logger.error(f"Failed to get FreshDesk connector config: {e}")

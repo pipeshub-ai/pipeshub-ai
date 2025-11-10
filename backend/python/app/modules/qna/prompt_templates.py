@@ -1,15 +1,18 @@
-from typing import List, Literal
+from typing import Literal
 
 from pydantic import BaseModel
 
 
 class AnswerWithMetadata(BaseModel):
     """Schema for the answer with metadata"""
+
     answer: str
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
-    answerMatchType: Literal["Derived From Blocks", "Exact Match", "Fuzzy Match", "Inferred", "Other"]
-    blockNumbers: List[int]
+    answerMatchType: Literal[
+        "Derived From Blocks", "Exact Match", "Fuzzy Match", "Inferred", "Other"
+    ]
+    blockNumbers: list[int]
 
 
 qna_prompt = """
@@ -506,7 +509,6 @@ Your answer: """
 # """
 
 
-
 # qna_prompt_instructions_1 = """
 # <task>
 #   You are an expert AI assistant within an enterprise who can answer any question person in the company has based on companies Knowledge sources and user information.
@@ -656,4 +658,3 @@ Your answer: """
 # </example>
 # ***Your entire response/output is going to consist of a single JSON, and you will NOT wrap it within JSON md markers***
 # """
-

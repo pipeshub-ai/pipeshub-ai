@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from logging import Logger
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiohttp
 from fastapi.responses import StreamingResponse
@@ -43,14 +43,17 @@ BASE_URL = "https://api.atlassian.com/ex/confluence"
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 
+
 @dataclass
 class AtlassianCloudResource:
     """Represents an Atlassian Cloud resource (site)"""
+
     id: str
     name: str
     url: str
-    scopes: List[str]
-    avatar_url: Optional[str] = None
+    scopes: list[str]
+    avatar_url: str | None = None
+
 
 class ConfluenceClient:
     def __init__(self, logger: Logger, config_service: ConfigurationService) -> None:
@@ -95,8 +98,8 @@ class ConfluenceClient:
         self,
         method: str,
         url: str,
-        **kwargs
-    ) -> Dict[str, Any]:
+        **kwargs,
+    ) -> dict[str, Any]:
         """Make authenticated API request and return JSON response"""
         config = await self.config_service.get_config(f"{OAUTH_CONFLUENCE_CONFIG_PATH}")
         token = None
@@ -111,7 +114,7 @@ class ConfluenceClient:
 
         token = {
             "token_type": credentials_config.get("token_type"),
-            "access_token": credentials_config.get("access_token")
+            "access_token": credentials_config.get("access_token"),
         }
 
         headers = kwargs.pop("headers", {})
@@ -122,18 +125,16 @@ class ConfluenceClient:
             response.raise_for_status()
             return await response.json()
 
-    async def get_accessible_resources(self) -> List[AtlassianCloudResource]:
-        """
-        Get list of Atlassian sites (Confluence/Jira instances) accessible to the user
+    async def get_accessible_resources(self) -> list[AtlassianCloudResource]:
+        """Get list of Atlassian sites (Confluence/Jira instances) accessible to the user
         Args:
             None
         Returns:
             List of accessible Atlassian Cloud resources
         """
-
         response = await self.make_authenticated_json_request(
             "GET",
-            RESOURCE_URL
+            RESOURCE_URL,
         )
 
         return [
@@ -142,17 +143,15 @@ class ConfluenceClient:
                 name=resource.get("name", ""),
                 url=resource["url"],
                 scopes=resource.get("scopes", []),
-                avatar_url=resource.get("avatarUrl")
+                avatar_url=resource.get("avatarUrl"),
             )
             for resource in response
         ]
 
-
     async def fetch_spaces_with_permissions(
         self,
-    ) -> Dict[str, Any]:
-        """
-        Get all Confluence spaces
+    ) -> dict[str, Any]:
+        """Get all Confluence spaces
         Args:
             None
         Returns:
@@ -169,8 +168,6 @@ class ConfluenceClient:
                 break
             spaces_url = f"{base_url}{next_url}"
 
-
-
         for space in spaces:
             space_permissions = await self._fetch_space_permission(space["id"])
             space["permissions"] = space_permissions
@@ -180,7 +177,7 @@ class ConfluenceClient:
     async def _fetch_space_permission(
         self,
         space_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         permissions = []
         base_url = f"{BASE_URL}/{self.cloud_id}"
         url = f"{base_url}/wiki/api/v2/spaces/{space_id}/permissions"
@@ -197,10 +194,12 @@ class ConfluenceClient:
     async def fetch_page_content(
         self,
         page_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         base_url = f"{BASE_URL}/{self.cloud_id}"
         url = f"{base_url}/wiki/api/v2/pages/{page_id}"
-        page_details = await self.make_authenticated_json_request("GET", url, params={"body-format": "storage"})
+        page_details = await self.make_authenticated_json_request(
+            "GET", url, params={"body-format": "storage"}
+        )
         html_content = page_details.get("body", {}).get("storage", {}).get("value", "")
         title = page_details.get("title", "")
 
@@ -222,7 +221,7 @@ class ConfluenceClient:
     async def _fetch_page_details(
         self,
         page_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         base_url = f"{BASE_URL}/{self.cloud_id}"
         url = f"{base_url}/wiki/api/v2/pages/{page_id}"
         return await self.make_authenticated_json_request("GET", url)
@@ -230,8 +229,8 @@ class ConfluenceClient:
     async def fetch_pages_with_permissions(
         self,
         space_id: str,
-        users: List[AppUser],
-    ) -> List[WebpageRecord]:
+        users: list[AppUser],
+    ) -> list[WebpageRecord]:
         base_url = f"{BASE_URL}/{self.cloud_id}"
         limit = 25
         pages_url = f"{base_url}/wiki/api/v2/spaces/{space_id}/pages"
@@ -240,27 +239,35 @@ class ConfluenceClient:
         permissions = []
 
         for user in users:
-            permissions.append(Permission(
-                email=user.email,
-                entity_type=EntityType.USER,
-                type=PermissionType.READ
-            ))
+            permissions.append(
+                Permission(
+                    email=user.email,
+                    entity_type=EntityType.USER,
+                    type=PermissionType.READ,
+                )
+            )
         while True:
-            pages_batch = await self.make_authenticated_json_request("GET", pages_url, params={"limit": limit})
+            pages_batch = await self.make_authenticated_json_request(
+                "GET", pages_url, params={"limit": limit}
+            )
             for page in pages_batch.get("results", []):
                 # page_permissions = await self._fetch_page_permission(page["id"])
                 # page["permissions"] = page_permissions
 
                 page_details = await self._fetch_page_details(page["id"])
 
-                created_at = datetime.strptime(page["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
-                modified_at = datetime.strptime(page_details["version"]["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
+                created_at = datetime.strptime(
+                    page["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ"
+                )
+                modified_at = datetime.strptime(
+                    page_details["version"]["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ"
+                )
                 page_link = page_details.get("_links")
                 web_url = ""
                 if page_link:
                     web_url = page_link.get("base", "") + page_link.get("webui", "")
 
-                record_id=str(uuid.uuid4())
+                record_id = str(uuid.uuid4())
                 record = WebpageRecord(
                     id=record_id,
                     external_record_id=page["id"],
@@ -273,7 +280,7 @@ class ConfluenceClient:
                     record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                     external_record_group_id=space_id,
                     parent_record_type=RecordType.WEBPAGE,
-                    parent_external_record_id=page.get('parentId'),
+                    parent_external_record_id=page.get("parentId"),
                     weburl=web_url,
                     mime_type=MimeTypes.HTML.value,
                     source_created_at=int(created_at.timestamp() * 1000),
@@ -287,7 +294,7 @@ class ConfluenceClient:
 
         return records
 
-    async def fetch_users(self) -> List[AppUser]:
+    async def fetch_users(self) -> list[AppUser]:
         url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/users/search"
         users = []
         base_url = f"{BASE_URL}/{self.cloud_id}"
@@ -298,56 +305,81 @@ class ConfluenceClient:
             if not next_url:
                 break
             url = f"{base_url}/{next_url}"
-        return [AppUser(self.connector_name, email=user["emailAddress"], org_id=self.org_id) for user in users]
+        return [
+            AppUser(self.connector_name, email=user["emailAddress"], org_id=self.org_id)
+            for user in users
+        ]
 
 
-@ConnectorBuilder("Confluence")\
-    .in_group("Atlassian")\
-    .with_auth_type("OAUTH")\
-    .with_description("Sync pages, spaces from Confluence Cloud")\
-    .with_categories(["Storage"])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/confluence.svg")
-        .add_documentation_link(DocumentationLink(
-            "Confluence Cloud API Setup",
-            "https://developer.atlassian.com/cloud/confluence/rest/",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/confluence/confluence',
-            'pipeshub'
-        ))
+@(
+    ConnectorBuilder("Confluence")
+    .in_group("Atlassian")
+    .with_auth_type("OAUTH")
+    .with_description("Sync pages, spaces from Confluence Cloud")
+    .with_categories(["Storage"])
+    .configure(
+        lambda builder: builder.with_icon("/assets/icons/connectors/confluence.svg")
+        .add_documentation_link(
+            DocumentationLink(
+                "Confluence Cloud API Setup",
+                "https://developer.atlassian.com/cloud/confluence/rest/",
+                "setup",
+            )
+        )
+        .add_documentation_link(
+            DocumentationLink(
+                "Pipeshub Documentation",
+                "https://docs.pipeshub.com/connectors/confluence/confluence",
+                "pipeshub",
+            )
+        )
         .with_redirect_uri("connectors/oauth/callback/Confluence", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Atlassian Cloud Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Atlassian Cloud Client Secret",
-            description="The Client Secret from Azure AD App Registration",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="domain",
-            display_name="Atlassian Domain",
-            description="https://your-domain.atlassian.net"
-        ))
+        .add_auth_field(
+            AuthField(
+                name="clientId",
+                display_name="Application (Client) ID",
+                placeholder="Enter your Atlassian Cloud Application ID",
+                description="The Application (Client) ID from Azure AD App Registration",
+            )
+        )
+        .add_auth_field(
+            AuthField(
+                name="clientSecret",
+                display_name="Client Secret",
+                placeholder="Enter your Atlassian Cloud Client Secret",
+                description="The Client Secret from Azure AD App Registration",
+                field_type="PASSWORD",
+                is_secret=True,
+            )
+        )
+        .add_auth_field(
+            AuthField(
+                name="domain",
+                display_name="Atlassian Domain",
+                description="https://your-domain.atlassian.net",
+            )
+        )
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access())
-
-    )\
+        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access()),
+    )
     .build_decorator()
+)
 class ConfluenceConnector(BaseConnector):
-    def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
-                 data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
-        super().__init__(ConfluenceApp(), logger, data_entities_processor, data_store_provider, config_service)
+    def __init__(
+        self,
+        logger: Logger,
+        data_entities_processor: DataSourceEntitiesProcessor,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+    ) -> None:
+        super().__init__(
+            ConfluenceApp(),
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+        )
 
     async def init(self) -> None:
         await self.data_entities_processor.initialize()
@@ -360,13 +392,17 @@ class ConfluenceConnector(BaseConnector):
         return ""
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        content = await self.confluence_client.fetch_page_content(record.external_record_id)
+        content = await self.confluence_client.fetch_page_content(
+            record.external_record_id
+        )
         return StreamingResponse(
             content,
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
+            media_type=record.mime_type
+            if record.mime_type
+            else "application/octet-stream",
             headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
+                "Content-Disposition": f"attachment; filename={record.record_name}",
+            },
         )
 
     async def test_connection_and_access(self) -> bool:
@@ -378,7 +414,7 @@ class ConfluenceConnector(BaseConnector):
     async def cleanup(self) -> None:
         pass
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: dict) -> None:
         pass
 
     async def run_sync(self) -> None:
@@ -391,18 +427,28 @@ class ConfluenceConnector(BaseConnector):
         try:
             spaces = await confluence_client.fetch_spaces_with_permissions()
             for space in spaces:
-                page_records = await confluence_client.fetch_pages_with_permissions(space["id"], users)
+                page_records = await confluence_client.fetch_pages_with_permissions(
+                    space["id"], users
+                )
                 await self.data_entities_processor.on_new_records(page_records)
         except Exception as e:
             self.logger.error(f"Error processing user {user.email}: {e}")
 
     @classmethod
-    async def create_connector(cls, logger: Logger,
-                               data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> BaseConnector:
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
+    async def create_connector(
+        cls,
+        logger: Logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+    ) -> BaseConnector:
+        data_entities_processor = DataSourceEntitiesProcessor(
+            logger, data_store_provider, config_service
+        )
         await data_entities_processor.initialize()
 
-        return ConfluenceConnector(logger, data_entities_processor, data_store_provider, config_service)
+        return ConfluenceConnector(
+            logger, data_entities_processor, data_store_provider, config_service
+        )
 
     async def get_confluence_client(self) -> ConfluenceClient:
         confluence_client = ConfluenceClient(self.logger, self.config_service)

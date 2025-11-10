@@ -8,6 +8,7 @@ import logging
 
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 
+
 async def main() -> None:
     # Set up logging
     logger = logging.getLogger(__name__)
@@ -17,7 +18,9 @@ async def main() -> None:
     etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(logger=logger)
 
     # create configuration service
-    config_service = ConfigurationService(logger=logger, key_value_store=etcd3_encrypted_key_value_store)
+    config_service = ConfigurationService(
+        logger=logger, key_value_store=etcd3_encrypted_key_value_store
+    )
 
     # Build S3 client using configuration service (await the async method)
     try:
@@ -30,10 +33,10 @@ async def main() -> None:
         logger.error(f"Failed to create S3 client: {e}")
         print(f"❌ Error creating S3 client: {e}")
         return
-    
+
     # Create data source and use it
     s3_data_source = S3DataSource(s3_client)
-    
+
     # Test list buckets
     try:
         response = await s3_data_source.list_buckets()

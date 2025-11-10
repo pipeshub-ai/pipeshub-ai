@@ -29,8 +29,11 @@ class EncryptionService:
         self.algorithm = algorithm
         self.secret_key = secret_key  # this is a hex string
         self.logger = logger
+
     @classmethod
-    def get_instance(cls, algorithm: str, secret_key: str, logger: Logger) -> "EncryptionService":
+    def get_instance(
+        cls, algorithm: str, secret_key: str, logger: Logger
+    ) -> "EncryptionService":
         if cls._instance is None:
             cls._instance = EncryptionService(algorithm, secret_key, logger)
         return cls._instance
@@ -61,7 +64,7 @@ class EncryptionService:
             PARTS_LENGTH = 3
             if len(parts) != PARTS_LENGTH:
                 raise InvalidKeyFormatError(
-                    "Invalid encrypted text format; expected format iv:ciphertext:authTag"
+                    "Invalid encrypted text format; expected format iv:ciphertext:authTag",
                 )
             iv_hex, ciphertext_hex, auth_tag_hex = parts
             iv = bytes.fromhex(iv_hex)

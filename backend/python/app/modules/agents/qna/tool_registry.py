@@ -1,9 +1,8 @@
-"""
-Migrated wrapper.py - Now uses the new factory system for cleaner code
-"""
+"""Migrated wrapper.py - Now uses the new factory system for cleaner code"""
 
 import json
-from typing import Callable, Dict, List, Optional, Union
+from collections.abc import Callable
+from typing import Union
 
 from langchain.tools import BaseTool
 from pydantic import ConfigDict, Field
@@ -25,8 +24,8 @@ class RegistryToolWrapper(BaseTool):
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
-        extra='allow',
-        validate_assignment=True
+        extra="allow",
+        validate_assignment=True,
     )
 
     app_name: str = Field(default="", description="Application name")
@@ -40,7 +39,7 @@ class RegistryToolWrapper(BaseTool):
         tool_name: str,
         registry_tool: object,
         state: ChatState,
-        **kwargs: Union[str, int, bool, dict, list, None]
+        **kwargs: str | int | bool | dict | list | None,
     ) -> None:
         """Initialize the registry tool wrapper.
 
@@ -50,15 +49,16 @@ class RegistryToolWrapper(BaseTool):
             registry_tool: Registry tool instance
             state: Chat state object
             **kwargs: Additional keyword arguments
+
         """
         base_description = getattr(
             registry_tool,
-            'description',
-            f"Tool: {app_name}.{tool_name}"
+            "description",
+            f"Tool: {app_name}.{tool_name}",
         )
 
         try:
-            params = getattr(registry_tool, 'parameters', []) or []
+            params = getattr(registry_tool, "parameters", []) or []
             if params:
                 formatted_params = self._format_parameters(params)
                 params_doc = "\nParameters:\n- " + "\n- ".join(formatted_params)
@@ -68,20 +68,20 @@ class RegistryToolWrapper(BaseTool):
         except Exception:
             full_description = base_description
 
-        init_data: Dict[str, Union[str, object]] = {
-            'name': f"{app_name}.{tool_name}",
-            'description': full_description,
-            'app_name': app_name,
-            'tool_name': tool_name,
-            'registry_tool': registry_tool,
-            'chat_state': state,
-            **kwargs
+        init_data: dict[str, str | object] = {
+            "name": f"{app_name}.{tool_name}",
+            "description": full_description,
+            "app_name": app_name,
+            "tool_name": tool_name,
+            "registry_tool": registry_tool,
+            "chat_state": state,
+            **kwargs,
         }
 
         super().__init__(**init_data)
 
     @staticmethod
-    def _format_parameters(params: List[object]) -> List[str]:
+    def _format_parameters(params: list[object]) -> list[str]:
         """Format parameters for description.
 
         Args:
@@ -89,22 +89,23 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             List of formatted parameter strings
+
         """
         formatted_params = []
         for param in params:
             try:
                 type_name = getattr(
                     param.type,
-                    'name',
-                    str(getattr(param, 'type', 'string'))
+                    "name",
+                    str(getattr(param, "type", "string")),
                 )
             except Exception:
-                type_name = 'string'
+                type_name = "string"
 
-            required_marker = ' (required)' if getattr(param, 'required', False) else ''
-            description = getattr(param, 'description', '')
+            required_marker = " (required)" if getattr(param, "required", False) else ""
+            description = getattr(param, "description", "")
             formatted_params.append(
-                f"{param.name}{required_marker}: {description} [{type_name}]"
+                f"{param.name}{required_marker}: {description} [{type_name}]",
             )
         return formatted_params
 
@@ -114,10 +115,11 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Chat state object
+
         """
         return self.chat_state
 
-    def _run(self, **kwargs: Union[str, int, bool, dict, list, None]) -> str:
+    def _run(self, **kwargs: str | int | bool | dict | list | None) -> str:
         """Execute the registry tool directly.
 
         Args:
@@ -125,6 +127,7 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Formatted result string
+
         """
         try:
             result = self._execute_tool_directly(kwargs)
@@ -135,32 +138,37 @@ class RegistryToolWrapper(BaseTool):
     def _handle_execution_error(
         self,
         error: Exception,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None],
     ) -> str:
         """Handle tool execution error.
+
         Args:
             error: Exception that occurred
             arguments: Tool arguments
 
         Returns:
             Formatted error message
-        """
-        error_msg = f"Error executing tool {self.app_name}.{self.tool_name}: {str(error)}"
 
-        logger = self.state.get("logger") if hasattr(self.state, 'get') else None
+        """
+        error_msg = f"Error executing tool {self.app_name}.{self.tool_name}: {error!s}"
+
+        logger = self.state.get("logger") if hasattr(self.state, "get") else None
         if logger:
             logger.error(error_msg)
 
-        return json.dumps({
-            "status": "error",
-            "message": error_msg,
-            "tool": f"{self.app_name}.{self.tool_name}",
-            "args": arguments
-        }, indent=2)
+        return json.dumps(
+            {
+                "status": "error",
+                "message": error_msg,
+                "tool": f"{self.app_name}.{self.tool_name}",
+                "args": arguments,
+            },
+            indent=2,
+        )
 
     def _execute_tool_directly(
         self,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None],
     ) -> ToolResult:
         """Execute the registry tool function directly.
 
@@ -169,18 +177,18 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Tool execution result
+
         """
         tool_function = self.registry_tool.function
 
-        if hasattr(tool_function, '__qualname__') and '.' in tool_function.__qualname__:
+        if hasattr(tool_function, "__qualname__") and "." in tool_function.__qualname__:
             return self._execute_class_method(tool_function, arguments)
-        else:
-            return tool_function(**arguments)
+        return tool_function(**arguments)
 
     def _execute_class_method(
         self,
         tool_function: Callable,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None],
     ) -> ToolResult:
         """Execute a class method tool.
 
@@ -193,8 +201,9 @@ class RegistryToolWrapper(BaseTool):
 
         Raises:
             RuntimeError: If instance creation fails
+
         """
-        class_name = tool_function.__qualname__.split('.')[0]
+        class_name = tool_function.__qualname__.split(".")[0]
         module_name = tool_function.__module__
 
         try:
@@ -206,7 +215,7 @@ class RegistryToolWrapper(BaseTool):
             return bound_method(**arguments)
         except Exception as e:
             raise RuntimeError(
-                f"Failed to create instance for tool '{self.app_name}.{self.tool_name}': {str(e)}"
+                f"Failed to create instance for tool '{self.app_name}.{self.tool_name}': {e!s}",
             ) from e
 
     def _create_tool_instance_with_factory(self, action_class: type) -> object:
@@ -220,18 +229,21 @@ class RegistryToolWrapper(BaseTool):
 
         Raises:
             ValueError: If factory not available
+
         """
         try:
             factory = ClientFactoryRegistry.get_factory(self.app_name)
 
             if factory:
                 retrieval_service = self.state.get("retrieval_service")
-                if retrieval_service and hasattr(retrieval_service, 'config_service'):
+                if retrieval_service and hasattr(retrieval_service, "config_service"):
                     config_service = retrieval_service.config_service
                     logger = self.state.get("logger")
 
                     # Pass chat state into factory for auth/impersonation decisions
-                    client = factory.create_client_sync(config_service, logger, self.state)
+                    client = factory.create_client_sync(
+                        config_service, logger, self.state
+                    )
                     return action_class(client)
 
             raise ValueError("Not able to get the client from factory")
@@ -240,7 +252,7 @@ class RegistryToolWrapper(BaseTool):
             logger = self.state.get("logger")
             if logger:
                 logger.warning(
-                    f"Factory creation failed for {self.app_name}, using fallback: {e}"
+                    f"Factory creation failed for {self.app_name}, using fallback: {e}",
                 )
             raise
 
@@ -252,16 +264,19 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Formatted result string
+
         """
-        if isinstance(result, (tuple, list)) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
+        if (
+            isinstance(result, (tuple, list))
+            and len(result) == TOOL_RESULT_TUPLE_LENGTH
+        ):
             success, result_data = result
             return str(result_data)
         return str(result)
 
 
 def _get_recently_failed_tools(state: ChatState, logger) -> dict:
-    """
-    Identify tools that have recently failed multiple times and should be blocked.
+    """Identify tools that have recently failed multiple times and should be blocked.
 
     Args:
         state: Chat state
@@ -269,6 +284,7 @@ def _get_recently_failed_tools(state: ChatState, logger) -> dict:
 
     Returns:
         Dict mapping tool_name to failure count for blocked tools
+
     """
     LOOKBACK_WINDOW = 7  # Check last N tool calls
     FAILURE_THRESHOLD = 2  # Block if failed N+ times
@@ -297,12 +313,14 @@ def _get_recently_failed_tools(state: ChatState, logger) -> dict:
     }
 
     if blocked_tools and logger:
-        logger.info(f"🚫 Identified {len(blocked_tools)} tools to block based on recent failures")
+        logger.info(
+            f"🚫 Identified {len(blocked_tools)} tools to block based on recent failures"
+        )
 
     return blocked_tools
 
 
-def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
+def get_agent_tools(state: ChatState) -> list[RegistryToolWrapper]:
     """Get all available tools from the global registry.
     - Caches tools after first load for performance
     - Only re-computes when blocked tools change
@@ -313,6 +331,7 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
 
     Returns:
         List of tool wrappers
+
     """
     logger = state.get("logger")
 
@@ -326,7 +345,9 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     # If cache exists and blocked tools haven't changed, return cached tools
     if cached_tools is not None and blocked_tools == cached_blocked_tools:
         if logger:
-            logger.debug(f"⚡ Using cached tools ({len(cached_tools)} tools) - significant performance boost")
+            logger.debug(
+                f"⚡ Using cached tools ({len(cached_tools)} tools) - significant performance boost"
+            )
         return cached_tools
 
     # Cache miss or blocked tools changed - rebuild tool list
@@ -336,7 +357,7 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
         else:
             logger.info("📦 First tool load - building cache")
 
-    tools: List[RegistryToolWrapper] = []
+    tools: list[RegistryToolWrapper] = []
     registry_tools = _global_tools_registry.get_all_tools()
 
     if logger:
@@ -357,13 +378,15 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
                 full_tool_name,
                 tool_name,
                 app_name,
-                user_enabled_tools
+                user_enabled_tools,
             )
 
             # Exclude tools that have recently failed
             if should_include and full_tool_name in blocked_tools:
                 if logger:
-                    logger.warning(f"🚫 Blocking tool: {full_tool_name} (recently failed {blocked_tools[full_tool_name]} times)")
+                    logger.warning(
+                        f"🚫 Blocking tool: {full_tool_name} (recently failed {blocked_tools[full_tool_name]} times)"
+                    )
                 should_include = False
 
             if should_include:
@@ -371,7 +394,7 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
                     app_name,
                     tool_name,
                     registry_tool,
-                    state
+                    state,
                 )
                 tools.append(wrapper_tool)
                 if logger:
@@ -392,7 +415,9 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     if logger:
         logger.info(f"✅ Cached {len(tools)} tools for future iterations")
         if blocked_tools:
-            logger.warning(f"⚠️ Blocked {len(blocked_tools)} tools due to recent failures: {list(blocked_tools.keys())}")
+            logger.warning(
+                f"⚠️ Blocked {len(blocked_tools)} tools due to recent failures: {list(blocked_tools.keys())}"
+            )
 
     return tools
 
@@ -405,6 +430,7 @@ def _parse_tool_name(full_tool_name: str) -> tuple[str, str]:
 
     Returns:
         Tuple of (app_name, tool_name)
+
     """
     if "." not in full_tool_name:
         return "default", full_tool_name
@@ -415,7 +441,7 @@ def _should_include_tool(
     full_tool_name: str,
     tool_name: str,
     app_name: str,
-    user_enabled_tools: Optional[List[str]]
+    user_enabled_tools: list[str] | None,
 ) -> bool:
     """Determine if a tool should be included.
 
@@ -427,13 +453,16 @@ def _should_include_tool(
 
     Returns:
         True if tool should be included
+
     """
     if user_enabled_tools is None:
         return True
 
-    if (full_tool_name in user_enabled_tools or
-        tool_name in user_enabled_tools or
-        app_name in user_enabled_tools):
+    if (
+        full_tool_name in user_enabled_tools
+        or tool_name in user_enabled_tools
+        or app_name in user_enabled_tools
+    ):
         return True
 
     return _is_essential_tool(full_tool_name)
@@ -447,6 +476,7 @@ def _is_essential_tool(full_tool_name: str) -> bool:
 
     Returns:
         True if tool is essential
+
     """
     essential_patterns = ["calculator.", "web_search", "get_current_datetime"]
     return any(pattern in full_tool_name for pattern in essential_patterns)
@@ -457,12 +487,13 @@ def _initialize_tool_state(state: ChatState) -> None:
 
     Args:
         state: Chat state object
+
     """
     state.setdefault("tool_results", [])
     state.setdefault("all_tool_results", [])
 
 
-def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolWrapper]:
+def get_tool_by_name(tool_name: str, state: ChatState) -> RegistryToolWrapper | None:
     """Get a specific tool by name from the registry.
 
     Args:
@@ -471,6 +502,7 @@ def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolW
 
     Returns:
         Tool wrapper or None if not found
+
     """
     registry_tools = _global_tools_registry.get_all_tools()
 
@@ -481,21 +513,20 @@ def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolW
             app_name,
             actual_tool_name,
             registry_tools[tool_name],
-            state
+            state,
         )
 
     # Search by tool name or suffix
     for full_name, registry_tool in registry_tools.items():
-        if hasattr(registry_tool, 'tool_name') and (
-            registry_tool.tool_name == tool_name or
-            full_name.endswith(f".{tool_name}")
+        if hasattr(registry_tool, "tool_name") and (
+            registry_tool.tool_name == tool_name or full_name.endswith(f".{tool_name}")
         ):
             app_name, actual_tool_name = _parse_tool_name(full_name)
             return RegistryToolWrapper(
                 app_name,
                 actual_tool_name,
                 registry_tool,
-                state
+                state,
             )
 
     return None
@@ -517,7 +548,7 @@ def get_tool_results_summary(state: ChatState) -> str:
 
     for tool_name, stats in tool_summary.items():
         # Extract category from tool name (e.g., "slack.send_message" → "slack")
-        category = tool_name.split('.')[0] if '.' in tool_name else "utility"
+        category = tool_name.split(".")[0] if "." in tool_name else "utility"
 
         if category not in tool_categories:
             tool_categories[category] = []
@@ -533,20 +564,33 @@ def get_tool_results_summary(state: ChatState) -> str:
 
                 # **GENERIC** guidance based on tool verb/action
                 if stats["success"] > 0:
-                    tool_action = tool_name.split('.')[-1] if '.' in tool_name else tool_name
+                    tool_action = (
+                        tool_name.split(".")[-1] if "." in tool_name else tool_name
+                    )
 
                     # Generic guidance based on action type
-                    if any(verb in tool_action.lower() for verb in ["fetch", "get", "list", "retrieve"]):
+                    if any(
+                        verb in tool_action.lower()
+                        for verb in ["fetch", "get", "list", "retrieve"]
+                    ):
                         summary += "  - ✅ Data retrieved successfully - can be used for further actions\n"
-                    elif any(verb in tool_action.lower() for verb in ["create", "send", "post", "add"]):
+                    elif any(
+                        verb in tool_action.lower()
+                        for verb in ["create", "send", "post", "add"]
+                    ):
                         summary += "  - ✅ Action completed successfully\n"
-                    elif any(verb in tool_action.lower() for verb in ["update", "modify", "edit"]):
+                    elif any(
+                        verb in tool_action.lower()
+                        for verb in ["update", "modify", "edit"]
+                    ):
                         summary += "  - ✅ Update completed successfully\n"
 
     return summary
 
 
-def _build_tool_summary(all_results: List[Dict[str, object]]) -> Dict[str, Dict[str, object]]:
+def _build_tool_summary(
+    all_results: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
     """Build summary statistics for tools.
 
     Args:
@@ -554,8 +598,9 @@ def _build_tool_summary(all_results: List[Dict[str, object]]) -> Dict[str, Dict[
 
     Returns:
         Dictionary of tool statistics
+
     """
-    tool_summary: Dict[str, Dict[str, object]] = {}
+    tool_summary: dict[str, dict[str, object]] = {}
 
     for result in all_results:
         tool_name = result.get("tool_name", "unknown")
@@ -565,7 +610,7 @@ def _build_tool_summary(all_results: List[Dict[str, object]]) -> Dict[str, Dict[
             tool_summary[tool_name] = {
                 "success": 0,
                 "error": 0,
-                "results": []
+                "results": [],
             }
 
         tool_summary[tool_name][status] += 1
@@ -574,7 +619,7 @@ def _build_tool_summary(all_results: List[Dict[str, object]]) -> Dict[str, Dict[
     return tool_summary
 
 
-def _format_tool_stats(tool_name: str, stats: Dict[str, object]) -> str:
+def _format_tool_stats(tool_name: str, stats: dict[str, object]) -> str:
     """Format statistics for a single tool.
 
     Args:
@@ -583,6 +628,7 @@ def _format_tool_stats(tool_name: str, stats: Dict[str, object]) -> str:
 
     Returns:
         Formatted statistics string
+
     """
     summary = f"\n{tool_name}:\n"
     summary += f"  - Successful: {stats['success']}\n"
@@ -602,16 +648,17 @@ def _format_tool_stats(tool_name: str, stats: Dict[str, object]) -> str:
     return summary
 
 
-def get_all_available_tool_names() -> Dict[str, Union[List[str], int]]:
+def get_all_available_tool_names() -> dict[str, list[str] | int]:
     """Get list of all available tool names.
 
     Returns:
         Dictionary with tool names and count
+
     """
     registry_tools = list(_global_tools_registry.list_tools())
     return {
         "registry_tools": registry_tools,
-        "total_count": len(registry_tools)
+        "total_count": len(registry_tools),
     }
 
 
@@ -620,6 +667,7 @@ def get_tool_usage_guidance() -> str:
 
     Returns:
         Tool usage guidance string
+
     """
     return """
 COMPREHENSIVE TOOL USAGE GUIDANCE:

@@ -46,7 +46,7 @@ async def main() -> None:
         for g in guild_list[:3]:
             print(f"  {g['name']} (ID: {g['id']})")
             print(
-                f"    Owner: {g.get('owner', False)}, Features: {g.get('features', [])}"
+                f"    Owner: {g.get('owner', False)}, Features: {g.get('features', [])}",
             )
     else:
         print(f"Error fetching guilds: {guilds.error}")
@@ -94,14 +94,16 @@ async def main() -> None:
             if messages.success:
                 message_list = messages.data if isinstance(messages.data, list) else []
                 print(f"Messages (up to 10): {len(message_list)}")
-                for msg in message_list[:MESSAGE_DISPLAY_LIMIT]:  # Show first N for brevity
+                for msg in message_list[
+                    :MESSAGE_DISPLAY_LIMIT
+                ]:  # Show first N for brevity
                     author = msg.get("author", {}).get("username", "Unknown")
                     content = msg.get("content", "")[:50]
                     timestamp = msg.get("timestamp", "")[:19]
                     print(f"  [{timestamp}] {author}: {content}")
                 if len(message_list) > MESSAGE_DISPLAY_LIMIT:
                     print(
-                        f"  ... and {len(message_list) - MESSAGE_DISPLAY_LIMIT} more messages"
+                        f"  ... and {len(message_list) - MESSAGE_DISPLAY_LIMIT} more messages",
                     )
             else:
                 print(f"Error fetching messages: {messages.error}")

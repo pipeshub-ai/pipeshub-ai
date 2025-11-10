@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -18,14 +18,16 @@ class FreshDesk:
 
     def __init__(self, client: FreshDeskClient) -> None:
         """Initialize the Freshdesk tool with a data source wrapper.
+
         Args:
             client: An initialized `FreshDeskClient` instance
+
         """
         self.client = FreshdeskDataSource(client)
         self._bg_loop = asyncio.new_event_loop()
         self._bg_loop_thread = threading.Thread(
             target=self._start_background_loop,
-            daemon=True
+            daemon=True,
         )
         self._bg_loop_thread.start()
 
@@ -42,7 +44,10 @@ class FreshDesk:
     def shutdown(self) -> None:
         """Gracefully stop the background event loop and thread."""
         try:
-            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+            if (
+                getattr(self, "_bg_loop", None) is not None
+                and self._bg_loop.is_running()
+            ):
                 self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
             if getattr(self, "_bg_loop_thread", None) is not None:
                 self._bg_loop_thread.join()
@@ -54,17 +59,21 @@ class FreshDesk:
     def _handle_response(
         self,
         response: FreshDeskResponse,
-        success_message: str
-    ) -> Tuple[bool, str]:
+        success_message: str,
+    ) -> tuple[bool, str]:
         """Handle FreshDeskResponse and return standardized tuple."""
         if response.success:
-            return True, json.dumps({
-                "message": success_message,
-                "data": response.data or {}
-            })
-        return False, json.dumps({
-            "error": response.error or "Unknown error"
-        })
+            return True, json.dumps(
+                {
+                    "message": success_message,
+                    "data": response.data or {},
+                }
+            )
+        return False, json.dumps(
+            {
+                "error": response.error or "Unknown error",
+            }
+        )
 
     @tool(
         app_name="freshdesk",
@@ -74,90 +83,90 @@ class FreshDesk:
             ToolParameter(
                 name="subject",
                 type=ParameterType.STRING,
-                description="The subject/title of the ticket (required)"
+                description="The subject/title of the ticket (required)",
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
-                description="The description/content of the ticket (required)"
+                description="The description/content of the ticket (required)",
             ),
             ToolParameter(
                 name="email",
                 type=ParameterType.STRING,
-                description="The email address of the requester (required)"
+                description="The email address of the requester (required)",
             ),
             ToolParameter(
                 name="priority",
                 type=ParameterType.NUMBER,
                 description="Priority level (1=Low, 2=Medium, 3=High, 4=Urgent)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="status",
                 type=ParameterType.NUMBER,
                 description="Status (2=Open, 3=Pending, 4=Resolved, 5=Closed)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="requester_id",
                 type=ParameterType.NUMBER,
                 description="User ID of the requester",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="phone",
                 type=ParameterType.STRING,
                 description="Phone number of the requester",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="source",
                 type=ParameterType.NUMBER,
                 description="Source of the ticket",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="tags",
                 type=ParameterType.ARRAY,
                 description="Tags associated with the ticket (array of strings)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="cc_emails",
                 type=ParameterType.ARRAY,
                 description="CC email addresses (array of strings)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="custom_fields",
                 type=ParameterType.OBJECT,
                 description="Custom field values (object)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="attachments",
                 type=ParameterType.ARRAY,
                 description="File paths for attachments (array of strings)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with created ticket details"
+        returns="JSON with created ticket details",
     )
     def create_ticket(
         self,
         subject: str,
         description: str,
         email: str,
-        priority: Optional[int] = None,
-        status: Optional[int] = None,
-        requester_id: Optional[int] = None,
-        phone: Optional[str] = None,
-        source: Optional[int] = None,
-        tags: Optional[List[str]] = None,
-        cc_emails: Optional[List[str]] = None,
-        custom_fields: Optional[Dict[str, Any]] = None,
-        attachments: Optional[List[str]] = None
-    ) -> Tuple[bool, str]:
+        priority: int | None = None,
+        status: int | None = None,
+        requester_id: int | None = None,
+        phone: str | None = None,
+        source: int | None = None,
+        tags: list[str] | None = None,
+        cc_emails: list[str] | None = None,
+        custom_fields: dict[str, Any] | None = None,
+        attachments: list[str] | None = None,
+    ) -> tuple[bool, str]:
         try:
             ticket_data = {
                 "subject": subject,
@@ -171,7 +180,7 @@ class FreshDesk:
                 "tags": tags,
                 "cc_emails": cc_emails,
                 "custom_fields": custom_fields,
-                "attachments": attachments
+                "attachments": attachments,
             }
             # Remove None values
             ticket_data = {k: v for k, v in ticket_data.items() if v is not None}
@@ -190,14 +199,18 @@ class FreshDesk:
             ToolParameter(
                 name="ticket_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the ticket to retrieve (required)"
-            )
+                description="The ID of the ticket to retrieve (required)",
+            ),
         ],
-        returns="JSON with ticket details"
+        returns="JSON with ticket details",
     )
-    def get_ticket(self, ticket_id: int, include: Optional[str] = None) -> Tuple[bool, str]:
+    def get_ticket(
+        self, ticket_id: int, include: str | None = None
+    ) -> tuple[bool, str]:
         try:
-            response = self._run_async(self.client.get_ticket(id=ticket_id, include=include))
+            response = self._run_async(
+                self.client.get_ticket(id=ticket_id, include=include)
+            )
             return self._handle_response(response, "Ticket retrieved successfully")
         except Exception as e:
             logger.error(f"Error getting ticket: {e}")
@@ -211,57 +224,57 @@ class FreshDesk:
             ToolParameter(
                 name="ticket_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the ticket to update (required)"
+                description="The ID of the ticket to update (required)",
             ),
             ToolParameter(
                 name="subject",
                 type=ParameterType.STRING,
                 description="Updated subject/title",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="Updated description/content",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="priority",
                 type=ParameterType.NUMBER,
                 description="Updated priority level (1=Low, 2=Medium, 3=High, 4=Urgent)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="status",
                 type=ParameterType.NUMBER,
                 description="Updated status (2=Open, 3=Pending, 4=Resolved, 5=Closed)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="tags",
                 type=ParameterType.ARRAY,
                 description="Tags to associate (array of strings)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="custom_fields",
                 type=ParameterType.OBJECT,
                 description="Custom field values (object)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with updated ticket details"
+        returns="JSON with updated ticket details",
     )
     def update_ticket(
         self,
         ticket_id: int,
-        subject: Optional[str] = None,
-        description: Optional[str] = None,
-        priority: Optional[int] = None,
-        status: Optional[int] = None,
-        tags: Optional[List[str]] = None,
-        custom_fields: Optional[Dict[str, Any]] = None
-    ) -> Tuple[bool, str]:
+        subject: str | None = None,
+        description: str | None = None,
+        priority: int | None = None,
+        status: int | None = None,
+        tags: list[str] | None = None,
+        custom_fields: dict[str, Any] | None = None,
+    ) -> tuple[bool, str]:
         try:
             update_data = {
                 "subject": subject,
@@ -269,13 +282,13 @@ class FreshDesk:
                 "priority": priority,
                 "status": status,
                 "tags": tags,
-                "custom_fields": custom_fields
+                "custom_fields": custom_fields,
             }
             # Remove None values
             update_data = {k: v for k, v in update_data.items() if v is not None}
 
             response = self._run_async(
-                self.client.update_ticket(id=ticket_id, **update_data)
+                self.client.update_ticket(id=ticket_id, **update_data),
             )
             return self._handle_response(response, "Ticket updated successfully")
         except Exception as e:
@@ -290,12 +303,12 @@ class FreshDesk:
             ToolParameter(
                 name="ticket_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the ticket to delete (required)"
-            )
+                description="The ID of the ticket to delete (required)",
+            ),
         ],
-        returns="JSON with deletion confirmation"
+        returns="JSON with deletion confirmation",
     )
-    def delete_ticket(self, ticket_id: int) -> Tuple[bool, str]:
+    def delete_ticket(self, ticket_id: int) -> tuple[bool, str]:
         try:
             response = self._run_async(self.client.delete_ticket(id=ticket_id))
             return self._handle_response(response, "Ticket deleted successfully")
@@ -311,46 +324,46 @@ class FreshDesk:
             ToolParameter(
                 name="ticket_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the ticket to add a note to (required)"
+                description="The ID of the ticket to add a note to (required)",
             ),
             ToolParameter(
                 name="body",
                 type=ParameterType.STRING,
-                description="The content of the note (required)"
+                description="The content of the note (required)",
             ),
             ToolParameter(
                 name="private",
                 type=ParameterType.BOOLEAN,
                 description="Whether the note should be private (only visible to agents)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="notify_emails",
                 type=ParameterType.ARRAY,
                 description="Email addresses to notify (array of strings)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with created note details"
+        returns="JSON with created note details",
     )
     def create_note(
         self,
         ticket_id: int,
         body: str,
-        private: Optional[bool] = None,
-        notify_emails: Optional[List[str]] = None
-    ) -> Tuple[bool, str]:
+        private: bool | None = None,
+        notify_emails: list[str] | None = None,
+    ) -> tuple[bool, str]:
         try:
             note_data = {
                 "body": body,
                 "private": private,
-                "notify_emails": notify_emails
+                "notify_emails": notify_emails,
             }
             # Remove None values
             note_data = {k: v for k, v in note_data.items() if v is not None}
 
             response = self._run_async(
-                self.client.create_note(id=ticket_id, **note_data)
+                self.client.create_note(id=ticket_id, **note_data),
             )
             return self._handle_response(response, "Note created successfully")
         except Exception as e:
@@ -365,46 +378,46 @@ class FreshDesk:
             ToolParameter(
                 name="ticket_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the ticket to reply to (required)"
+                description="The ID of the ticket to reply to (required)",
             ),
             ToolParameter(
                 name="body",
                 type=ParameterType.STRING,
-                description="The content of the reply (required)"
+                description="The content of the reply (required)",
             ),
             ToolParameter(
                 name="cc_emails",
                 type=ParameterType.ARRAY,
                 description="CC email addresses (array of strings)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="bcc_emails",
                 type=ParameterType.ARRAY,
                 description="BCC email addresses (array of strings)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with created reply details"
+        returns="JSON with created reply details",
     )
     def create_reply(
         self,
         ticket_id: int,
         body: str,
-        cc_emails: Optional[List[str]] = None,
-        bcc_emails: Optional[List[str]] = None
-    ) -> Tuple[bool, str]:
+        cc_emails: list[str] | None = None,
+        bcc_emails: list[str] | None = None,
+    ) -> tuple[bool, str]:
         try:
             reply_data = {
                 "body": body,
                 "cc_emails": cc_emails,
-                "bcc_emails": bcc_emails
+                "bcc_emails": bcc_emails,
             }
             # Remove None values
             reply_data = {k: v for k, v in reply_data.items() if v is not None}
 
             response = self._run_async(
-                self.client.create_reply(id=ticket_id, **reply_data)
+                self.client.create_reply(id=ticket_id, **reply_data),
             )
             return self._handle_response(response, "Reply created successfully")
         except Exception as e:
@@ -419,64 +432,154 @@ class FreshDesk:
             ToolParameter(
                 name="first_name",
                 type=ParameterType.STRING,
-                description="The first name of the agent (required)"
+                description="The first name of the agent (required)",
             ),
             ToolParameter(
                 name="email",
                 type=ParameterType.STRING,
-                description="The email address of the agent (required)"
+                description="The email address of the agent (required)",
             ),
             ToolParameter(
                 name="last_name",
                 type=ParameterType.STRING,
                 description="The last name of the agent",
-                required=False
+                required=False,
             ),
-            ToolParameter(name="occasional", type=ParameterType.BOOLEAN, description="True if occasional agent", required=False),
-            ToolParameter(name="job_title", type=ParameterType.STRING, description="Job title of the agent", required=False),
-            ToolParameter(name="work_phone_number", type=ParameterType.STRING, description="Work phone number", required=False),
-            ToolParameter(name="mobile_phone_number", type=ParameterType.STRING, description="Mobile phone number", required=False),
-            ToolParameter(name="department_ids", type=ParameterType.ARRAY, description="IDs of departments (array of numbers)", required=False),
-            ToolParameter(name="can_see_all_tickets_from_associated_departments", type=ParameterType.BOOLEAN, description="Can view all department tickets", required=False),
-            ToolParameter(name="reporting_manager_id", type=ParameterType.NUMBER, description="User ID of reporting manager", required=False),
-            ToolParameter(name="address", type=ParameterType.STRING, description="Address of the agent", required=False),
-            ToolParameter(name="time_zone", type=ParameterType.STRING, description="Time zone", required=False),
-            ToolParameter(name="time_format", type=ParameterType.STRING, description="Time format (12h or 24h)", required=False),
-            ToolParameter(name="language", type=ParameterType.STRING, description="Language code", required=False),
-            ToolParameter(name="location_id", type=ParameterType.NUMBER, description="Location ID", required=False),
-            ToolParameter(name="background_information", type=ParameterType.STRING, description="Background information", required=False),
-            ToolParameter(name="scoreboard_level_id", type=ParameterType.NUMBER, description="Scoreboard level ID", required=False),
-            ToolParameter(name="roles", type=ParameterType.ARRAY, description="Array of role objects", required=False),
-            ToolParameter(name="signature", type=ParameterType.STRING, description="Signature in HTML format", required=False),
-            ToolParameter(name="custom_fields", type=ParameterType.OBJECT, description="Custom field values", required=False),
-            ToolParameter(name="workspace_ids", type=ParameterType.ARRAY, description="Workspace IDs (array of numbers)", required=False)
+            ToolParameter(
+                name="occasional",
+                type=ParameterType.BOOLEAN,
+                description="True if occasional agent",
+                required=False,
+            ),
+            ToolParameter(
+                name="job_title",
+                type=ParameterType.STRING,
+                description="Job title of the agent",
+                required=False,
+            ),
+            ToolParameter(
+                name="work_phone_number",
+                type=ParameterType.STRING,
+                description="Work phone number",
+                required=False,
+            ),
+            ToolParameter(
+                name="mobile_phone_number",
+                type=ParameterType.STRING,
+                description="Mobile phone number",
+                required=False,
+            ),
+            ToolParameter(
+                name="department_ids",
+                type=ParameterType.ARRAY,
+                description="IDs of departments (array of numbers)",
+                required=False,
+            ),
+            ToolParameter(
+                name="can_see_all_tickets_from_associated_departments",
+                type=ParameterType.BOOLEAN,
+                description="Can view all department tickets",
+                required=False,
+            ),
+            ToolParameter(
+                name="reporting_manager_id",
+                type=ParameterType.NUMBER,
+                description="User ID of reporting manager",
+                required=False,
+            ),
+            ToolParameter(
+                name="address",
+                type=ParameterType.STRING,
+                description="Address of the agent",
+                required=False,
+            ),
+            ToolParameter(
+                name="time_zone",
+                type=ParameterType.STRING,
+                description="Time zone",
+                required=False,
+            ),
+            ToolParameter(
+                name="time_format",
+                type=ParameterType.STRING,
+                description="Time format (12h or 24h)",
+                required=False,
+            ),
+            ToolParameter(
+                name="language",
+                type=ParameterType.STRING,
+                description="Language code",
+                required=False,
+            ),
+            ToolParameter(
+                name="location_id",
+                type=ParameterType.NUMBER,
+                description="Location ID",
+                required=False,
+            ),
+            ToolParameter(
+                name="background_information",
+                type=ParameterType.STRING,
+                description="Background information",
+                required=False,
+            ),
+            ToolParameter(
+                name="scoreboard_level_id",
+                type=ParameterType.NUMBER,
+                description="Scoreboard level ID",
+                required=False,
+            ),
+            ToolParameter(
+                name="roles",
+                type=ParameterType.ARRAY,
+                description="Array of role objects",
+                required=False,
+            ),
+            ToolParameter(
+                name="signature",
+                type=ParameterType.STRING,
+                description="Signature in HTML format",
+                required=False,
+            ),
+            ToolParameter(
+                name="custom_fields",
+                type=ParameterType.OBJECT,
+                description="Custom field values",
+                required=False,
+            ),
+            ToolParameter(
+                name="workspace_ids",
+                type=ParameterType.ARRAY,
+                description="Workspace IDs (array of numbers)",
+                required=False,
+            ),
         ],
-        returns="JSON with created agent details"
+        returns="JSON with created agent details",
     )
     def create_agent(
         self,
         first_name: str,
         email: str,
-        last_name: Optional[str] = None,
-        occasional: Optional[bool] = None,
-        job_title: Optional[str] = None,
-        work_phone_number: Optional[str] = None,
-        mobile_phone_number: Optional[str] = None,
-        department_ids: Optional[List[int]] = None,
-        can_see_all_tickets_from_associated_departments: Optional[bool] = None,
-        reporting_manager_id: Optional[int] = None,
-        address: Optional[str] = None,
-        time_zone: Optional[str] = None,
-        time_format: Optional[str] = None,
-        language: Optional[str] = None,
-        location_id: Optional[int] = None,
-        background_information: Optional[str] = None,
-        scoreboard_level_id: Optional[int] = None,
-        roles: Optional[List[Dict[str, Any]]] = None,
-        signature: Optional[str] = None,
-        custom_fields: Optional[Dict[str, Any]] = None,
-        workspace_ids: Optional[List[int]] = None
-    ) -> Tuple[bool, str]:
+        last_name: str | None = None,
+        occasional: bool | None = None,
+        job_title: str | None = None,
+        work_phone_number: str | None = None,
+        mobile_phone_number: str | None = None,
+        department_ids: list[int] | None = None,
+        can_see_all_tickets_from_associated_departments: bool | None = None,
+        reporting_manager_id: int | None = None,
+        address: str | None = None,
+        time_zone: str | None = None,
+        time_format: str | None = None,
+        language: str | None = None,
+        location_id: int | None = None,
+        background_information: str | None = None,
+        scoreboard_level_id: int | None = None,
+        roles: list[dict[str, Any]] | None = None,
+        signature: str | None = None,
+        custom_fields: dict[str, Any] | None = None,
+        workspace_ids: list[int] | None = None,
+    ) -> tuple[bool, str]:
         try:
             agent_data = {
                 "first_name": first_name,
@@ -499,7 +602,7 @@ class FreshDesk:
                 "roles": roles,
                 "signature": signature,
                 "custom_fields": custom_fields,
-                "workspace_ids": workspace_ids
+                "workspace_ids": workspace_ids,
             }
             # Remove None values
             agent_data = {k: v for k, v in agent_data.items() if v is not None}
@@ -518,39 +621,41 @@ class FreshDesk:
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
-                description="Search query string (required)"
+                description="Search query string (required)",
             ),
             ToolParameter(
                 name="page",
                 type=ParameterType.NUMBER,
                 description="Page number for pagination",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="per_page",
                 type=ParameterType.NUMBER,
                 description="Number of results per page (max 100)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with search results"
+        returns="JSON with search results",
     )
     def search_tickets(
         self,
         query: str,
-        page: Optional[int] = None,
-        per_page: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        page: int | None = None,
+        per_page: int | None = None,
+    ) -> tuple[bool, str]:
         try:
             search_params = {
                 "query": query,
-                "page": page
+                "page": page,
             }
             # Remove None values
             search_params = {k: v for k, v in search_params.items() if v is not None}
 
             response = self._run_async(self.client.filter_tickets(**search_params))
-            return self._handle_response(response, "Ticket search completed successfully")
+            return self._handle_response(
+                response, "Ticket search completed successfully"
+            )
         except Exception as e:
             logger.error(f"Error searching tickets: {e}")
             return False, json.dumps({"error": str(e)})

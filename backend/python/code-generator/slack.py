@@ -67,12 +67,13 @@ FALLBACK_SPEC_URLS = [
 DEFAULT_OUT = "slack_client.py"
 DEFAULT_CLASS = "SlackDataSource"
 
+
 # ---- Operation Model -------------------------------------------------------
 @dataclass
 class Operation:
-    op_id: str            # e.g. "chat.postMessage"
-    http_method: str      # e.g. "POST" | "GET" | ... (not used for transport here)
-    path: str             # e.g. "/chat.postMessage"
+    op_id: str  # e.g. "chat.postMessage"
+    http_method: str  # e.g. "POST" | "GET" | ... (not used for transport here)
+    path: str  # e.g. "/chat.postMessage"
     summary: str
     description: str
     params: List[Mapping[str, Any]]  # merged path+op params
@@ -96,7 +97,9 @@ def _read_bytes_from_url(url: str) -> bytes:
         return resp.read()
 
 
-def load_spec(*, spec_url: Optional[str] = None, spec_path: Optional[str] = None) -> Mapping[str, Any]:
+def load_spec(
+    *, spec_url: Optional[str] = None, spec_path: Optional[str] = None
+) -> Mapping[str, Any]:
     """Load Slack OpenAPI spec (JSON or YAML).
 
     Order:
@@ -114,12 +117,16 @@ def load_spec(*, spec_url: Optional[str] = None, spec_path: Optional[str] = None
             try:
                 import yaml  # type: ignore
             except Exception as e:  # pragma: no cover
-                raise RuntimeError("Spec is not JSON and PyYAML is not installed") from e
+                raise RuntimeError(
+                    "Spec is not JSON and PyYAML is not installed"
+                ) from e
             return yaml.safe_load(data)
 
     # 2..4) URLs
     tried: List[str] = []
-    url_candidates = [u for u in [spec_url or DEFAULT_SPEC_URL] if u] + FALLBACK_SPEC_URLS
+    url_candidates = [
+        u for u in [spec_url or DEFAULT_SPEC_URL] if u
+    ] + FALLBACK_SPEC_URLS
     for url in url_candidates:
         tried.append(url)
         try:
@@ -130,14 +137,17 @@ def load_spec(*, spec_url: Optional[str] = None, spec_path: Optional[str] = None
                 try:
                     import yaml  # type: ignore
                 except Exception as e:  # pragma: no cover
-                    raise RuntimeError("Spec is not JSON and PyYAML is not installed") from e
+                    raise RuntimeError(
+                        "Spec is not JSON and PyYAML is not installed"
+                    ) from e
                 return yaml.safe_load(data)
         except Exception:
             continue
 
     raise RuntimeError(
-        "Failed to load Slack OpenAPI spec. Tried: " + ", ".join(tried) +
-        "\nHint: pass --spec-path to a local copy, or set SLACK_OPENAPI_SPEC_URL."
+        "Failed to load Slack OpenAPI spec. Tried: "
+        + ", ".join(tried)
+        + "\nHint: pass --spec-path to a local copy, or set SLACK_OPENAPI_SPEC_URL."
     )
 
 
@@ -203,7 +213,9 @@ def to_snake(name: str) -> str:
     for i, ch in enumerate(n):
         if ch.isupper():
             # Insert underscore on camel hump boundaries
-            if i > 0 and (n[i-1].islower() or (i+1 < len(n) and n[i+1].islower())):
+            if i > 0 and (
+                n[i - 1].islower() or (i + 1 < len(n) and n[i + 1].islower())
+            ):
                 out.append("_")
             out.append(ch.lower())
         else:
@@ -237,12 +249,16 @@ def build_method_code(op: Operation) -> str:
             required_parts.append(f"{py_name}: Any")
         else:
             optional_parts.append(f"{py_name}: Any = None")
-        arg_map_entries.append(f"            {py_name}={py_name},") if default == "..." else arg_map_entries.append(f"            {py_name}={py_name},")
+        arg_map_entries.append(
+            f"            {py_name}={py_name},"
+        ) if default == "..." else arg_map_entries.append(
+            f"            {py_name}={py_name},"
+        )
         flag = "required" if default == "..." else "optional"
         desc = (p.get("description") or "").replace("\n", " ")
         docs_param_lines.append(f"            {py_name} ({flag}): {desc}")
 
-    # Format parameters properly for multi-line signature  
+    # Format parameters properly for multi-line signature
     if required_parts or optional_parts:
         star = ["*"] if (required_parts or optional_parts) else []
         all_params = star + required_parts + optional_parts + ["**kwargs"]
@@ -255,16 +271,26 @@ def build_method_code(op: Operation) -> str:
         sig = "**kwargs"
 
     summary = op.summary or op.op_id
-    params_doc = "\n".join(docs_param_lines) if docs_param_lines else "            (no parameters)"
-    
+    params_doc = (
+        "\n".join(docs_param_lines)
+        if docs_param_lines
+        else "            (no parameters)"
+    )
+
     # Build parameter mapping for kwargs
     param_mapping = []
     for p in op.params:
         api_name = str(p.get("name") or "param")
         py_name, api_name, default = param_sig_fragment(p)
-        param_mapping.append(f"        if {py_name} is not None:\n            kwargs_api['{api_name}'] = {py_name}")
+        param_mapping.append(
+            f"        if {py_name} is not None:\n            kwargs_api['{api_name}'] = {py_name}"
+        )
 
-    param_mapping_code = "\n".join(param_mapping) if param_mapping else "        # No parameters for this method"
+    param_mapping_code = (
+        "\n".join(param_mapping)
+        if param_mapping
+        else "        # No parameters for this method"
+    )
 
     method_code = f'''    async def {op.wrapper_name}(self, {sig}) -> SlackResponse:
         """{summary}
@@ -370,7 +396,13 @@ class {class_name}:
 
 """
 
-    return header + runtime_helpers + "\n" + "\n".join(methods) + f"\n\n__all__ = ['{class_name}', 'SlackResponse']\n"
+    return (
+        header
+        + runtime_helpers
+        + "\n"
+        + "\n".join(methods)
+        + f"\n\n__all__ = ['{class_name}', 'SlackResponse']\n"
+    )
 
 
 # ---- Public entrypoints ----------------------------------------------------
@@ -385,12 +417,12 @@ def generate_slack_client(
     spec = load_spec(spec_url=spec_url, spec_path=spec_path)
     ops = extract_operations(spec)
     code = build_class_code(class_name, ops)
-    
+
     # Create slack directory in the same folder as this script
-    script_dir = Path(__file__).parent if __file__ else Path('.')
-    slack_dir = script_dir / 'slack'
+    script_dir = Path(__file__).parent if __file__ else Path(".")
+    slack_dir = script_dir / "slack"
     slack_dir.mkdir(exist_ok=True)
-    
+
     # Set the full file path
     full_path = slack_dir / out_path
     full_path.write_text(code, encoding="utf-8")
@@ -411,13 +443,25 @@ def import_generated(path: str, symbol: str = DEFAULT_CLASS):
 
 # ---- CLI & Self-tests ------------------------------------------------------
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="Generate Slack Web API client (snake_case, with response handling)")
-    ap.add_argument("--out", default=DEFAULT_OUT, help="Output .py file path (default: slack_client.py)")
+    ap = argparse.ArgumentParser(
+        description="Generate Slack Web API client (snake_case, with response handling)"
+    )
+    ap.add_argument(
+        "--out",
+        default=DEFAULT_OUT,
+        help="Output .py file path (default: slack_client.py)",
+    )
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--spec-url", default=None, help="Spec URL (overrides env/DEFAULT)")
     g.add_argument("--spec-path", help="Local spec file path (JSON/YAML)")
-    ap.add_argument("--class-name", default=DEFAULT_CLASS, help="Generated class name (default: SlackDataSource)")
-    ap.add_argument("--self-test", action="store_true", help="Run minimal self-tests and exit")
+    ap.add_argument(
+        "--class-name",
+        default=DEFAULT_CLASS,
+        help="Generated class name (default: SlackDataSource)",
+    )
+    ap.add_argument(
+        "--self-test", action="store_true", help="Run minimal self-tests and exit"
+    )
     return ap.parse_args(argv)
 
 
@@ -430,8 +474,18 @@ def _self_tests() -> None:
                 "post": {
                     "operationId": "chat.postMessage",
                     "parameters": [
-                        {"name": "channel", "in": "formData", "required": True, "type": "string"},
-                        {"name": "text", "in": "formData", "required": False, "type": "string"},
+                        {
+                            "name": "channel",
+                            "in": "formData",
+                            "required": True,
+                            "type": "string",
+                        },
+                        {
+                            "name": "text",
+                            "in": "formData",
+                            "required": False,
+                            "type": "string",
+                        },
                     ],
                 }
             },
@@ -439,7 +493,12 @@ def _self_tests() -> None:
                 "post": {
                     "operationId": "admin.conversations.convertToPrivate",
                     "parameters": [
-                        {"name": "channel_id", "in": "formData", "required": True, "type": "string"},
+                        {
+                            "name": "channel_id",
+                            "in": "formData",
+                            "required": True,
+                            "type": "string",
+                        },
                     ],
                 }
             },
@@ -457,7 +516,12 @@ def _self_tests() -> None:
     # Client with only SDK aliases (camelCase preserved)
     class AliasClient:
         def chat_postMessage(self, **kwargs):
-            return {"ok": True, "channel": kwargs.get("channel"), "text": kwargs.get("text")}
+            return {
+                "ok": True,
+                "channel": kwargs.get("channel"),
+                "text": kwargs.get("text"),
+            }
+
         def admin_conversations_convertToPrivate(self, **kwargs):
             return {"ok": True, "channel_id": kwargs.get("channel_id")}
 
@@ -487,6 +551,7 @@ def _self_tests() -> None:
     # 4) Missing alias should return SlackResponse with error (not raise exception)
     class MissingAliasClient:
         pass
+
     ds_missing = TestCls(MissingAliasClient())
     r4 = ds_missing.chat_post_message(channel="#x")
     assert isinstance(r4, SlackResponseCls)
@@ -497,7 +562,7 @@ def _self_tests() -> None:
     class ErrorClient:
         def chat_postMessage(self, **kwargs):
             return {"ok": False, "error": "channel_not_found"}
-    
+
     ds_error = TestCls(ErrorClient())
     r5 = ds_error.chat_post_message(channel="#nonexistent")
     assert isinstance(r5, SlackResponseCls)
@@ -513,11 +578,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         _self_tests()
         return
     out_path = generate_slack_client(
-        out_path=ns.out, class_name=ns.class_name, spec_url=ns.spec_url, spec_path=ns.spec_path
+        out_path=ns.out,
+        class_name=ns.class_name,
+        spec_url=ns.spec_url,
+        spec_path=ns.spec_path,
     )
     print(f"✅ Generated {ns.class_name} -> {out_path}")
     print(f"📁 Files saved in: {Path(out_path).parent}")
-    
+
     # Get generated method count
     spec = load_spec(spec_url=ns.spec_url, spec_path=ns.spec_path)
     ops = extract_operations(spec)

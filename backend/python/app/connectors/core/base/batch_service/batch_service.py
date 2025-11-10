@@ -1,6 +1,6 @@
 import logging
 from abc import ABC
-from typing import Any, Dict, List
+from typing import Any
 
 from app.connectors.core.interfaces.batch_service.ibatch_service import (
     IBatchOperationsService,
@@ -15,7 +15,7 @@ class BaseBatchOperationsService(IBatchOperationsService, ABC):
         self.logger = logger
         self.data_service = data_service
 
-    async def batch_get_metadata(self, item_ids: List[str]) -> List[Dict[str, Any]]:
+    async def batch_get_metadata(self, item_ids: list[str]) -> list[dict[str, Any]]:
         """Get metadata for multiple items in batch"""
         try:
             self.logger.info(f"Getting metadata for {len(item_ids)} items in batch")
@@ -26,10 +26,10 @@ class BaseBatchOperationsService(IBatchOperationsService, ABC):
                     results.append(metadata)
             return results
         except Exception as e:
-            self.logger.error(f"Failed to batch get metadata: {str(e)}")
+            self.logger.error(f"Failed to batch get metadata: {e!s}")
             return []
 
-    async def batch_get_permissions(self, item_ids: List[str]) -> List[Dict[str, Any]]:
+    async def batch_get_permissions(self, item_ids: list[str]) -> list[dict[str, Any]]:
         """Get permissions for multiple items in batch"""
         try:
             self.logger.info(f"Getting permissions for {len(item_ids)} items in batch")
@@ -40,10 +40,10 @@ class BaseBatchOperationsService(IBatchOperationsService, ABC):
                     results.extend(permissions)
             return results
         except Exception as e:
-            self.logger.error(f"Failed to batch get permissions: {str(e)}")
+            self.logger.error(f"Failed to batch get permissions: {e!s}")
             return []
 
-    async def batch_download(self, item_ids: List[str]) -> List[Dict[str, Any]]:
+    async def batch_download(self, item_ids: list[str]) -> list[dict[str, Any]]:
         """Download multiple items in batch"""
         try:
             self.logger.info(f"Downloading {len(item_ids)} items in batch")
@@ -54,5 +54,5 @@ class BaseBatchOperationsService(IBatchOperationsService, ABC):
                     results.append({"item_id": item_id, "content": content})
             return results
         except Exception as e:
-            self.logger.error(f"Failed to batch download: {str(e)}")
+            self.logger.error(f"Failed to batch download: {e!s}")
             return []

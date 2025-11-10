@@ -1,30 +1,31 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.sources.client.google.google import GoogleClient
 
 
 class GoogleDriveDataSource:
-    """
-    Auto-generated Google Drive API client wrapper.
+    """Auto-generated Google Drive API client wrapper.
     Uses Google SDK client internally for all operations.
     This class wraps all Google Drive API v3 methods and provides
     a consistent interface while using the official Google SDK.
     """
+
     def __init__(
         self,
-        client: GoogleClient
+        client: GoogleClient,
     ) -> None:
-        """
-        Initialize with Google Drive API client.
+        """Initialize with Google Drive API client.
+
         Args:
             client: Google Drive API client from build('drive', 'v3', credentials=credentials)
+
         """
         self.client = client
 
     async def operations_get(
         self,
-        name: str
-    ) -> Dict[str, Any]:
+        name: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Gets the latest state of a long-running operation. Clients can use this method to poll the operation result at intervals as recommended by the API service.
 
         HTTP GET operations/{name}
@@ -34,32 +35,34 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if name is not None:
-            kwargs['name'] = name
+            kwargs["name"] = name
 
-        request = self.client.operations().get(**kwargs) # type: ignore
+        request = self.client.operations().get(**kwargs)  # type: ignore
         return request.execute()
 
-    async def about_get(self) -> Dict[str, Any]:
+    async def about_get(self) -> dict[str, Any]:
         """Google Drive API: Gets information about the user, the user's Drive, and system capabilities. For more information, see [Return user info](https://developers.google.com/workspace/drive/api/guides/user-info). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter).
 
         HTTP GET about
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         # No parameters for this method
 
-        request = self.client.about().get(**kwargs) # type: ignore
+        request = self.client.about().get(**kwargs)  # type: ignore
         return request.execute()
 
     async def apps_get(
         self,
-        appId: str
-    ) -> Dict[str, Any]:
+        appId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Gets a specific app. For more information, see [Return user info](https://developers.google.com/workspace/drive/api/guides/user-info).
 
         HTTP GET apps/{appId}
@@ -69,20 +72,21 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if appId is not None:
-            kwargs['appId'] = appId
+            kwargs["appId"] = appId
 
-        request = self.client.apps().get(**kwargs) # type: ignore
+        request = self.client.apps().get(**kwargs)  # type: ignore
         return request.execute()
 
     async def apps_list(
         self,
-        appFilterExtensions: Optional[str] = None,
-        appFilterMimeTypes: Optional[str] = None,
-        languageCode: Optional[str] = None
-    ) -> Dict[str, Any]:
+        appFilterExtensions: str | None = None,
+        appFilterMimeTypes: str | None = None,
+        languageCode: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Lists a user's installed apps. For more information, see [Return user info](https://developers.google.com/workspace/drive/api/guides/user-info).
 
         HTTP GET apps
@@ -94,25 +98,26 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if appFilterExtensions is not None:
-            kwargs['appFilterExtensions'] = appFilterExtensions
+            kwargs["appFilterExtensions"] = appFilterExtensions
         if appFilterMimeTypes is not None:
-            kwargs['appFilterMimeTypes'] = appFilterMimeTypes
+            kwargs["appFilterMimeTypes"] = appFilterMimeTypes
         if languageCode is not None:
-            kwargs['languageCode'] = languageCode
+            kwargs["languageCode"] = languageCode
 
-        request = self.client.apps().list(**kwargs) # type: ignore
+        request = self.client.apps().list(**kwargs)  # type: ignore
         return request.execute()
 
     async def changes_get_start_page_token(
         self,
-        driveId: Optional[str] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        teamDriveId: Optional[str] = None
-    ) -> Dict[str, Any]:
+        driveId: str | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        teamDriveId: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Gets the starting pageToken for listing future changes. For more information, see [Retrieve changes](https://developers.google.com/workspace/drive/api/guides/manage-changes).
 
         HTTP GET changes/startPageToken
@@ -125,37 +130,38 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if driveId is not None:
-            kwargs['driveId'] = driveId
+            kwargs["driveId"] = driveId
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if teamDriveId is not None:
-            kwargs['teamDriveId'] = teamDriveId
+            kwargs["teamDriveId"] = teamDriveId
 
-        request = self.client.changes().getStartPageToken(**kwargs) # type: ignore
+        request = self.client.changes().getStartPageToken(**kwargs)  # type: ignore
         return request.execute()
 
     async def changes_list(
         self,
         pageToken: str,
-        driveId: Optional[str] = None,
-        includeCorpusRemovals: Optional[bool] = None,
-        includeItemsFromAllDrives: Optional[bool] = None,
-        includeRemoved: Optional[bool] = None,
-        includeTeamDriveItems: Optional[bool] = None,
-        pageSize: Optional[int] = None,
-        restrictToMyDrive: Optional[bool] = None,
-        spaces: Optional[str] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        teamDriveId: Optional[str] = None,
-        includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
-    ) -> Dict[str, Any]:
+        driveId: str | None = None,
+        includeCorpusRemovals: bool | None = None,
+        includeItemsFromAllDrives: bool | None = None,
+        includeRemoved: bool | None = None,
+        includeTeamDriveItems: bool | None = None,
+        pageSize: int | None = None,
+        restrictToMyDrive: bool | None = None,
+        spaces: str | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        teamDriveId: str | None = None,
+        includePermissionsForView: str | None = None,
+        includeLabels: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Lists the changes for a user or shared drive. For more information, see [Retrieve changes](https://developers.google.com/workspace/drive/api/guides/manage-changes).
 
         HTTP GET changes
@@ -178,57 +184,58 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if driveId is not None:
-            kwargs['driveId'] = driveId
+            kwargs["driveId"] = driveId
         if includeCorpusRemovals is not None:
-            kwargs['includeCorpusRemovals'] = includeCorpusRemovals
+            kwargs["includeCorpusRemovals"] = includeCorpusRemovals
         if includeItemsFromAllDrives is not None:
-            kwargs['includeItemsFromAllDrives'] = includeItemsFromAllDrives
+            kwargs["includeItemsFromAllDrives"] = includeItemsFromAllDrives
         if includeRemoved is not None:
-            kwargs['includeRemoved'] = includeRemoved
+            kwargs["includeRemoved"] = includeRemoved
         if includeTeamDriveItems is not None:
-            kwargs['includeTeamDriveItems'] = includeTeamDriveItems
+            kwargs["includeTeamDriveItems"] = includeTeamDriveItems
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if restrictToMyDrive is not None:
-            kwargs['restrictToMyDrive'] = restrictToMyDrive
+            kwargs["restrictToMyDrive"] = restrictToMyDrive
         if spaces is not None:
-            kwargs['spaces'] = spaces
+            kwargs["spaces"] = spaces
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if teamDriveId is not None:
-            kwargs['teamDriveId'] = teamDriveId
+            kwargs["teamDriveId"] = teamDriveId
         if includePermissionsForView is not None:
-            kwargs['includePermissionsForView'] = includePermissionsForView
+            kwargs["includePermissionsForView"] = includePermissionsForView
         if includeLabels is not None:
-            kwargs['includeLabels'] = includeLabels
+            kwargs["includeLabels"] = includeLabels
 
-        request = self.client.changes().list(**kwargs) # type: ignore
+        request = self.client.changes().list(**kwargs)  # type: ignore
         return request.execute()
 
     async def changes_watch(
         self,
         pageToken: str,
-        driveId: Optional[str] = None,
-        includeCorpusRemovals: Optional[bool] = None,
-        includeItemsFromAllDrives: Optional[bool] = None,
-        includeRemoved: Optional[bool] = None,
-        includeTeamDriveItems: Optional[bool] = None,
-        pageSize: Optional[int] = None,
-        restrictToMyDrive: Optional[bool] = None,
-        spaces: Optional[str] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        teamDriveId: Optional[str] = None,
-        includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
-    ) -> Dict[str, Any]:
+        driveId: str | None = None,
+        includeCorpusRemovals: bool | None = None,
+        includeItemsFromAllDrives: bool | None = None,
+        includeRemoved: bool | None = None,
+        includeTeamDriveItems: bool | None = None,
+        pageSize: int | None = None,
+        restrictToMyDrive: bool | None = None,
+        spaces: str | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        teamDriveId: str | None = None,
+        includePermissionsForView: str | None = None,
+        includeLabels: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Subscribes to changes for a user. For more information, see [Notifications for resource changes](https://developers.google.com/workspace/drive/api/guides/push).
 
         HTTP POST changes/watch
@@ -251,68 +258,70 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if driveId is not None:
-            kwargs['driveId'] = driveId
+            kwargs["driveId"] = driveId
         if includeCorpusRemovals is not None:
-            kwargs['includeCorpusRemovals'] = includeCorpusRemovals
+            kwargs["includeCorpusRemovals"] = includeCorpusRemovals
         if includeItemsFromAllDrives is not None:
-            kwargs['includeItemsFromAllDrives'] = includeItemsFromAllDrives
+            kwargs["includeItemsFromAllDrives"] = includeItemsFromAllDrives
         if includeRemoved is not None:
-            kwargs['includeRemoved'] = includeRemoved
+            kwargs["includeRemoved"] = includeRemoved
         if includeTeamDriveItems is not None:
-            kwargs['includeTeamDriveItems'] = includeTeamDriveItems
+            kwargs["includeTeamDriveItems"] = includeTeamDriveItems
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if restrictToMyDrive is not None:
-            kwargs['restrictToMyDrive'] = restrictToMyDrive
+            kwargs["restrictToMyDrive"] = restrictToMyDrive
         if spaces is not None:
-            kwargs['spaces'] = spaces
+            kwargs["spaces"] = spaces
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if teamDriveId is not None:
-            kwargs['teamDriveId'] = teamDriveId
+            kwargs["teamDriveId"] = teamDriveId
         if includePermissionsForView is not None:
-            kwargs['includePermissionsForView'] = includePermissionsForView
+            kwargs["includePermissionsForView"] = includePermissionsForView
         if includeLabels is not None:
-            kwargs['includeLabels'] = includeLabels
+            kwargs["includeLabels"] = includeLabels
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.changes().watch(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.changes().watch(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.changes().watch(**kwargs) # type: ignore
+            request = self.client.changes().watch(**kwargs)  # type: ignore
         return request.execute()
 
-    async def channels_stop(self) -> Dict[str, Any]:
+    async def channels_stop(self) -> dict[str, Any]:
         """Google Drive API: Stops watching resources through this channel. For more information, see [Notifications for resource changes](https://developers.google.com/workspace/drive/api/guides/push).
 
         HTTP POST channels/stop
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         # No parameters for this method
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.channels().stop(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.channels().stop(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.channels().stop(**kwargs) # type: ignore
+            request = self.client.channels().stop(**kwargs)  # type: ignore
         return request.execute()
 
     async def comments_create(
         self,
-        fileId: str
-    ) -> Dict[str, Any]:
+        fileId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Creates a comment on a file. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter).
 
         HTTP POST files/{fileId}/comments
@@ -322,24 +331,25 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.comments().create(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.comments().create(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.comments().create(**kwargs) # type: ignore
+            request = self.client.comments().create(**kwargs)  # type: ignore
         return request.execute()
 
     async def comments_delete(
         self,
         fileId: str,
-        commentId: str
-    ) -> Dict[str, Any]:
+        commentId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Deletes a comment. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments).
 
         HTTP DELETE files/{fileId}/comments/{commentId}
@@ -350,22 +360,23 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if commentId is not None:
-            kwargs['commentId'] = commentId
+            kwargs["commentId"] = commentId
 
-        request = self.client.comments().delete(**kwargs) # type: ignore
+        request = self.client.comments().delete(**kwargs)  # type: ignore
         return request.execute()
 
     async def comments_get(
         self,
         fileId: str,
         commentId: str,
-        includeDeleted: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        includeDeleted: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Gets a comment by ID. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter).
 
         HTTP GET files/{fileId}/comments/{commentId}
@@ -377,26 +388,27 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if commentId is not None:
-            kwargs['commentId'] = commentId
+            kwargs["commentId"] = commentId
         if includeDeleted is not None:
-            kwargs['includeDeleted'] = includeDeleted
+            kwargs["includeDeleted"] = includeDeleted
 
-        request = self.client.comments().get(**kwargs) # type: ignore
+        request = self.client.comments().get(**kwargs)  # type: ignore
         return request.execute()
 
     async def comments_list(
         self,
         fileId: str,
-        includeDeleted: Optional[bool] = None,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        startModifiedTime: Optional[str] = None
-    ) -> Dict[str, Any]:
+        includeDeleted: bool | None = None,
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        startModifiedTime: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Lists a file's comments. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter).
 
         HTTP GET files/{fileId}/comments
@@ -410,27 +422,28 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if includeDeleted is not None:
-            kwargs['includeDeleted'] = includeDeleted
+            kwargs["includeDeleted"] = includeDeleted
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if startModifiedTime is not None:
-            kwargs['startModifiedTime'] = startModifiedTime
+            kwargs["startModifiedTime"] = startModifiedTime
 
-        request = self.client.comments().list(**kwargs) # type: ignore
+        request = self.client.comments().list(**kwargs)  # type: ignore
         return request.execute()
 
     async def comments_update(
         self,
         fileId: str,
-        commentId: str
-    ) -> Dict[str, Any]:
+        commentId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Updates a comment with patch semantics. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter).
 
         HTTP PATCH files/{fileId}/comments/{commentId}
@@ -441,25 +454,26 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if commentId is not None:
-            kwargs['commentId'] = commentId
+            kwargs["commentId"] = commentId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.comments().update(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.comments().update(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.comments().update(**kwargs) # type: ignore
+            request = self.client.comments().update(**kwargs)  # type: ignore
         return request.execute()
 
     async def drives_create(
         self,
-        requestId: str
-    ) -> Dict[str, Any]:
+        requestId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Creates a shared drive. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives).
 
         HTTP POST drives
@@ -469,25 +483,26 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if requestId is not None:
-            kwargs['requestId'] = requestId
+            kwargs["requestId"] = requestId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.drives().create(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.drives().create(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.drives().create(**kwargs) # type: ignore
+            request = self.client.drives().create(**kwargs)  # type: ignore
         return request.execute()
 
     async def drives_delete(
         self,
         driveId: str,
-        useDomainAdminAccess: Optional[bool] = None,
-        allowItemDeletion: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        useDomainAdminAccess: bool | None = None,
+        allowItemDeletion: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Permanently deletes a shared drive for which the user is an `organizer`. The shared drive cannot contain any untrashed items. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives).
 
         HTTP DELETE drives/{driveId}
@@ -499,23 +514,24 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if driveId is not None:
-            kwargs['driveId'] = driveId
+            kwargs["driveId"] = driveId
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
         if allowItemDeletion is not None:
-            kwargs['allowItemDeletion'] = allowItemDeletion
+            kwargs["allowItemDeletion"] = allowItemDeletion
 
-        request = self.client.drives().delete(**kwargs) # type: ignore
+        request = self.client.drives().delete(**kwargs)  # type: ignore
         return request.execute()
 
     async def drives_get(
         self,
         driveId: str,
-        useDomainAdminAccess: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        useDomainAdminAccess: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Gets a shared drive's metadata by ID. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives).
 
         HTTP GET drives/{driveId}
@@ -526,20 +542,21 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if driveId is not None:
-            kwargs['driveId'] = driveId
+            kwargs["driveId"] = driveId
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
 
-        request = self.client.drives().get(**kwargs) # type: ignore
+        request = self.client.drives().get(**kwargs)  # type: ignore
         return request.execute()
 
     async def drives_hide(
         self,
-        driveId: str
-    ) -> Dict[str, Any]:
+        driveId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Hides a shared drive from the default view. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives).
 
         HTTP POST drives/{driveId}/hide
@@ -549,26 +566,27 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if driveId is not None:
-            kwargs['driveId'] = driveId
+            kwargs["driveId"] = driveId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.drives().hide(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.drives().hide(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.drives().hide(**kwargs) # type: ignore
+            request = self.client.drives().hide(**kwargs)  # type: ignore
         return request.execute()
 
     async def drives_list(
         self,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        q: Optional[str] = None,
-        useDomainAdminAccess: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        q: str | None = None,
+        useDomainAdminAccess: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API:  Lists the user's shared drives. This method accepts the `q` parameter, which is a search query combining one or more search terms. For more information, see the [Search for shared drives](/workspace/drive/api/guides/search-shareddrives) guide.
 
         HTTP GET drives
@@ -581,24 +599,25 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if q is not None:
-            kwargs['q'] = q
+            kwargs["q"] = q
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
 
-        request = self.client.drives().list(**kwargs) # type: ignore
+        request = self.client.drives().list(**kwargs)  # type: ignore
         return request.execute()
 
     async def drives_unhide(
         self,
-        driveId: str
-    ) -> Dict[str, Any]:
+        driveId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Restores a shared drive to the default view. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives).
 
         HTTP POST drives/{driveId}/unhide
@@ -608,24 +627,25 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if driveId is not None:
-            kwargs['driveId'] = driveId
+            kwargs["driveId"] = driveId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.drives().unhide(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.drives().unhide(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.drives().unhide(**kwargs) # type: ignore
+            request = self.client.drives().unhide(**kwargs)  # type: ignore
         return request.execute()
 
     async def drives_update(
         self,
         driveId: str,
-        useDomainAdminAccess: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        useDomainAdminAccess: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Updates the metadata for a shared drive. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives).
 
         HTTP PATCH drives/{driveId}
@@ -636,34 +656,35 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if driveId is not None:
-            kwargs['driveId'] = driveId
+            kwargs["driveId"] = driveId
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.drives().update(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.drives().update(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.drives().update(**kwargs) # type: ignore
+            request = self.client.drives().update(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_copy(
         self,
         fileId: str,
-        enforceSingleParent: Optional[bool] = None,
-        ignoreDefaultVisibility: Optional[bool] = None,
-        keepRevisionForever: Optional[bool] = None,
-        ocrLanguage: Optional[str] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None,
-        body: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        enforceSingleParent: bool | None = None,
+        ignoreDefaultVisibility: bool | None = None,
+        keepRevisionForever: bool | None = None,
+        ocrLanguage: str | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        includePermissionsForView: str | None = None,
+        includeLabels: str | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Creates a copy of a file and applies any requested updates with patch semantics.
 
         HTTP POST files/{fileId}/copy
@@ -681,47 +702,48 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if enforceSingleParent is not None:
-            kwargs['enforceSingleParent'] = enforceSingleParent
+            kwargs["enforceSingleParent"] = enforceSingleParent
         if ignoreDefaultVisibility is not None:
-            kwargs['ignoreDefaultVisibility'] = ignoreDefaultVisibility
+            kwargs["ignoreDefaultVisibility"] = ignoreDefaultVisibility
         if keepRevisionForever is not None:
-            kwargs['keepRevisionForever'] = keepRevisionForever
+            kwargs["keepRevisionForever"] = keepRevisionForever
         if ocrLanguage is not None:
-            kwargs['ocrLanguage'] = ocrLanguage
+            kwargs["ocrLanguage"] = ocrLanguage
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if includePermissionsForView is not None:
-            kwargs['includePermissionsForView'] = includePermissionsForView
+            kwargs["includePermissionsForView"] = includePermissionsForView
         if includeLabels is not None:
-            kwargs['includeLabels'] = includeLabels
+            kwargs["includeLabels"] = includeLabels
 
         # Handle request body if provided
         if body is not None:
-            request = self.client.files().copy(**kwargs, body=body) # type: ignore
+            request = self.client.files().copy(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.files().copy(**kwargs) # type: ignore
+            request = self.client.files().copy(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_create(
         self,
-        enforceSingleParent: Optional[bool] = None,
-        ignoreDefaultVisibility: Optional[bool] = None,
-        keepRevisionForever: Optional[bool] = None,
-        ocrLanguage: Optional[str] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        useContentAsIndexableText: Optional[bool] = None,
-        includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None,
-        body: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        enforceSingleParent: bool | None = None,
+        ignoreDefaultVisibility: bool | None = None,
+        keepRevisionForever: bool | None = None,
+        ocrLanguage: str | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        useContentAsIndexableText: bool | None = None,
+        includePermissionsForView: str | None = None,
+        includeLabels: str | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API:  Creates a new file. This method supports an */upload* URI and accepts uploaded media with the following characteristics: - *Maximum file size:* 5,120 GB - *Accepted Media MIME types:*`*/*` Note: Specify a valid MIME type, rather than the literal `*/*` value. The literal `*/*` is only used to indicate that any valid MIME type can be uploaded. For more information on uploading files, see [Upload file data](/workspace/drive/api/guides/manage-uploads). Apps creating shortcuts with `files.create` must specify the MIME type `application/vnd.google-apps.shortcut`. Apps should specify a file extension in the `name` property when inserting files with the API. For example, an operation to insert a JPEG file should specify something like `"name": "cat.jpg"` in the metadata. Subsequent `GET` requests include the read-only `fileExtension` property populated with the extension originally specified in the `title` property. When a Google Drive user requests to download a file, or when the file is downloaded through the sync client, Drive builds a full filename (with extension) based on the title. In cases where the extension is missing, Drive attempts to determine the extension based on the file's MIME type.
 
         HTTP POST files
@@ -739,49 +761,50 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if enforceSingleParent is not None:
-            kwargs['enforceSingleParent'] = enforceSingleParent
+            kwargs["enforceSingleParent"] = enforceSingleParent
         if ignoreDefaultVisibility is not None:
-            kwargs['ignoreDefaultVisibility'] = ignoreDefaultVisibility
+            kwargs["ignoreDefaultVisibility"] = ignoreDefaultVisibility
         if keepRevisionForever is not None:
-            kwargs['keepRevisionForever'] = keepRevisionForever
+            kwargs["keepRevisionForever"] = keepRevisionForever
         if ocrLanguage is not None:
-            kwargs['ocrLanguage'] = ocrLanguage
+            kwargs["ocrLanguage"] = ocrLanguage
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if useContentAsIndexableText is not None:
-            kwargs['useContentAsIndexableText'] = useContentAsIndexableText
+            kwargs["useContentAsIndexableText"] = useContentAsIndexableText
         if includePermissionsForView is not None:
-            kwargs['includePermissionsForView'] = includePermissionsForView
+            kwargs["includePermissionsForView"] = includePermissionsForView
         if includeLabels is not None:
-            kwargs['includeLabels'] = includeLabels
+            kwargs["includeLabels"] = includeLabels
 
         # Handle request body if provided
         if body is not None:
-            request = self.client.files().create(**kwargs, body=body) # type: ignore
+            request = self.client.files().create(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.files().create(**kwargs) # type: ignore
+            request = self.client.files().create(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_create_with_media(
         self,
-        file_metadata: Dict[str, Any],
+        file_metadata: dict[str, Any],
         content: bytes,
         mime_type: str,
-        enforceSingleParent: Optional[bool] = None,
-        ignoreDefaultVisibility: Optional[bool] = None,
-        keepRevisionForever: Optional[bool] = None,
-        ocrLanguage: Optional[str] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        useContentAsIndexableText: Optional[bool] = None,
-        includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
-    ) -> Dict[str, Any]:
+        enforceSingleParent: bool | None = None,
+        ignoreDefaultVisibility: bool | None = None,
+        keepRevisionForever: bool | None = None,
+        ocrLanguage: str | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        useContentAsIndexableText: bool | None = None,
+        includePermissionsForView: str | None = None,
+        includeLabels: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Creates a new file with content upload.
 
         Args:
@@ -800,6 +823,7 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response with uploaded file details
+
         """
         import io
 
@@ -807,23 +831,23 @@ class GoogleDriveDataSource:
 
         kwargs = {}
         if enforceSingleParent is not None:
-            kwargs['enforceSingleParent'] = enforceSingleParent
+            kwargs["enforceSingleParent"] = enforceSingleParent
         if ignoreDefaultVisibility is not None:
-            kwargs['ignoreDefaultVisibility'] = ignoreDefaultVisibility
+            kwargs["ignoreDefaultVisibility"] = ignoreDefaultVisibility
         if keepRevisionForever is not None:
-            kwargs['keepRevisionForever'] = keepRevisionForever
+            kwargs["keepRevisionForever"] = keepRevisionForever
         if ocrLanguage is not None:
-            kwargs['ocrLanguage'] = ocrLanguage
+            kwargs["ocrLanguage"] = ocrLanguage
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if useContentAsIndexableText is not None:
-            kwargs['useContentAsIndexableText'] = useContentAsIndexableText
+            kwargs["useContentAsIndexableText"] = useContentAsIndexableText
         if includePermissionsForView is not None:
-            kwargs['includePermissionsForView'] = includePermissionsForView
+            kwargs["includePermissionsForView"] = includePermissionsForView
         if includeLabels is not None:
-            kwargs['includeLabels'] = includeLabels
+            kwargs["includeLabels"] = includeLabels
 
         # Create a file-like object from the content
         content_file = io.BytesIO(content)
@@ -833,18 +857,18 @@ class GoogleDriveDataSource:
         request = self.client.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id,name,mimeType,webViewLink,parents,size',
-            **kwargs
-        ) # type: ignore
+            fields="id,name,mimeType,webViewLink,parents,size",
+            **kwargs,
+        )  # type: ignore
         return request.execute()
 
     async def files_delete(
         self,
         fileId: str,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        enforceSingleParent: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        enforceSingleParent: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Permanently deletes a file owned by the user without moving it to the trash. If the file belongs to a shared drive, the user must be an `organizer` on the parent folder. If the target is a folder, all descendants owned by the user are also deleted.
 
         HTTP DELETE files/{fileId}
@@ -857,25 +881,26 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if enforceSingleParent is not None:
-            kwargs['enforceSingleParent'] = enforceSingleParent
+            kwargs["enforceSingleParent"] = enforceSingleParent
 
-        request = self.client.files().delete(**kwargs) # type: ignore
+        request = self.client.files().delete(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_empty_trash(
         self,
-        enforceSingleParent: Optional[bool] = None,
-        driveId: Optional[str] = None
-    ) -> Dict[str, Any]:
+        enforceSingleParent: bool | None = None,
+        driveId: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Permanently deletes all of the user's trashed files.
 
         HTTP DELETE files/trash
@@ -886,21 +911,22 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if enforceSingleParent is not None:
-            kwargs['enforceSingleParent'] = enforceSingleParent
+            kwargs["enforceSingleParent"] = enforceSingleParent
         if driveId is not None:
-            kwargs['driveId'] = driveId
+            kwargs["driveId"] = driveId
 
-        request = self.client.files().emptyTrash(**kwargs) # type: ignore
+        request = self.client.files().emptyTrash(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_export(
         self,
         fileId: str,
-        mimeType: str
-    ) -> Dict[str, Any]:
+        mimeType: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Exports a Google Workspace document to the requested MIME type and returns exported byte content. Note that the exported content is limited to 10MB.
 
         HTTP GET files/{fileId}/export
@@ -911,22 +937,23 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if mimeType is not None:
-            kwargs['mimeType'] = mimeType
+            kwargs["mimeType"] = mimeType
 
-        request = self.client.files().export(**kwargs) # type: ignore
+        request = self.client.files().export(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_generate_ids(
         self,
-        count: Optional[int] = None,
-        space: Optional[str] = None,
-        type: Optional[str] = None
-    ) -> Dict[str, Any]:
+        count: int | None = None,
+        space: str | None = None,
+        type: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Generates a set of file IDs which can be provided in create or copy requests.
 
         HTTP GET files/generateIds
@@ -938,27 +965,28 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if count is not None:
-            kwargs['count'] = count
+            kwargs["count"] = count
         if space is not None:
-            kwargs['space'] = space
+            kwargs["space"] = space
         if type is not None:
-            kwargs['type'] = type
+            kwargs["type"] = type
 
-        request = self.client.files().generateIds(**kwargs) # type: ignore
+        request = self.client.files().generateIds(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_get(
         self,
         fileId: str,
-        acknowledgeAbuse: Optional[bool] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
-    ) -> Dict[str, Any]:
+        acknowledgeAbuse: bool | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        includePermissionsForView: str | None = None,
+        includeLabels: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API:  Gets a file's metadata or content by ID. If you provide the URL parameter `alt=media`, then the response includes the file contents in the response body. Downloading content with `alt=media` only works if the file is stored in Drive. To download Google Docs, Sheets, and Slides use [`files.export`](/workspace/drive/api/reference/rest/v3/files/export) instead. For more information, see [Download & export files](/workspace/drive/api/guides/manage-downloads).
 
         HTTP GET files/{fileId}
@@ -973,42 +1001,43 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if acknowledgeAbuse is not None:
-            kwargs['acknowledgeAbuse'] = acknowledgeAbuse
+            kwargs["acknowledgeAbuse"] = acknowledgeAbuse
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if includePermissionsForView is not None:
-            kwargs['includePermissionsForView'] = includePermissionsForView
+            kwargs["includePermissionsForView"] = includePermissionsForView
         if includeLabels is not None:
-            kwargs['includeLabels'] = includeLabels
+            kwargs["includeLabels"] = includeLabels
 
-        request = self.client.files().get(**kwargs) # type: ignore
+        request = self.client.files().get(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_list(
         self,
-        corpora: Optional[str] = None,
-        corpus: Optional[str] = None,
-        driveId: Optional[str] = None,
-        includeItemsFromAllDrives: Optional[bool] = None,
-        includeTeamDriveItems: Optional[bool] = None,
-        orderBy: Optional[str] = None,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        q: Optional[str] = None,
-        spaces: Optional[str] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        teamDriveId: Optional[str] = None,
-        includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
-    ) -> Dict[str, Any]:
+        corpora: str | None = None,
+        corpus: str | None = None,
+        driveId: str | None = None,
+        includeItemsFromAllDrives: bool | None = None,
+        includeTeamDriveItems: bool | None = None,
+        orderBy: str | None = None,
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        q: str | None = None,
+        spaces: str | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        teamDriveId: str | None = None,
+        includePermissionsForView: str | None = None,
+        includeLabels: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API:  Lists the user's files. This method accepts the `q` parameter, which is a search query combining one or more search terms. For more information, see the [Search for files & folders](/workspace/drive/api/guides/search-files) guide. *Note:* This method returns *all* files by default, including trashed files. If you don't want trashed files to appear in the list, use the `trashed=false` query parameter to remove trashed files from the results.
 
         HTTP GET files
@@ -1032,48 +1061,49 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if corpora is not None:
-            kwargs['corpora'] = corpora
+            kwargs["corpora"] = corpora
         if corpus is not None:
-            kwargs['corpus'] = corpus
+            kwargs["corpus"] = corpus
         if driveId is not None:
-            kwargs['driveId'] = driveId
+            kwargs["driveId"] = driveId
         if includeItemsFromAllDrives is not None:
-            kwargs['includeItemsFromAllDrives'] = includeItemsFromAllDrives
+            kwargs["includeItemsFromAllDrives"] = includeItemsFromAllDrives
         if includeTeamDriveItems is not None:
-            kwargs['includeTeamDriveItems'] = includeTeamDriveItems
+            kwargs["includeTeamDriveItems"] = includeTeamDriveItems
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if q is not None:
-            kwargs['q'] = q
+            kwargs["q"] = q
         if spaces is not None:
-            kwargs['spaces'] = spaces
+            kwargs["spaces"] = spaces
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if teamDriveId is not None:
-            kwargs['teamDriveId'] = teamDriveId
+            kwargs["teamDriveId"] = teamDriveId
         if includePermissionsForView is not None:
-            kwargs['includePermissionsForView'] = includePermissionsForView
+            kwargs["includePermissionsForView"] = includePermissionsForView
         if includeLabels is not None:
-            kwargs['includeLabels'] = includeLabels
+            kwargs["includeLabels"] = includeLabels
 
-        request = self.client.files().list(**kwargs) # type: ignore
+        request = self.client.files().list(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_list_labels(
         self,
         fileId: str,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Lists the labels on a file.
 
         HTTP GET files/{fileId}/listLabels
@@ -1085,22 +1115,23 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
 
-        request = self.client.files().listLabels(**kwargs) # type: ignore
+        request = self.client.files().listLabels(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_modify_labels(
         self,
-        fileId: str
-    ) -> Dict[str, Any]:
+        fileId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Modifies the set of labels applied to a file. Returns a list of the labels that were added or modified.
 
         HTTP POST files/{fileId}/modifyLabels
@@ -1110,33 +1141,34 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.files().modifyLabels(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.files().modifyLabels(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.files().modifyLabels(**kwargs) # type: ignore
+            request = self.client.files().modifyLabels(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_update(
         self,
         fileId: str,
-        addParents: Optional[str] = None,
-        enforceSingleParent: Optional[bool] = None,
-        keepRevisionForever: Optional[bool] = None,
-        ocrLanguage: Optional[str] = None,
-        removeParents: Optional[str] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        useContentAsIndexableText: Optional[bool] = None,
-        includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
-    ) -> Dict[str, Any]:
+        addParents: str | None = None,
+        enforceSingleParent: bool | None = None,
+        keepRevisionForever: bool | None = None,
+        ocrLanguage: str | None = None,
+        removeParents: str | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        useContentAsIndexableText: bool | None = None,
+        includePermissionsForView: str | None = None,
+        includeLabels: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API:  Updates a file's metadata and/or content. When calling this method, only populate fields in the request that you want to modify. When updating fields, some fields might be changed automatically, such as `modifiedDate`. This method supports patch semantics. This method supports an */upload* URI and accepts uploaded media with the following characteristics: - *Maximum file size:* 5,120 GB - *Accepted Media MIME types:*`*/*` Note: Specify a valid MIME type, rather than the literal `*/*` value. The literal `*/*` is only used to indicate that any valid MIME type can be uploaded. For more information on uploading files, see [Upload file data](/workspace/drive/api/guides/manage-uploads).
 
         HTTP PATCH files/{fileId}
@@ -1156,48 +1188,49 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if addParents is not None:
-            kwargs['addParents'] = addParents
+            kwargs["addParents"] = addParents
         if enforceSingleParent is not None:
-            kwargs['enforceSingleParent'] = enforceSingleParent
+            kwargs["enforceSingleParent"] = enforceSingleParent
         if keepRevisionForever is not None:
-            kwargs['keepRevisionForever'] = keepRevisionForever
+            kwargs["keepRevisionForever"] = keepRevisionForever
         if ocrLanguage is not None:
-            kwargs['ocrLanguage'] = ocrLanguage
+            kwargs["ocrLanguage"] = ocrLanguage
         if removeParents is not None:
-            kwargs['removeParents'] = removeParents
+            kwargs["removeParents"] = removeParents
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if useContentAsIndexableText is not None:
-            kwargs['useContentAsIndexableText'] = useContentAsIndexableText
+            kwargs["useContentAsIndexableText"] = useContentAsIndexableText
         if includePermissionsForView is not None:
-            kwargs['includePermissionsForView'] = includePermissionsForView
+            kwargs["includePermissionsForView"] = includePermissionsForView
         if includeLabels is not None:
-            kwargs['includeLabels'] = includeLabels
+            kwargs["includeLabels"] = includeLabels
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.files().update(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.files().update(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.files().update(**kwargs) # type: ignore
+            request = self.client.files().update(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_watch(
         self,
         fileId: str,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        acknowledgeAbuse: Optional[bool] = None,
-        includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
-    ) -> Dict[str, Any]:
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        acknowledgeAbuse: bool | None = None,
+        includePermissionsForView: str | None = None,
+        includeLabels: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Subscribes to changes to a file.
 
         HTTP POST files/{fileId}/watch
@@ -1212,35 +1245,36 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if acknowledgeAbuse is not None:
-            kwargs['acknowledgeAbuse'] = acknowledgeAbuse
+            kwargs["acknowledgeAbuse"] = acknowledgeAbuse
         if includePermissionsForView is not None:
-            kwargs['includePermissionsForView'] = includePermissionsForView
+            kwargs["includePermissionsForView"] = includePermissionsForView
         if includeLabels is not None:
-            kwargs['includeLabels'] = includeLabels
+            kwargs["includeLabels"] = includeLabels
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.files().watch(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.files().watch(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.files().watch(**kwargs) # type: ignore
+            request = self.client.files().watch(**kwargs)  # type: ignore
         return request.execute()
 
     async def files_download(
         self,
         fileId: str,
-        mimeType: Optional[str] = None,
-        revisionId: Optional[str] = None
-    ) -> Dict[str, Any]:
+        mimeType: str | None = None,
+        revisionId: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Downloads content of a file. Operations are valid for 24 hours from the time of creation.
 
         HTTP POST files/{fileId}/download
@@ -1252,36 +1286,37 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if mimeType is not None:
-            kwargs['mimeType'] = mimeType
+            kwargs["mimeType"] = mimeType
         if revisionId is not None:
-            kwargs['revisionId'] = revisionId
+            kwargs["revisionId"] = revisionId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.files().download(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.files().download(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.files().download(**kwargs) # type: ignore
+            request = self.client.files().download(**kwargs)  # type: ignore
         return request.execute()
 
     async def permissions_create(
         self,
         fileId: str,
-        emailMessage: Optional[str] = None,
-        enforceSingleParent: Optional[bool] = None,
-        moveToNewOwnersRoot: Optional[bool] = None,
-        sendNotificationEmail: Optional[bool] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        transferOwnership: Optional[bool] = None,
-        useDomainAdminAccess: Optional[bool] = None,
-        enforceExpansiveAccess: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        emailMessage: str | None = None,
+        enforceSingleParent: bool | None = None,
+        moveToNewOwnersRoot: bool | None = None,
+        sendNotificationEmail: bool | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        transferOwnership: bool | None = None,
+        useDomainAdminAccess: bool | None = None,
+        enforceExpansiveAccess: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Creates a permission for a file or shared drive. **Warning:** Concurrent permissions operations on the same file are not supported; only the last update is applied.
 
         HTTP POST files/{fileId}/permissions
@@ -1300,46 +1335,47 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if emailMessage is not None:
-            kwargs['emailMessage'] = emailMessage
+            kwargs["emailMessage"] = emailMessage
         if enforceSingleParent is not None:
-            kwargs['enforceSingleParent'] = enforceSingleParent
+            kwargs["enforceSingleParent"] = enforceSingleParent
         if moveToNewOwnersRoot is not None:
-            kwargs['moveToNewOwnersRoot'] = moveToNewOwnersRoot
+            kwargs["moveToNewOwnersRoot"] = moveToNewOwnersRoot
         if sendNotificationEmail is not None:
-            kwargs['sendNotificationEmail'] = sendNotificationEmail
+            kwargs["sendNotificationEmail"] = sendNotificationEmail
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if transferOwnership is not None:
-            kwargs['transferOwnership'] = transferOwnership
+            kwargs["transferOwnership"] = transferOwnership
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
         if enforceExpansiveAccess is not None:
-            kwargs['enforceExpansiveAccess'] = enforceExpansiveAccess
+            kwargs["enforceExpansiveAccess"] = enforceExpansiveAccess
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.permissions().create(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.permissions().create(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.permissions().create(**kwargs) # type: ignore
+            request = self.client.permissions().create(**kwargs)  # type: ignore
         return request.execute()
 
     async def permissions_delete(
         self,
         fileId: str,
         permissionId: str,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        useDomainAdminAccess: Optional[bool] = None,
-        enforceExpansiveAccess: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        useDomainAdminAccess: bool | None = None,
+        enforceExpansiveAccess: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Deletes a permission. **Warning:** Concurrent permissions operations on the same file are not supported; only the last update is applied.
 
         HTTP DELETE files/{fileId}/permissions/{permissionId}
@@ -1354,32 +1390,33 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if permissionId is not None:
-            kwargs['permissionId'] = permissionId
+            kwargs["permissionId"] = permissionId
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
         if enforceExpansiveAccess is not None:
-            kwargs['enforceExpansiveAccess'] = enforceExpansiveAccess
+            kwargs["enforceExpansiveAccess"] = enforceExpansiveAccess
 
-        request = self.client.permissions().delete(**kwargs) # type: ignore
+        request = self.client.permissions().delete(**kwargs)  # type: ignore
         return request.execute()
 
     async def permissions_get(
         self,
         fileId: str,
         permissionId: str,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        useDomainAdminAccess: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        useDomainAdminAccess: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Gets a permission by ID.
 
         HTTP GET files/{fileId}/permissions/{permissionId}
@@ -1393,32 +1430,33 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if permissionId is not None:
-            kwargs['permissionId'] = permissionId
+            kwargs["permissionId"] = permissionId
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
 
-        request = self.client.permissions().get(**kwargs) # type: ignore
+        request = self.client.permissions().get(**kwargs)  # type: ignore
         return request.execute()
 
     async def permissions_list(
         self,
         fileId: str,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        useDomainAdminAccess: Optional[bool] = None,
-        includePermissionsForView: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        useDomainAdminAccess: bool | None = None,
+        includePermissionsForView: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Lists a file's or shared drive's permissions.
 
         HTTP GET files/{fileId}/permissions
@@ -1434,37 +1472,38 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
         if includePermissionsForView is not None:
-            kwargs['includePermissionsForView'] = includePermissionsForView
+            kwargs["includePermissionsForView"] = includePermissionsForView
 
-        request = self.client.permissions().list(**kwargs) # type: ignore
+        request = self.client.permissions().list(**kwargs)  # type: ignore
         return request.execute()
 
     async def permissions_update(
         self,
         fileId: str,
         permissionId: str,
-        removeExpiration: Optional[bool] = None,
-        supportsAllDrives: Optional[bool] = None,
-        supportsTeamDrives: Optional[bool] = None,
-        transferOwnership: Optional[bool] = None,
-        useDomainAdminAccess: Optional[bool] = None,
-        enforceExpansiveAccess: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        removeExpiration: bool | None = None,
+        supportsAllDrives: bool | None = None,
+        supportsTeamDrives: bool | None = None,
+        transferOwnership: bool | None = None,
+        useDomainAdminAccess: bool | None = None,
+        enforceExpansiveAccess: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Updates a permission with patch semantics. **Warning:** Concurrent permissions operations on the same file are not supported; only the last update is applied.
 
         HTTP PATCH files/{fileId}/permissions/{permissionId}
@@ -1481,38 +1520,39 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if permissionId is not None:
-            kwargs['permissionId'] = permissionId
+            kwargs["permissionId"] = permissionId
         if removeExpiration is not None:
-            kwargs['removeExpiration'] = removeExpiration
+            kwargs["removeExpiration"] = removeExpiration
         if supportsAllDrives is not None:
-            kwargs['supportsAllDrives'] = supportsAllDrives
+            kwargs["supportsAllDrives"] = supportsAllDrives
         if supportsTeamDrives is not None:
-            kwargs['supportsTeamDrives'] = supportsTeamDrives
+            kwargs["supportsTeamDrives"] = supportsTeamDrives
         if transferOwnership is not None:
-            kwargs['transferOwnership'] = transferOwnership
+            kwargs["transferOwnership"] = transferOwnership
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
         if enforceExpansiveAccess is not None:
-            kwargs['enforceExpansiveAccess'] = enforceExpansiveAccess
+            kwargs["enforceExpansiveAccess"] = enforceExpansiveAccess
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.permissions().update(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.permissions().update(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.permissions().update(**kwargs) # type: ignore
+            request = self.client.permissions().update(**kwargs)  # type: ignore
         return request.execute()
 
     async def replies_create(
         self,
         fileId: str,
-        commentId: str
-    ) -> Dict[str, Any]:
+        commentId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Creates a reply to a comment.
 
         HTTP POST files/{fileId}/comments/{commentId}/replies
@@ -1523,27 +1563,28 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if commentId is not None:
-            kwargs['commentId'] = commentId
+            kwargs["commentId"] = commentId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.replies().create(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.replies().create(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.replies().create(**kwargs) # type: ignore
+            request = self.client.replies().create(**kwargs)  # type: ignore
         return request.execute()
 
     async def replies_delete(
         self,
         fileId: str,
         commentId: str,
-        replyId: str
-    ) -> Dict[str, Any]:
+        replyId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Deletes a reply.
 
         HTTP DELETE files/{fileId}/comments/{commentId}/replies/{replyId}
@@ -1555,16 +1596,17 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if commentId is not None:
-            kwargs['commentId'] = commentId
+            kwargs["commentId"] = commentId
         if replyId is not None:
-            kwargs['replyId'] = replyId
+            kwargs["replyId"] = replyId
 
-        request = self.client.replies().delete(**kwargs) # type: ignore
+        request = self.client.replies().delete(**kwargs)  # type: ignore
         return request.execute()
 
     async def replies_get(
@@ -1572,8 +1614,8 @@ class GoogleDriveDataSource:
         fileId: str,
         commentId: str,
         replyId: str,
-        includeDeleted: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        includeDeleted: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Gets a reply by ID.
 
         HTTP GET files/{fileId}/comments/{commentId}/replies/{replyId}
@@ -1586,28 +1628,29 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if commentId is not None:
-            kwargs['commentId'] = commentId
+            kwargs["commentId"] = commentId
         if replyId is not None:
-            kwargs['replyId'] = replyId
+            kwargs["replyId"] = replyId
         if includeDeleted is not None:
-            kwargs['includeDeleted'] = includeDeleted
+            kwargs["includeDeleted"] = includeDeleted
 
-        request = self.client.replies().get(**kwargs) # type: ignore
+        request = self.client.replies().get(**kwargs)  # type: ignore
         return request.execute()
 
     async def replies_list(
         self,
         fileId: str,
         commentId: str,
-        includeDeleted: Optional[bool] = None,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        includeDeleted: bool | None = None,
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Lists a comment's replies.
 
         HTTP GET files/{fileId}/comments/{commentId}/replies
@@ -1621,28 +1664,29 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if commentId is not None:
-            kwargs['commentId'] = commentId
+            kwargs["commentId"] = commentId
         if includeDeleted is not None:
-            kwargs['includeDeleted'] = includeDeleted
+            kwargs["includeDeleted"] = includeDeleted
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
 
-        request = self.client.replies().list(**kwargs) # type: ignore
+        request = self.client.replies().list(**kwargs)  # type: ignore
         return request.execute()
 
     async def replies_update(
         self,
         fileId: str,
         commentId: str,
-        replyId: str
-    ) -> Dict[str, Any]:
+        replyId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Updates a reply with patch semantics.
 
         HTTP PATCH files/{fileId}/comments/{commentId}/replies/{replyId}
@@ -1654,28 +1698,29 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if commentId is not None:
-            kwargs['commentId'] = commentId
+            kwargs["commentId"] = commentId
         if replyId is not None:
-            kwargs['replyId'] = replyId
+            kwargs["replyId"] = replyId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.replies().update(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.replies().update(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.replies().update(**kwargs) # type: ignore
+            request = self.client.replies().update(**kwargs)  # type: ignore
         return request.execute()
 
     async def revisions_delete(
         self,
         fileId: str,
-        revisionId: str
-    ) -> Dict[str, Any]:
+        revisionId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Permanently deletes a file version. You can only delete revisions for files with binary content in Google Drive, like images or videos. Revisions for other files, like Google Docs or Sheets, and the last remaining file version can't be deleted. For more information, see [Manage file revisions](https://developers.google.com/drive/api/guides/manage-revisions).
 
         HTTP DELETE files/{fileId}/revisions/{revisionId}
@@ -1686,22 +1731,23 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if revisionId is not None:
-            kwargs['revisionId'] = revisionId
+            kwargs["revisionId"] = revisionId
 
-        request = self.client.revisions().delete(**kwargs) # type: ignore
+        request = self.client.revisions().delete(**kwargs)  # type: ignore
         return request.execute()
 
     async def revisions_get(
         self,
         fileId: str,
         revisionId: str,
-        acknowledgeAbuse: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        acknowledgeAbuse: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Gets a revision's metadata or content by ID. For more information, see [Manage file revisions](https://developers.google.com/workspace/drive/api/guides/manage-revisions).
 
         HTTP GET files/{fileId}/revisions/{revisionId}
@@ -1713,24 +1759,25 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if revisionId is not None:
-            kwargs['revisionId'] = revisionId
+            kwargs["revisionId"] = revisionId
         if acknowledgeAbuse is not None:
-            kwargs['acknowledgeAbuse'] = acknowledgeAbuse
+            kwargs["acknowledgeAbuse"] = acknowledgeAbuse
 
-        request = self.client.revisions().get(**kwargs) # type: ignore
+        request = self.client.revisions().get(**kwargs)  # type: ignore
         return request.execute()
 
     async def revisions_list(
         self,
         fileId: str,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Lists a file's revisions. For more information, see [Manage file revisions](https://developers.google.com/workspace/drive/api/guides/manage-revisions).
 
         HTTP GET files/{fileId}/revisions
@@ -1742,23 +1789,24 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
 
-        request = self.client.revisions().list(**kwargs) # type: ignore
+        request = self.client.revisions().list(**kwargs)  # type: ignore
         return request.execute()
 
     async def revisions_update(
         self,
         fileId: str,
-        revisionId: str
-    ) -> Dict[str, Any]:
+        revisionId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Updates a revision with patch semantics. For more information, see [Manage file revisions](https://developers.google.com/workspace/drive/api/guides/manage-revisions).
 
         HTTP PATCH files/{fileId}/revisions/{revisionId}
@@ -1769,25 +1817,26 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if revisionId is not None:
-            kwargs['revisionId'] = revisionId
+            kwargs["revisionId"] = revisionId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.revisions().update(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.revisions().update(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.revisions().update(**kwargs) # type: ignore
+            request = self.client.revisions().update(**kwargs)  # type: ignore
         return request.execute()
 
     async def teamdrives_create(
         self,
-        requestId: str
-    ) -> Dict[str, Any]:
+        requestId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Deprecated: Use `drives.create` instead.
 
         HTTP POST teamdrives
@@ -1797,23 +1846,24 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if requestId is not None:
-            kwargs['requestId'] = requestId
+            kwargs["requestId"] = requestId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.teamdrives().create(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.teamdrives().create(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.teamdrives().create(**kwargs) # type: ignore
+            request = self.client.teamdrives().create(**kwargs)  # type: ignore
         return request.execute()
 
     async def teamdrives_delete(
         self,
-        teamDriveId: str
-    ) -> Dict[str, Any]:
+        teamDriveId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Deprecated: Use `drives.delete` instead.
 
         HTTP DELETE teamdrives/{teamDriveId}
@@ -1823,19 +1873,20 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if teamDriveId is not None:
-            kwargs['teamDriveId'] = teamDriveId
+            kwargs["teamDriveId"] = teamDriveId
 
-        request = self.client.teamdrives().delete(**kwargs) # type: ignore
+        request = self.client.teamdrives().delete(**kwargs)  # type: ignore
         return request.execute()
 
     async def teamdrives_get(
         self,
         teamDriveId: str,
-        useDomainAdminAccess: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        useDomainAdminAccess: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Deprecated: Use `drives.get` instead.
 
         HTTP GET teamdrives/{teamDriveId}
@@ -1846,23 +1897,24 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if teamDriveId is not None:
-            kwargs['teamDriveId'] = teamDriveId
+            kwargs["teamDriveId"] = teamDriveId
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
 
-        request = self.client.teamdrives().get(**kwargs) # type: ignore
+        request = self.client.teamdrives().get(**kwargs)  # type: ignore
         return request.execute()
 
     async def teamdrives_list(
         self,
-        pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        q: Optional[str] = None,
-        useDomainAdminAccess: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        pageSize: int | None = None,
+        pageToken: str | None = None,
+        q: str | None = None,
+        useDomainAdminAccess: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Deprecated: Use `drives.list` instead.
 
         HTTP GET teamdrives
@@ -1875,25 +1927,26 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if q is not None:
-            kwargs['q'] = q
+            kwargs["q"] = q
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
 
-        request = self.client.teamdrives().list(**kwargs) # type: ignore
+        request = self.client.teamdrives().list(**kwargs)  # type: ignore
         return request.execute()
 
     async def teamdrives_update(
         self,
         teamDriveId: str,
-        useDomainAdminAccess: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        useDomainAdminAccess: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: Deprecated: Use `drives.update` instead.
 
         HTTP PATCH teamdrives/{teamDriveId}
@@ -1904,26 +1957,27 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if teamDriveId is not None:
-            kwargs['teamDriveId'] = teamDriveId
+            kwargs["teamDriveId"] = teamDriveId
         if useDomainAdminAccess is not None:
-            kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+            kwargs["useDomainAdminAccess"] = useDomainAdminAccess
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.teamdrives().update(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.teamdrives().update(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.teamdrives().update(**kwargs) # type: ignore
+            request = self.client.teamdrives().update(**kwargs)  # type: ignore
         return request.execute()
 
     async def accessproposals_get(
         self,
         fileId: str,
-        proposalId: str
-    ) -> Dict[str, Any]:
+        proposalId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Retrieves an AccessProposal by ID.
 
         HTTP GET files/{fileId}/accessproposals/{proposalId}
@@ -1934,21 +1988,22 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if proposalId is not None:
-            kwargs['proposalId'] = proposalId
+            kwargs["proposalId"] = proposalId
 
-        request = self.client.accessproposals().get(**kwargs) # type: ignore
+        request = self.client.accessproposals().get(**kwargs)  # type: ignore
         return request.execute()
 
     async def accessproposals_resolve(
         self,
         fileId: str,
-        proposalId: str
-    ) -> Dict[str, Any]:
+        proposalId: str,
+    ) -> dict[str, Any]:
         """Google Drive API: Used to approve or deny an Access Proposal.
 
         HTTP POST files/{fileId}/accessproposals/{proposalId}:resolve
@@ -1959,27 +2014,28 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if proposalId is not None:
-            kwargs['proposalId'] = proposalId
+            kwargs["proposalId"] = proposalId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = self.client.accessproposals().resolve(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = self.client.accessproposals().resolve(**kwargs, body=body)  # type: ignore
         else:
-            request = self.client.accessproposals().resolve(**kwargs) # type: ignore
+            request = self.client.accessproposals().resolve(**kwargs)  # type: ignore
         return request.execute()
 
     async def accessproposals_list(
         self,
         fileId: str,
-        pageToken: Optional[str] = None,
-        pageSize: Optional[int] = None
-    ) -> Dict[str, Any]:
+        pageToken: str | None = None,
+        pageSize: int | None = None,
+    ) -> dict[str, Any]:
         """Google Drive API: List the AccessProposals on a file. Note: Only approvers are able to list AccessProposals on a file. If the user is not an approver, returns a 403.
 
         HTTP GET files/{fileId}/accessproposals
@@ -1991,16 +2047,17 @@ class GoogleDriveDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if fileId is not None:
-            kwargs['fileId'] = fileId
+            kwargs["fileId"] = fileId
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if pageSize is not None:
-            kwargs['pageSize'] = pageSize
+            kwargs["pageSize"] = pageSize
 
-        request = self.client.accessproposals().list(**kwargs) # type: ignore
+        request = self.client.accessproposals().list(**kwargs)  # type: ignore
         return request.execute()
 
     async def get_client(self) -> object:

@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -18,14 +17,16 @@ class Discord:
 
     def __init__(self, client: DiscordClient) -> None:
         """Initialize the Discord tool with a data source wrapper.
+
         Args:
             client: An initialized `DiscordClient` instance
+
         """
         self.client = DiscordDataSource(client)
         self._bg_loop = asyncio.new_event_loop()
         self._bg_loop_thread = threading.Thread(
             target=self._start_background_loop,
-            daemon=True
+            daemon=True,
         )
         self._bg_loop_thread.start()
 
@@ -42,7 +43,10 @@ class Discord:
     def shutdown(self) -> None:
         """Gracefully stop the background event loop and thread."""
         try:
-            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+            if (
+                getattr(self, "_bg_loop", None) is not None
+                and self._bg_loop.is_running()
+            ):
                 self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
             if getattr(self, "_bg_loop_thread", None) is not None:
                 self._bg_loop_thread.join()
@@ -54,17 +58,21 @@ class Discord:
     def _handle_response(
         self,
         response: DiscordResponse,
-        success_message: str
-    ) -> Tuple[bool, str]:
+        success_message: str,
+    ) -> tuple[bool, str]:
         """Handle DiscordResponse and return standardized tuple."""
         if response.success:
-            return True, json.dumps({
-                "message": success_message,
-                "data": response.data or {}
-            })
-        return False, json.dumps({
-            "error": response.error or "Unknown error"
-        })
+            return True, json.dumps(
+                {
+                    "message": success_message,
+                    "data": response.data or {},
+                }
+            )
+        return False, json.dumps(
+            {
+                "error": response.error or "Unknown error",
+            }
+        )
 
     @tool(
         app_name="discord",
@@ -74,20 +82,20 @@ class Discord:
             ToolParameter(
                 name="channel_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the channel to send the message to (required)"
+                description="The ID of the channel to send the message to (required)",
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
-                description="The content of the message to send (required)"
-            )
+                description="The content of the message to send (required)",
+            ),
         ],
-        returns="JSON with sent message details"
+        returns="JSON with sent message details",
     )
-    def send_message(self, channel_id: int, content: str) -> Tuple[bool, str]:
+    def send_message(self, channel_id: int, content: str) -> tuple[bool, str]:
         try:
             response = self._run_async(
-                self.client.send_message(channel_id=channel_id, content=content)
+                self.client.send_message(channel_id=channel_id, content=content),
             )
             return self._handle_response(response, "Message sent successfully")
         except Exception as e:
@@ -102,15 +110,17 @@ class Discord:
             ToolParameter(
                 name="channel_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the channel to retrieve (required)"
-            )
+                description="The ID of the channel to retrieve (required)",
+            ),
         ],
-        returns="JSON with channel information"
+        returns="JSON with channel information",
     )
-    def get_channel(self, channel_id: int) -> Tuple[bool, str]:
+    def get_channel(self, channel_id: int) -> tuple[bool, str]:
         try:
             response = self._run_async(self.client.get_channel(channel_id=channel_id))
-            return self._handle_response(response, "Channel information retrieved successfully")
+            return self._handle_response(
+                response, "Channel information retrieved successfully"
+            )
         except Exception as e:
             logger.error(f"Error getting channel: {e}")
             return False, json.dumps({"error": str(e)})
@@ -123,35 +133,35 @@ class Discord:
             ToolParameter(
                 name="guild_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the guild to create the channel in (required)"
+                description="The ID of the guild to create the channel in (required)",
             ),
             ToolParameter(
                 name="name",
                 type=ParameterType.STRING,
-                description="The name of the channel to create (required)"
+                description="The name of the channel to create (required)",
             ),
             ToolParameter(
                 name="channel_type",
                 type=ParameterType.STRING,
                 description="The type of channel (text, voice, category)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with created channel details"
+        returns="JSON with created channel details",
     )
     def create_channel(
         self,
         guild_id: int,
         name: str,
-        channel_type: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        channel_type: str | None = None,
+    ) -> tuple[bool, str]:
         try:
             response = self._run_async(
                 self.client.create_channel(
                     guild_id=guild_id,
                     name=name,
-                    channel_type=channel_type
-                )
+                    channel_type=channel_type,
+                ),
             )
             return self._handle_response(response, "Channel created successfully")
         except Exception as e:
@@ -166,14 +176,16 @@ class Discord:
             ToolParameter(
                 name="channel_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the channel to delete (required)"
-            )
+                description="The ID of the channel to delete (required)",
+            ),
         ],
-        returns="JSON with deletion confirmation"
+        returns="JSON with deletion confirmation",
     )
-    def delete_channel(self, channel_id: int) -> Tuple[bool, str]:
+    def delete_channel(self, channel_id: int) -> tuple[bool, str]:
         try:
-            response = self._run_async(self.client.delete_channel(channel_id=channel_id))
+            response = self._run_async(
+                self.client.delete_channel(channel_id=channel_id)
+            )
             return self._handle_response(response, "Channel deleted successfully")
         except Exception as e:
             logger.error(f"Error deleting channel: {e}")
@@ -187,44 +199,44 @@ class Discord:
             ToolParameter(
                 name="channel_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the channel to get messages from (required)"
+                description="The ID of the channel to get messages from (required)",
             ),
             ToolParameter(
                 name="limit",
                 type=ParameterType.NUMBER,
                 description="Maximum number of messages to retrieve (default: 100, max: 100)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="before",
                 type=ParameterType.NUMBER,
                 description="Message ID to fetch messages before this ID",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="after",
                 type=ParameterType.NUMBER,
                 description="Message ID to fetch messages after this ID",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with list of messages"
+        returns="JSON with list of messages",
     )
     def get_messages(
         self,
         channel_id: int,
-        limit: Optional[int] = None,
-        before: Optional[int] = None,
-        after: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        limit: int | None = None,
+        before: int | None = None,
+        after: int | None = None,
+    ) -> tuple[bool, str]:
         try:
             response = self._run_async(
                 self.client.get_messages(
                     channel_id=channel_id,
                     limit=limit,
                     before=before,
-                    after=after
-                )
+                    after=after,
+                ),
             )
             return self._handle_response(response, "Messages retrieved successfully")
         except Exception as e:
@@ -236,9 +248,9 @@ class Discord:
         tool_name="get_guilds",
         description="Get all guilds (servers) the bot has access to",
         parameters=[],
-        returns="JSON with list of guilds"
+        returns="JSON with list of guilds",
     )
-    def get_guilds(self) -> Tuple[bool, str]:
+    def get_guilds(self) -> tuple[bool, str]:
         try:
             response = self._run_async(self.client.get_guilds())
             return self._handle_response(response, "Guilds retrieved successfully")
@@ -254,30 +266,32 @@ class Discord:
             ToolParameter(
                 name="guild_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the guild to get channels from (required)"
+                description="The ID of the guild to get channels from (required)",
             ),
             ToolParameter(
                 name="channel_type",
                 type=ParameterType.STRING,
                 description="Filter by channel type (text, voice, category)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with list of channels"
+        returns="JSON with list of channels",
     )
     def get_guild_channels(
         self,
         guild_id: int,
-        channel_type: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        channel_type: str | None = None,
+    ) -> tuple[bool, str]:
         try:
             response = self._run_async(
                 self.client.get_channels(
                     guild_id=guild_id,
-                    channel_type=channel_type
-                )
+                    channel_type=channel_type,
+                ),
             )
-            return self._handle_response(response, "Guild channels retrieved successfully")
+            return self._handle_response(
+                response, "Guild channels retrieved successfully"
+            )
         except Exception as e:
             logger.error(f"Error getting guild channels: {e}")
             return False, json.dumps({"error": str(e)})
@@ -290,20 +304,20 @@ class Discord:
             ToolParameter(
                 name="user_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the user to send a DM to (required)"
+                description="The ID of the user to send a DM to (required)",
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
-                description="The content of the direct message (required)"
-            )
+                description="The content of the direct message (required)",
+            ),
         ],
-        returns="JSON with sent message details"
+        returns="JSON with sent message details",
     )
-    def send_direct_message(self, user_id: int, content: str) -> Tuple[bool, str]:
+    def send_direct_message(self, user_id: int, content: str) -> tuple[bool, str]:
         try:
             response = self._run_async(
-                self.client.send_dm(user_id=user_id, content=content)
+                self.client.send_dm(user_id=user_id, content=content),
             )
             return self._handle_response(response, "Direct message sent successfully")
         except Exception as e:
@@ -318,27 +332,29 @@ class Discord:
             ToolParameter(
                 name="guild_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the guild to get members from (required)"
+                description="The ID of the guild to get members from (required)",
             ),
             ToolParameter(
                 name="limit",
                 type=ParameterType.NUMBER,
                 description="Maximum number of members to retrieve (default: 100, max: 1000)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with list of guild members"
+        returns="JSON with list of guild members",
     )
     def get_guild_members(
         self,
         guild_id: int,
-        limit: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        limit: int | None = None,
+    ) -> tuple[bool, str]:
         try:
             response = self._run_async(
-                self.client.get_members(guild_id=guild_id, limit=limit)
+                self.client.get_members(guild_id=guild_id, limit=limit),
             )
-            return self._handle_response(response, "Guild members retrieved successfully")
+            return self._handle_response(
+                response, "Guild members retrieved successfully"
+            )
         except Exception as e:
             logger.error(f"Error getting guild members: {e}")
             return False, json.dumps({"error": str(e)})
@@ -351,20 +367,20 @@ class Discord:
             ToolParameter(
                 name="guild_id",
                 type=ParameterType.NUMBER,
-                description="The ID of the guild to create the role in (required)"
+                description="The ID of the guild to create the role in (required)",
             ),
             ToolParameter(
                 name="name",
                 type=ParameterType.STRING,
-                description="The name of the role to create (required)"
-            )
+                description="The name of the role to create (required)",
+            ),
         ],
-        returns="JSON with created role details"
+        returns="JSON with created role details",
     )
-    def create_role(self, guild_id: int, name: str) -> Tuple[bool, str]:
+    def create_role(self, guild_id: int, name: str) -> tuple[bool, str]:
         try:
             response = self._run_async(
-                self.client.create_role(guild_id=guild_id, name=name)
+                self.client.create_role(guild_id=guild_id, name=name),
             )
             return self._handle_response(response, "Role created successfully")
         except Exception as e:

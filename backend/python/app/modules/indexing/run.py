@@ -1,5 +1,5 @@
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 from langchain.schema import Document
 from langchain_experimental.text_splitter import SemanticChunker
@@ -33,7 +33,7 @@ class CustomChunker(SemanticChunker):
         self.breakpoint_threshold_type: str = "percentile"
         self.breakpoint_threshold_amount: float = 1
 
-    def split_documents(self, documents: List[Document]) -> List[Document]:
+    def split_documents(self, documents: list[Document]) -> list[Document]:
         """Override split_documents to use our custom merging logic"""
         try:
             self.logger.info("Splitting documents")
@@ -43,7 +43,7 @@ class CustomChunker(SemanticChunker):
             # Calculate distances between adjacent documents
             try:
                 distances, sentences = self._calculate_sentence_distances(
-                    [doc.page_content for doc in documents]
+                    [doc.page_content for doc in documents],
                 )
             except Exception as e:
                 raise ChunkingError(
@@ -55,7 +55,7 @@ class CustomChunker(SemanticChunker):
             try:
                 if self.number_of_chunks is not None:
                     breakpoint_distance_threshold = self._threshold_from_clusters(
-                        distances
+                        distances,
                     )
                     breakpoint_array = distances
                 else:
@@ -107,7 +107,7 @@ class CustomChunker(SemanticChunker):
                             else:
                                 block_nums.append(nums)
                         merged_metadata["blockNum"] = sorted(
-                            list(set(block_nums))
+                            list(set(block_nums)),
                         )  # Remove duplicates and sort
 
                     # Merge bounding boxes and add to metadata
@@ -119,7 +119,7 @@ class CustomChunker(SemanticChunker):
                         Document(
                             page_content=merged_text,
                             metadata=merged_metadata,
-                        )
+                        ),
                     )
 
                     start_index = index + 1
@@ -149,7 +149,7 @@ class CustomChunker(SemanticChunker):
                                 else:
                                     block_nums.append(nums)
                             merged_metadata["blockNum"] = sorted(
-                                list(set(block_nums))
+                                list(set(block_nums)),
                             )  # Remove duplicates and sort
 
                         # Merge bounding boxes and add to metadata
@@ -161,7 +161,7 @@ class CustomChunker(SemanticChunker):
                             Document(
                                 page_content=merged_text,
                                 metadata=merged_metadata,
-                            )
+                            ),
                         )
                     except MetadataProcessingError as e:
                         raise ChunkingError(
@@ -190,7 +190,7 @@ class CustomChunker(SemanticChunker):
                 details={"error": str(e)},
             )
 
-    def _merge_bboxes(self, bboxes: List[List[dict]]) -> List[dict]:
+    def _merge_bboxes(self, bboxes: list[list[dict]]) -> list[dict]:
         """Merge multiple bounding boxes into one encompassing box"""
         try:
             if not bboxes:
@@ -198,7 +198,8 @@ class CustomChunker(SemanticChunker):
 
             if not all(isinstance(bbox, list) for bbox in bboxes):
                 raise MetadataProcessingError(
-                    "Invalid bounding box format.", details={"bboxes": bboxes}
+                    "Invalid bounding box format.",
+                    details={"bboxes": bboxes},
                 )
 
             try:
@@ -226,12 +227,12 @@ class CustomChunker(SemanticChunker):
             raise
         except Exception as e:
             raise MetadataProcessingError(
-                "Failed to merge bounding boxes: " + str(e), details={"error": str(e)}
+                "Failed to merge bounding boxes: " + str(e),
+                details={"error": str(e)},
             )
 
-    def _merge_metadata(self, metadata_list: List[dict]) -> dict:
-        """
-        Merge metadata from multiple documents.
+    def _merge_metadata(self, metadata_list: list[dict]) -> dict:
+        """Merge metadata from multiple documents.
         For each field:
         - If all values are the same, keep single value
         - If values differ, keep all unique values in a list
@@ -300,7 +301,8 @@ class CustomChunker(SemanticChunker):
                 return merged_metadata
             except Exception as e:
                 raise MetadataProcessingError(
-                    "Failed to merge metadata: " + str(e), details={"error": str(e)}
+                    "Failed to merge metadata: " + str(e),
+                    details={"error": str(e)},
                 )
 
         except MetadataProcessingError:
@@ -311,7 +313,7 @@ class CustomChunker(SemanticChunker):
                 details={"error": str(e)},
             )
 
-    def split_text(self, text: str) -> List[str]:
+    def split_text(self, text: str) -> list[str]:
         """This method won't be used but needs to be implemented"""
         return [text]  # Return as is since we're not using this method
 
@@ -360,31 +362,35 @@ class IndexingPipeline:
             )
 
     async def _initialize_collection(
-        self, embedding_size: int = 1024, sparse_idf: bool = False
+        self,
+        embedding_size: int = 1024,
+        sparse_idf: bool = False,
     ) -> None:
         """Initialize collection with proper configuration."""
         try:
-            collection_info = await self.vector_db_service.get_collection(self.collection_name)
+            collection_info = await self.vector_db_service.get_collection(
+                self.collection_name
+            )
             if not collection_info:
                 self.logger.info(
-                    f"Collection {self.collection_name} not found, creating new collection"
+                    f"Collection {self.collection_name} not found, creating new collection",
                 )
                 raise Exception("Collection not found")
-            current_vector_size = collection_info.config.params.vectors["dense"].size #type: ignore
+            current_vector_size = collection_info.config.params.vectors["dense"].size  # type: ignore
 
             if current_vector_size != embedding_size:
                 self.logger.warning(
                     f"Collection {self.collection_name} has size {current_vector_size}, but {embedding_size} is required."
-                    " Recreating collection."
+                    " Recreating collection.",
                 )
                 await self.vector_db_service.delete_collection(self.collection_name)
                 raise Exception(
-                    "Recreating collection due to vector dimension mismatch."
+                    "Recreating collection due to vector dimension mismatch.",
                 )
 
         except Exception:
             self.logger.info(
-                f"Collection {self.collection_name} not found, creating new collection"
+                f"Collection {self.collection_name} not found, creating new collection",
             )
             try:
                 # create the collection
@@ -394,25 +400,25 @@ class IndexingPipeline:
                     sparse_idf=sparse_idf,
                 )
                 self.logger.info(
-                    f"✅ Successfully created collection {self.collection_name}"
+                    f"✅ Successfully created collection {self.collection_name}",
                 )
                 await self.vector_db_service.create_index(
                     collection_name=self.collection_name,
                     field_name=VIRTUAL_RECORD_ID_FIELD,
                     field_schema={
                         "type": "keyword",
-                    }
+                    },
                 )
                 await self.vector_db_service.create_index(
                     collection_name=self.collection_name,
                     field_name=ORG_ID_FIELD,
                     field_schema={
                         "type": "keyword",
-                    }
+                    },
                 )
             except Exception as e:
                 self.logger.error(
-                    f"❌ Error creating collection {self.collection_name}: {str(e)}"
+                    f"❌ Error creating collection {self.collection_name}: {e!s}",
                 )
                 raise VectorStoreError(
                     "Failed to create collection",
@@ -424,7 +430,7 @@ class IndexingPipeline:
             self.logger.info("Getting embedding model")
             dense_embeddings = None
             ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
+                config_node_constants.AI_MODELS.value,
             )
             embedding_configs = ai_models.get("embedding", [])
             if not embedding_configs:
@@ -438,7 +444,9 @@ class IndexingPipeline:
                         break
 
                 if not dense_embeddings:
-                    self.logger.info("No default embedding model found, using first available provider")
+                    self.logger.info(
+                        "No default embedding model found, using first available provider"
+                    )
                     for config in embedding_configs:
                         provider = config["provider"]
                         dense_embeddings = get_embedding_model(provider, config)
@@ -453,7 +461,7 @@ class IndexingPipeline:
                 embedding_size = len(sample_embedding)
             except Exception as e:
                 self.logger.warning(
-                    f"Error with configured embedding model, falling back to default: {str(e)}"
+                    f"Error with configured embedding model, falling back to default: {e!s}",
                 )
                 raise IndexingError(
                     "Failed to get embedding model: " + str(e),
@@ -470,7 +478,7 @@ class IndexingPipeline:
                 model_name = "unknown"
 
             self.logger.info(
-                f"Using embedding model: {model_name}, embedding_size: {embedding_size}"
+                f"Using embedding model: {model_name}, embedding_size: {embedding_size}",
             )
 
             # Initialize collection with correct embedding size
@@ -503,14 +511,14 @@ class IndexingPipeline:
 
             return True
         except IndexingError as e:
-            self.logger.error(f"Error getting embedding model: {str(e)}")
+            self.logger.error(f"Error getting embedding model: {e!s}")
             raise IndexingError(
-                "Failed to get embedding model: " + str(e), details={"error": str(e)}
+                "Failed to get embedding model: " + str(e),
+                details={"error": str(e)},
             )
 
-    async def _create_embeddings(self, chunks: List[Document]) -> None:
-        """
-        Create both sparse and dense embeddings for document chunks and store them in vector store.
+    async def _create_embeddings(self, chunks: list[Document]) -> None:
+        """Create both sparse and dense embeddings for document chunks and store them in vector store.
 
         Args:
             chunks: List of document chunks to embed
@@ -520,6 +528,7 @@ class IndexingPipeline:
             VectorStoreError: If there's an error storing embeddings
             MetadataProcessingError: If there's an error processing metadata
             DocumentProcessingError: If there's an error updating document status
+
         """
         try:
             # Validate input
@@ -545,18 +554,20 @@ class IndexingPipeline:
             # Store in vector store
             try:
                 start_time = time.perf_counter()
-                self.logger.info(f"⏱️ Starting embeddings insertion for {len(chunks)} chunks into vector store")
+                self.logger.info(
+                    f"⏱️ Starting embeddings insertion for {len(chunks)} chunks into vector store"
+                )
 
                 await self.vector_store.aadd_documents(chunks)
 
                 elapsed_time = time.perf_counter() - start_time
                 if len(chunks) > 0:
                     self.logger.info(
-                        f"✅ Successfully added {len(chunks)} documents to vector store in {elapsed_time:.2f}s (avg: {elapsed_time/len(chunks)*1000:.2f}ms per document)"
+                        f"✅ Successfully added {len(chunks)} documents to vector store in {elapsed_time:.2f}s (avg: {elapsed_time / len(chunks) * 1000:.2f}ms per document)",
                     )
                 else:
                     self.logger.info(
-                        f"✅ Successfully added 0 documents to vector store in {elapsed_time:.2f}s"
+                        f"✅ Successfully added 0 documents to vector store in {elapsed_time:.2f}s",
                     )
             except Exception as e:
                 raise VectorStoreError(
@@ -567,7 +578,8 @@ class IndexingPipeline:
             # Update record with indexing status
             try:
                 record = await self.arango_service.get_document(
-                    meta["recordId"], CollectionNames.RECORDS.value
+                    meta["recordId"],
+                    CollectionNames.RECORDS.value,
                 )
                 if not record:
                     raise DocumentProcessingError(
@@ -582,17 +594,19 @@ class IndexingPipeline:
                         "isDirty": False,
                         "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
                         "virtualRecordId": virtual_record_id,
-                    }
+                    },
                 )
 
                 docs = [doc]
 
                 success = await self.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
+                    docs,
+                    CollectionNames.RECORDS.value,
                 )
                 if not success:
                     raise DocumentProcessingError(
-                        "Failed to update indexing status", doc_id=meta["recordId"]
+                        "Failed to update indexing status",
+                        doc_id=meta["recordId"],
                     )
                 return
 
@@ -619,8 +633,7 @@ class IndexingPipeline:
             )
 
     async def delete_embeddings(self, record_id: str, virtual_record_id: str) -> None:
-        """
-        Delete embeddings only if this is the last record with this virtual_record_id.
+        """Delete embeddings only if this is the last record with this virtual_record_id.
         If other records exist with the same virtual_record_id, skip deletion.
 
         Args:
@@ -629,22 +642,28 @@ class IndexingPipeline:
 
         Raises:
             EmbeddingDeletionError: If there's an error during the deletion process
+
         """
         try:
             if not record_id:
                 raise EmbeddingDeletionError(
-                    "No record ID provided for deletion", record_id=record_id
+                    "No record ID provided for deletion",
+                    record_id=record_id,
                 )
 
             if not virtual_record_id:
-                self.logger.info(f"No virtual record ID provided for deletion, skipping embedding deletion for record {record_id}")
+                self.logger.info(
+                    f"No virtual record ID provided for deletion, skipping embedding deletion for record {record_id}"
+                )
                 return
 
-            self.logger.info(f"🔍 Checking other records with virtual_record_id {virtual_record_id}")
+            self.logger.info(
+                f"🔍 Checking other records with virtual_record_id {virtual_record_id}"
+            )
 
             # Get other records with same virtual_record_id
             other_records = await self.arango_service.get_records_by_virtual_record_id(
-                virtual_record_id=virtual_record_id
+                virtual_record_id=virtual_record_id,
             )
 
             # Filter out the current record
@@ -653,7 +672,7 @@ class IndexingPipeline:
             if other_records:
                 self.logger.info(
                     f"⏭️ Skipping embedding deletion for record {record_id} as other records "
-                    f"exist with same virtual_record_id: {other_records}"
+                    f"exist with same virtual_record_id: {other_records}",
                 )
                 return
 
@@ -661,7 +680,7 @@ class IndexingPipeline:
 
             try:
                 filter_dict = await self.vector_db_service.filter_collection(
-                    must={"virtualRecordId": virtual_record_id}
+                    must={"virtualRecordId": virtual_record_id},
                 )
 
                 result = await self.vector_db_service.scroll(
@@ -674,7 +693,7 @@ class IndexingPipeline:
                     self.logger.info(f"No embeddings found for record {record_id}")
                     return
 
-                ids = [point.id for point in result[0]] #type: ignore
+                ids = [point.id for point in result[0]]  # type: ignore
                 self.logger.info(f"🎯 Filter: {filter_dict}")
 
                 try:
@@ -689,7 +708,7 @@ class IndexingPipeline:
                     await self.vector_store.adelete(ids=ids)
 
                 self.logger.info(
-                    f"✅ Successfully deleted embeddings for record {record_id}"
+                    f"✅ Successfully deleted embeddings for record {record_id}",
                 )
 
             except Exception as e:
@@ -709,10 +728,11 @@ class IndexingPipeline:
             )
 
     async def index_documents(
-        self, sentences: List[Dict[str, Any]], merge_documents: bool = False
-    ) -> List[Document]:
-        """
-        Main method to index documents through the entire pipeline.
+        self,
+        sentences: list[dict[str, Any]],
+        merge_documents: bool = False,
+    ) -> list[Document]:
+        """Main method to index documents through the entire pipeline.
 
         Args:
             sentences: List of dictionaries containing text and metadata
@@ -722,6 +742,7 @@ class IndexingPipeline:
             DocumentProcessingError: If there's an error processing the documents
             ChunkingError: If there's an error during document chunking
             EmbeddingError: If there's an error creating embeddings
+
         """
         try:
             if not sentences:
@@ -767,13 +788,12 @@ class IndexingPipeline:
         except Exception as e:
             # Catch any unexpected errors
             raise IndexingError(
-                f"Unexpected error during indexing: {str(e)}",
+                f"Unexpected error during indexing: {e!s}",
                 details={"error_type": type(e).__name__},
             )
 
-    def _process_metadata(self, meta: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process and enhance document metadata.
+    def _process_metadata(self, meta: dict[str, Any]) -> dict[str, Any]:
+        """Process and enhance document metadata.
 
         Args:
             metadata: Original metadata dictionary
@@ -783,6 +803,7 @@ class IndexingPipeline:
 
         Raises:
             MetadataProcessingError: If there's an error processing the metadata
+
         """
         try:
             block_type = meta.get("blockType", "text")
@@ -828,6 +849,6 @@ class IndexingPipeline:
             raise
         except Exception as e:
             raise MetadataProcessingError(
-                f"Unexpected error processing metadata: {str(e)}",
+                f"Unexpected error processing metadata: {e!s}",
                 details={"error_type": type(e).__name__},
             )

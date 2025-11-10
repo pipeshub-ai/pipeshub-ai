@@ -20,8 +20,7 @@ from app.services.scheduler.interface.scheduler import Scheduler
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
 async def make_api_call(signed_url_route: str, token: str) -> dict:
-    """
-    Make an API call with the JWT token.
+    """Make an API call with the JWT token.
 
     Args:
         signed_url_route (str): The route to send the request to
@@ -29,6 +28,7 @@ async def make_api_call(signed_url_route: str, token: str) -> dict:
 
     Returns:
         dict: The response from the API
+
     """
     try:
         async with aiohttp.ClientSession() as session:
@@ -44,18 +44,26 @@ async def make_api_call(signed_url_route: str, token: str) -> dict:
             async with session.get(url, headers=headers) as response:
                 content_type = response.headers.get("Content-Type", "").lower()
 
-                if response.status == HttpStatusCode.SUCCESS.value and "application/json" in content_type:
+                if (
+                    response.status == HttpStatusCode.SUCCESS.value
+                    and "application/json" in content_type
+                ):
                     data = await response.json()
                     return {"is_json": True, "data": data}
-                else:
-                    data = await response.read()
-                    return {"is_json": False, "data": data}
+                data = await response.read()
+                return {"is_json": False, "data": data}
     except Exception:
         raise
 
 
 class RedisScheduler(Scheduler):
-    def __init__(self, redis_url: str, logger, config_service: ConfigurationService, delay_hours: int = 1) -> None:
+    def __init__(
+        self,
+        redis_url: str,
+        logger,
+        config_service: ConfigurationService,
+        delay_hours: int = 1,
+    ) -> None:
         self.redis = aioredis.from_url(redis_url)
         self.logger = logger
         self.config_service = config_service
@@ -64,22 +72,22 @@ class RedisScheduler(Scheduler):
         self.processing_set = "processing_updates"
 
     async def generate_jwt(self, token_payload: dict) -> str:
-        """
-        Generate a JWT token using the jose library.
+        """Generate a JWT token using the jose library.
 
         Args:
             token_payload (dict): The payload to include in the JWT
 
         Returns:
             str: The generated JWT token
+
         """
         # Get the JWT secret from environment variable
         secret_keys = await self.config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
+            config_node_constants.SECRET_KEYS.value,
         )
         if not secret_keys:
             raise ValueError("SECRET_KEYS environment variable is not set")
-        scoped_jwt_secret = secret_keys.get("scopedJwtSecret") # type: ignore
+        scoped_jwt_secret = secret_keys.get("scopedJwtSecret")  # type: ignore
         if not scoped_jwt_secret:
             raise ValueError("SCOPED_JWT_SECRET environment variable is not set")
 
@@ -99,12 +107,11 @@ class RedisScheduler(Scheduler):
 
     # implementing the abstract methods from the interface
     async def schedule_event(self, event_data: dict) -> None:
-        """
-        Schedule an update event for later processing.
+        """Schedule an update event for later processing.
         If an update for the same record already exists, it will be replaced.
         """
         try:
-            record_id = event_data.get('payload', {}).get('recordId')
+            record_id = event_data.get("payload", {}).get("recordId")
             if not record_id:
                 raise ValueError("Event data missing recordId")
 
@@ -112,35 +119,39 @@ class RedisScheduler(Scheduler):
             execution_time = datetime.now() + timedelta(hours=self.delay_hours)
 
             # Create a composite key with record_id to ensure uniqueness
-            event_json = json.dumps({
-                'record_id': record_id,
-                'scheduled_at': datetime.now().isoformat(),
-                'event_data': event_data
-            })
+            event_json = json.dumps(
+                {
+                    "record_id": record_id,
+                    "scheduled_at": datetime.now().isoformat(),
+                    "event_data": event_data,
+                }
+            )
 
             # Remove any existing updates for this record
             existing_updates = await self.redis.zrangebyscore(
                 self.scheduled_set,
                 "-inf",
-                "+inf"
+                "+inf",
             )
             for update in existing_updates:
                 update_data = json.loads(update)
-                if update_data.get('record_id') == record_id:
+                if update_data.get("record_id") == record_id:
                     await self.redis.zrem(self.scheduled_set, update)
-                    self.logger.info(f"Removed existing scheduled update for record {record_id}")
+                    self.logger.info(
+                        f"Removed existing scheduled update for record {record_id}"
+                    )
 
             # Store new update
             await self.redis.zadd(
                 self.scheduled_set,
-                {event_json: execution_time.timestamp()}
+                {event_json: execution_time.timestamp()},
             )
 
             self.logger.info(
-                f"Scheduled update for record {record_id} at {execution_time}"
+                f"Scheduled update for record {record_id} at {execution_time}",
             )
         except Exception as e:
-            self.logger.error(f"Failed to schedule update: {str(e)}")
+            self.logger.error(f"Failed to schedule update: {e!s}")
             raise
 
     # implementing the abstract methods from the interface
@@ -153,20 +164,20 @@ class RedisScheduler(Scheduler):
             events = await self.redis.zrangebyscore(
                 self.scheduled_set,
                 "-inf",
-                current_time
+                current_time,
             )
 
             # Extract the actual event data from the stored format
-            return [json.loads(event)['event_data'] for event in events]
+            return [json.loads(event)["event_data"] for event in events]
         except Exception as e:
-            self.logger.error(f"Failed to get ready events: {str(e)}")
+            self.logger.error(f"Failed to get ready events: {e!s}")
             return []
 
     # implementing the abstract methods from the interface
     async def remove_processed_event(self, event_data: dict) -> None:
         """Remove an event after processing"""
         try:
-            record_id = event_data.get('payload', {}).get('recordId')
+            record_id = event_data.get("payload", {}).get("recordId")
             if not record_id:
                 raise ValueError("Event data missing recordId")
 
@@ -174,16 +185,16 @@ class RedisScheduler(Scheduler):
             existing_updates = await self.redis.zrangebyscore(
                 self.scheduled_set,
                 "-inf",
-                "+inf"
+                "+inf",
             )
             for update in existing_updates:
                 update_data = json.loads(update)
-                if update_data.get('record_id') == record_id:
+                if update_data.get("record_id") == record_id:
                     await self.redis.zrem(self.scheduled_set, update)
                     self.logger.info(f"Removed processed event for record {record_id}")
                     break
         except Exception as e:
-            self.logger.error(f"Failed to remove processed event: {str(e)}")
+            self.logger.error(f"Failed to remove processed event: {e!s}")
 
     # implementing the abstract methods from the interface
     async def process_scheduled_events(self, event_processor: EventProcessor) -> None:
@@ -206,14 +217,17 @@ class RedisScheduler(Scheduler):
 
                         self.logger.info(
                             f"Processing update for record {record_id}"
-                            f"Extension: {extension}, Mime Type: {mime_type}"
+                            f"Extension: {extension}, Mime Type: {mime_type}",
                         )
 
                         record = await event_processor.arango_service.get_document(
-                            record_id, CollectionNames.RECORDS.value
+                            record_id,
+                            CollectionNames.RECORDS.value,
                         )
                         if record is None:
-                            self.logger.error(f"❌ Record {record_id} not found in database")
+                            self.logger.error(
+                                f"❌ Record {record_id} not found in database"
+                            )
                             return
                         doc = dict(record)
 
@@ -222,12 +236,13 @@ class RedisScheduler(Scheduler):
                             {
                                 "indexingStatus": ProgressStatus.IN_PROGRESS.value,
                                 "extractionStatus": ProgressStatus.IN_PROGRESS.value,
-                            }
+                            },
                         )
 
                         docs = [doc]
                         await event_processor.arango_service.batch_upsert_nodes(
-                            docs, CollectionNames.RECORDS.value
+                            docs,
+                            CollectionNames.RECORDS.value,
                         )
 
                         if payload_data and payload_data.get("signedUrlRoute"):
@@ -237,13 +252,16 @@ class RedisScheduler(Scheduler):
                                     "scopes": ["storage:token"],
                                 }
                                 token = await self.generate_jwt(payload)
-                                self.logger.debug(f"Generated JWT token for record {record_id}")
+                                self.logger.debug(
+                                    f"Generated JWT token for record {record_id}"
+                                )
 
                                 response = await make_api_call(
-                                    payload_data["signedUrlRoute"], token
+                                    payload_data["signedUrlRoute"],
+                                    token,
                                 )
                                 self.logger.debug(
-                                    f"Received signed URL response for record {record_id}"
+                                    f"Received signed URL response for record {record_id}",
                                 )
 
                                 if response.get("is_json"):
@@ -256,7 +274,7 @@ class RedisScheduler(Scheduler):
                                 await event_processor.on_event(event)
 
                             except Exception as e:
-                                self.logger.error(f"Error processing signed URL: {str(e)}")
+                                self.logger.error(f"Error processing signed URL: {e!s}")
                                 raise
 
                         # Remove processed event
@@ -264,14 +282,14 @@ class RedisScheduler(Scheduler):
 
                         self.logger.info(
                             f"Processed scheduled update for record "
-                            f"{event.get('payload', {}).get('recordId')}"
+                            f"{event.get('payload', {}).get('recordId')}",
                         )
                     except Exception as e:
-                        self.logger.error(f"Error processing scheduled update: {str(e)}")
+                        self.logger.error(f"Error processing scheduled update: {e!s}")
 
                 # Wait before next check
                 await asyncio.sleep(60)  # Check every minute
 
             except Exception as e:
-                self.logger.error(f"Error in scheduled update processor: {str(e)}")
+                self.logger.error(f"Error in scheduled update processor: {e!s}")
                 await asyncio.sleep(60)

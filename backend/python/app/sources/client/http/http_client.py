@@ -1,5 +1,3 @@
-from typing import Optional
-
 import httpx  # type: ignore
 
 from app.sources.client.http.http_request import HTTPRequest
@@ -13,14 +11,14 @@ class HTTPClient(IClient):
         token: str,
         token_type: str = "Bearer",
         timeout: float = 30.0,
-        follow_redirects: bool = True
+        follow_redirects: bool = True,
     ) -> None:
         self.headers = {
             "Authorization": f"{token_type} {token}",
         }
         self.timeout = timeout
         self.follow_redirects = follow_redirects
-        self.client: Optional[httpx.AsyncClient] = None
+        self.client: httpx.AsyncClient | None = None
 
     def get_client(self) -> "HTTPClient":
         """Get the client"""
@@ -31,7 +29,7 @@ class HTTPClient(IClient):
         if self.client is None:
             self.client = httpx.AsyncClient(
                 timeout=self.timeout,
-                follow_redirects=self.follow_redirects
+                follow_redirects=self.follow_redirects,
             )
         return self.client
 
@@ -51,7 +49,7 @@ class HTTPClient(IClient):
         request_kwargs = {
             "params": request.query_params,
             "headers": merged_headers,
-            **kwargs
+            **kwargs,
         }
 
         if isinstance(request.body, dict):

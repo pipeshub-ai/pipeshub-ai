@@ -14,6 +14,7 @@ from app.utils.redis_util import build_redis_url
 # Create the Celery instance at module level
 celery = Celery("drive_sync")
 
+
 class CeleryApp:
     """Celery application manager"""
 
@@ -31,7 +32,7 @@ class CeleryApp:
         """Configure Celery application"""
         try:
             redis_config = await self.config_service.get_config(
-                config_node_constants.REDIS.value
+                config_node_constants.REDIS.value,
             )
             if not redis_config or not isinstance(redis_config, dict):
                 raise ValueError("Redis configuration not found")
@@ -52,7 +53,7 @@ class CeleryApp:
             self.start_beat()
             self.logger.info("✅ Celery app configured successfully")
         except Exception as e:
-            self.logger.error(f"❌ Failed to configure Celery app: {str(e)}")
+            self.logger.error(f"❌ Failed to configure Celery app: {e!s}")
             raise
 
     async def setup_schedules(self) -> None:
@@ -61,7 +62,11 @@ class CeleryApp:
             self.logger.info("🔄 Initializing Celery beat schedules")
 
             # Calculate interval to be 12 hours before webhook expiration
-            watch_expiration = timedelta(days=WebhookConfig.EXPIRATION_DAYS.value, hours=WebhookConfig.EXPIRATION_HOURS.value, minutes=WebhookConfig.EXPIRATION_MINUTES.value)
+            watch_expiration = timedelta(
+                days=WebhookConfig.EXPIRATION_DAYS.value,
+                hours=WebhookConfig.EXPIRATION_HOURS.value,
+                minutes=WebhookConfig.EXPIRATION_MINUTES.value,
+            )
             renewal_interval = watch_expiration - timedelta(hours=12)
 
             self.logger.info("⏰ Configuring watch renewal task")
@@ -78,19 +83,21 @@ class CeleryApp:
                     "task": "app.connectors.sources.google.common.sync_tasks.schedule_next_changes_watch",
                     "schedule": interval_seconds,
                     "options": {
-                        "expires": expiration_seconds
-                    }
-                }
+                        "expires": expiration_seconds,
+                    },
+                },
             }
 
             self.logger.info("📋 Celery beat configuration:")
-            self.logger.info("   ├─ Task: app.connectors.sources.google.common.sync_tasks.schedule_next_changes_watch")
+            self.logger.info(
+                "   ├─ Task: app.connectors.sources.google.common.sync_tasks.schedule_next_changes_watch"
+            )
             self.logger.info(f"   ├─ Interval: {interval_seconds} seconds")
             self.logger.info(f"   └─ Expiration: {expiration_seconds} seconds")
 
             self.logger.info("✅ Watch scheduling configured successfully")
         except Exception as e:
-            self.logger.error(f"❌ Failed to setup watch scheduling: {str(e)}")
+            self.logger.error(f"❌ Failed to setup watch scheduling: {e!s}")
             self.logger.exception("Detailed error information:")
             raise
 
@@ -104,12 +111,13 @@ class CeleryApp:
 
     def start_worker(self) -> None:
         """Start Celery worker in a separate thread"""
+
         def _worker() -> None:
             self.logger.info("🚀 Starting Celery worker...")
             argv = [
-                'worker',
-                '--pool=solo',
-                '--traceback'
+                "worker",
+                "--pool=solo",
+                "--traceback",
             ]
             self.app.worker_main(argv)
 
@@ -117,6 +125,7 @@ class CeleryApp:
 
     def start_beat(self) -> None:
         """Start Celery beat scheduler in a separate thread"""
+
         def _beat() -> None:
             self.logger.info("🕒 Starting Celery beat scheduler...")
             # argv = [
@@ -125,7 +134,7 @@ class CeleryApp:
             # ]
             self.app.Beat(
                 app=self.app,
-                loglevel='INFO'
+                loglevel="INFO",
             ).run()
 
         threading.Thread(target=_beat, daemon=True).start()

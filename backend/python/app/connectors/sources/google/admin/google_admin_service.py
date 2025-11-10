@@ -1,4 +1,3 @@
-from typing import Dict, List, Optional
 from uuid import uuid4
 
 from google.oauth2 import service_account
@@ -61,13 +60,22 @@ class GoogleAdminService:
 
             try:
                 credentials_json = await self.google_token_handler.get_enterprise_token(
-                    org_id, app_name
+                    org_id,
+                    app_name,
                 )
 
-                self.logger.info(f"🔍 Retrieved credentials for org {org_id}, app {app_name}")
-                self.logger.info(f"🔍 Credentials keys: {list(credentials_json.keys())}")
-                self.logger.info(f"🔍 Admin email: {credentials_json.get('adminEmail')}")
-                self.logger.info(f"🔍 Client email: {credentials_json.get('client_email')}")
+                self.logger.info(
+                    f"🔍 Retrieved credentials for org {org_id}, app {app_name}"
+                )
+                self.logger.info(
+                    f"🔍 Credentials keys: {list(credentials_json.keys())}"
+                )
+                self.logger.info(
+                    f"🔍 Admin email: {credentials_json.get('adminEmail')}"
+                )
+                self.logger.info(
+                    f"🔍 Client email: {credentials_json.get('client_email')}"
+                )
 
                 admin_email = credentials_json.get("adminEmail")
                 if not credentials_json:
@@ -93,7 +101,9 @@ class GoogleAdminService:
             try:
                 self.credentials = (
                     service_account.Credentials.from_service_account_info(
-                        credentials_json, scopes=SCOPES, subject=admin_email
+                        credentials_json,
+                        scopes=SCOPES,
+                        subject=admin_email,
                     )
                 )
             except Exception as e:
@@ -136,7 +146,7 @@ class GoogleAdminService:
             )
 
     @exponential_backoff()
-    async def list_enterprise_users(self, org_id: str) -> List[Dict]:
+    async def list_enterprise_users(self, org_id: str) -> list[dict]:
         """List all users in the domain for enterprise setup"""
         try:
             self.logger.info("🚀 Listing domain users")
@@ -163,7 +173,7 @@ class GoogleAdminService:
                             "Permission denied listing users: " + str(e),
                             details={"org_id": org_id, "error": str(e)},
                         )
-                    elif e.resp.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
+                    if e.resp.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
                         raise AdminQuotaError(
                             "Rate limit exceeded listing users: " + str(e),
                             details={"org_id": org_id, "error": str(e)},
@@ -186,32 +196,35 @@ class GoogleAdminService:
                                     "email": user.get("primaryEmail"),
                                     "fullName": user.get("name", {}).get("fullName"),
                                     "firstName": user.get("name", {}).get(
-                                        "givenName", ""
+                                        "givenName",
+                                        "",
                                     ),
                                     "middleName": user.get("name", {}).get(
-                                        "middleName", ""
+                                        "middleName",
+                                        "",
                                     ),
                                     "lastName": user.get("name", {}).get(
-                                        "familyName", ""
+                                        "familyName",
+                                        "",
                                     ),
                                     "designation": user.get("designation", "user"),
                                     "businessPhones": user.get("phones", []),
                                     "isActive": user.get("isActive", False),
                                     "createdAtTimestamp": int(
                                         parse_timestamp(
-                                            user.get("creationTime")
-                                        )
+                                            user.get("creationTime"),
+                                        ),
                                     ),
                                     "updatedAtTimestamp": int(
                                         parse_timestamp(
-                                            user.get("creationTime")
-                                        )
+                                            user.get("creationTime"),
+                                        ),
                                     ),
-                                }
+                                },
                             )
                         except Exception as e:
                             failed_items.append(
-                                {"email": user.get("primaryEmail"), "error": str(e)}
+                                {"email": user.get("primaryEmail"), "error": str(e)},
                             )
 
                 page_token = results.get("nextPageToken")
@@ -237,7 +250,7 @@ class GoogleAdminService:
             )
 
     @exponential_backoff()
-    async def list_groups(self, org_id: str) -> Optional[List[Dict]]:
+    async def list_groups(self, org_id: str) -> list[dict] | None:
         """List all groups in the domain for enterprise setup"""
         try:
             self.logger.info("🚀 Listing domain groups")
@@ -259,7 +272,8 @@ class GoogleAdminService:
                             details={"error": str(e)},
                         )
                     raise AdminListError(
-                        "Failed to list groups" + str(e), details={"error": str(e)}
+                        "Failed to list groups" + str(e),
+                        details={"error": str(e)},
                     )
 
                 current_groups = results.get("groups", [])
@@ -282,7 +296,7 @@ class GoogleAdminService:
                             "createdAt": group.get("creationTime"),
                         }
                         for group in current_groups
-                    ]
+                    ],
                 )
 
                 page_token = results.get("nextPageToken")
@@ -301,7 +315,7 @@ class GoogleAdminService:
             )
 
     @exponential_backoff()
-    async def list_domains(self) -> List[Dict]:
+    async def list_domains(self) -> list[dict]:
         """List all domains for the enterprise"""
         try:
             self.logger.info("🚀 Listing domains")
@@ -330,7 +344,7 @@ class GoogleAdminService:
                                 "createdAt": domain.get("creationTime"),
                             }
                             for domain in current_domains
-                        ]
+                        ],
                     )
 
                     page_token = results.get("nextPageToken")
@@ -345,7 +359,7 @@ class GoogleAdminService:
             return []
 
     @exponential_backoff()
-    async def list_group_members(self, group_email: str) -> List[Dict]:
+    async def list_group_members(self, group_email: str) -> list[dict]:
         """List all members of a specific group"""
         try:
             self.logger.info(f"🚀 Listing members for group: {group_email}")
@@ -387,7 +401,7 @@ class GoogleAdminService:
                             "status": member.get("status", "active"),
                         }
                         for member in current_members
-                    ]
+                    ],
                 )
 
                 page_token = results.get("nextPageToken")
@@ -422,7 +436,8 @@ class GoogleAdminService:
             if not user_key:
                 # Create user in Arango with isActive=False
                 await self.arango_service.batch_upsert_nodes(
-                    [user_info], CollectionNames.USERS.value
+                    [user_info],
+                    CollectionNames.USERS.value,
                 )
 
                 # Create edge between org and user if it doesn't exist
@@ -441,7 +456,7 @@ class GoogleAdminService:
 
         except Exception as e:
             self.logger.error(
-                f"Error handling new user creation for {user_email}: {str(e)}"
+                f"Error handling new user creation for {user_email}: {e!s}",
             )
             raise
 
@@ -456,7 +471,8 @@ class GoogleAdminService:
                 return
 
             user = await self.arango_service.get_document(
-                user_key, CollectionNames.USERS.value
+                user_key,
+                CollectionNames.USERS.value,
             )
             if not user:
                 self.logger.warning(f"User {user_email} not found in ArangoDB")
@@ -464,14 +480,15 @@ class GoogleAdminService:
 
             user["isActive"] = False
             await self.arango_service.batch_upsert_nodes(
-                [user], CollectionNames.USERS.value
+                [user],
+                CollectionNames.USERS.value,
             )
 
             self.logger.info(f"Successfully marked user {user_email} as inactive")
 
         except Exception as e:
             self.logger.error(
-                f"Error handling user deletion for {user_email}: {str(e)}"
+                f"Error handling user deletion for {user_email}: {e!s}",
             )
             raise
 
@@ -490,14 +507,15 @@ class GoogleAdminService:
             if not group_key:
                 # Create group in Arango
                 await self.arango_service.batch_upsert_nodes(
-                    [group_info], CollectionNames.GROUPS.value
+                    [group_info],
+                    CollectionNames.GROUPS.value,
                 )
 
             self.logger.info(f"Successfully created group record for {group_email}")
 
         except Exception as e:
             self.logger.error(
-                f"Error handling new group creation for {group_email}: {str(e)}"
+                f"Error handling new group creation for {group_email}: {e!s}",
             )
             raise
 
@@ -531,22 +549,25 @@ class GoogleAdminService:
             cursor = self.arango_service.db.aql.execute(query)
             cursor.next()
             self.logger.info(
-                f"Successfully deleted group {group_email} and its associated edges"
+                f"Successfully deleted group {group_email} and its associated edges",
             )
 
         except Exception as e:
             self.logger.error(
-                f"Error handling group deletion for {group_email}: {str(e)}"
+                f"Error handling group deletion for {group_email}: {e!s}",
             )
             raise
 
     async def handle_group_member_added(
-        self, org_id: str, group_email: str, user_email: str
+        self,
+        org_id: str,
+        group_email: str,
+        user_email: str,
     ) -> None:
         """Handle group member addition event"""
         try:
             self.logger.info(
-                f"Handling member addition to group {group_email}: {user_email}"
+                f"Handling member addition to group {group_email}: {user_email}",
             )
 
             group_key = await self.arango_service.get_entity_id_by_email(group_email)
@@ -554,7 +575,7 @@ class GoogleAdminService:
 
             if not group_key or not user_key:
                 self.logger.error(
-                    f"Group {group_email} or user {user_email} not found in ArangoDB"
+                    f"Group {group_email} or user {user_email} not found in ArangoDB",
                 )
                 return
 
@@ -570,22 +591,26 @@ class GoogleAdminService:
 
             # Create both edges
             await self.arango_service.batch_create_edges(
-                [belongs_to_data], CollectionNames.BELONGS_TO.value
+                [belongs_to_data],
+                CollectionNames.BELONGS_TO.value,
             )
 
             self.logger.info(f"Successfully added {user_email} to group {group_email}")
 
         except Exception as e:
-            self.logger.error(f"Error handling group member addition: {str(e)}")
+            self.logger.error(f"Error handling group member addition: {e!s}")
             raise
 
     async def handle_group_member_removed(
-        self, org_id: str, group_email: str, user_email: str
+        self,
+        org_id: str,
+        group_email: str,
+        user_email: str,
     ) -> None:
         """Handle group member removal event"""
         try:
             self.logger.info(
-                f"Handling member removal from group {group_email}: {user_email}"
+                f"Handling member removal from group {group_email}: {user_email}",
             )
 
             group_key = await self.arango_service.get_entity_id_by_email(group_email)
@@ -593,7 +618,7 @@ class GoogleAdminService:
 
             if not group_key or not user_key:
                 self.logger.error(
-                    f"Group {group_email} or user {user_email} not found in ArangoDB"
+                    f"Group {group_email} or user {user_email} not found in ArangoDB",
                 )
                 return
 
@@ -620,15 +645,15 @@ class GoogleAdminService:
             cursor = self.arango_service.db.aql.execute(query)
             cursor.next()
             self.logger.info(
-                f"Successfully removed {user_email} from group {group_email}"
+                f"Successfully removed {user_email} from group {group_email}",
             )
 
         except Exception as e:
-            self.logger.error(f"Error handling group member removal: {str(e)}")
+            self.logger.error(f"Error handling group member removal: {e!s}")
             raise
 
     @exponential_backoff()
-    async def get_user_info(self, org_id: str, user_email: str) -> Optional[Dict]:
+    async def get_user_info(self, org_id: str, user_email: str) -> dict | None:
         """Get user information from Google Admin API"""
         try:
             if not await self.connect_admin(org_id):
@@ -657,19 +682,19 @@ class GoogleAdminService:
                     "businessPhones": user_info.get("phones", []),
                     "isActive": False,  # New users start as inactive
                     "createdAtTimestamp": int(
-                        parse_timestamp(user_info.get("creationTime"))
+                        parse_timestamp(user_info.get("creationTime")),
                     ),
                     "updatedAtTimestamp": int(
-                        parse_timestamp(user_info.get("creationTime"))
+                        parse_timestamp(user_info.get("creationTime")),
                     ),
                 }
 
         except Exception as e:
-            self.logger.error(f"Failed to get user info for {user_email}: {str(e)}")
+            self.logger.error(f"Failed to get user info for {user_email}: {e!s}")
             return None
 
     @exponential_backoff()
-    async def get_group_info(self, org_id: str, group_email: str) -> Optional[Dict]:
+    async def get_group_info(self, org_id: str, group_email: str) -> dict | None:
         """Get group information from Google Admin API"""
         try:
             if not await self.connect_admin(org_id):
@@ -697,7 +722,7 @@ class GoogleAdminService:
                 }
 
         except Exception as e:
-            self.logger.error(f"Failed to get group info for {group_email}: {str(e)}")
+            self.logger.error(f"Failed to get group info for {group_email}: {e!s}")
             return None
 
     @exponential_backoff()
@@ -717,11 +742,13 @@ class GoogleAdminService:
             channel_token = str(uuid4())
             try:
                 endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
+                    config_node_constants.ENDPOINTS.value,
                 )
                 webhook_endpoint = endpoints.get("connectors", {}).get("publicEndpoint")
                 if not webhook_endpoint:
-                    webhook_endpoint = endpoints.get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                    webhook_endpoint = endpoints.get("connectors", {}).get(
+                        "endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value
+                    )
                     if not webhook_endpoint:
                         raise AdminServiceError(
                             "Missing webhook endpoint configuration",
@@ -733,7 +760,7 @@ class GoogleAdminService:
                     or "localhost" in webhook_endpoint
                 ):
                     self.logger.warning(
-                        "⚠️ Skipping changes watch - webhook endpoint uses HTTP or localhost"
+                        "⚠️ Skipping changes watch - webhook endpoint uses HTTP or localhost",
                     )
                     return
 
@@ -760,12 +787,14 @@ class GoogleAdminService:
                     (
                         self.admin_reports_service.activities()
                         .watch(
-                            userKey="all", applicationName="admin", body=channel_body
+                            userKey="all",
+                            applicationName="admin",
+                            body=channel_body,
                         )
                         .execute()
                     )
                     self.logger.debug(
-                        f"🔍 Admin watch created successfully for {org_id}"
+                        f"🔍 Admin watch created successfully for {org_id}",
                     )
                     return
             except HttpError as http_err:
@@ -777,22 +806,25 @@ class GoogleAdminService:
                     details={"org_id": org_id, "error": error_details},
                 )
             except Exception as e:
-                self.logger.error(f"❌ Failed to create admin watch: {str(e)}")
+                self.logger.error(f"❌ Failed to create admin watch: {e!s}")
                 raise
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to create admin watch: {str(e)}")
+            self.logger.error(f"❌ Failed to create admin watch: {e!s}")
             raise
 
     async def create_drive_user_service(
-        self, user_email: str
-    ) -> Optional[DriveUserService]:
+        self,
+        user_email: str,
+    ) -> DriveUserService | None:
         """Get or create a DriveUserService for a specific user"""
         try:
             # Create delegated credentials for the user
             try:
                 user_key = await self.arango_service.get_entity_id_by_email(user_email)
-                user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value,)
+                user = await self.arango_service.get_document(
+                    user_key, CollectionNames.USERS.value
+                )
                 if self.credentials is None:
                     await self.connect_admin(user.get("orgId"), app_name="DRIVE")
                 user_credentials = self.credentials.with_subject(user_email)
@@ -832,7 +864,7 @@ class GoogleAdminService:
             raise
         except Exception as e:
             self.logger.error(
-                f"❌ Failed to create user service for {user_email}: {str(e)}"
+                f"❌ Failed to create user service for {user_email}: {e!s}",
             )
             raise AdminServiceError(
                 "Unexpected error creating user service: " + str(e),
@@ -840,14 +872,17 @@ class GoogleAdminService:
             )
 
     async def create_gmail_user_service(
-        self, user_email: str
-    ) -> Optional[GmailUserService]:
+        self,
+        user_email: str,
+    ) -> GmailUserService | None:
         """Get or create a GmailUserService for a specific user"""
         try:
             # Create delegated credentials for the user
             try:
                 user_key = await self.arango_service.get_entity_id_by_email(user_email)
-                user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value)
+                user = await self.arango_service.get_document(
+                    user_key, CollectionNames.USERS.value
+                )
                 if self.credentials is None:
                     await self.connect_admin(user.get("orgId"), app_name="GMAIL")
                 user_credentials = self.credentials.with_subject(user_email)
@@ -893,14 +928,17 @@ class GoogleAdminService:
             )
 
     async def create_parser_user_service(
-        self, user_email: str
-    ) -> Optional[ParserUserService]:
+        self,
+        user_email: str,
+    ) -> ParserUserService | None:
         """Create a ParserUserService for a specific user"""
         try:
             self.logger.info("🚀 Creating parser user service for %s", user_email)
             try:
                 user_key = await self.arango_service.get_entity_id_by_email(user_email)
-                user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value)
+                user = await self.arango_service.get_document(
+                    user_key, CollectionNames.USERS.value
+                )
                 if self.credentials is None:
                     await self.connect_admin(user.get("orgId"))
                 user_credentials = self.credentials.with_subject(user_email)
@@ -926,7 +964,7 @@ class GoogleAdminService:
 
         except Exception as e:
             self.logger.error(
-                f"❌ Failed to create user service for {user_email}: {str(e)}"
+                f"❌ Failed to create user service for {user_email}: {e!s}",
             )
             raise AdminServiceError(
                 "Unexpected error creating user service: " + str(e),

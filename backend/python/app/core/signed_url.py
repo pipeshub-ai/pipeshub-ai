@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any
 
 import jwt
 from fastapi import HTTPException
@@ -22,12 +22,12 @@ class SignedUrlConfig(BaseModel):
         try:
             # Assuming there's a config node for JWT settings
             secret_keys = await config_service.get_config(
-                config_node_constants.SECRET_KEYS.value
+                config_node_constants.SECRET_KEYS.value,
             )
             private_key = secret_keys.get("scopedJwtSecret")
             if not private_key:
                 raise ValueError(
-                    "Private key must be provided through configuration or environment"
+                    "Private key must be provided through configuration or environment",
                 )
             return cls(private_key=private_key)
         except Exception:
@@ -37,7 +37,7 @@ class SignedUrlConfig(BaseModel):
         super().__init__(**data)
         if not self.private_key:
             raise ValueError(
-                "Private key must be provided through configuration or environment"
+                "Private key must be provided through configuration or environment",
             )
 
 
@@ -46,11 +46,11 @@ class TokenPayload(BaseModel):
     user_id: str
     exp: datetime
     iat: datetime
-    additional_claims: Dict[str, Any] = {}
+    additional_claims: dict[str, Any] = {}
 
     class Config:
         json_encoders = {
-            datetime: lambda v: v.timestamp()  # Convert datetime to timestamp
+            datetime: lambda v: v.timestamp(),  # Convert datetime to timestamp
         }
 
 
@@ -78,19 +78,23 @@ class SignedUrlHandler:
         record_id: str,
         org_id: str,
         user_id: str,
-        additional_claims: Dict[str, Any] = None,
+        additional_claims: dict[str, Any] = None,
         connector: str = None,
     ) -> str:
         """Create a signed URL with optional additional claims"""
         try:
             # Use UTC consistently for both iat and exp
             now_utc = datetime.now(timezone.utc)
-            expiration = now_utc + timedelta(minutes=self.signed_url_config.expiration_minutes)
+            expiration = now_utc + timedelta(
+                minutes=self.signed_url_config.expiration_minutes
+            )
 
             endpoints = await self.config_service.get_config(
-                config_node_constants.ENDPOINTS.value
+                config_node_constants.ENDPOINTS.value,
             )
-            connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+            connector_endpoint = endpoints.get("connectors").get(
+                "endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value
+            )
 
             self.logger.info(f"user_id: {user_id}")
 
@@ -133,7 +137,9 @@ class SignedUrlHandler:
             raise HTTPException(status_code=500, detail="Error creating signed URL")
 
     def validate_token(
-        self, token: str, required_claims: Dict[str, Any] = None
+        self,
+        token: str,
+        required_claims: dict[str, Any] = None,
     ) -> TokenPayload:
         """Validate the JWT token and optional required claims"""
         try:
@@ -158,7 +164,8 @@ class SignedUrlHandler:
                 for key, value in required_claims.items():
                     if token_data.additional_claims.get(key) != value:
                         raise HTTPException(
-                            status_code=401, detail=f"Required claim '{key}' is invalid"
+                            status_code=401,
+                            detail=f"Required claim '{key}' is invalid",
                         )
 
             return token_data

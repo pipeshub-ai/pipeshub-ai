@@ -1,6 +1,7 @@
 import asyncio
 import json
-from typing import Any, Callable, Generic, List, Optional, TypeVar
+from collections.abc import Callable
+from typing import Any, Generic, TypeVar
 
 import etcd3
 
@@ -17,8 +18,7 @@ T = TypeVar("T")
 
 
 class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
-    """
-    ETCD3-based implementation of the distributed key-value store.
+    """ETCD3-based implementation of the distributed key-value store.
 
     This implementation provides a robust, distributed key-value store using ETCD3
     as the backend, with support for watching keys, TTL, and automatic reconnection.
@@ -27,6 +27,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         connection_manager: Manages ETCD3 connection and reconnection
         serializer: Function to convert values to bytes
         deserializer: Function to convert bytes back to values
+
     """
 
     def __init__(
@@ -36,12 +37,11 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         host: str,
         port: int,
         timeout: float = 5.0,
-        ca_cert: Optional[str] = None,
-        cert_key: Optional[str] = None,
-        cert_cert: Optional[str] = None,
+        ca_cert: str | None = None,
+        cert_key: str | None = None,
+        cert_cert: str | None = None,
     ) -> None:
-        """
-        Initialize the ETCD3 store.
+        """Initialize the ETCD3 store.
 
         Args:
             serializer: Function to convert values to bytes
@@ -54,6 +54,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             ca_cert: Optional CA certificate path for TLS
             cert_key: Optional client key path for TLS
             cert_cert: Optional client certificate path for TLS
+
         """
         logger.debug("🔧 Initializing ETCD3 store")
         logger.debug("📋 Configuration:")
@@ -74,7 +75,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self.connection_manager = Etcd3ConnectionManager(config)
         self.serializer = serializer
         self.deserializer = deserializer
-        self._active_watchers: List[Any] = []
+        self._active_watchers: list[Any] = []
         logger.debug("✅ ETCD3 store initialized")
 
     async def _get_client(self) -> etcd3.client:
@@ -85,7 +86,9 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self.client = client
         return client
 
-    async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> bool:
+    async def create_key(
+        self, key: str, value: T, overwrite: bool = True, ttl: int | None = None
+    ) -> bool:
         """Create a new key in etcd."""
         logger.debug("🔄 Creating key in ETCD: %s", key)
         logger.debug("📋 Value: %s (type: %s)", value, type(value))
@@ -105,10 +108,10 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             if existing_value[0] is not None and not overwrite:
                 logger.debug("📋 Key exists, skipping creation")
                 return True
-            elif existing_value[0] is not None:
+            if existing_value[0] is not None:
                 logger.debug("📋 Key exists, updating value")
                 success = await asyncio.to_thread(
-                    lambda: client.put(key, value_str.encode())
+                    lambda: client.put(key, value_str.encode()),
                 )
             else:
                 logger.debug("📋 Key doesn't exist, creating new")
@@ -116,11 +119,11 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     logger.debug("🔄 Creating lease with TTL: %s seconds", ttl)
                     lease = await asyncio.to_thread(lambda: client.lease(ttl))
                     success = await asyncio.to_thread(
-                        lambda: client.put(key, value_str.encode(), lease=lease)
+                        lambda: client.put(key, value_str.encode(), lease=lease),
                     )
                 else:
                     success = await asyncio.to_thread(
-                        lambda: client.put(key, value_str.encode())
+                        lambda: client.put(key, value_str.encode()),
                     )
 
             logger.debug("✅ Key operation successful: %s", success is not None)
@@ -132,9 +135,9 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("   - Type: %s", type(e).__name__)
             logger.error("   - Message: %s", str(e))
             logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to create key: {str(e)}")
+            raise ConnectionError(f"Failed to create key: {e!s}")
 
-    async def update_value(self, key: str, value: T, ttl: Optional[int] = None) -> None:
+    async def update_value(self, key: str, value: T, ttl: int | None = None) -> None:
         client = await self._get_client()
 
         # Check if key exists
@@ -157,9 +160,9 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         except Exception as e:
             if lease:
                 await lease.revoke()
-            raise ConnectionError(f"Failed to update key: {str(e)}")
+            raise ConnectionError(f"Failed to update key: {e!s}")
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str) -> T | None:
         """Get value for key from etcd."""
         logger.debug("🔍 Getting key from ETCD: %s", key)
         try:
@@ -190,7 +193,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("   - Type: %s", type(e).__name__)
             logger.error("   - Message: %s", str(e))
             logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to get key: {str(e)}")
+            raise ConnectionError(f"Failed to get key: {e!s}")
 
     async def delete_key(self, key: str) -> bool:
         client = await self._get_client()
@@ -198,9 +201,9 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             result = await client.delete(key)
             return result is not None
         except Exception as e:
-            raise ConnectionError(f"Failed to delete key: {str(e)}")
+            raise ConnectionError(f"Failed to delete key: {e!s}")
 
-    async def get_all_keys(self) -> List[str]:
+    async def get_all_keys(self) -> list[str]:
         """Get all keys from etcd."""
         logger.debug("🔍 Getting all keys from ETCD")
         try:
@@ -216,13 +219,13 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("   - Type: %s", type(e).__name__)
             logger.error("   - Message: %s", str(e))
             logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to get all keys: {str(e)}")
+            raise ConnectionError(f"Failed to get all keys: {e!s}")
 
     async def watch_key(
         self,
         key: str,
-        callback: Callable[[Optional[T]], None],
-        error_callback: Optional[Callable[[Exception], None]] = None,
+        callback: Callable[[T | None], None],
+        error_callback: Callable[[Exception], None] | None = None,
     ) -> None:
         logger.debug("🔄 Setting up watch for key: %s", key)
         client = await self._get_client()
@@ -255,16 +258,16 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         except Exception as e:
             logger.error("❌ Failed to setup watch: %s", str(e))
             logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to watch key: {str(e)}")
+            raise ConnectionError(f"Failed to watch key: {e!s}")
 
-    async def list_keys_in_directory(self, directory: str) -> List[str]:
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
         client = await self._get_client()
         try:
             # Ensure directory ends with '/' for proper prefix matching
             prefix = directory if directory.endswith("/") else f"{directory}/"
             return [key.decode("utf-8") for key, _ in await client.get_prefix(prefix)]
         except Exception as e:
-            raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
+            raise ConnectionError(f"Failed to list keys in directory: {e!s}")
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:
         client = await self._get_client()

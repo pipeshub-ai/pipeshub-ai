@@ -8,6 +8,7 @@ import logging
 
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 
+
 async def main() -> None:
     # Set up logging
     logger = logging.getLogger(__name__)
@@ -17,7 +18,9 @@ async def main() -> None:
     etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(logger=logger)
 
     # create configuration service
-    config_service = ConfigurationService(logger=logger, key_value_store=etcd3_encrypted_key_value_store)
+    config_service = ConfigurationService(
+        logger=logger, key_value_store=etcd3_encrypted_key_value_store
+    )
 
     # Build Airtable client using configuration service (await the async method)
     try:
@@ -30,10 +33,10 @@ async def main() -> None:
         logger.error(f"Failed to create Airtable client: {e}")
         print(f"❌ Error creating Airtable client: {e}")
         return
-    
+
     # Create data source and use it
     airtable_data_source = AirtableDataSource(airtable_client)
-    
+
     # Test get current user
     try:
         response = await airtable_data_source.get_current_user()
@@ -43,6 +46,7 @@ async def main() -> None:
     finally:
         # Properly close the client session
         await airtable_client.get_client().close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

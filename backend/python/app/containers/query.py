@@ -17,14 +17,18 @@ class QueryAppContainer(BaseAppContainer):
     key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
 
     # Override config_service to use the service-specific logger
-    config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
+    config_service = providers.Singleton(
+        ConfigurationService, logger=logger, key_value_store=key_value_store
+    )
 
     # Override arango_client and redis_client to use the service-specific config_service
     arango_client = providers.Resource(
-        BaseAppContainer._create_arango_client, config_service=config_service
+        BaseAppContainer._create_arango_client,
+        config_service=config_service,
     )
     redis_client = providers.Resource(
-        BaseAppContainer._create_redis_client, config_service=config_service
+        BaseAppContainer._create_redis_client,
+        config_service=config_service,
     )
     kafka_service = providers.Singleton(lambda: None)  # Not used in query service
     arango_service = providers.Resource(
@@ -34,7 +38,7 @@ class QueryAppContainer(BaseAppContainer):
         config_service=config_service,
         kafka_service=kafka_service,
     )
-    vector_db_service =  providers.Resource(
+    vector_db_service = providers.Resource(
         container_utils.get_vector_db_service,
         config_service=config_service,
     )
@@ -64,6 +68,6 @@ class QueryAppContainer(BaseAppContainer):
         modules=[
             "app.api.routes.search",
             "app.api.routes.chatbot",
-            "app.modules.retrieval.retrieval_service"
-        ]
+            "app.modules.retrieval.retrieval_service",
+        ],
     )

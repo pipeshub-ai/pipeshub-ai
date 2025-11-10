@@ -7,7 +7,13 @@ from app.modules.transformers.vectorstore import VectorStore
 
 
 class SinkOrchestrator(Transformer):
-    def __init__(self, arango: Arango, blob_storage: BlobStorage, vector_store: VectorStore, arango_service: BaseArangoService) -> None:
+    def __init__(
+        self,
+        arango: Arango,
+        blob_storage: BlobStorage,
+        vector_store: VectorStore,
+        arango_service: BaseArangoService,
+    ) -> None:
         super().__init__()
         self.arango = arango
         self.blob_storage = blob_storage
@@ -20,8 +26,9 @@ class SinkOrchestrator(Transformer):
         record = ctx.record
         record_id = record.id
         record = await self.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
+            record_id,
+            CollectionNames.RECORDS.value,
+        )
         if record is None:
             self.logger.error(f"❌ Record {record_id} not found in database")
             raise Exception(f"Record {record_id} not found in database")

@@ -13,7 +13,7 @@ sheet_summary_prompt = ChatPromptTemplate.from_messages(
             "Sheet name: {sheet_name}\n\nTables:\n{tables_data}\n\n"
             "Provide a comprehensive summary of all tables in this sheet.",
         ),
-    ]
+    ],
 )
 
 # Prompt for summarizing a single table
@@ -28,7 +28,7 @@ table_summary_prompt = ChatPromptTemplate.from_messages(
             "Table headers: {headers}\n\nSample data:\n{sample_data}\n\n"
             "Provide a clear summary of this table's purpose and content.",
         ),
-    ]
+    ],
 )
 
 # Prompt for converting row data into natural language
@@ -61,7 +61,7 @@ Rows Data:
 
 Remember: Respond with ONLY a JSON array of strings containing one description per row. Number of strings should be equal to the number of rows in the data.""",
         ),
-    ]
+    ],
 )
 
 prompt = """

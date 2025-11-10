@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import List
 
 from github import (
     Github,  # type: ignore
@@ -47,7 +46,9 @@ class GitHubDataSource:
         else:
             get_sdk = getattr(client, "get_sdk", None)
             if get_sdk is None or not callable(get_sdk):
-                raise TypeError("client must be a github.Github or expose get_sdk() -> Github")
+                raise TypeError(
+                    "client must be a github.Github or expose get_sdk() -> Github"
+                )
             sdk = get_sdk()
             if not isinstance(sdk, Github):
                 raise TypeError("get_sdk() must return a github.Github instance")
@@ -63,7 +64,6 @@ class GitHubDataSource:
     def _not_none(**params: object) -> dict[str, object]:
         return {k: v for k, v in params.items() if v is not None}
 
-
     def get_authenticated(self) -> GitHubResponse[AuthenticatedUser]:
         """Return the authenticated user."""
         try:
@@ -71,7 +71,6 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=user)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def get_user(self, login: str) -> GitHubResponse[NamedUser]:
         """Get a user by login."""
@@ -81,7 +80,6 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
     def get_organization(self, org: str) -> GitHubResponse[Organization]:
         """Get an organization by login."""
         try:
@@ -90,8 +88,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_user_repos(self, user: str, type: str = "owner") -> GitHubResponse[list[Repository]]:
+    def list_user_repos(
+        self, user: str, type: str = "owner"
+    ) -> GitHubResponse[list[Repository]]:
         """List repositories for a given user. `type` in {'all','owner','member'}."""
         try:
             u = self._sdk.get_user(user)
@@ -99,7 +98,6 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=repos)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def get_repo(self, owner: str, repo: str) -> GitHubResponse[Repository]:
         """Get a repository."""
@@ -109,8 +107,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_org_repos(self, org: str, type: str = "all") -> GitHubResponse[list[Repository]]:
+    def list_org_repos(
+        self, org: str, type: str = "all"
+    ) -> GitHubResponse[list[Repository]]:
         """List repositories for an organization."""
         try:
             o = self._sdk.get_organization(org)
@@ -119,18 +118,31 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_repo(self, name: str, private: bool = True, description: str | None = None, auto_init: bool = True) -> GitHubResponse[Repository]:
+    def create_repo(
+        self,
+        name: str,
+        private: bool = True,
+        description: str | None = None,
+        auto_init: bool = True,
+    ) -> GitHubResponse[Repository]:
         """Create a repository under the authenticated user."""
         try:
             params = self._not_none(description=description)
-            repo = self._sdk.get_user().create_repo(name=name, private=private, auto_init=auto_init, **params)
+            repo = self._sdk.get_user().create_repo(
+                name=name, private=private, auto_init=auto_init, **params
+            )
             return GitHubResponse(success=True, data=repo)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_issues(self, owner: str, repo: str, state: str = "open", labels: Sequence[str] | None = None, assignee: str | None = None) -> GitHubResponse[list[Issue]]:
+    def list_issues(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        labels: Sequence[str] | None = None,
+        assignee: str | None = None,
+    ) -> GitHubResponse[list[Issue]]:
         """List issues with filters."""
         try:
             r = self._repo(owner, repo)
@@ -139,7 +151,6 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=issues)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def get_issue(self, owner: str, repo: str, number: int) -> GitHubResponse[Issue]:
         """Get a single issue."""
@@ -150,8 +161,15 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_issue(self, owner: str, repo: str, title: str, body: str | None = None, assignees: Sequence[str] | None = None, labels: Sequence[str] | None = None) -> GitHubResponse[Issue]:
+    def create_issue(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        body: str | None = None,
+        assignees: Sequence[str] | None = None,
+        labels: Sequence[str] | None = None,
+    ) -> GitHubResponse[Issue]:
         """Create an issue."""
         try:
             r = self._repo(owner, repo)
@@ -160,7 +178,6 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=issue)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def close_issue(self, owner: str, repo: str, number: int) -> GitHubResponse[Issue]:
         """Close an issue."""
@@ -172,8 +189,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def add_labels_to_issue(self, owner: str, repo: str, number: int, labels: Sequence[str]) -> GitHubResponse[list[Label]]:
+    def add_labels_to_issue(
+        self, owner: str, repo: str, number: int, labels: Sequence[str]
+    ) -> GitHubResponse[list[Label]]:
         """Add labels to an issue."""
         try:
             r = self._repo(owner, repo)
@@ -183,8 +201,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_issue_comments(self, owner: str, repo: str, number: int) -> GitHubResponse[list[IssueComment]]:
+    def list_issue_comments(
+        self, owner: str, repo: str, number: int
+    ) -> GitHubResponse[list[IssueComment]]:
         """List comments on an issue."""
         try:
             r = self._repo(owner, repo)
@@ -194,8 +213,14 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_pulls(self, owner: str, repo: str, state: str = "open", head: str | None = None, base: str | None = None) -> GitHubResponse[list[PullRequest]]:
+    def list_pulls(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        head: str | None = None,
+        base: str | None = None,
+    ) -> GitHubResponse[list[PullRequest]]:
         """List PRs."""
         try:
             r = self._repo(owner, repo)
@@ -205,8 +230,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def get_pull(self, owner: str, repo: str, number: int) -> GitHubResponse[PullRequest]:
+    def get_pull(
+        self, owner: str, repo: str, number: int
+    ) -> GitHubResponse[PullRequest]:
         """Get a PR."""
         try:
             r = self._repo(owner, repo)
@@ -215,8 +241,16 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_pull(self, owner: str, repo: str, title: str, head: str, base: str, body: str | None = None, draft: bool = False) -> GitHubResponse[PullRequest]:
+    def create_pull(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        head: str,
+        base: str,
+        body: str | None = None,
+        draft: bool = False,
+    ) -> GitHubResponse[PullRequest]:
         """Create a PR."""
         try:
             r = self._repo(owner, repo)
@@ -226,18 +260,25 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def merge_pull(self, owner: str, repo: str, number: int, commit_message: str | None = None, merge_method: str = "merge") -> GitHubResponse[bool]:
+    def merge_pull(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        commit_message: str | None = None,
+        merge_method: str = "merge",
+    ) -> GitHubResponse[bool]:
         """Merge a PR (merge/squash/rebase)."""
         try:
             r = self._repo(owner, repo)
             pr = r.get_pull(number)
-            params = self._not_none(commit_message=commit_message, merge_method=merge_method)
+            params = self._not_none(
+                commit_message=commit_message, merge_method=merge_method
+            )
             ok = pr.merge(**params)
             return GitHubResponse(success=True, data=bool(ok))
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def list_releases(self, owner: str, repo: str) -> GitHubResponse[list[GitRelease]]:
         """List releases."""
@@ -248,8 +289,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def get_release_by_tag(self, owner: str, repo: str, tag: str) -> GitHubResponse[GitRelease]:
+    def get_release_by_tag(
+        self, owner: str, repo: str, tag: str
+    ) -> GitHubResponse[GitRelease]:
         """Get release by tag."""
         try:
             r = self._repo(owner, repo)
@@ -258,18 +300,27 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_release(self, owner: str, repo: str, tag: str, name: str | None = None, body: str | None = None, draft: bool = False, prerelease: bool = False) -> GitHubResponse[GitRelease]:
+    def create_release(
+        self,
+        owner: str,
+        repo: str,
+        tag: str,
+        name: str | None = None,
+        body: str | None = None,
+        draft: bool = False,
+        prerelease: bool = False,
+    ) -> GitHubResponse[GitRelease]:
         """Create a release."""
         try:
             r = self._repo(owner, repo)
             _name = name if name is not None else tag
             _msg = body if body is not None else ""
-            rel = r.create_git_release(tag=tag, name=_name, message=_msg, draft=draft, prerelease=prerelease)
+            rel = r.create_git_release(
+                tag=tag, name=_name, message=_msg, draft=draft, prerelease=prerelease
+            )
             return GitHubResponse(success=True, data=rel)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def list_branches(self, owner: str, repo: str) -> GitHubResponse[list[Branch]]:
         """List branches."""
@@ -280,7 +331,6 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
     def get_branch(self, owner: str, repo: str, branch: str) -> GitHubResponse[Branch]:
         """Get one branch."""
         try:
@@ -289,7 +339,6 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=b)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def list_tags(self, owner: str, repo: str) -> GitHubResponse[list[Tag]]:
         """List tags."""
@@ -300,8 +349,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def get_file_contents(self, owner: str, repo: str, path: str, ref: str | None = None) -> GitHubResponse[ContentFile]:
+    def get_file_contents(
+        self, owner: str, repo: str, path: str, ref: str | None = None
+    ) -> GitHubResponse[ContentFile]:
         """Get file contents."""
         try:
             r = self._repo(owner, repo)
@@ -311,30 +361,56 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_file(self, owner: str, repo: str, path: str, message: str, content: bytes, branch: str | None = None) -> GitHubResponse[dict[str, object]]:
+    def create_file(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        message: str,
+        content: bytes,
+        branch: str | None = None,
+    ) -> GitHubResponse[dict[str, object]]:
         """Create a file."""
         try:
             r = self._repo(owner, repo)
             params = self._not_none(branch=branch)
-            result = r.create_file(path=path, message=message, content=content, **params)
+            result = r.create_file(
+                path=path, message=message, content=content, **params
+            )
             return GitHubResponse(success=True, data=result)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def update_file(self, owner: str, repo: str, path: str, message: str, content: bytes, sha: str, branch: str | None = None) -> GitHubResponse[dict[str, object]]:
+    def update_file(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        message: str,
+        content: bytes,
+        sha: str,
+        branch: str | None = None,
+    ) -> GitHubResponse[dict[str, object]]:
         """Update a file."""
         try:
             r = self._repo(owner, repo)
             params = self._not_none(branch=branch)
-            result = r.update_file(path=path, message=message, content=content, sha=sha, **params)
+            result = r.update_file(
+                path=path, message=message, content=content, sha=sha, **params
+            )
             return GitHubResponse(success=True, data=result)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def delete_file(self, owner: str, repo: str, path: str, message: str, sha: str, branch: str | None = None) -> GitHubResponse[dict[str, object]]:
+    def delete_file(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        message: str,
+        sha: str,
+        branch: str | None = None,
+    ) -> GitHubResponse[dict[str, object]]:
         """Delete a file."""
         try:
             r = self._repo(owner, repo)
@@ -344,8 +420,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_collaborators(self, owner: str, repo: str) -> GitHubResponse[list[NamedUser]]:
+    def list_collaborators(
+        self, owner: str, repo: str
+    ) -> GitHubResponse[list[NamedUser]]:
         """List collaborators."""
         try:
             r = self._repo(owner, repo)
@@ -354,8 +431,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def add_collaborator(self, owner: str, repo: str, username: str, permission: str = "push") -> GitHubResponse[bool]:
+    def add_collaborator(
+        self, owner: str, repo: str, username: str, permission: str = "push"
+    ) -> GitHubResponse[bool]:
         """Add collaborator."""
         try:
             r = self._repo(owner, repo)
@@ -364,8 +442,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def remove_collaborator(self, owner: str, repo: str, username: str) -> GitHubResponse[bool]:
+    def remove_collaborator(
+        self, owner: str, repo: str, username: str
+    ) -> GitHubResponse[bool]:
         """Remove collaborator."""
         try:
             r = self._repo(owner, repo)
@@ -373,7 +452,6 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=True)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def list_repo_teams(self, owner: str, repo: str) -> GitHubResponse[list[Team]]:
         """List teams with access to the repo."""
@@ -384,7 +462,6 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
     def list_repo_hooks(self, owner: str, repo: str) -> GitHubResponse[list[Hook]]:
         """List repo webhooks."""
         try:
@@ -394,8 +471,15 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_repo_hook(self, owner: str, repo: str, name: str, config: dict[str, str], events: Sequence[str] | None = None, active: bool = True) -> GitHubResponse[Hook]:
+    def create_repo_hook(
+        self,
+        owner: str,
+        repo: str,
+        name: str,
+        config: dict[str, str],
+        events: Sequence[str] | None = None,
+        active: bool = True,
+    ) -> GitHubResponse[Hook]:
         """Create a webhook."""
         try:
             r = self._repo(owner, repo)
@@ -405,20 +489,32 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def edit_repo_hook(self, owner: str, repo: str, hook_id: int, config: dict[str, str] | None = None, events: Sequence[str] | None = None, active: bool | None = None) -> GitHubResponse[Hook]:
+    def edit_repo_hook(
+        self,
+        owner: str,
+        repo: str,
+        hook_id: int,
+        config: dict[str, str] | None = None,
+        events: Sequence[str] | None = None,
+        active: bool | None = None,
+    ) -> GitHubResponse[Hook]:
         """Edit webhook."""
         try:
             r = self._repo(owner, repo)
             hook = r.get_hook(hook_id)
-            params = self._not_none(config=config, events=list(events) if events is not None else None, active=active)
+            params = self._not_none(
+                config=config,
+                events=list(events) if events is not None else None,
+                active=active,
+            )
             hook.edit(**params)
             return GitHubResponse(success=True, data=hook)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def ping_repo_hook(self, owner: str, repo: str, hook_id: int) -> GitHubResponse[bool]:
+    def ping_repo_hook(
+        self, owner: str, repo: str, hook_id: int
+    ) -> GitHubResponse[bool]:
         """Ping webhook."""
         try:
             r = self._repo(owner, repo)
@@ -428,8 +524,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def test_repo_hook(self, owner: str, repo: str, hook_id: int) -> GitHubResponse[bool]:
+    def test_repo_hook(
+        self, owner: str, repo: str, hook_id: int
+    ) -> GitHubResponse[bool]:
         """Test webhook delivery."""
         try:
             r = self._repo(owner, repo)
@@ -439,8 +536,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_hook_deliveries(self, owner: str, repo: str, hook_id: int) -> GitHubResponse[list[dict[str, object]]]:
+    def list_hook_deliveries(
+        self, owner: str, repo: str, hook_id: int
+    ) -> GitHubResponse[list[dict[str, object]]]:
         """List webhook deliveries."""
         try:
             r = self._repo(owner, repo)
@@ -449,8 +547,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def get_hook_delivery(self, owner: str, repo: str, hook_id: int, delivery_id: int) -> GitHubResponse[dict[str, object]]:
+    def get_hook_delivery(
+        self, owner: str, repo: str, hook_id: int, delivery_id: int
+    ) -> GitHubResponse[dict[str, object]]:
         """Get a webhook delivery."""
         try:
             r = self._repo(owner, repo)
@@ -459,8 +558,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def delete_repo_hook(self, owner: str, repo: str, hook_id: int) -> GitHubResponse[bool]:
+    def delete_repo_hook(
+        self, owner: str, repo: str, hook_id: int
+    ) -> GitHubResponse[bool]:
         """Delete webhook."""
         try:
             r = self._repo(owner, repo)
@@ -469,7 +569,6 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=True)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def list_workflows(self, owner: str, repo: str) -> GitHubResponse[list[Workflow]]:
         """List workflows."""
@@ -480,8 +579,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def get_workflow(self, owner: str, repo: str, workflow_id: int) -> GitHubResponse[Workflow]:
+    def get_workflow(
+        self, owner: str, repo: str, workflow_id: int
+    ) -> GitHubResponse[Workflow]:
         """Get a workflow."""
         try:
             r = self._repo(owner, repo)
@@ -490,8 +590,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def enable_workflow(self, owner: str, repo: str, workflow_id: int) -> GitHubResponse[bool]:
+    def enable_workflow(
+        self, owner: str, repo: str, workflow_id: int
+    ) -> GitHubResponse[bool]:
         """Enable a workflow."""
         try:
             wf = self._repo(owner, repo).get_workflow(workflow_id)
@@ -500,8 +601,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def disable_workflow(self, owner: str, repo: str, workflow_id: int) -> GitHubResponse[bool]:
+    def disable_workflow(
+        self, owner: str, repo: str, workflow_id: int
+    ) -> GitHubResponse[bool]:
         """Disable a workflow."""
         try:
             wf = self._repo(owner, repo).get_workflow(workflow_id)
@@ -510,8 +612,14 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def dispatch_workflow(self, owner: str, repo: str, workflow_id: int, ref: str, inputs: dict[str, str] | None = None) -> GitHubResponse[bool]:
+    def dispatch_workflow(
+        self,
+        owner: str,
+        repo: str,
+        workflow_id: int,
+        ref: str,
+        inputs: dict[str, str] | None = None,
+    ) -> GitHubResponse[bool]:
         """Dispatch a workflow."""
         try:
             wf = self._repo(owner, repo).get_workflow(workflow_id)
@@ -521,8 +629,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_workflow_runs(self, owner: str, repo: str, workflow_id: int) -> GitHubResponse[list[WorkflowRun]]:
+    def list_workflow_runs(
+        self, owner: str, repo: str, workflow_id: int
+    ) -> GitHubResponse[list[WorkflowRun]]:
         """List runs for a workflow."""
         try:
             wf = self._repo(owner, repo).get_workflow(workflow_id)
@@ -531,8 +640,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def rerun_workflow_run(self, owner: str, repo: str, run_id: int) -> GitHubResponse[bool]:
+    def rerun_workflow_run(
+        self, owner: str, repo: str, run_id: int
+    ) -> GitHubResponse[bool]:
         """Re-run a workflow run."""
         try:
             run = self._repo(owner, repo).get_workflow_run(run_id)
@@ -541,8 +651,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def cancel_workflow_run(self, owner: str, repo: str, run_id: int) -> GitHubResponse[bool]:
+    def cancel_workflow_run(
+        self, owner: str, repo: str, run_id: int
+    ) -> GitHubResponse[bool]:
         """Cancel a workflow run."""
         try:
             run = self._repo(owner, repo).get_workflow_run(run_id)
@@ -551,19 +662,37 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_deployment(self, owner: str, repo: str, ref: str, task: str = "deploy", auto_merge: bool = False, required_contexts: Sequence[str] | None = None, environment: str | None = None, description: str | None = None) -> GitHubResponse[Deployment]:
+    def create_deployment(
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        task: str = "deploy",
+        auto_merge: bool = False,
+        required_contexts: Sequence[str] | None = None,
+        environment: str | None = None,
+        description: str | None = None,
+    ) -> GitHubResponse[Deployment]:
         """Create a deployment. (Requires suitable permissions)"""
         try:
             r = self._repo(owner, repo)
-            params = self._not_none(task=task, auto_merge=auto_merge, required_contexts=list(required_contexts) if required_contexts is not None else None, environment=environment, description=description)
+            params = self._not_none(
+                task=task,
+                auto_merge=auto_merge,
+                required_contexts=list(required_contexts)
+                if required_contexts is not None
+                else None,
+                environment=environment,
+                description=description,
+            )
             dep = r.create_deployment(ref=ref, **params)
             return GitHubResponse(success=True, data=dep)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_deployments(self, owner: str, repo: str) -> GitHubResponse[list[Deployment]]:
+    def list_deployments(
+        self, owner: str, repo: str
+    ) -> GitHubResponse[list[Deployment]]:
         """List deployments."""
         try:
             r = self._repo(owner, repo)
@@ -572,8 +701,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def get_deployment(self, owner: str, repo: str, deployment_id: int) -> GitHubResponse[Deployment]:
+    def get_deployment(
+        self, owner: str, repo: str, deployment_id: int
+    ) -> GitHubResponse[Deployment]:
         """Get a deployment."""
         try:
             r = self._repo(owner, repo)
@@ -582,17 +712,32 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_deployment_status(self, owner: str, repo: str, deployment_id: int, state: str, target_url: str | None = None, description: str | None = None, environment: str | None = None, environment_url: str | None = None, auto_inactive: bool | None = None) -> GitHubResponse[DeploymentStatus]:
+    def create_deployment_status(
+        self,
+        owner: str,
+        repo: str,
+        deployment_id: int,
+        state: str,
+        target_url: str | None = None,
+        description: str | None = None,
+        environment: str | None = None,
+        environment_url: str | None = None,
+        auto_inactive: bool | None = None,
+    ) -> GitHubResponse[DeploymentStatus]:
         """Create a deployment status."""
         try:
             dep = self._repo(owner, repo).get_deployment(deployment_id)
-            params = self._not_none(target_url=target_url, description=description, environment=environment, environment_url=environment_url, auto_inactive=auto_inactive)
+            params = self._not_none(
+                target_url=target_url,
+                description=description,
+                environment=environment,
+                environment_url=environment_url,
+                auto_inactive=auto_inactive,
+            )
             st = dep.create_status(state=state, **params)
             return GitHubResponse(success=True, data=st)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def get_commit(self, owner: str, repo: str, sha: str) -> GitHubResponse[Commit]:
         """Get a commit."""
@@ -602,17 +747,26 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_commit_status(self, owner: str, repo: str, sha: str, state: str, target_url: str | None = None, description: str | None = None, context: str | None = None) -> GitHubResponse[bool]:
+    def create_commit_status(
+        self,
+        owner: str,
+        repo: str,
+        sha: str,
+        state: str,
+        target_url: str | None = None,
+        description: str | None = None,
+        context: str | None = None,
+    ) -> GitHubResponse[bool]:
         """Create a commit status."""
         try:
             commit = self._repo(owner, repo).get_commit(sha=sha)
-            params = self._not_none(target_url=target_url, description=description, context=context)
+            params = self._not_none(
+                target_url=target_url, description=description, context=context
+            )
             commit.create_status(state=state, **params)
             return GitHubResponse(success=True, data=True)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def get_topics(self, owner: str, repo: str) -> GitHubResponse[list[str]]:
         """Get repository topics."""
@@ -623,8 +777,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def replace_topics(self, owner: str, repo: str, topics: Sequence[str]) -> GitHubResponse[list[str]]:
+    def replace_topics(
+        self, owner: str, repo: str, topics: Sequence[str]
+    ) -> GitHubResponse[list[str]]:
         """Replace repository topics."""
         try:
             r = self._repo(owner, repo)
@@ -633,26 +788,31 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def get_clones_traffic(self, owner: str, repo: str) -> GitHubResponse[dict[str, object]]:
+    def get_clones_traffic(
+        self, owner: str, repo: str
+    ) -> GitHubResponse[dict[str, object]]:
         """Get clone traffic."""
         try:
             r = self._repo(owner, repo)
             data = r.get_clones_traffic()
-            return GitHubResponse(success=True, data=data.__dict__ if hasattr(data, "__dict__") else data)
+            return GitHubResponse(
+                success=True, data=data.__dict__ if hasattr(data, "__dict__") else data
+            )
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def get_views_traffic(self, owner: str, repo: str) -> GitHubResponse[dict[str, object]]:
+    def get_views_traffic(
+        self, owner: str, repo: str
+    ) -> GitHubResponse[dict[str, object]]:
         """Get views traffic."""
         try:
             r = self._repo(owner, repo)
             data = r.get_views_traffic()
-            return GitHubResponse(success=True, data=data.__dict__ if hasattr(data, "__dict__") else data)
+            return GitHubResponse(
+                success=True, data=data.__dict__ if hasattr(data, "__dict__") else data
+            )
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def list_forks(self, owner: str, repo: str) -> GitHubResponse[list[Repository]]:
         """List forks."""
@@ -663,8 +823,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_fork(self, owner: str, repo: str, org: str | None = None) -> GitHubResponse[Repository]:
+    def create_fork(
+        self, owner: str, repo: str, org: str | None = None
+    ) -> GitHubResponse[Repository]:
         """Create a fork."""
         try:
             r = self._repo(owner, repo)
@@ -674,8 +835,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_contributors(self, owner: str, repo: str) -> GitHubResponse[list[NamedUser]]:
+    def list_contributors(
+        self, owner: str, repo: str
+    ) -> GitHubResponse[list[NamedUser]]:
         """List contributors."""
         try:
             r = self._repo(owner, repo)
@@ -683,7 +845,6 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=users)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def list_assignees(self, owner: str, repo: str) -> GitHubResponse[list[NamedUser]]:
         """List potential assignees."""
@@ -694,7 +855,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-    def list_pending_invitations(self, owner: str, repo: str) -> GitHubResponse[List[Invitation]]:
+    def list_pending_invitations(
+        self, owner: str, repo: str
+    ) -> GitHubResponse[list[Invitation]]:
         """List pending repo invitations."""
         try:
             r = self._repo(owner, repo)
@@ -703,8 +866,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def remove_invitation(self, owner: str, repo: str, invitation_id: int) -> GitHubResponse[bool]:
+    def remove_invitation(
+        self, owner: str, repo: str, invitation_id: int
+    ) -> GitHubResponse[bool]:
         """Remove a repo invitation."""
         try:
             r = self._repo(owner, repo)
@@ -713,9 +877,10 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
     # DependabotAlert not available in older PyGithub versions
-    def list_dependabot_alerts(self, owner: str, repo: str) -> GitHubResponse[List[object]]:
+    def list_dependabot_alerts(
+        self, owner: str, repo: str
+    ) -> GitHubResponse[list[object]]:
         """List Dependabot alerts for a repo."""
         try:
             r = self._repo(owner, repo)
@@ -724,9 +889,10 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
     # DependabotAlert not available in older PyGithub versions
-    def get_dependabot_alert(self, owner: str, repo: str, alert_number: int) -> GitHubResponse[object]:
+    def get_dependabot_alert(
+        self, owner: str, repo: str, alert_number: int
+    ) -> GitHubResponse[object]:
         """Get a single Dependabot alert."""
         try:
             r = self._repo(owner, repo)
@@ -735,8 +901,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_git_ref(self, owner: str, repo: str, ref: str, sha: str) -> GitHubResponse[GitRef]:
+    def create_git_ref(
+        self, owner: str, repo: str, ref: str, sha: str
+    ) -> GitHubResponse[GitRef]:
         """Create a git ref."""
         try:
             r = self._repo(owner, repo)
@@ -744,7 +911,6 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=gitref)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def get_git_ref(self, owner: str, repo: str, ref: str) -> GitHubResponse[GitRef]:
         """Get a git ref."""
@@ -755,7 +921,6 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
     def delete_git_ref(self, owner: str, repo: str, ref: str) -> GitHubResponse[bool]:
         """Delete a git ref."""
         try:
@@ -765,8 +930,9 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_git_blob(self, owner: str, repo: str, content: str, encoding: str = "utf-8") -> GitHubResponse[GitBlob]:
+    def create_git_blob(
+        self, owner: str, repo: str, content: str, encoding: str = "utf-8"
+    ) -> GitHubResponse[GitBlob]:
         """Create a git blob."""
         try:
             r = self._repo(owner, repo)
@@ -775,8 +941,13 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_git_tree(self, owner: str, repo: str, tree: list[tuple[str, str, str]], base_tree: str | None = None) -> GitHubResponse[GitTree]:
+    def create_git_tree(
+        self,
+        owner: str,
+        repo: str,
+        tree: list[tuple[str, str, str]],
+        base_tree: str | None = None,
+    ) -> GitHubResponse[GitTree]:
         """Create a git tree."""
         try:
             r = self._repo(owner, repo)
@@ -786,17 +957,26 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def create_git_tag(self, owner: str, repo: str, tag: str, message: str, object_sha: str, type: str, tagger: dict[str, str] | None = None) -> GitHubResponse[GitTag]:
+    def create_git_tag(
+        self,
+        owner: str,
+        repo: str,
+        tag: str,
+        message: str,
+        object_sha: str,
+        type: str,
+        tagger: dict[str, str] | None = None,
+    ) -> GitHubResponse[GitTag]:
         """Create a git tag object."""
         try:
             r = self._repo(owner, repo)
             params = self._not_none(tagger=tagger)
-            out = r.create_git_tag(tag=tag, message=message, object=object_sha, type=type, **params)
+            out = r.create_git_tag(
+                tag=tag, message=message, object=object_sha, type=type, **params
+            )
             return GitHubResponse(success=True, data=out)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def search_repositories(self, query: str) -> GitHubResponse[list[Repository]]:
         """Search repositories."""
@@ -806,7 +986,6 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
     def get_rate_limit(self) -> GitHubResponse[RateLimit]:
         """Get current rate limit."""
         try:
@@ -814,4 +993,3 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=limit)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-

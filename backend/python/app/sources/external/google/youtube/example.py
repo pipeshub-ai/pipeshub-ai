@@ -2,6 +2,7 @@
 """
 Example script to demonstrate how to use the Google Youtube API
 """
+
 import asyncio
 import logging
 
@@ -14,12 +15,19 @@ from app.sources.external.google.youtube.youtube import YouTubeDataSource
 
 async def main() -> None:
     # create configuration service client
-    etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(logger=logging.getLogger(__name__))
+    etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(
+        logger=logging.getLogger(__name__)
+    )
 
     # create configuration service
-    config_service = ConfigurationService(logger=logging.getLogger(__name__), key_value_store=etcd3_encrypted_key_value_store)
+    config_service = ConfigurationService(
+        logger=logging.getLogger(__name__),
+        key_value_store=etcd3_encrypted_key_value_store,
+    )
     # create graph db service
-    graph_db_service = await GraphDBFactory.create_service("arango", logger=logging.getLogger(__name__), config_service=config_service)
+    graph_db_service = await GraphDBFactory.create_service(
+        "arango", logger=logging.getLogger(__name__), config_service=config_service
+    )
     if not graph_db_service:
         raise Exception("Graph DB service not found")
     await graph_db_service.connect()
@@ -62,8 +70,9 @@ async def main() -> None:
         )
         for it in pl_page.get("items", []):
             # Prefer contentDetails.videoId when present; snippet.resourceId is a fallback
-            vid = it.get("contentDetails", {}).get("videoId") \
-                or it.get("snippet", {}).get("resourceId", {}).get("videoId")
+            vid = it.get("contentDetails", {}).get("videoId") or it.get(
+                "snippet", {}
+            ).get("resourceId", {}).get("videoId")
             if vid:
                 video_ids.append(vid)
 
@@ -75,9 +84,9 @@ async def main() -> None:
 
     # 3) (Optional) Get details/stats for those videos in batches of 50
     details = []
-    
+
     for i in range(0, len(video_ids), 50):
-        batch_ids = ",".join(video_ids[i:i+50])
+        batch_ids = ",".join(video_ids[i : i + 50])
         vres = await google_youtube_data_source.videos_list(
             part="snippet,contentDetails,statistics",
             id=batch_ids,
@@ -89,9 +98,7 @@ async def main() -> None:
         snippet = video.get("snippet", {})
         title = snippet.get("title", "No Title")
         desc = snippet.get("description", "No Description")
-        print(f"▶️ {title}\n{desc}\n{'-'*60}")
-
-
+        print(f"▶️ {title}\n{desc}\n{'-' * 60}")
 
 
 if __name__ == "__main__":

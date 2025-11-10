@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 class Calculator:
     """Calculator tool exposed to the agents"""
+
     def __init__(self) -> None:
         """Initialize the Calculator tool
         Args:
@@ -25,7 +26,15 @@ class Calculator:
         Returns:
             A list of supported operations
         """
-        return ["add", "subtract", "multiply", "divide", "power", "square root", "cube root"]
+        return [
+            "add",
+            "subtract",
+            "multiply",
+            "divide",
+            "power",
+            "square root",
+            "cube root",
+        ]
 
     @tool(
         app_name="calculator",
@@ -35,16 +44,16 @@ class Calculator:
                 name="a",
                 type=ParameterType.NUMBER,
                 description="The first number",
-                required=True
-                ),
+                required=True,
+            ),
             ToolParameter(
                 name="operation",
                 type=ParameterType.STRING,
                 description="Mathematical operation: 'sqrt' (square root), 'cbrt' (cube root)",
-                required=True
-                )
-            ]
-        )
+                required=True,
+            ),
+        ],
+    )
     def calculate_single_operand(self, a: float, operation: str) -> float:
         """Calculate the result of a mathematical operation
         Args:
@@ -53,13 +62,11 @@ class Calculator:
         Returns:
             The result of the mathematical operation
         """
-
         if operation in ("square root", "square root of", "sqrt"):
             return self._square_root(a)
-        elif operation in ("cube root", "cube root of", "cbrt"):
+        if operation in ("cube root", "cube root of", "cbrt"):
             return self._cube_root(a)
-        else:
-            raise ValueError(f"Invalid operation: {operation}")
+        raise ValueError(f"Invalid operation: {operation}")
 
     @tool(
         app_name="calculator",
@@ -69,22 +76,22 @@ class Calculator:
                 name="a",
                 type=ParameterType.NUMBER,
                 description="The first number",
-                required=True
-                ),
+                required=True,
+            ),
             ToolParameter(
                 name="b",
                 type=ParameterType.NUMBER,
                 description="The second number",
-                required=True
-                ),
+                required=True,
+            ),
             ToolParameter(
                 name="operation",
                 type=ParameterType.STRING,
                 description="Mathematical operation: 'add', 'subtract', 'multiply', 'divide', 'power'",
-                required=True
-                )
-            ]
-        )
+                required=True,
+            ),
+        ],
+    )
     def calculate_two_operands(self, a: float, b: float, operation: str) -> float:
         """Calculate the result of a mathematical operation
         Args:
@@ -94,19 +101,17 @@ class Calculator:
         Returns:
             The result of the mathematical operation
         """
-
         if operation in ("add", "addition", "plus", "sum", "+"):
             return self._add(a, b)
-        elif operation in ("subtract", "subtraction", "minus", "difference", "-"):
+        if operation in ("subtract", "subtraction", "minus", "difference", "-"):
             return self._subtract(a, b)
-        elif operation in ("multiply", "multiplication", "times", "product", "*"):
+        if operation in ("multiply", "multiplication", "times", "product", "*"):
             return self._multiply(a, b)
-        elif operation in ("divide", "division", "over", "quotient", "/"):
+        if operation in ("divide", "division", "over", "quotient", "/"):
             return self._divide(a, b)
-        elif operation in ("power", "exponent", "raised to the power of", "^"):
+        if operation in ("power", "exponent", "raised to the power of", "^"):
             return self._power(a, b)
-        else:
-            raise ValueError(f"Invalid operation: {operation}")
+        raise ValueError(f"Invalid operation: {operation}")
 
     def _add(self, a: float, b: float) -> float:
         """Add two numbers
@@ -158,7 +163,7 @@ class Calculator:
         Returns:
             The result of the power operation
         """
-        return a ** b
+        return a**b
 
     def _square_root(self, a: float) -> float:
         """Calculate the square root of a number
@@ -169,7 +174,7 @@ class Calculator:
         """
         if a < 0:
             raise ValueError("Cannot calculate the square root of a negative number")
-        return a ** 0.5
+        return a**0.5
 
     def _cube_root(self, a: float) -> float:
         """Calculate the cube root of a number
@@ -179,5 +184,5 @@ class Calculator:
             The result of the cube root operation
         """
         if a < 0:
-            return -(-a) ** (1/3)
-        return a ** (1/3)
+            return -((-a) ** (1 / 3))
+        return a ** (1 / 3)

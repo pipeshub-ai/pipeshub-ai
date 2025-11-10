@@ -1,9 +1,5 @@
-from typing import List, Optional
-
-
-def merge_scopes(defaults: List[str], overrides: Optional[List[str]] = None) -> List[str]:
-    """
-    Merge default OAuth scopes with user-provided overrides.
+def merge_scopes(defaults: list[str], overrides: list[str] | None = None) -> list[str]:
+    """Merge default OAuth scopes with user-provided overrides.
 
     - Always includes defaults
     - Adds overrides if provided
@@ -16,6 +12,7 @@ def merge_scopes(defaults: List[str], overrides: Optional[List[str]] = None) -> 
 
     Returns:
         List[str]: A combined list of unique scopes.
+
     """
     combined = [*defaults, *(overrides or [])]
     return list(dict.fromkeys(combined))  # preserves order while removing duplicates

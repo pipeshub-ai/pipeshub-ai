@@ -1,9 +1,8 @@
-
-
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import asdict
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
@@ -23,29 +22,37 @@ from app.sources.client.microsoft.microsoft import MSGraphClient
 # OneDrive-specific response wrapper
 class OneDriveResponse:
     """Standardized OneDrive API response wrapper."""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def __init__(self, success: bool, data: Optional[Dict[str, Any]] = None, error: Optional[str] = None, message: Optional[str] = None) -> None:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def __init__(
+        self,
+        success: bool,
+        data: dict[str, Any] | None = None,
+        error: str | None = None,
+        message: str | None = None,
+    ) -> None:
         self.success = success
         self.data = data
         self.error = error
         self.message = message
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
 
+
 # Set up logger
 logger = logging.getLogger(__name__)
 
+
 class OneDriveDataSource:
-    """
-    Basic Microsoft OneDrive API client with core endpoint coverage.
+    """Basic Microsoft OneDrive API client with core endpoint coverage.
 
     Features:
     - Basic OneDrive API coverage with 332 methods organized by operation type
@@ -115,25 +122,27 @@ class OneDriveDataSource:
         """Handle OneDrive API response with comprehensive error handling."""
         try:
             if response is None:
-                return OneDriveResponse(success=False, error="Empty response from OneDrive API")
+                return OneDriveResponse(
+                    success=False, error="Empty response from OneDrive API"
+                )
 
             success = True
             error_msg = None
 
             # Enhanced error response handling for OneDrive operations
-            if hasattr(response, 'error'):
+            if hasattr(response, "error"):
                 success = False
                 error_msg = str(response.error)
-            elif isinstance(response, dict) and 'error' in response:
+            elif isinstance(response, dict) and "error" in response:
                 success = False
-                error_info = response['error']
+                error_info = response["error"]
                 if isinstance(error_info, dict):
-                    error_code = error_info.get('code', 'Unknown')
-                    error_message = error_info.get('message', 'No message')
+                    error_code = error_info.get("code", "Unknown")
+                    error_message = error_info.get("message", "No message")
                     error_msg = f"{error_code}: {error_message}"
                 else:
                     error_msg = str(error_info)
-            elif hasattr(response, 'code') and hasattr(response, 'message'):
+            elif hasattr(response, "code") and hasattr(response, "message"):
                 success = False
                 error_msg = f"{response.code}: {response.message}"
 
@@ -146,7 +155,7 @@ class OneDriveDataSource:
             logger.error(f"Error handling OneDrive response: {e}")
             return OneDriveResponse(success=False, error=str(e))
 
-    def get_data_source(self) -> 'OneDriveDataSource':
+    def get_data_source(self) -> "OneDriveDataSource":
         """Get the underlying OneDrive client."""
         return self
 
@@ -154,18 +163,18 @@ class OneDriveDataSource:
 
     async def drives_drive_list_drive(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get entities from drives.
         OneDrive operation: GET /drives
@@ -218,29 +227,29 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
             response = await self.client.drives.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_delete_drive(
         self,
         drive_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete entity from drives.
         OneDrive operation: DELETE /drives/{drive-id}
@@ -292,30 +301,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).delete(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).delete(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_get_drive(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get entity from drives by key.
         OneDrive operation: GET /drives/{drive-id}
@@ -368,29 +379,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_update_drive(
         self,
         drive_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update entity in drives.
         OneDrive operation: PATCH /drives/{drive-id}
@@ -442,31 +455,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_bundles(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get bundles from drives.
         OneDrive operation: GET /drives/{drive-id}/bundles
@@ -520,31 +535,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).bundles.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).bundles.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_get_bundles(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get bundles from drives.
         OneDrive operation: GET /drives/{drive-id}/bundles/{driveItem-id}
@@ -598,31 +615,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).bundles.by_bundle_id(driveItem_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .bundles.by_bundle_id(driveItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """drive: sharedWithMe.
         OneDrive operation: GET /drives/{drive-id}/items
@@ -676,30 +697,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).items.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_delete_items(
         self,
         drive_id: str,
         driveItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property items for drives.
         OneDrive operation: DELETE /drives/{drive-id}/items/{driveItem-id}
@@ -752,31 +775,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_get_items(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}
@@ -830,30 +857,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_update_items(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property items in drives.
         OneDrive operation: PATCH /drives/{drive-id}/items/{driveItem-id}
@@ -906,30 +937,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_assign_sensitivity_label(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action assignSensitivityLabel.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/assignSensitivityLabel
@@ -982,30 +1017,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).assign_sensitivity_label.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .assign_sensitivity_label.post(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_checkin(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action checkin.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/checkin
@@ -1058,29 +1099,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).checkin.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .checkin.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_checkout(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action checkout.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/checkout
@@ -1132,32 +1177,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).checkout.post(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .checkout.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_list_children(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """List children of a driveItem.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/children
@@ -1212,14 +1261,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).children.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .children.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_get_children(
@@ -1227,17 +1280,17 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         driveItem_id1: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get children from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/children/{driveItem-id1}
@@ -1292,30 +1345,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).children.by_children_id(driveItem_id1).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .children.by_children_id(driveItem_id1)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_copy(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action copy.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/copy
@@ -1368,29 +1426,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).copy.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .copy.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_extract_sensitivity_labels(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action extractSensitivityLabels.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/extractSensitivityLabels
@@ -1442,29 +1504,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).extract_sensitivity_labels.post(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .extract_sensitivity_labels.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_follow(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action follow.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/follow
@@ -1516,14 +1582,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).follow.post(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .follow.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_get_activities_by_interval_ad27(
@@ -1533,18 +1603,18 @@ class OneDriveDataSource:
         startDateTime: str,
         endDateTime: str,
         interval: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getActivitiesByInterval.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/getActivitiesByInterval(startDateTime='{startDateTime}',endDateTime='{endDateTime}',interval='{interval}')
@@ -1602,31 +1672,40 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).get_activities_by_interval(start_date_time='{start_date_time}',end_date_time='{end_date_time}',interval='{interval}').get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .get_activities_by_interval(
+                    start_date_time="{start_date_time}",
+                    end_date_time="{end_date_time}",
+                    interval="{interval}",
+                )
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_get_last_modified_by_user(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get lastModifiedByUser from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/lastModifiedByUser
@@ -1680,32 +1759,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).last_modified_by_user.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .last_modified_by_user.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_last_modified_by_user_list_service_provisioning_errors(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/lastModifiedByUser/serviceProvisioningErrors
@@ -1760,31 +1843,37 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).last_modified_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .last_modified_by_user.service_provisioning_errors.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_get_list_item(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get listItem from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/listItem
@@ -1838,29 +1927,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).list_item.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .list_item.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_permanent_delete(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action permanentDelete.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/permanentDelete
@@ -1912,30 +2005,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).permanent_delete.post(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .permanent_delete.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_restore(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action restore.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/restore
@@ -1988,32 +2085,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).restore.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .restore.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_list_subscriptions(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get subscriptions from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/subscriptions
@@ -2068,14 +2169,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).subscriptions.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .subscriptions.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_delete_subscriptions(
@@ -2083,16 +2188,16 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         subscription_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property subscriptions for drives.
         OneDrive operation: DELETE /drives/{drive-id}/items/{driveItem-id}/subscriptions/{subscription-id}
@@ -2146,14 +2251,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).subscriptions.by_subscription_id(subscription_id).delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .subscriptions.by_subscription_id(subscription_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_get_subscriptions(
@@ -2161,17 +2271,17 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         subscription_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get subscriptions from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/subscriptions/{subscription-id}
@@ -2226,14 +2336,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).subscriptions.by_subscription_id(subscription_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .subscriptions.by_subscription_id(subscription_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_update_subscriptions(
@@ -2241,16 +2356,16 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         subscription_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property subscriptions in drives.
         OneDrive operation: PATCH /drives/{drive-id}/items/{driveItem-id}/subscriptions/{subscription-id}
@@ -2304,14 +2419,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).subscriptions.by_subscription_id(subscription_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .subscriptions.by_subscription_id(subscription_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_subscriptions_subscription_reauthorize(
@@ -2319,15 +2439,15 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         subscription_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action reauthorize.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/subscriptions/{subscription-id}/reauthorize
@@ -2380,29 +2500,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).subscriptions.by_subscription_id(subscription_id).reauthorize.post(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .subscriptions.by_subscription_id(subscription_id)
+                .reauthorize.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_unfollow(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action unfollow.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/unfollow
@@ -2454,32 +2579,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).unfollow.post(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .unfollow.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_list_versions(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get versions from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/versions
@@ -2534,14 +2663,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).versions.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .versions.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_delete_versions(
@@ -2549,16 +2682,16 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         driveItemVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property versions for drives.
         OneDrive operation: DELETE /drives/{drive-id}/items/{driveItem-id}/versions/{driveItemVersion-id}
@@ -2612,14 +2745,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).versions.by_version_id(driveItemVersion_id).delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .versions.by_version_id(driveItemVersion_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_get_versions(
@@ -2627,17 +2765,17 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         driveItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get versions from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/versions/{driveItemVersion-id}
@@ -2692,14 +2830,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).versions.by_version_id(driveItemVersion_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .versions.by_version_id(driveItemVersion_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_update_versions(
@@ -2707,16 +2850,16 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         driveItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property versions in drives.
         OneDrive operation: PATCH /drives/{drive-id}/items/{driveItem-id}/versions/{driveItemVersion-id}
@@ -2770,30 +2913,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).versions.by_version_id(driveItemVersion_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .versions.by_version_id(driveItemVersion_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_get_last_modified_by_user(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get lastModifiedByUser from drives.
         OneDrive operation: GET /drives/{drive-id}/lastModifiedByUser
@@ -2846,31 +2994,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).last_modified_by_user.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).last_modified_by_user.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_last_modified_by_user_list_service_provisioning_errors(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /drives/{drive-id}/lastModifiedByUser/serviceProvisioningErrors
@@ -2924,29 +3074,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).last_modified_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).last_modified_by_user.service_provisioning_errors.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_delete_list(
         self,
         drive_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property list for drives.
         OneDrive operation: DELETE /drives/{drive-id}/list
@@ -2998,30 +3152,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.delete(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).list.delete(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_get_list(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get list from drives.
         OneDrive operation: GET /drives/{drive-id}/list
@@ -3074,29 +3230,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).list.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_update_list(
         self,
         drive_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property list in drives.
         OneDrive operation: PATCH /drives/{drive-id}/list
@@ -3148,31 +3306,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.patch(body=request_body, request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).list.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_list_columns(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get columns from drives.
         OneDrive operation: GET /drives/{drive-id}/list/columns
@@ -3226,30 +3386,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.columns.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).list.columns.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_delete_columns(
         self,
         drive_id: str,
         columnDefinition_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property columns for drives.
         OneDrive operation: DELETE /drives/{drive-id}/list/columns/{columnDefinition-id}
@@ -3302,31 +3464,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.columns.by_column_id(columnDefinition_id).delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.columns.by_column_id(columnDefinition_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_get_columns(
         self,
         drive_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get columns from drives.
         OneDrive operation: GET /drives/{drive-id}/list/columns/{columnDefinition-id}
@@ -3380,30 +3546,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.columns.by_column_id(columnDefinition_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.columns.by_column_id(columnDefinition_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_update_columns(
         self,
         drive_id: str,
         columnDefinition_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property columns in drives.
         OneDrive operation: PATCH /drives/{drive-id}/list/columns/{columnDefinition-id}
@@ -3456,30 +3626,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.columns.by_column_id(columnDefinition_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.columns.by_column_id(columnDefinition_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_get_drive(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drive from drives.
         OneDrive operation: GET /drives/{drive-id}/list/drive
@@ -3532,31 +3706,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.drive.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).list.drive.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_list_items(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items
@@ -3610,30 +3786,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).list.items.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_delete_items(
         self,
         drive_id: str,
         listItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property items for drives.
         OneDrive operation: DELETE /drives/{drive-id}/list/items/{listItem-id}
@@ -3686,31 +3864,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_get_items(
         self,
         drive_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}
@@ -3764,30 +3946,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_update_items(
         self,
         drive_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property items in drives.
         OneDrive operation: PATCH /drives/{drive-id}/list/items/{listItem-id}
@@ -3840,32 +4026,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_list_document_set_versions(
         self,
         drive_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get documentSetVersions from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/documentSetVersions
@@ -3920,14 +4110,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).document_set_versions.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_delete_document_set_versions(
@@ -3935,16 +4129,16 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property documentSetVersions for drives.
         OneDrive operation: DELETE /drives/{drive-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -3998,14 +4192,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_get_document_set_versions(
@@ -4013,17 +4212,17 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get documentSetVersions from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -4078,14 +4277,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_update_document_set_versions(
@@ -4093,16 +4297,16 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property documentSetVersions in drives.
         OneDrive operation: PATCH /drives/{drive-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -4156,14 +4360,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_document_set_versions_delete_fields(
@@ -4171,16 +4380,16 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for drives.
         OneDrive operation: DELETE /drives/{drive-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -4234,14 +4443,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_document_set_versions_get_fields(
@@ -4249,17 +4463,17 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -4314,14 +4528,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_document_set_versions_update_fields(
@@ -4329,16 +4548,16 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in drives.
         OneDrive operation: PATCH /drives/{drive-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -4392,14 +4611,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_list_items_list_item_document_set_versions_document_set_version_restore(
@@ -4407,15 +4631,15 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action restore.
         OneDrive operation: POST /drives/{drive-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/restore
@@ -4468,31 +4692,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).restore.post(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .restore.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_get_drive_item(
         self,
         drive_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get driveItem from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/driveItem
@@ -4546,30 +4775,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).drive_item.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .drive_item.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_delete_fields(
         self,
         drive_id: str,
         listItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for drives.
         OneDrive operation: DELETE /drives/{drive-id}/list/items/{listItem-id}/fields
@@ -4622,31 +4855,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_get_fields(
         self,
         drive_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/fields
@@ -4700,30 +4937,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_update_fields(
         self,
         drive_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in drives.
         OneDrive operation: PATCH /drives/{drive-id}/list/items/{listItem-id}/fields
@@ -4776,32 +5017,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_list_items_list_item_get_activities_by_interval_4c35(
         self,
         drive_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getActivitiesByInterval.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/getActivitiesByInterval()
@@ -4856,14 +5101,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).get_activities_by_interval().get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .get_activities_by_interval()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_list_items_list_item_get_activities_by_interval_ad27(
@@ -4873,18 +5123,18 @@ class OneDriveDataSource:
         startDateTime: str,
         endDateTime: str,
         interval: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getActivitiesByInterval.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/getActivitiesByInterval(startDateTime='{startDateTime}',endDateTime='{endDateTime}',interval='{interval}')
@@ -4942,31 +5192,40 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).get_activities_by_interval(start_date_time='{start_date_time}',end_date_time='{end_date_time}',interval='{interval}').get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .get_activities_by_interval(
+                    start_date_time="{start_date_time}",
+                    end_date_time="{end_date_time}",
+                    interval="{interval}",
+                )
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_get_last_modified_by_user(
         self,
         drive_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get lastModifiedByUser from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/lastModifiedByUser
@@ -5020,32 +5279,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).last_modified_by_user.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .last_modified_by_user.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_last_modified_by_user_list_service_provisioning_errors(
         self,
         drive_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/lastModifiedByUser/serviceProvisioningErrors
@@ -5100,32 +5363,38 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).last_modified_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .last_modified_by_user.service_provisioning_errors.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_list_versions(
         self,
         drive_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get versions from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/versions
@@ -5180,14 +5449,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).versions.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_delete_versions(
@@ -5195,16 +5468,16 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property versions for drives.
         OneDrive operation: DELETE /drives/{drive-id}/list/items/{listItem-id}/versions/{listItemVersion-id}
@@ -5258,14 +5531,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_get_versions(
@@ -5273,17 +5551,17 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get versions from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/versions/{listItemVersion-id}
@@ -5338,14 +5616,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_update_versions(
@@ -5353,16 +5636,16 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property versions in drives.
         OneDrive operation: PATCH /drives/{drive-id}/list/items/{listItem-id}/versions/{listItemVersion-id}
@@ -5416,14 +5699,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_versions_delete_fields(
@@ -5431,16 +5719,16 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for drives.
         OneDrive operation: DELETE /drives/{drive-id}/list/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -5494,14 +5782,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_versions_get_fields(
@@ -5509,17 +5802,17 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -5574,14 +5867,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_versions_update_fields(
@@ -5589,16 +5887,16 @@ class OneDriveDataSource:
         drive_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in drives.
         OneDrive operation: PATCH /drives/{drive-id}/list/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -5652,30 +5950,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_get_last_modified_by_user(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get lastModifiedByUser from drives.
         OneDrive operation: GET /drives/{drive-id}/list/lastModifiedByUser
@@ -5728,31 +6031,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.last_modified_by_user.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).list.last_modified_by_user.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_last_modified_by_user_list_service_provisioning_errors(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /drives/{drive-id}/list/lastModifiedByUser/serviceProvisioningErrors
@@ -5806,31 +6111,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.last_modified_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).list.last_modified_by_user.service_provisioning_errors.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_list_operations(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get operations from drives.
         OneDrive operation: GET /drives/{drive-id}/list/operations
@@ -5884,30 +6193,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.operations.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).list.operations.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_delete_operations(
         self,
         drive_id: str,
         richLongRunningOperation_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property operations for drives.
         OneDrive operation: DELETE /drives/{drive-id}/list/operations/{richLongRunningOperation-id}
@@ -5960,31 +6271,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.operations.by_operation_id(richLongRunningOperation_id).delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.operations.by_operation_id(richLongRunningOperation_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_get_operations(
         self,
         drive_id: str,
         richLongRunningOperation_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get operations from drives.
         OneDrive operation: GET /drives/{drive-id}/list/operations/{richLongRunningOperation-id}
@@ -6038,30 +6353,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.operations.by_operation_id(richLongRunningOperation_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.operations.by_operation_id(richLongRunningOperation_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_update_operations(
         self,
         drive_id: str,
         richLongRunningOperation_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property operations in drives.
         OneDrive operation: PATCH /drives/{drive-id}/list/operations/{richLongRunningOperation-id}
@@ -6114,31 +6433,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.operations.by_operation_id(richLongRunningOperation_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.operations.by_operation_id(richLongRunningOperation_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_list_subscriptions(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get subscriptions from drives.
         OneDrive operation: GET /drives/{drive-id}/list/subscriptions
@@ -6192,30 +6515,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.subscriptions.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).list.subscriptions.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_delete_subscriptions(
         self,
         drive_id: str,
         subscription_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property subscriptions for drives.
         OneDrive operation: DELETE /drives/{drive-id}/list/subscriptions/{subscription-id}
@@ -6268,31 +6593,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.subscriptions.by_subscription_id(subscription_id).delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.subscriptions.by_subscription_id(subscription_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_get_subscriptions(
         self,
         drive_id: str,
         subscription_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get subscriptions from drives.
         OneDrive operation: GET /drives/{drive-id}/list/subscriptions/{subscription-id}
@@ -6346,30 +6675,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.subscriptions.by_subscription_id(subscription_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.subscriptions.by_subscription_id(subscription_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_update_subscriptions(
         self,
         drive_id: str,
         subscription_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property subscriptions in drives.
         OneDrive operation: PATCH /drives/{drive-id}/list/subscriptions/{subscription-id}
@@ -6422,29 +6755,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.subscriptions.by_subscription_id(subscription_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.subscriptions.by_subscription_id(subscription_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_list_subscriptions_subscription_reauthorize(
         self,
         drive_id: str,
         subscription_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action reauthorize.
         OneDrive operation: POST /drives/{drive-id}/list/subscriptions/{subscription-id}/reauthorize
@@ -6496,30 +6833,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.subscriptions.by_subscription_id(subscription_id).reauthorize.post(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.subscriptions.by_subscription_id(subscription_id)
+                .reauthorize.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_get_root(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get root from drives.
         OneDrive operation: GET /drives/{drive-id}/root
@@ -6572,31 +6913,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).root.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).root.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_special(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get special from drives.
         OneDrive operation: GET /drives/{drive-id}/special
@@ -6650,31 +6993,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).special.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).special.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_get_special(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get special from drives.
         OneDrive operation: GET /drives/{drive-id}/special/{driveItem-id}
@@ -6728,30 +7073,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).special.by_special_id(driveItem_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .special.by_special_id(driveItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_get_drive(
         self,
         group_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drive from groups.
         OneDrive operation: GET /groups/{group-id}/drive
@@ -6804,31 +7153,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).drive.get(request_configuration=config)
+            response = await self.client.groups.by_group_id(group_id).drive.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_list_drives(
         self,
         group_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from groups.
         OneDrive operation: GET /groups/{group-id}/drives
@@ -6882,31 +7233,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).drives.get(request_configuration=config)
+            response = await self.client.groups.by_group_id(group_id).drives.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_get_drives(
         self,
         group_id: str,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from groups.
         OneDrive operation: GET /groups/{group-id}/drives/{drive-id}
@@ -6960,31 +7313,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).drives.by_drive_id(drive_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .drives.by_drive_id(drive_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_get_photos(
         self,
         group_id: str,
         profilePhoto_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get photos from groups.
         OneDrive operation: GET /groups/{group-id}/photos/{profilePhoto-id}
@@ -7038,31 +7395,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).photos.by_photo_id(profilePhoto_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .photos.by_photo_id(profilePhoto_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_get_drive(
         self,
         group_id: str,
         site_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drive from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/drive
@@ -7116,32 +7477,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).drive.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .drive.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_list_drives(
         self,
         group_id: str,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/drives
@@ -7196,14 +7561,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).drives.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .drives.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_get_drives(
@@ -7211,17 +7580,17 @@ class OneDriveDataSource:
         group_id: str,
         site_id: str,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/drives/{drive-id}
@@ -7276,14 +7645,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).drives.by_drive_id(drive_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .drives.by_drive_id(drive_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_get_by_path_get_drive(
@@ -7291,17 +7665,17 @@ class OneDriveDataSource:
         group_id: str,
         site_id: str,
         path: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drive from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/getByPath(path='{path}')/drive
@@ -7356,14 +7730,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).get_by_path(path='{path}').drive.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .get_by_path(path="{path}")
+                .drive.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_get_by_path_list_drives(
@@ -7371,18 +7750,18 @@ class OneDriveDataSource:
         group_id: str,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/getByPath(path='{path}')/drives
@@ -7438,14 +7817,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).get_by_path(path='{path}').drives.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .get_by_path(path="{path}")
+                .drives.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_get_by_path_list_items(
@@ -7453,18 +7837,18 @@ class OneDriveDataSource:
         group_id: str,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/getByPath(path='{path}')/items
@@ -7520,32 +7904,37 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).get_by_path(path='{path}').items.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .get_by_path(path="{path}")
+                .items.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_list_items(
         self,
         group_id: str,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/items
@@ -7600,14 +7989,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).items.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .items.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_get_items(
@@ -7615,17 +8008,17 @@ class OneDriveDataSource:
         group_id: str,
         site_id: str,
         baseItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/items/{baseItem-id}
@@ -7680,14 +8073,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).items.by_drive_item_id(baseItem_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .items.by_drive_item_id(baseItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_get_drive(
@@ -7695,17 +8093,17 @@ class OneDriveDataSource:
         group_id: str,
         site_id: str,
         list_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drive from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/drive
@@ -7760,14 +8158,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).drive.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .drive.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_list_items(
@@ -7775,18 +8178,18 @@ class OneDriveDataSource:
         group_id: str,
         site_id: str,
         list_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items
@@ -7842,14 +8245,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_delete_items(
@@ -7858,16 +8266,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property items for groups.
         OneDrive operation: DELETE /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}
@@ -7922,14 +8330,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_get_items(
@@ -7938,17 +8352,17 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}
@@ -8004,14 +8418,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_update_items(
@@ -8020,16 +8440,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property items in groups.
         OneDrive operation: PATCH /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}
@@ -8084,14 +8504,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_list_document_set_versions(
@@ -8100,18 +8526,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get documentSetVersions from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions
@@ -8168,14 +8594,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_delete_document_set_versions(
@@ -8185,16 +8617,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property documentSetVersions for groups.
         OneDrive operation: DELETE /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -8250,14 +8682,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_get_document_set_versions(
@@ -8267,17 +8706,17 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get documentSetVersions from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -8334,14 +8773,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_update_document_set_versions(
@@ -8351,16 +8797,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property documentSetVersions in groups.
         OneDrive operation: PATCH /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -8416,14 +8862,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_document_set_versions_delete_fields(
@@ -8433,16 +8886,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for groups.
         OneDrive operation: DELETE /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -8498,14 +8951,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_document_set_versions_get_fields(
@@ -8515,17 +8975,17 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -8582,14 +9042,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_document_set_versions_update_fields(
@@ -8599,16 +9066,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in groups.
         OneDrive operation: PATCH /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -8664,14 +9131,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_group_sites_site_lists_list_items_list_item_document_set_versions_document_set_version_restore(
@@ -8681,15 +9155,15 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action restore.
         OneDrive operation: POST /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/restore
@@ -8744,14 +9218,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).restore.post(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .restore.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_get_drive_item(
@@ -8760,17 +9241,17 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get driveItem from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/driveItem
@@ -8826,14 +9307,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).drive_item.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .drive_item.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_delete_fields(
@@ -8842,16 +9329,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for groups.
         OneDrive operation: DELETE /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/fields
@@ -8906,14 +9393,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_get_fields(
@@ -8922,17 +9415,17 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/fields
@@ -8988,14 +9481,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_update_fields(
@@ -9004,16 +9503,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in groups.
         OneDrive operation: PATCH /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/fields
@@ -9068,14 +9567,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_group_sites_site_lists_list_items_list_item_get_activities_by_interval_4c35(
@@ -9084,18 +9589,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getActivitiesByInterval.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/getActivitiesByInterval()
@@ -9152,14 +9657,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).get_activities_by_interval().get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .get_activities_by_interval()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_group_sites_site_lists_list_items_list_item_get_activities_by_interval_ad27(
@@ -9171,18 +9683,18 @@ class OneDriveDataSource:
         startDateTime: str,
         endDateTime: str,
         interval: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getActivitiesByInterval.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/getActivitiesByInterval(startDateTime='{startDateTime}',endDateTime='{endDateTime}',interval='{interval}')
@@ -9242,14 +9754,25 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).get_activities_by_interval(start_date_time='{start_date_time}',end_date_time='{end_date_time}',interval='{interval}').get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .get_activities_by_interval(
+                    start_date_time="{start_date_time}",
+                    end_date_time="{end_date_time}",
+                    interval="{interval}",
+                )
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_get_last_modified_by_user(
@@ -9258,17 +9781,17 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get lastModifiedByUser from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/lastModifiedByUser
@@ -9324,14 +9847,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).last_modified_by_user.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .last_modified_by_user.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_last_modified_by_user_list_service_provisioning_errors(
@@ -9340,18 +9869,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/lastModifiedByUser/serviceProvisioningErrors
@@ -9408,14 +9937,22 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).last_modified_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .last_modified_by_user.service_provisioning_errors.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_list_versions(
@@ -9424,18 +9961,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get versions from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions
@@ -9492,14 +10029,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_delete_versions(
@@ -9509,16 +10052,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property versions for groups.
         OneDrive operation: DELETE /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}
@@ -9574,14 +10117,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_get_versions(
@@ -9591,17 +10141,17 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get versions from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}
@@ -9658,14 +10208,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_update_versions(
@@ -9675,16 +10232,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property versions in groups.
         OneDrive operation: PATCH /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}
@@ -9740,14 +10297,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_versions_delete_fields(
@@ -9757,16 +10321,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for groups.
         OneDrive operation: DELETE /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -9822,14 +10386,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_versions_get_fields(
@@ -9839,17 +10410,17 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -9906,14 +10477,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_versions_update_fields(
@@ -9923,16 +10501,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in groups.
         OneDrive operation: PATCH /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -9988,31 +10566,38 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_team_channels_get_files_folder(
         self,
         group_id: str,
         channel_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get filesFolder from groups.
         OneDrive operation: GET /groups/{group-id}/team/channels/{channel-id}/filesFolder
@@ -10066,30 +10651,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).team.channels.by_channel_id(channel_id).files_folder.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .team.channels.by_channel_id(channel_id)
+                .files_folder.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_team_primary_channel_get_files_folder(
         self,
         group_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get filesFolder from groups.
         OneDrive operation: GET /groups/{group-id}/team/primaryChannel/filesFolder
@@ -10142,30 +10731,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).team.primary_channel.files_folder.get(request_configuration=config)
+            response = await self.client.groups.by_group_id(
+                group_id
+            ).team.primary_channel.files_folder.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def identity_protection_risky_service_principals_delete_history(
         self,
         riskyServicePrincipal_id: str,
         riskyServicePrincipalHistoryItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property history for identityProtection.
         OneDrive operation: DELETE /identityProtection/riskyServicePrincipals/{riskyServicePrincipal-id}/history/{riskyServicePrincipalHistoryItem-id}
@@ -10218,31 +10809,37 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.identity_protection.risky_service_principals.by_riskyServicePrincipal_id(riskyServicePrincipal_id).history.by_history_id(riskyServicePrincipalHistoryItem_id).delete(request_configuration=config)
+            response = (
+                await self.client.identity_protection.risky_service_principals.by_riskyServicePrincipal_id(
+                    riskyServicePrincipal_id
+                )
+                .history.by_history_id(riskyServicePrincipalHistoryItem_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def identity_protection_risky_service_principals_get_history(
         self,
         riskyServicePrincipal_id: str,
         riskyServicePrincipalHistoryItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get history from identityProtection.
         OneDrive operation: GET /identityProtection/riskyServicePrincipals/{riskyServicePrincipal-id}/history/{riskyServicePrincipalHistoryItem-id}
@@ -10296,30 +10893,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.identity_protection.risky_service_principals.by_riskyServicePrincipal_id(riskyServicePrincipal_id).history.by_history_id(riskyServicePrincipalHistoryItem_id).get(request_configuration=config)
+            response = (
+                await self.client.identity_protection.risky_service_principals.by_riskyServicePrincipal_id(
+                    riskyServicePrincipal_id
+                )
+                .history.by_history_id(riskyServicePrincipalHistoryItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def identity_protection_risky_service_principals_update_history(
         self,
         riskyServicePrincipal_id: str,
         riskyServicePrincipalHistoryItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property history in identityProtection.
         OneDrive operation: PATCH /identityProtection/riskyServicePrincipals/{riskyServicePrincipal-id}/history/{riskyServicePrincipalHistoryItem-id}
@@ -10372,30 +10975,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.identity_protection.risky_service_principals.by_riskyServicePrincipal_id(riskyServicePrincipal_id).history.by_history_id(riskyServicePrincipalHistoryItem_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.identity_protection.risky_service_principals.by_riskyServicePrincipal_id(
+                    riskyServicePrincipal_id
+                )
+                .history.by_history_id(riskyServicePrincipalHistoryItem_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def identity_protection_risky_users_delete_history(
         self,
         riskyUser_id: str,
         riskyUserHistoryItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property history for identityProtection.
         OneDrive operation: DELETE /identityProtection/riskyUsers/{riskyUser-id}/history/{riskyUserHistoryItem-id}
@@ -10448,31 +11057,37 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.identity_protection.risky_users.by_riskyUser_id(riskyUser_id).history.by_history_id(riskyUserHistoryItem_id).delete(request_configuration=config)
+            response = (
+                await self.client.identity_protection.risky_users.by_riskyUser_id(
+                    riskyUser_id
+                )
+                .history.by_history_id(riskyUserHistoryItem_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def identity_protection_risky_users_get_history(
         self,
         riskyUser_id: str,
         riskyUserHistoryItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get history from identityProtection.
         OneDrive operation: GET /identityProtection/riskyUsers/{riskyUser-id}/history/{riskyUserHistoryItem-id}
@@ -10526,30 +11141,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.identity_protection.risky_users.by_riskyUser_id(riskyUser_id).history.by_history_id(riskyUserHistoryItem_id).get(request_configuration=config)
+            response = (
+                await self.client.identity_protection.risky_users.by_riskyUser_id(
+                    riskyUser_id
+                )
+                .history.by_history_id(riskyUserHistoryItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def identity_protection_risky_users_update_history(
         self,
         riskyUser_id: str,
         riskyUserHistoryItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property history in identityProtection.
         OneDrive operation: PATCH /identityProtection/riskyUsers/{riskyUser-id}/history/{riskyUserHistoryItem-id}
@@ -10602,31 +11223,37 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.identity_protection.risky_users.by_riskyUser_id(riskyUser_id).history.by_history_id(riskyUserHistoryItem_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.identity_protection.risky_users.by_riskyUser_id(
+                    riskyUser_id
+                )
+                .history.by_history_id(riskyUserHistoryItem_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_activities_list_history_items(
         self,
         userActivity_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get historyItems from me.
         OneDrive operation: GET /me/activities/{userActivity-id}/historyItems
@@ -10680,30 +11307,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.activities.by_activitie_id(userActivity_id).history_items.get(request_configuration=config)
+            response = await self.client.me.activities.by_activitie_id(
+                userActivity_id
+            ).history_items.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_activities_delete_history_items(
         self,
         userActivity_id: str,
         activityHistoryItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property historyItems for me.
         OneDrive operation: DELETE /me/activities/{userActivity-id}/historyItems/{activityHistoryItem-id}
@@ -10756,31 +11385,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.activities.by_activitie_id(userActivity_id).history_items.by_historyItem_id(activityHistoryItem_id).delete(request_configuration=config)
+            response = (
+                await self.client.me.activities.by_activitie_id(userActivity_id)
+                .history_items.by_historyItem_id(activityHistoryItem_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_activities_get_history_items(
         self,
         userActivity_id: str,
         activityHistoryItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get historyItems from me.
         OneDrive operation: GET /me/activities/{userActivity-id}/historyItems/{activityHistoryItem-id}
@@ -10834,30 +11467,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.activities.by_activitie_id(userActivity_id).history_items.by_historyItem_id(activityHistoryItem_id).get(request_configuration=config)
+            response = (
+                await self.client.me.activities.by_activitie_id(userActivity_id)
+                .history_items.by_historyItem_id(activityHistoryItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_activities_update_history_items(
         self,
         userActivity_id: str,
         activityHistoryItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete an activityHistoryItem.
         OneDrive operation: PATCH /me/activities/{userActivity-id}/historyItems/{activityHistoryItem-id}
@@ -10910,31 +11547,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.activities.by_activitie_id(userActivity_id).history_items.by_historyItem_id(activityHistoryItem_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.activities.by_activitie_id(userActivity_id)
+                .history_items.by_historyItem_id(activityHistoryItem_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_activities_history_items_get_activity(
         self,
         userActivity_id: str,
         activityHistoryItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get activity from me.
         OneDrive operation: GET /me/activities/{userActivity-id}/historyItems/{activityHistoryItem-id}/activity
@@ -10988,30 +11629,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.activities.by_activitie_id(userActivity_id).history_items.by_historyItem_id(activityHistoryItem_id).activity.get(request_configuration=config)
+            response = (
+                await self.client.me.activities.by_activitie_id(userActivity_id)
+                .history_items.by_historyItem_id(activityHistoryItem_id)
+                .activity.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_cloud_clipboard_list_items(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from me.
         OneDrive operation: GET /me/cloudClipboard/items
@@ -11064,29 +11709,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.cloud_clipboard.items.get(request_configuration=config)
+            response = await self.client.me.cloud_clipboard.items.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_cloud_clipboard_delete_items(
         self,
         cloudClipboardItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property items for me.
         OneDrive operation: DELETE /me/cloudClipboard/items/{cloudClipboardItem-id}
@@ -11138,30 +11785,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.cloud_clipboard.items.by_drive_item_id(cloudClipboardItem_id).delete(request_configuration=config)
+            response = await self.client.me.cloud_clipboard.items.by_drive_item_id(
+                cloudClipboardItem_id
+            ).delete(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_cloud_clipboard_get_items(
         self,
         cloudClipboardItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from me.
         OneDrive operation: GET /me/cloudClipboard/items/{cloudClipboardItem-id}
@@ -11214,29 +11863,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.cloud_clipboard.items.by_drive_item_id(cloudClipboardItem_id).get(request_configuration=config)
+            response = await self.client.me.cloud_clipboard.items.by_drive_item_id(
+                cloudClipboardItem_id
+            ).get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_cloud_clipboard_update_items(
         self,
         cloudClipboardItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property items in me.
         OneDrive operation: PATCH /me/cloudClipboard/items/{cloudClipboardItem-id}
@@ -11288,29 +11939,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.cloud_clipboard.items.by_drive_item_id(cloudClipboardItem_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.me.cloud_clipboard.items.by_drive_item_id(
+                cloudClipboardItem_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_get_drive(
         self,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get Drive.
         OneDrive operation: GET /me/drive
@@ -11362,30 +12015,30 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
             response = await self.client.me.drive.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_list_drives(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """List available drives.
         OneDrive operation: GET /me/drives
@@ -11438,30 +12091,30 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
             response = await self.client.me.drives.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_get_drives(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from me.
         OneDrive operation: GET /me/drives/{drive-id}
@@ -11514,31 +12167,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.drives.by_drive_id(drive_id).get(request_configuration=config)
+            response = await self.client.me.drives.by_drive_id(drive_id).get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_joined_teams_channels_get_files_folder(
         self,
         team_id: str,
         channel_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get filesFolder from me.
         OneDrive operation: GET /me/joinedTeams/{team-id}/channels/{channel-id}/filesFolder
@@ -11592,30 +12247,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.joined_teams.by_joinedTeam_id(team_id).channels.by_channel_id(channel_id).files_folder.get(request_configuration=config)
+            response = (
+                await self.client.me.joined_teams.by_joinedTeam_id(team_id)
+                .channels.by_channel_id(channel_id)
+                .files_folder.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_joined_teams_primary_channel_get_files_folder(
         self,
         team_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get filesFolder from me.
         OneDrive operation: GET /me/joinedTeams/{team-id}/primaryChannel/filesFolder
@@ -11668,30 +12327,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.joined_teams.by_joinedTeam_id(team_id).primary_channel.files_folder.get(request_configuration=config)
+            response = await self.client.me.joined_teams.by_joinedTeam_id(
+                team_id
+            ).primary_channel.files_folder.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_get_photos(
         self,
         profilePhoto_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get photos from me.
         OneDrive operation: GET /me/photos/{profilePhoto-id}
@@ -11744,28 +12405,30 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.photos.by_photo_id(profilePhoto_id).get(request_configuration=config)
+            response = await self.client.me.photos.by_photo_id(profilePhoto_id).get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def reports_get_one_drive_activity_user_detail_77b1(
         self,
         date: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getOneDriveActivityUserDetail.
         OneDrive operation: GET /reports/getOneDriveActivityUserDetail(date={date})
@@ -11816,28 +12479,30 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.reports.get_one_drive_activity_user_detail(date={date}).get(request_configuration=config)
+            response = await self.client.reports.get_one_drive_activity_user_detail(
+                date={date}
+            ).get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def reports_get_one_drive_activity_user_detail_657c(
         self,
         period: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getOneDriveActivityUserDetail.
         OneDrive operation: GET /reports/getOneDriveActivityUserDetail(period='{period}')
@@ -11888,30 +12553,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.reports.get_one_drive_activity_user_detail(period='{period}').get(request_configuration=config)
+            response = await self.client.reports.get_one_drive_activity_user_detail(
+                period="{period}"
+            ).get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_get_drive(
         self,
         site_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drive from sites.
         OneDrive operation: GET /sites/{site-id}/drive
@@ -11964,31 +12631,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).drive.get(request_configuration=config)
+            response = await self.client.sites.by_site_id(site_id).drive.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_list_drives(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from sites.
         OneDrive operation: GET /sites/{site-id}/drives
@@ -12042,31 +12711,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).drives.get(request_configuration=config)
+            response = await self.client.sites.by_site_id(site_id).drives.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_get_drives(
         self,
         site_id: str,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from sites.
         OneDrive operation: GET /sites/{site-id}/drives/{drive-id}
@@ -12120,31 +12791,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).drives.by_drive_id(drive_id).get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .drives.by_drive_id(drive_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_get_by_path_get_drive(
         self,
         site_id: str,
         path: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drive from sites.
         OneDrive operation: GET /sites/{site-id}/getByPath(path='{path}')/drive
@@ -12198,32 +12873,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).get_by_path(path='{path}').drive.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .get_by_path(path="{path}")
+                .drive.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_get_by_path_list_drives(
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from sites.
         OneDrive operation: GET /sites/{site-id}/getByPath(path='{path}')/drives
@@ -12278,32 +12957,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).get_by_path(path='{path}').drives.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .get_by_path(path="{path}")
+                .drives.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_get_by_path_list_items(
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from sites.
         OneDrive operation: GET /sites/{site-id}/getByPath(path='{path}')/items
@@ -12358,31 +13041,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).get_by_path(path='{path}').items.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .get_by_path(path="{path}")
+                .items.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_list_items(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from sites.
         OneDrive operation: GET /sites/{site-id}/items
@@ -12436,31 +13123,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).items.get(request_configuration=config)
+            response = await self.client.sites.by_site_id(site_id).items.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_get_items(
         self,
         site_id: str,
         baseItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from sites.
         OneDrive operation: GET /sites/{site-id}/items/{baseItem-id}
@@ -12514,31 +13203,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).items.by_drive_item_id(baseItem_id).get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .items.by_drive_item_id(baseItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_get_drive(
         self,
         site_id: str,
         list_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drive from sites.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/drive
@@ -12592,32 +13285,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).drive.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .drive.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_list_items(
         self,
         site_id: str,
         list_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """List items.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items
@@ -12672,14 +13369,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_delete_items(
@@ -12687,16 +13388,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete an item from a list.
         OneDrive operation: DELETE /sites/{site-id}/lists/{list-id}/items/{listItem-id}
@@ -12750,14 +13451,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).delete(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_get_items(
@@ -12765,17 +13471,17 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get listItem.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}
@@ -12830,14 +13536,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_update_items(
@@ -12845,16 +13556,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property items in sites.
         OneDrive operation: PATCH /sites/{site-id}/lists/{list-id}/items/{listItem-id}
@@ -12908,14 +13619,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_list_document_set_versions(
@@ -12923,18 +13639,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """List documentSetVersions.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions
@@ -12990,14 +13706,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_delete_document_set_versions(
@@ -13006,16 +13727,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete documentSetVersion.
         OneDrive operation: DELETE /sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -13070,14 +13791,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).delete(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_get_document_set_versions(
@@ -13086,17 +13813,17 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get documentSetVersion.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -13152,14 +13879,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_update_document_set_versions(
@@ -13168,16 +13901,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property documentSetVersions in sites.
         OneDrive operation: PATCH /sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -13232,14 +13965,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_document_set_versions_delete_fields(
@@ -13248,16 +13987,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for sites.
         OneDrive operation: DELETE /sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -13312,14 +14051,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_document_set_versions_get_fields(
@@ -13328,17 +14073,17 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from sites.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -13394,14 +14139,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_document_set_versions_update_fields(
@@ -13410,16 +14161,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in sites.
         OneDrive operation: PATCH /sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -13474,14 +14225,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_site_lists_list_items_list_item_document_set_versions_document_set_version_restore(
@@ -13490,15 +14247,15 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action restore.
         OneDrive operation: POST /sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/restore
@@ -13552,14 +14309,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).restore.post(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .restore.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_get_drive_item(
@@ -13567,17 +14330,17 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get driveItem from sites.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/driveItem
@@ -13632,14 +14395,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).drive_item.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .drive_item.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_delete_fields(
@@ -13647,16 +14415,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for sites.
         OneDrive operation: DELETE /sites/{site-id}/lists/{list-id}/items/{listItem-id}/fields
@@ -13710,14 +14478,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_get_fields(
@@ -13725,17 +14498,17 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from sites.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/fields
@@ -13790,14 +14563,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_update_fields(
@@ -13805,16 +14583,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update listItem.
         OneDrive operation: PATCH /sites/{site-id}/lists/{list-id}/items/{listItem-id}/fields
@@ -13868,14 +14646,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_site_lists_list_items_list_item_get_activities_by_interval_4c35(
@@ -13883,18 +14666,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getActivitiesByInterval.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/getActivitiesByInterval()
@@ -13950,14 +14733,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).get_activities_by_interval().get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .get_activities_by_interval()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_site_lists_list_items_list_item_get_activities_by_interval_ad27(
@@ -13968,18 +14757,18 @@ class OneDriveDataSource:
         startDateTime: str,
         endDateTime: str,
         interval: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getActivitiesByInterval.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/getActivitiesByInterval(startDateTime='{startDateTime}',endDateTime='{endDateTime}',interval='{interval}')
@@ -14038,14 +14827,24 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).get_activities_by_interval(start_date_time='{start_date_time}',end_date_time='{end_date_time}',interval='{interval}').get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .get_activities_by_interval(
+                    start_date_time="{start_date_time}",
+                    end_date_time="{end_date_time}",
+                    interval="{interval}",
+                )
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_get_last_modified_by_user(
@@ -14053,17 +14852,17 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get lastModifiedByUser from sites.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/lastModifiedByUser
@@ -14118,14 +14917,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).last_modified_by_user.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .last_modified_by_user.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_last_modified_by_user_list_service_provisioning_errors(
@@ -14133,18 +14937,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/lastModifiedByUser/serviceProvisioningErrors
@@ -14200,14 +15004,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).last_modified_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .last_modified_by_user.service_provisioning_errors.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_delete_versions(
@@ -14216,16 +15027,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property versions for sites.
         OneDrive operation: DELETE /sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}
@@ -14280,14 +15091,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).delete(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_get_versions(
@@ -14296,17 +15113,17 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get a ListItemVersion resource.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}
@@ -14362,14 +15179,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_update_versions(
@@ -14378,16 +15201,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property versions in sites.
         OneDrive operation: PATCH /sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}
@@ -14442,14 +15265,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_versions_delete_fields(
@@ -14458,16 +15287,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for sites.
         OneDrive operation: DELETE /sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -14522,14 +15351,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_versions_get_fields(
@@ -14538,17 +15373,17 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from sites.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -14604,14 +15439,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_versions_update_fields(
@@ -14620,16 +15461,16 @@ class OneDriveDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in sites.
         OneDrive operation: PATCH /sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -14684,31 +15525,37 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def teams_channels_get_files_folder(
         self,
         team_id: str,
         channel_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get filesFolder.
         OneDrive operation: GET /teams/{team-id}/channels/{channel-id}/filesFolder
@@ -14762,30 +15609,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.teams.by_team_id(team_id).channels.by_channel_id(channel_id).files_folder.get(request_configuration=config)
+            response = (
+                await self.client.teams.by_team_id(team_id)
+                .channels.by_channel_id(channel_id)
+                .files_folder.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def teams_primary_channel_get_files_folder(
         self,
         team_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get filesFolder from teams.
         OneDrive operation: GET /teams/{team-id}/primaryChannel/filesFolder
@@ -14838,31 +15689,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.teams.by_team_id(team_id).primary_channel.files_folder.get(request_configuration=config)
+            response = await self.client.teams.by_team_id(
+                team_id
+            ).primary_channel.files_folder.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def teamwork_deleted_teams_channels_get_files_folder(
         self,
         deletedTeam_id: str,
         channel_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get filesFolder from teamwork.
         OneDrive operation: GET /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/filesFolder
@@ -14916,32 +15769,38 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.teamwork.deleted_teams.by_deletedTeam_id(deletedTeam_id).channels.by_channel_id(channel_id).files_folder.get(request_configuration=config)
+            response = (
+                await self.client.teamwork.deleted_teams.by_deletedTeam_id(
+                    deletedTeam_id
+                )
+                .channels.by_channel_id(channel_id)
+                .files_folder.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_activities_list_history_items(
         self,
         user_id: str,
         userActivity_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get historyItems from users.
         OneDrive operation: GET /users/{user-id}/activities/{userActivity-id}/historyItems
@@ -14996,14 +15855,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).activities.by_activitie_id(userActivity_id).history_items.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .activities.by_activitie_id(userActivity_id)
+                .history_items.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_activities_delete_history_items(
@@ -15011,16 +15874,16 @@ class OneDriveDataSource:
         user_id: str,
         userActivity_id: str,
         activityHistoryItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property historyItems for users.
         OneDrive operation: DELETE /users/{user-id}/activities/{userActivity-id}/historyItems/{activityHistoryItem-id}
@@ -15074,14 +15937,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).activities.by_activitie_id(userActivity_id).history_items.by_historyItem_id(activityHistoryItem_id).delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .activities.by_activitie_id(userActivity_id)
+                .history_items.by_historyItem_id(activityHistoryItem_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_activities_get_history_items(
@@ -15089,17 +15957,17 @@ class OneDriveDataSource:
         user_id: str,
         userActivity_id: str,
         activityHistoryItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get historyItems from users.
         OneDrive operation: GET /users/{user-id}/activities/{userActivity-id}/historyItems/{activityHistoryItem-id}
@@ -15154,14 +16022,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).activities.by_activitie_id(userActivity_id).history_items.by_historyItem_id(activityHistoryItem_id).get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .activities.by_activitie_id(userActivity_id)
+                .history_items.by_historyItem_id(activityHistoryItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_activities_update_history_items(
@@ -15169,16 +16042,16 @@ class OneDriveDataSource:
         user_id: str,
         userActivity_id: str,
         activityHistoryItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property historyItems in users.
         OneDrive operation: PATCH /users/{user-id}/activities/{userActivity-id}/historyItems/{activityHistoryItem-id}
@@ -15232,14 +16105,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).activities.by_activitie_id(userActivity_id).history_items.by_historyItem_id(activityHistoryItem_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .activities.by_activitie_id(userActivity_id)
+                .history_items.by_historyItem_id(activityHistoryItem_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_activities_history_items_get_activity(
@@ -15247,17 +16125,17 @@ class OneDriveDataSource:
         user_id: str,
         userActivity_id: str,
         activityHistoryItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get activity from users.
         OneDrive operation: GET /users/{user-id}/activities/{userActivity-id}/historyItems/{activityHistoryItem-id}/activity
@@ -15312,31 +16190,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).activities.by_activitie_id(userActivity_id).history_items.by_historyItem_id(activityHistoryItem_id).activity.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .activities.by_activitie_id(userActivity_id)
+                .history_items.by_historyItem_id(activityHistoryItem_id)
+                .activity.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_cloud_clipboard_list_items(
         self,
         user_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from users.
         OneDrive operation: GET /users/{user-id}/cloudClipboard/items
@@ -15390,30 +16273,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).cloud_clipboard.items.get(request_configuration=config)
+            response = await self.client.users.by_user_id(
+                user_id
+            ).cloud_clipboard.items.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_cloud_clipboard_delete_items(
         self,
         user_id: str,
         cloudClipboardItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property items for users.
         OneDrive operation: DELETE /users/{user-id}/cloudClipboard/items/{cloudClipboardItem-id}
@@ -15466,31 +16351,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).cloud_clipboard.items.by_drive_item_id(cloudClipboardItem_id).delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .cloud_clipboard.items.by_drive_item_id(cloudClipboardItem_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_cloud_clipboard_get_items(
         self,
         user_id: str,
         cloudClipboardItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from users.
         OneDrive operation: GET /users/{user-id}/cloudClipboard/items/{cloudClipboardItem-id}
@@ -15544,30 +16433,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).cloud_clipboard.items.by_drive_item_id(cloudClipboardItem_id).get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .cloud_clipboard.items.by_drive_item_id(cloudClipboardItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_cloud_clipboard_update_items(
         self,
         user_id: str,
         cloudClipboardItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property items in users.
         OneDrive operation: PATCH /users/{user-id}/cloudClipboard/items/{cloudClipboardItem-id}
@@ -15620,30 +16513,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).cloud_clipboard.items.by_drive_item_id(cloudClipboardItem_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .cloud_clipboard.items.by_drive_item_id(cloudClipboardItem_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_get_drive(
         self,
         user_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drive from users.
         OneDrive operation: GET /users/{user-id}/drive
@@ -15696,31 +16593,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).drive.get(request_configuration=config)
+            response = await self.client.users.by_user_id(user_id).drive.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_list_drives(
         self,
         user_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from users.
         OneDrive operation: GET /users/{user-id}/drives
@@ -15774,31 +16673,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).drives.get(request_configuration=config)
+            response = await self.client.users.by_user_id(user_id).drives.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_get_drives(
         self,
         user_id: str,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drives from users.
         OneDrive operation: GET /users/{user-id}/drives/{drive-id}
@@ -15852,14 +16753,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).drives.by_drive_id(drive_id).get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .drives.by_drive_id(drive_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_joined_teams_channels_get_files_folder(
@@ -15867,17 +16772,17 @@ class OneDriveDataSource:
         user_id: str,
         team_id: str,
         channel_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get filesFolder from users.
         OneDrive operation: GET /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/filesFolder
@@ -15932,31 +16837,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).joined_teams.by_joinedTeam_id(team_id).channels.by_channel_id(channel_id).files_folder.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .joined_teams.by_joinedTeam_id(team_id)
+                .channels.by_channel_id(channel_id)
+                .files_folder.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_joined_teams_primary_channel_get_files_folder(
         self,
         user_id: str,
         team_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get filesFolder from users.
         OneDrive operation: GET /users/{user-id}/joinedTeams/{team-id}/primaryChannel/filesFolder
@@ -16010,31 +16920,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).joined_teams.by_joinedTeam_id(team_id).primary_channel.files_folder.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .joined_teams.by_joinedTeam_id(team_id)
+                .primary_channel.files_folder.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_get_photos(
         self,
         user_id: str,
         profilePhoto_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get photos from users.
         OneDrive operation: GET /users/{user-id}/photos/{profilePhoto-id}
@@ -16088,30 +17002,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).photos.by_photo_id(profilePhoto_id).get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .photos.by_photo_id(profilePhoto_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     # ========== FOLDER OPERATIONS (34 methods) ==========
 
     async def drives_drive_create_drive(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Add new entity to drives.
         OneDrive operation: POST /drives
@@ -16162,29 +17080,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.post(body=request_body, request_configuration=config)
+            response = await self.client.drives.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_create_bundles(
         self,
         drive_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to bundles for drives.
         OneDrive operation: POST /drives/{drive-id}/bundles
@@ -16236,30 +17156,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).bundles.post(body=request_body, request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).bundles.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_get_created_by_user(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get createdByUser from drives.
         OneDrive operation: GET /drives/{drive-id}/createdByUser
@@ -16312,31 +17234,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).created_by_user.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).created_by_user.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_created_by_user_list_service_provisioning_errors(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /drives/{drive-id}/createdByUser/serviceProvisioningErrors
@@ -16390,29 +17314,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).created_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).created_by_user.service_provisioning_errors.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_create_items(
         self,
         drive_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to items for drives.
         OneDrive operation: POST /drives/{drive-id}/items
@@ -16464,30 +17392,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.post(body=request_body, request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).items.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_create_children(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to children for drives.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/children
@@ -16540,31 +17470,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).children.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .children.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_get_created_by_user(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get createdByUser from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/createdByUser
@@ -16618,32 +17552,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).created_by_user.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .created_by_user.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_created_by_user_list_service_provisioning_errors(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/createdByUser/serviceProvisioningErrors
@@ -16698,30 +17636,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).created_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .created_by_user.service_provisioning_errors.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_create_subscriptions(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to subscriptions for drives.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/subscriptions
@@ -16774,30 +17718,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).subscriptions.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .subscriptions.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_create_versions(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to versions for drives.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/versions
@@ -16850,29 +17798,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).versions.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .versions.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_create_columns(
         self,
         drive_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to columns for drives.
         OneDrive operation: POST /drives/{drive-id}/list/columns
@@ -16924,30 +17876,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.columns.post(body=request_body, request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).list.columns.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_get_created_by_user(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get createdByUser from drives.
         OneDrive operation: GET /drives/{drive-id}/list/createdByUser
@@ -17000,31 +17954,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.created_by_user.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).list.created_by_user.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_created_by_user_list_service_provisioning_errors(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /drives/{drive-id}/list/createdByUser/serviceProvisioningErrors
@@ -17078,29 +18034,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.created_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).list.created_by_user.service_provisioning_errors.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_create_items(
         self,
         drive_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to items for drives.
         OneDrive operation: POST /drives/{drive-id}/list/items
@@ -17152,31 +18112,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.post(body=request_body, request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).list.items.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_get_created_by_user(
         self,
         drive_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get createdByUser from drives.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/createdByUser
@@ -17230,32 +18192,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).created_by_user.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .created_by_user.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_created_by_user_list_service_provisioning_errors(
         self,
         drive_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /drives/{drive-id}/list/items/{listItem-id}/createdByUser/serviceProvisioningErrors
@@ -17310,30 +18276,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).created_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .created_by_user.service_provisioning_errors.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_create_document_set_versions(
         self,
         drive_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to documentSetVersions for drives.
         OneDrive operation: POST /drives/{drive-id}/list/items/{listItem-id}/documentSetVersions
@@ -17386,30 +18358,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).document_set_versions.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.post(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_items_create_versions(
         self,
         drive_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to versions for drives.
         OneDrive operation: POST /drives/{drive-id}/list/items/{listItem-id}/versions
@@ -17462,29 +18440,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).versions.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_create_operations(
         self,
         drive_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to operations for drives.
         OneDrive operation: POST /drives/{drive-id}/list/operations
@@ -17536,29 +18518,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.operations.post(body=request_body, request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).list.operations.post(body=request_body, request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_list_create_subscriptions(
         self,
         drive_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to subscriptions for drives.
         OneDrive operation: POST /drives/{drive-id}/list/subscriptions
@@ -17610,14 +18594,16 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.subscriptions.post(body=request_body, request_configuration=config)
+            response = await self.client.drives.by_drive_id(
+                drive_id
+            ).list.subscriptions.post(body=request_body, request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_create_items(
@@ -17625,16 +18611,16 @@ class OneDriveDataSource:
         group_id: str,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to items for groups.
         OneDrive operation: POST /groups/{group-id}/sites/{site-id}/lists/{list-id}/items
@@ -17688,14 +18674,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_get_created_by_user(
@@ -17704,17 +18695,17 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get createdByUser from groups.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/createdByUser
@@ -17770,14 +18761,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).created_by_user.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .created_by_user.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_created_by_user_list_service_provisioning_errors(
@@ -17786,18 +18783,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/createdByUser/serviceProvisioningErrors
@@ -17854,14 +18851,22 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).created_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .created_by_user.service_provisioning_errors.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_create_document_set_versions(
@@ -17870,16 +18875,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to documentSetVersions for groups.
         OneDrive operation: POST /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions
@@ -17934,14 +18939,22 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.post(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_sites_lists_items_create_versions(
@@ -17950,16 +18963,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to versions for groups.
         OneDrive operation: POST /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions
@@ -18014,29 +19027,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_activities_create_history_items(
         self,
         userActivity_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to historyItems for me.
         OneDrive operation: POST /me/activities/{userActivity-id}/historyItems
@@ -18088,28 +19107,30 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.activities.by_activitie_id(userActivity_id).history_items.post(body=request_body, request_configuration=config)
+            response = await self.client.me.activities.by_activitie_id(
+                userActivity_id
+            ).history_items.post(body=request_body, request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def me_cloud_clipboard_create_items(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to items for me.
         OneDrive operation: POST /me/cloudClipboard/items
@@ -18160,30 +19181,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.cloud_clipboard.items.post(body=request_body, request_configuration=config)
+            response = await self.client.me.cloud_clipboard.items.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_create_items(
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create a new item in a list.
         OneDrive operation: POST /sites/{site-id}/lists/{list-id}/items
@@ -18236,14 +19259,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_get_created_by_user(
@@ -18251,17 +19278,17 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get createdByUser from sites.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/createdByUser
@@ -18316,14 +19343,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).created_by_user.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .created_by_user.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_created_by_user_list_service_provisioning_errors(
@@ -18331,18 +19363,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/{listItem-id}/createdByUser/serviceProvisioningErrors
@@ -18398,14 +19430,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).created_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .created_by_user.service_provisioning_errors.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_create_document_set_versions(
@@ -18413,16 +19452,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create documentSetVersion.
         OneDrive operation: POST /sites/{site-id}/lists/{list-id}/items/{listItem-id}/documentSetVersions
@@ -18476,14 +19515,21 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).document_set_versions.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .document_set_versions.post(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_lists_items_create_versions(
@@ -18491,16 +19537,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to versions for sites.
         OneDrive operation: POST /sites/{site-id}/lists/{list-id}/items/{listItem-id}/versions
@@ -18554,30 +19600,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).versions.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .versions.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_activities_create_history_items(
         self,
         user_id: str,
         userActivity_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to historyItems for users.
         OneDrive operation: POST /users/{user-id}/activities/{userActivity-id}/historyItems
@@ -18630,29 +19681,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).activities.by_activitie_id(userActivity_id).history_items.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .activities.by_activitie_id(userActivity_id)
+                .history_items.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def users_cloud_clipboard_create_items(
         self,
         user_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to items for users.
         OneDrive operation: POST /users/{user-id}/cloudClipboard/items
@@ -18704,14 +19759,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).cloud_clipboard.items.post(body=request_body, request_configuration=config)
+            response = await self.client.users.by_user_id(
+                user_id
+            ).cloud_clipboard.items.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     # ========== SHARING OPERATIONS (76 methods) ==========
@@ -18720,16 +19779,16 @@ class OneDriveDataSource:
         self,
         drive_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action createLink.
         OneDrive operation: POST /drives/{drive-id}/list/items/{listItem-id}/createLink
@@ -18782,31 +19841,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.by_drive_item_id(listItem_id).create_link.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .create_link.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_shared_with_me(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function sharedWithMe.
         OneDrive operation: GET /drives/{drive-id}/sharedWithMe()
@@ -18860,14 +19923,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).shared_with_me().get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .shared_with_me()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_group_sites_site_lists_list_items_list_item_create_link(
@@ -18876,16 +19943,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action createLink.
         OneDrive operation: POST /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/{listItem-id}/createLink
@@ -18940,29 +20007,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).create_link.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .create_link.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_shared_drive_item_delete_shared_drive_item(
         self,
         sharedDriveItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete entity from shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}
@@ -19014,30 +20087,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).delete(request_configuration=config)
+            response = await self.client.shares.by_share_id(sharedDriveItem_id).delete(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_shared_drive_item_get_shared_drive_item(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Accessing shared DriveItems.
         OneDrive operation: GET /shares/{sharedDriveItem-id}
@@ -19090,29 +20165,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).get(request_configuration=config)
+            response = await self.client.shares.by_share_id(sharedDriveItem_id).get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_shared_drive_item_update_shared_drive_item(
         self,
         sharedDriveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update entity in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}
@@ -19164,30 +20241,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.shares.by_share_id(sharedDriveItem_id).patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_get_created_by_user(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get createdByUser from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/createdByUser
@@ -19240,31 +20319,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).created_by_user.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).created_by_user.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_created_by_user_list_service_provisioning_errors(
         self,
         sharedDriveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/createdByUser/serviceProvisioningErrors
@@ -19318,30 +20399,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).created_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).created_by_user.service_provisioning_errors.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_get_drive_item(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Accessing shared DriveItems.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/driveItem
@@ -19394,31 +20479,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).drive_item.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).drive_item.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items(
         self,
         sharedDriveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/items
@@ -19472,31 +20559,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).items.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).items.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_get_items(
         self,
         sharedDriveItem_id: str,
         driveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/items/{driveItem-id}
@@ -19550,30 +20639,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).items.by_drive_item_id(driveItem_id).get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .items.by_drive_item_id(driveItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_get_last_modified_by_user(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get lastModifiedByUser from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/lastModifiedByUser
@@ -19626,31 +20719,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).last_modified_by_user.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).last_modified_by_user.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_last_modified_by_user_list_service_provisioning_errors(
         self,
         sharedDriveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/lastModifiedByUser/serviceProvisioningErrors
@@ -19704,29 +20799,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).last_modified_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).last_modified_by_user.service_provisioning_errors.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_delete_list(
         self,
         sharedDriveItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property list for shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}/list
@@ -19778,30 +20877,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.delete(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.delete(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_get_list(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get list from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list
@@ -19854,29 +20955,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_update_list(
         self,
         sharedDriveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property list in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}/list
@@ -19928,29 +21031,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.patch(body=request_body, request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.patch(body=request_body, request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_create_columns(
         self,
         sharedDriveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to columns for shares.
         OneDrive operation: POST /shares/{sharedDriveItem-id}/list/columns
@@ -20002,31 +21107,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.columns.post(body=request_body, request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.columns.post(body=request_body, request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_list_columns(
         self,
         sharedDriveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get columns from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/columns
@@ -20080,30 +21187,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.columns.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.columns.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_delete_columns(
         self,
         sharedDriveItem_id: str,
         columnDefinition_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property columns for shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}/list/columns/{columnDefinition-id}
@@ -20156,31 +21265,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.columns.by_column_id(columnDefinition_id).delete(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.columns.by_column_id(columnDefinition_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_get_columns(
         self,
         sharedDriveItem_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get columns from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/columns/{columnDefinition-id}
@@ -20234,30 +21347,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.columns.by_column_id(columnDefinition_id).get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.columns.by_column_id(columnDefinition_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_update_columns(
         self,
         sharedDriveItem_id: str,
         columnDefinition_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property columns in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}/list/columns/{columnDefinition-id}
@@ -20310,30 +21427,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.columns.by_column_id(columnDefinition_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.columns.by_column_id(columnDefinition_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_get_created_by_user(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get createdByUser from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/createdByUser
@@ -20386,31 +21507,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.created_by_user.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.created_by_user.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_created_by_user_list_service_provisioning_errors(
         self,
         sharedDriveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/createdByUser/serviceProvisioningErrors
@@ -20464,30 +21587,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.created_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.created_by_user.service_provisioning_errors.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_get_drive(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get drive from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/drive
@@ -20540,29 +21667,31 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.drive.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.drive.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_create_items(
         self,
         sharedDriveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to items for shares.
         OneDrive operation: POST /shares/{sharedDriveItem-id}/list/items
@@ -20614,31 +21743,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.post(body=request_body, request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.items.post(body=request_body, request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_list_items(
         self,
         sharedDriveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items
@@ -20692,31 +21823,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.items.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_shared_drive_item_list_items_delta_fa14(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function delta.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/delta()
@@ -20770,32 +21903,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.delta().get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.delta()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_shared_drive_item_list_items_delta_9846(
         self,
         sharedDriveItem_id: str,
         token: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function delta.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/delta(token='{token}')
@@ -20850,30 +21987,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.delta(token='{token}').get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.delta(token="{token}")
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_delete_items(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property items for shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}/list/items/{listItem-id}
@@ -20926,31 +22067,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).delete(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_get_items(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get items from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}
@@ -21004,30 +22149,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_update_items(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property items in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}/list/items/{listItem-id}
@@ -21080,30 +22229,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_shared_drive_item_list_items_list_item_create_link(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action createLink.
         OneDrive operation: POST /shares/{sharedDriveItem-id}/list/items/{listItem-id}/createLink
@@ -21156,31 +22309,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).create_link.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .create_link.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_get_created_by_user(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get createdByUser from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/createdByUser
@@ -21234,32 +22391,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).created_by_user.get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .created_by_user.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_created_by_user_list_service_provisioning_errors(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/createdByUser/serviceProvisioningErrors
@@ -21314,30 +22475,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).created_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .created_by_user.service_provisioning_errors.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_create_document_set_versions(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to documentSetVersions for shares.
         OneDrive operation: POST /shares/{sharedDriveItem-id}/list/items/{listItem-id}/documentSetVersions
@@ -21390,32 +22557,38 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).document_set_versions.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.post(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_list_document_set_versions(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get documentSetVersions from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/documentSetVersions
@@ -21470,14 +22643,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).document_set_versions.get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_delete_document_set_versions(
@@ -21485,16 +22662,16 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property documentSetVersions for shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -21548,14 +22725,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).delete(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_get_document_set_versions(
@@ -21563,17 +22745,17 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get documentSetVersions from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -21628,14 +22810,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_update_document_set_versions(
@@ -21643,16 +22830,16 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property documentSetVersions in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}
@@ -21706,14 +22893,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_document_set_versions_delete_fields(
@@ -21721,16 +22913,16 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -21784,14 +22976,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_document_set_versions_get_fields(
@@ -21799,17 +22996,17 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -21864,14 +23061,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_document_set_versions_update_fields(
@@ -21879,16 +23081,16 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/fields
@@ -21942,14 +23144,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_shared_drive_item_list_items_list_item_document_set_versions_document_set_version_restore(
@@ -21957,15 +23164,15 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action restore.
         OneDrive operation: POST /shares/{sharedDriveItem-id}/list/items/{listItem-id}/documentSetVersions/{documentSetVersion-id}/restore
@@ -22018,31 +23225,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).document_set_versions.by_documentSetVersion_id(documentSetVersion_id).restore.post(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .document_set_versions.by_documentSetVersion_id(documentSetVersion_id)
+                .restore.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_get_drive_item(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get driveItem from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/driveItem
@@ -22096,30 +23308,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).drive_item.get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .drive_item.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_delete_fields(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}/list/items/{listItem-id}/fields
@@ -22172,31 +23388,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_get_fields(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/fields
@@ -22250,30 +23470,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_update_fields(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}/list/items/{listItem-id}/fields
@@ -22326,32 +23550,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_shared_drive_item_list_items_list_item_get_activities_by_interval_4c35(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getActivitiesByInterval.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/getActivitiesByInterval()
@@ -22406,14 +23634,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).get_activities_by_interval().get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .get_activities_by_interval()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_shared_drive_item_list_items_list_item_get_activities_by_interval_ad27(
@@ -22423,18 +23656,18 @@ class OneDriveDataSource:
         startDateTime: str,
         endDateTime: str,
         interval: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function getActivitiesByInterval.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/getActivitiesByInterval(startDateTime='{startDateTime}',endDateTime='{endDateTime}',interval='{interval}')
@@ -22492,31 +23725,40 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).get_activities_by_interval(start_date_time='{start_date_time}',end_date_time='{end_date_time}',interval='{interval}').get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .get_activities_by_interval(
+                    start_date_time="{start_date_time}",
+                    end_date_time="{end_date_time}",
+                    interval="{interval}",
+                )
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_get_last_modified_by_user(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get lastModifiedByUser from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/lastModifiedByUser
@@ -22570,32 +23812,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).last_modified_by_user.get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .last_modified_by_user.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_last_modified_by_user_list_service_provisioning_errors(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/lastModifiedByUser/serviceProvisioningErrors
@@ -22650,30 +23896,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).last_modified_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .last_modified_by_user.service_provisioning_errors.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_create_versions(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to versions for shares.
         OneDrive operation: POST /shares/{sharedDriveItem-id}/list/items/{listItem-id}/versions
@@ -22726,32 +23978,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).versions.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_list_versions(
         self,
         sharedDriveItem_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get versions from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/versions
@@ -22806,14 +24062,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).versions.get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_delete_versions(
@@ -22821,16 +24081,16 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property versions for shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}/list/items/{listItem-id}/versions/{listItemVersion-id}
@@ -22884,14 +24144,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).delete(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_get_versions(
@@ -22899,17 +24164,17 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get versions from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/versions/{listItemVersion-id}
@@ -22964,14 +24229,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_update_versions(
@@ -22979,16 +24249,16 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property versions in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}/list/items/{listItem-id}/versions/{listItemVersion-id}
@@ -23042,14 +24312,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_versions_delete_fields(
@@ -23057,16 +24332,16 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property fields for shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}/list/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -23120,14 +24395,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.delete(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_versions_get_fields(
@@ -23135,17 +24415,17 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get fields from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -23200,14 +24480,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_items_versions_update_fields(
@@ -23215,16 +24500,16 @@ class OneDriveDataSource:
         sharedDriveItem_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property fields in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}/list/items/{listItem-id}/versions/{listItemVersion-id}/fields
@@ -23278,30 +24563,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.items.by_drive_item_id(listItem_id).versions.by_version_id(listItemVersion_id).fields.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.items.by_drive_item_id(listItem_id)
+                .versions.by_version_id(listItemVersion_id)
+                .fields.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_get_last_modified_by_user(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get lastModifiedByUser from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/lastModifiedByUser
@@ -23354,31 +24644,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.last_modified_by_user.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.last_modified_by_user.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_last_modified_by_user_list_service_provisioning_errors(
         self,
         sharedDriveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get serviceProvisioningErrors property value.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/lastModifiedByUser/serviceProvisioningErrors
@@ -23432,29 +24724,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.last_modified_by_user.service_provisioning_errors.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.last_modified_by_user.service_provisioning_errors.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_create_operations(
         self,
         sharedDriveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to operations for shares.
         OneDrive operation: POST /shares/{sharedDriveItem-id}/list/operations
@@ -23506,31 +24802,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.operations.post(body=request_body, request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.operations.post(body=request_body, request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_list_operations(
         self,
         sharedDriveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get operations from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/operations
@@ -23584,30 +24882,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.operations.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.operations.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_delete_operations(
         self,
         sharedDriveItem_id: str,
         richLongRunningOperation_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property operations for shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}/list/operations/{richLongRunningOperation-id}
@@ -23660,31 +24960,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.operations.by_operation_id(richLongRunningOperation_id).delete(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.operations.by_operation_id(richLongRunningOperation_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_get_operations(
         self,
         sharedDriveItem_id: str,
         richLongRunningOperation_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get operations from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/operations/{richLongRunningOperation-id}
@@ -23738,30 +25042,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.operations.by_operation_id(richLongRunningOperation_id).get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.operations.by_operation_id(richLongRunningOperation_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_update_operations(
         self,
         sharedDriveItem_id: str,
         richLongRunningOperation_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property operations in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}/list/operations/{richLongRunningOperation-id}
@@ -23814,29 +25122,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.operations.by_operation_id(richLongRunningOperation_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.operations.by_operation_id(richLongRunningOperation_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_create_subscriptions(
         self,
         sharedDriveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to subscriptions for shares.
         OneDrive operation: POST /shares/{sharedDriveItem-id}/list/subscriptions
@@ -23888,31 +25200,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.subscriptions.post(body=request_body, request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.subscriptions.post(body=request_body, request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_list_subscriptions(
         self,
         sharedDriveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get subscriptions from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/subscriptions
@@ -23966,30 +25280,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.subscriptions.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list.subscriptions.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_delete_subscriptions(
         self,
         sharedDriveItem_id: str,
         subscription_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property subscriptions for shares.
         OneDrive operation: DELETE /shares/{sharedDriveItem-id}/list/subscriptions/{subscription-id}
@@ -24042,31 +25358,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.subscriptions.by_subscription_id(subscription_id).delete(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.subscriptions.by_subscription_id(subscription_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_get_subscriptions(
         self,
         sharedDriveItem_id: str,
         subscription_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get subscriptions from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/list/subscriptions/{subscription-id}
@@ -24120,30 +25440,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.subscriptions.by_subscription_id(subscription_id).get(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.subscriptions.by_subscription_id(subscription_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_list_update_subscriptions(
         self,
         sharedDriveItem_id: str,
         subscription_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property subscriptions in shares.
         OneDrive operation: PATCH /shares/{sharedDriveItem-id}/list/subscriptions/{subscription-id}
@@ -24196,29 +25520,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.subscriptions.by_subscription_id(subscription_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.subscriptions.by_subscription_id(subscription_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_shared_drive_item_list_subscriptions_subscription_reauthorize(
         self,
         sharedDriveItem_id: str,
         subscription_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action reauthorize.
         OneDrive operation: POST /shares/{sharedDriveItem-id}/list/subscriptions/{subscription-id}/reauthorize
@@ -24270,30 +25598,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list.subscriptions.by_subscription_id(subscription_id).reauthorize.post(request_configuration=config)
+            response = (
+                await self.client.shares.by_share_id(sharedDriveItem_id)
+                .list.subscriptions.by_subscription_id(subscription_id)
+                .reauthorize.post(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_get_list_item(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get listItem from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/listItem
@@ -24346,30 +25678,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).list_item.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).list_item.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_get_root(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get root from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/root
@@ -24422,30 +25756,32 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).root.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).root.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def shares_get_site(
         self,
         sharedDriveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get site from shares.
         OneDrive operation: GET /shares/{sharedDriveItem-id}/site
@@ -24498,14 +25834,16 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.shares.by_share_id(sharedDriveItem_id).site.get(request_configuration=config)
+            response = await self.client.shares.by_share_id(
+                sharedDriveItem_id
+            ).site.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_site_lists_list_items_list_item_create_link(
@@ -24513,16 +25851,16 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action createLink.
         OneDrive operation: POST /sites/{site-id}/lists/{list-id}/items/{listItem-id}/createLink
@@ -24576,14 +25914,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.by_drive_item_id(listItem_id).create_link.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.by_drive_item_id(listItem_id)
+                .create_link.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     # ========== METADATA OPERATIONS (6 methods) ==========
@@ -24592,16 +25935,16 @@ class OneDriveDataSource:
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke action preview.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/preview
@@ -24654,30 +25997,34 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).preview.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .preview.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_create_thumbnails(
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Create new navigation property to thumbnails for drives.
         OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/thumbnails
@@ -24730,32 +26077,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).thumbnails.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .thumbnails.post(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_list_thumbnails(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get thumbnails from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/thumbnails
@@ -24810,14 +26161,18 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).thumbnails.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .thumbnails.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_delete_thumbnails(
@@ -24825,16 +26180,16 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         thumbnailSet_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Delete navigation property thumbnails for drives.
         OneDrive operation: DELETE /drives/{drive-id}/items/{driveItem-id}/thumbnails/{thumbnailSet-id}
@@ -24888,14 +26243,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).thumbnails.by_thumbnail_id(thumbnailSet_id).delete(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .thumbnails.by_thumbnail_id(thumbnailSet_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_get_thumbnails(
@@ -24903,17 +26263,17 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         thumbnailSet_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get thumbnails from drives.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/thumbnails/{thumbnailSet-id}
@@ -24968,14 +26328,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).thumbnails.by_thumbnail_id(thumbnailSet_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .thumbnails.by_thumbnail_id(thumbnailSet_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_items_update_thumbnails(
@@ -24983,16 +26348,16 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         thumbnailSet_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Update the navigation property thumbnails in drives.
         OneDrive operation: PATCH /drives/{drive-id}/items/{driveItem-id}/thumbnails/{thumbnailSet-id}
@@ -25046,14 +26411,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).thumbnails.by_thumbnail_id(thumbnailSet_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .thumbnails.by_thumbnail_id(thumbnailSet_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     # ========== DISCOVERY OPERATIONS (13 methods) ==========
@@ -25061,18 +26431,18 @@ class OneDriveDataSource:
     async def drives_list_following(
         self,
         drive_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get following from drives.
         OneDrive operation: GET /drives/{drive-id}/following
@@ -25126,31 +26496,33 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).following.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).following.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_get_following(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Get following from drives.
         OneDrive operation: GET /drives/{drive-id}/following/{driveItem-id}
@@ -25204,32 +26576,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).following.by_following_id(driveItem_id).get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .following.by_following_id(driveItem_id)
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_delta_fa14(
         self,
         drive_id: str,
         driveItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function delta.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/delta()
@@ -25284,14 +26660,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).delta().get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .delta()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_delta_9846(
@@ -25299,18 +26680,18 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         token: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function delta.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/delta(token='{token}')
@@ -25366,14 +26747,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).delta(token='{token}').get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .delta(token="{token}")
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_items_drive_item_search(
@@ -25381,18 +26767,18 @@ class OneDriveDataSource:
         drive_id: str,
         driveItem_id: str,
         q: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function search.
         OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/search(q='{q}')
@@ -25448,31 +26834,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).search.get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .items.by_drive_item_id(driveItem_id)
+                .search.get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_list_items_delta_fa14(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function delta.
         OneDrive operation: GET /drives/{drive-id}/list/items/delta()
@@ -25526,32 +26916,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.delta().get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.delta()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_list_items_delta_9846(
         self,
         drive_id: str,
         token: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function delta.
         OneDrive operation: GET /drives/{drive-id}/list/items/delta(token='{token}')
@@ -25606,31 +27000,35 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).list.items.delta(token='{token}').get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .list.items.delta(token="{token}")
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_recent(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function recent.
         OneDrive operation: GET /drives/{drive-id}/recent()
@@ -25684,32 +27082,36 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).recent().get(request_configuration=config)
+            response = (
+                await self.client.drives.by_drive_id(drive_id)
+                .recent()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def drives_drive_search(
         self,
         drive_id: str,
         q: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function search.
         OneDrive operation: GET /drives/{drive-id}/search(q='{q}')
@@ -25764,14 +27166,16 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.drives.by_drive_id(drive_id).search.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).search.get(
+                request_configuration=config
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_group_sites_site_lists_list_items_delta_fa14(
@@ -25779,18 +27183,18 @@ class OneDriveDataSource:
         group_id: str,
         site_id: str,
         list_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function delta.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/delta()
@@ -25846,14 +27250,20 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.delta().get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.delta()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def groups_group_sites_site_lists_list_items_delta_9846(
@@ -25862,18 +27272,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         token: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function delta.
         OneDrive operation: GET /groups/{group-id}/sites/{site-id}/lists/{list-id}/items/delta(token='{token}')
@@ -25930,32 +27340,38 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).sites.by_site_id(site_id).lists.by_list_id(list_id).items.delta(token='{token}').get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.delta(token="{token}")
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_site_lists_list_items_delta_fa14(
         self,
         site_id: str,
         list_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function delta.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/delta()
@@ -26010,14 +27426,19 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.delta().get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.delta()
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
 
     async def sites_site_lists_list_items_delta_9846(
@@ -26025,18 +27446,18 @@ class OneDriveDataSource:
         site_id: str,
         list_id: str,
         token: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> OneDriveResponse:
         """Invoke function delta.
         OneDrive operation: GET /sites/{site-id}/lists/{list-id}/items/delta(token='{token}')
@@ -26092,13 +27513,17 @@ class OneDriveDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).items.delta(token='{token}').get(request_configuration=config)
+            response = (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .items.delta(token="{token}")
+                .get(request_configuration=config)
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive API call failed: {e!s}",
             )
-

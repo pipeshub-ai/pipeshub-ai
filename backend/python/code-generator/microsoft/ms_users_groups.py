@@ -3,10 +3,11 @@
 """
 =============================================================================
 🔧 EASY MODIFICATION GUIDE:
-To exclude more APIs, add keywords to EXCLUDED_KEYWORDS or paths to EXCLUDED_PATHS 
+To exclude more APIs, add keywords to EXCLUDED_KEYWORDS or paths to EXCLUDED_PATHS
 Search for "EXCLUSION CONFIGURATION" section below to find the lists
 =============================================================================
 """
+
 """
 Microsoft Users Groups API Client Generator (Users, Groups, Invitations Focus)
 
@@ -70,137 +71,137 @@ logger = logging.getLogger(__name__)
 
 # Keywords to exclude from Users Groups operations (ADD MORE HERE TO EXCLUDE)
 EXCLUDED_KEYWORDS = [
-    'drive',          # Exclude OneDrive operations for users/groups
-    'drives',         # Exclude OneDrive operations for users/groups
-    'chat',           # Exclude Teams chat operations
-    'chats',          # Exclude Teams chat operations
-    'team',           # Exclude Teams operations
-    'teams',          # Exclude Teams operations
-    'joinedteams',    # Exclude Teams operations
-    'channel',        # Exclude Teams channel operations
-    'channels',       # Exclude Teams channel operations
-    'site',           # Exclude SharePoint site operations
-    'sites',          # Exclude SharePoint site operations
-    'onenote',        # Exclude OneNote operations
-    'planner',        # Exclude Planner operations
-    'message',        # Exclude Outlook message operations
-    'messages',       # Exclude Outlook message operations
-    'event',          # Exclude Outlook event operations
-    'events',         # Exclude Outlook event operations
-    'contact',        # Exclude Outlook contact operations
-    'contacts',       # Exclude Outlook contact operations
-    'calendar',       # Exclude Outlook calendar operations
-    'calendars',      # Exclude Outlook calendar operations
-    'mailfolder',     # Exclude Outlook mail folder operations
-    'mailfolders',    # Exclude Outlook mail folder operations
-    'deviceAppManagement',
-    'deviceManagement',
-    'device',         # Keep basic device info but exclude device management
-    'security',       # Exclude Security operations
-    'compliance',     # Exclude Compliance operations
-    'admin',          # Exclude Admin operations
-    'agreements',     # Exclude Agreements operations
-    'analytics',      # Exclude Analytics operations
-    'auditLogs',      # Exclude Audit Logs operations
-    'storage',        # Exclude Storage operations
-    'connections',    # Exclude Connections operations
-    'workbook',       # Exclude Excel workbook operations
-    'worksheet',      # Exclude Excel worksheet operations
-    'todo',           # Exclude To-Do operations
-    'notebook',       # Exclude notebook operations
-    'communications',
-    'education',
-    'identity',
-    'inferenceClassification',
-    'extensions',
-    'termStore',
-    'servicePrincipals',
-    'applications',   # Keep basic application info but exclude app management
-    'directory',
-    'licenseDetails',
-    'settings',
-    'outlook',
-    'conversations',
-    'authentication',
-    'print',
-    'photo',
-    'solutions',
-    'threads',
-    'copilot',
-    'reports',
-    'employeeExperience',
-    'privacy',
-    'onlineMeetings',
-    'insights',
-    'manager',
-    'oauth2PermissionGrants'
+    "drive",  # Exclude OneDrive operations for users/groups
+    "drives",  # Exclude OneDrive operations for users/groups
+    "chat",  # Exclude Teams chat operations
+    "chats",  # Exclude Teams chat operations
+    "team",  # Exclude Teams operations
+    "teams",  # Exclude Teams operations
+    "joinedteams",  # Exclude Teams operations
+    "channel",  # Exclude Teams channel operations
+    "channels",  # Exclude Teams channel operations
+    "site",  # Exclude SharePoint site operations
+    "sites",  # Exclude SharePoint site operations
+    "onenote",  # Exclude OneNote operations
+    "planner",  # Exclude Planner operations
+    "message",  # Exclude Outlook message operations
+    "messages",  # Exclude Outlook message operations
+    "event",  # Exclude Outlook event operations
+    "events",  # Exclude Outlook event operations
+    "contact",  # Exclude Outlook contact operations
+    "contacts",  # Exclude Outlook contact operations
+    "calendar",  # Exclude Outlook calendar operations
+    "calendars",  # Exclude Outlook calendar operations
+    "mailfolder",  # Exclude Outlook mail folder operations
+    "mailfolders",  # Exclude Outlook mail folder operations
+    "deviceAppManagement",
+    "deviceManagement",
+    "device",  # Keep basic device info but exclude device management
+    "security",  # Exclude Security operations
+    "compliance",  # Exclude Compliance operations
+    "admin",  # Exclude Admin operations
+    "agreements",  # Exclude Agreements operations
+    "analytics",  # Exclude Analytics operations
+    "auditLogs",  # Exclude Audit Logs operations
+    "storage",  # Exclude Storage operations
+    "connections",  # Exclude Connections operations
+    "workbook",  # Exclude Excel workbook operations
+    "worksheet",  # Exclude Excel worksheet operations
+    "todo",  # Exclude To-Do operations
+    "notebook",  # Exclude notebook operations
+    "communications",
+    "education",
+    "identity",
+    "inferenceClassification",
+    "extensions",
+    "termStore",
+    "servicePrincipals",
+    "applications",  # Keep basic application info but exclude app management
+    "directory",
+    "licenseDetails",
+    "settings",
+    "outlook",
+    "conversations",
+    "authentication",
+    "print",
+    "photo",
+    "solutions",
+    "threads",
+    "copilot",
+    "reports",
+    "employeeExperience",
+    "privacy",
+    "onlineMeetings",
+    "insights",
+    "manager",
+    "oauth2PermissionGrants",
 ]
 
 # Path patterns to exclude (ADD MORE PATTERNS HERE TO EXCLUDE)
 EXCLUDED_PATHS = [
-    '/users/{user-id}/drive',
-    '/users/{user-id}/drives',
-    '/groups/{group-id}/drive',
-    '/groups/{group-id}/drives',
-    '/users/{user-id}/chats',
-    '/users/{user-id}/joinedTeams',
-    '/users/{user-id}/teamwork',
-    '/groups/{group-id}/team',
-    '/users/{user-id}/sites',
-    '/groups/{group-id}/sites',
-    '/users/{user-id}/onenote',
-    '/groups/{group-id}/onenote',
-    '/users/{user-id}/planner',
-    '/groups/{group-id}/planner',
-    '/users/{user-id}/messages',
-    '/users/{user-id}/mailFolders',
-    '/users/{user-id}/events',
-    '/users/{user-id}/calendar',
-    '/users/{user-id}/calendars',
-    '/users/{user-id}/contacts',
-    '/users/{user-id}/contactFolders',
-    '/groups/{group-id}/calendar',
-    '/groups/{group-id}/events',
-    '/deviceAppManagement',
-    '/deviceManagement',
-    '/devices',
-    '/security',
-    '/compliance',
-    '/admin',
-    '/agreements',
-    '/analytics',
-    '/auditLogs',
-    '/storage',
-    '/connections',
-    '/workbook',
-    '/worksheets',
-    '/todo',
-    '/communications',
-    '/education',
-    '/identity',
-    '/inferenceClassification',
-    '/extensions',
-    '/termStore',
-    '/servicePrincipals',
-    '/applications',
-    '/directory',
-    '/licenseDetails',
-    '/settings',
-    '/outlook',
-    '/conversations',
-    '/authentication',
-    '/print',
-    '/photo',
-    '/solutions',
-    '/threads',
-    '/copilot',
-    '/reports',
-    '/employeeExperience',
-    '/privacy',
-    '/onlineMeetings',
-    '/insights',
-    '/manager',
-    '/oauth2PermissionGrants'
+    "/users/{user-id}/drive",
+    "/users/{user-id}/drives",
+    "/groups/{group-id}/drive",
+    "/groups/{group-id}/drives",
+    "/users/{user-id}/chats",
+    "/users/{user-id}/joinedTeams",
+    "/users/{user-id}/teamwork",
+    "/groups/{group-id}/team",
+    "/users/{user-id}/sites",
+    "/groups/{group-id}/sites",
+    "/users/{user-id}/onenote",
+    "/groups/{group-id}/onenote",
+    "/users/{user-id}/planner",
+    "/groups/{group-id}/planner",
+    "/users/{user-id}/messages",
+    "/users/{user-id}/mailFolders",
+    "/users/{user-id}/events",
+    "/users/{user-id}/calendar",
+    "/users/{user-id}/calendars",
+    "/users/{user-id}/contacts",
+    "/users/{user-id}/contactFolders",
+    "/groups/{group-id}/calendar",
+    "/groups/{group-id}/events",
+    "/deviceAppManagement",
+    "/deviceManagement",
+    "/devices",
+    "/security",
+    "/compliance",
+    "/admin",
+    "/agreements",
+    "/analytics",
+    "/auditLogs",
+    "/storage",
+    "/connections",
+    "/workbook",
+    "/worksheets",
+    "/todo",
+    "/communications",
+    "/education",
+    "/identity",
+    "/inferenceClassification",
+    "/extensions",
+    "/termStore",
+    "/servicePrincipals",
+    "/applications",
+    "/directory",
+    "/licenseDetails",
+    "/settings",
+    "/outlook",
+    "/conversations",
+    "/authentication",
+    "/print",
+    "/photo",
+    "/solutions",
+    "/threads",
+    "/copilot",
+    "/reports",
+    "/employeeExperience",
+    "/privacy",
+    "/onlineMeetings",
+    "/insights",
+    "/manager",
+    "/oauth2PermissionGrants",
 ]
 
 # =============================================================================
@@ -245,7 +246,6 @@ USERS_GROUPS_PATH_PATTERNS = [
     "/users/delta",
     "/users/getByIds",
     "/users/validateProperties",
-    
     # User Settings and Preferences
     "/users/{user-id}/settings",
     "/users/{user-id}/settings/shiftPreferences",
@@ -257,7 +257,6 @@ USERS_GROUPS_PATH_PATTERNS = [
     "/users/{user-id}/mailboxSettings",
     "/users/{user-id}/mailboxSettings/workingHours",
     "/users/{user-id}/mailboxSettings/userPurpose",
-    
     # User Authentication
     "/users/{user-id}/authentication",
     "/users/{user-id}/authentication/methods",
@@ -276,7 +275,6 @@ USERS_GROUPS_PATH_PATTERNS = [
     "/users/{user-id}/authentication/temporaryAccessPassMethods/{temporary-access-pass-authentication-method-id}",
     "/users/{user-id}/authentication/windowsHelloForBusinessMethods",
     "/users/{user-id}/authentication/windowsHelloForBusinessMethods/{windows-hello-for-business-authentication-method-id}",
-    
     # Groups - Core Operations
     "/groups",
     "/groups/{group-id}",
@@ -314,7 +312,6 @@ USERS_GROUPS_PATH_PATTERNS = [
     "/groups/getByIds",
     "/groups/validateProperties",
     "/groups/getAvailableExtensionProperties",
-    
     # Group Settings
     "/groups/{group-id}/settings",
     "/groups/{group-id}/settings/{group-setting-id}",
@@ -322,12 +319,10 @@ USERS_GROUPS_PATH_PATTERNS = [
     "/groupSettings/{group-setting-id}",
     "/groupSettingTemplates",
     "/groupSettingTemplates/{group-setting-template-id}",
-    
     # Invitations
     "/invitations",
     "/invitations/{invitation-id}",
     "/invitations/{invitation-id}/invitedUser",
-    
     # Directory Objects
     "/directoryObjects",
     "/directoryObjects/{directory-object-id}",
@@ -339,7 +334,6 @@ USERS_GROUPS_PATH_PATTERNS = [
     "/directoryObjects/getByIds",
     "/directoryObjects/validateProperties",
     "/directoryObjects/getAvailableExtensionProperties",
-    
     # Organization
     "/organization",
     "/organization/{organization-id}",
@@ -350,7 +344,6 @@ USERS_GROUPS_PATH_PATTERNS = [
     "/organization/{organization-id}/branding/localizations/{organizational-branding-localization-id}",
     "/organization/{organization-id}/certificateBasedAuthConfiguration",
     "/organization/{organization-id}/certificateBasedAuthConfiguration/{certificate-based-auth-configuration-id}",
-    
     # Directory Roles
     "/directoryRoles",
     "/directoryRoles/{directory-role-id}",
@@ -361,7 +354,6 @@ USERS_GROUPS_PATH_PATTERNS = [
     "/directoryRoles/{directory-role-id}/scopedMembers/{scoped-role-membership-id}",
     "/directoryRoleTemplates",
     "/directoryRoleTemplates/{directory-role-template-id}",
-    
     # Administrative Units
     "/administrativeUnits",
     "/administrativeUnits/{administrative-unit-id}",
@@ -372,7 +364,6 @@ USERS_GROUPS_PATH_PATTERNS = [
     "/administrativeUnits/{administrative-unit-id}/scopedRoleMembers/{scoped-role-membership-id}",
     "/administrativeUnits/{administrative-unit-id}/extensions",
     "/administrativeUnits/{administrative-unit-id}/extensions/{extension-id}",
-    
     # Domains
     "/domains",
     "/domains/{domain-id}",
@@ -383,19 +374,17 @@ USERS_GROUPS_PATH_PATTERNS = [
     "/domains/{domain-id}/verificationDnsRecords/{domain-dns-record-id}",
     "/domains/{domain-id}/promote",
     "/domains/{domain-id}/verify",
-    
     # Subscriptions
     "/subscriptions",
     "/subscriptions/{subscription-id}",
     "/subscriptions/{subscription-id}/reauthorize",
-    
     # Directory Extensions
     "/schemaExtensions",
     "/schemaExtensions/{schema-extension-id}",
-    
     # NOTE: Excluded patterns (OneDrive, Teams, SharePoint, Outlook) are filtered out by EXCLUDED_KEYWORDS and EXCLUDED_PATHS
     # To re-enable them, remove the keywords from the exclusion lists above
 ]
+
 
 # ---- Operation Model -------------------------------------------------------
 @dataclass
@@ -408,7 +397,9 @@ class UsersGroupsOperation:
     params: List[Mapping[str, Any]]
     request_body: Optional[Mapping[str, Any]] = None
     path_params: List[Dict[str, str]] = None
-    operation_type: str = "general"  # users, groups, invitations, directory, organization, roles, domains
+    operation_type: str = (
+        "general"  # users, groups, invitations, directory, organization, roles, domains
+    )
 
     @property
     def wrapper_name(self) -> str:
@@ -425,38 +416,71 @@ class UsersGroupsOperation:
         """Determine the type of Users Groups operation for better organization."""
         path_lower = self.path.lower()
         op_lower = self.op_id.lower()
-        
-        if any(keyword in path_lower for keyword in ["users", "user", "manager", "directreports", "memberof"]):
+
+        if any(
+            keyword in path_lower
+            for keyword in ["users", "user", "manager", "directreports", "memberof"]
+        ):
             return "users"
-        elif any(keyword in path_lower for keyword in ["groups", "group", "members", "owners"]):
+        elif any(
+            keyword in path_lower
+            for keyword in ["groups", "group", "members", "owners"]
+        ):
             return "groups"
-        elif any(keyword in path_lower for keyword in ["invitations", "invitation", "inviteduser"]):
+        elif any(
+            keyword in path_lower
+            for keyword in ["invitations", "invitation", "inviteduser"]
+        ):
             return "invitations"
-        elif any(keyword in path_lower for keyword in ["directoryobjects", "directoryobject"]):
+        elif any(
+            keyword in path_lower for keyword in ["directoryobjects", "directoryobject"]
+        ):
             return "directory"
         elif any(keyword in path_lower for keyword in ["organization", "branding"]):
             return "organization"
-        elif any(keyword in path_lower for keyword in ["directoryroles", "directoryrole", "roletemplate", "administrativeunits"]):
+        elif any(
+            keyword in path_lower
+            for keyword in [
+                "directoryroles",
+                "directoryrole",
+                "roletemplate",
+                "administrativeunits",
+            ]
+        ):
             return "roles"
         elif any(keyword in path_lower for keyword in ["domains", "domain"]):
             return "domains"
-        elif any(keyword in path_lower for keyword in ["subscriptions", "subscription"]):
+        elif any(
+            keyword in path_lower for keyword in ["subscriptions", "subscription"]
+        ):
             return "subscriptions"
-        elif any(keyword in path_lower for keyword in ["schemaextensions", "schemaextension"]):
+        elif any(
+            keyword in path_lower for keyword in ["schemaextensions", "schemaextension"]
+        ):
             return "extensions"
-        elif any(keyword in path_lower for keyword in ["authentication", "methods", "fido2", "authenticator"]):
+        elif any(
+            keyword in path_lower
+            for keyword in ["authentication", "methods", "fido2", "authenticator"]
+        ):
             return "authentication"
-        elif any(keyword in path_lower for keyword in ["settings", "preferences", "mailboxsettings"]):
+        elif any(
+            keyword in path_lower
+            for keyword in ["settings", "preferences", "mailboxsettings"]
+        ):
             return "settings"
         else:
             return "general"
+
 
 # ---- Spec loading & parsing ------------------------------------------------
 def _read_bytes_from_url(url: str) -> bytes:
     with urllib.request.urlopen(url) as resp:
         return resp.read()
 
-def load_spec(*, spec_url: Optional[str] = None, spec_path: Optional[str] = None) -> Mapping[str, Any]:
+
+def load_spec(
+    *, spec_url: Optional[str] = None, spec_path: Optional[str] = None
+) -> Mapping[str, Any]:
     """Load Microsoft Graph OpenAPI spec (JSON or YAML)."""
     if spec_path:
         data = Path(spec_path).read_bytes()
@@ -466,12 +490,16 @@ def load_spec(*, spec_url: Optional[str] = None, spec_path: Optional[str] = None
             try:
                 import yaml
             except Exception as e:
-                raise RuntimeError("Spec is not JSON and PyYAML is not installed") from e
+                raise RuntimeError(
+                    "Spec is not JSON and PyYAML is not installed"
+                ) from e
             return yaml.safe_load(data)
 
     # Try URLs
     tried: List[str] = []
-    url_candidates = [u for u in [spec_url or DEFAULT_SPEC_URL] if u] + FALLBACK_SPEC_URLS
+    url_candidates = [
+        u for u in [spec_url or DEFAULT_SPEC_URL] if u
+    ] + FALLBACK_SPEC_URLS
     for url in url_candidates:
         tried.append(url)
         try:
@@ -482,7 +510,9 @@ def load_spec(*, spec_url: Optional[str] = None, spec_path: Optional[str] = None
                 try:
                     import yaml
                 except Exception as e:
-                    raise RuntimeError("Spec is not JSON and PyYAML is not installed") from e
+                    raise RuntimeError(
+                        "Spec is not JSON and PyYAML is not installed"
+                    ) from e
                 return yaml.safe_load(data)
         except Exception as e:
             logger.warning(f"Failed to load from {url}: {e}")
@@ -492,109 +522,157 @@ def load_spec(*, spec_url: Optional[str] = None, spec_path: Optional[str] = None
         "Failed to load Microsoft Graph OpenAPI spec. Tried: " + ", ".join(tried)
     )
 
+
 def extract_path_parameters(path: str) -> List[Dict[str, str]]:
     """Extract path parameters from Users Groups path pattern."""
     import re
-    
+
     # Find all {parameter} patterns
-    pattern = r'\{([^}]+)\}'
+    pattern = r"\{([^}]+)\}"
     matches = re.findall(pattern, path)
-    
+
     path_params = []
     for match in matches:
         # Clean up parameter name and convert to Python-friendly format
-        param_name = match.replace('-', '_').replace('.', '_')
-        
+        param_name = match.replace("-", "_").replace(".", "_")
+
         # Determine parameter type based on common Users Groups patterns
-        param_type = 'str'
-        description = f'Users Groups path parameter: {match}'
-        
-        if 'id' in match.lower():
-            description = f'Users Groups {match.replace("-", " ").replace("_", " ")} identifier'
-        elif 'user' in match.lower():
-            description = f'User identifier: {match}'
-        elif 'group' in match.lower():
-            description = f'Group identifier: {match}'
-        elif 'invitation' in match.lower():
-            description = f'Invitation identifier: {match}'
-        elif 'directory' in match.lower():
-            description = f'Directory object identifier: {match}'
-        elif 'organization' in match.lower():
-            description = f'Organization identifier: {match}'
-        elif 'role' in match.lower():
-            description = f'Role identifier: {match}'
-        elif 'domain' in match.lower():
-            description = f'Domain identifier: {match}'
-        elif 'extension' in match.lower():
-            description = f'Extension identifier: {match}'
-        
-        path_params.append({
-            'name': param_name,
-            'original': match,
-            'type': param_type,
-            'required': True,
-            'description': description
-        })
-    
+        param_type = "str"
+        description = f"Users Groups path parameter: {match}"
+
+        if "id" in match.lower():
+            description = (
+                f"Users Groups {match.replace('-', ' ').replace('_', ' ')} identifier"
+            )
+        elif "user" in match.lower():
+            description = f"User identifier: {match}"
+        elif "group" in match.lower():
+            description = f"Group identifier: {match}"
+        elif "invitation" in match.lower():
+            description = f"Invitation identifier: {match}"
+        elif "directory" in match.lower():
+            description = f"Directory object identifier: {match}"
+        elif "organization" in match.lower():
+            description = f"Organization identifier: {match}"
+        elif "role" in match.lower():
+            description = f"Role identifier: {match}"
+        elif "domain" in match.lower():
+            description = f"Domain identifier: {match}"
+        elif "extension" in match.lower():
+            description = f"Extension identifier: {match}"
+
+        path_params.append(
+            {
+                "name": param_name,
+                "original": match,
+                "type": param_type,
+                "required": True,
+                "description": description,
+            }
+        )
+
     return path_params
+
 
 def _is_users_groups_operation(path: str, op_id: str) -> bool:
     """Check if this operation is related to Users Groups (Users, Groups, Invitations).
-    
+
     MODIFICATION POINT: Update EXCLUDED_KEYWORDS and EXCLUDED_PATHS lists above to exclude more APIs
     """
     path_lower = path.lower()
     op_lower = op_id.lower()
-    
+
     # ============ EXCLUSION CHECK (MODIFY EXCLUDED_KEYWORDS LIST ABOVE) ============
     # Exclude operations based on keywords
     for keyword in EXCLUDED_KEYWORDS:
         if keyword in path_lower or keyword in op_lower:
             return False
-    
-    # Exclude operations based on path patterns  
+
+    # Exclude operations based on path patterns
     for excluded_path in EXCLUDED_PATHS:
         if excluded_path.lower() in path_lower:
             return False
     # ===============================================================================
-    
+
     # Include operations that are clearly Users Groups related (CORE USERS GROUPS KEYWORDS)
     users_groups_core_keywords = [
-        'users', 'user', 'groups', 'group', 'invitations', 'invitation',
-        'directoryobjects', 'directoryobject', 'organization', 'directoryroles',
-        'directoryrole', 'directoryroletemplates', 'administrativeunits',
-        'domains', 'domain', 'subscriptions', 'subscription', 'schemaextensions',
-        'schemaextension', 'authentication', 'manager', 'directreports',
-        'memberof', 'members', 'owners', 'photo', 'settings', 'mailboxsettings',
-        'licensedetails', 'assignlicense', 'changepassword', 'revokesigninsessions',
-        'branding', 'extensions', 'groupsettings', 'groupsettingtemplates'
+        "users",
+        "user",
+        "groups",
+        "group",
+        "invitations",
+        "invitation",
+        "directoryobjects",
+        "directoryobject",
+        "organization",
+        "directoryroles",
+        "directoryrole",
+        "directoryroletemplates",
+        "administrativeunits",
+        "domains",
+        "domain",
+        "subscriptions",
+        "subscription",
+        "schemaextensions",
+        "schemaextension",
+        "authentication",
+        "manager",
+        "directreports",
+        "memberof",
+        "members",
+        "owners",
+        "photo",
+        "settings",
+        "mailboxsettings",
+        "licensedetails",
+        "assignlicense",
+        "changepassword",
+        "revokesigninsessions",
+        "branding",
+        "extensions",
+        "groupsettings",
+        "groupsettingtemplates",
     ]
-    
-    return any(keyword in path_lower or keyword in op_lower for keyword in users_groups_core_keywords)
+
+    return any(
+        keyword in path_lower or keyword in op_lower
+        for keyword in users_groups_core_keywords
+    )
+
 
 def _is_count_operation(path: str, op_id: str, summary: str, description: str) -> bool:
     """Check if this is a count operation that should be excluded."""
     # Check path patterns
-    if path.endswith('/$count') or '/$count/' in path or path.endswith('/count'):
+    if path.endswith("/$count") or "/$count/" in path or path.endswith("/count"):
         return True
-    
+
     # Check operation ID
-    if 'count' in op_id.lower():
+    if "count" in op_id.lower():
         return True
-    
+
     # Check summary and description
     summary_lower = summary.lower()
     description_lower = description.lower()
-    
-    count_indicators = [
-        'count of', 'get count', 'retrieve count', 'return count',
-        'number of', 'total count', 'item count'
-    ]
-    
-    return any(indicator in summary_lower or indicator in description_lower 
-              for indicator in count_indicators)
 
-def extract_users_groups_operations(spec: Mapping[str, Any]) -> List[UsersGroupsOperation]:
+    count_indicators = [
+        "count of",
+        "get count",
+        "retrieve count",
+        "return count",
+        "number of",
+        "total count",
+        "item count",
+    ]
+
+    return any(
+        indicator in summary_lower or indicator in description_lower
+        for indicator in count_indicators
+    )
+
+
+def extract_users_groups_operations(
+    spec: Mapping[str, Any],
+) -> List[UsersGroupsOperation]:
     """Extract Users Groups-specific operations from OpenAPI spec."""
     paths = spec.get("paths")
     if not isinstance(paths, Mapping):
@@ -603,18 +681,21 @@ def extract_users_groups_operations(spec: Mapping[str, Any]) -> List[UsersGroups
     ops: List[UsersGroupsOperation] = []
     skipped_count_ops = 0
     skipped_non_users_groups = 0
-    
+
     for path, item in paths.items():
         if not isinstance(item, Mapping):
             continue
-            
+
         # Check if path matches any Users Groups patterns
-        if not any(_path_matches_pattern(path, pattern) for pattern in USERS_GROUPS_PATH_PATTERNS):
+        if not any(
+            _path_matches_pattern(path, pattern)
+            for pattern in USERS_GROUPS_PATH_PATTERNS
+        ):
             # Additional check for Users Groups-related operations
             if not _is_users_groups_operation(path, ""):
                 skipped_non_users_groups += 1
                 continue
-        
+
         # ============ EXCLUSION CHECK (MODIFY EXCLUDED_PATHS LIST ABOVE) ============
         # Explicitly exclude paths based on exclusion list
         should_exclude = False
@@ -622,77 +703,85 @@ def extract_users_groups_operations(spec: Mapping[str, Any]) -> List[UsersGroups
             if excluded_path.lower() in path.lower():
                 should_exclude = True
                 break
-        
+
         if should_exclude:
             skipped_non_users_groups += 1
             continue
         # ============================================================================
-        
+
         # Extract path parameters
         path_params = extract_path_parameters(path)
-        
+
         for method, op in item.items():
             if method.lower() not in {"get", "post", "put", "patch", "delete"}:
                 continue
             if not isinstance(op, Mapping):
                 continue
-                
+
             op_id = op.get("operationId")
             if not op_id:
-                path_clean = path.strip("/").replace("/", "_").replace("{", "").replace("}", "").replace("-", "_")
+                path_clean = (
+                    path.strip("/")
+                    .replace("/", "_")
+                    .replace("{", "")
+                    .replace("}", "")
+                    .replace("-", "_")
+                )
                 op_id = f"{method.lower()}_{path_clean}"
-            
+
             summary = str(op.get("summary") or "")
             description = str(op.get("description") or "")
-            
+
             # Skip non-Users Groups operations
             if not _is_users_groups_operation(path, str(op_id)):
                 skipped_non_users_groups += 1
                 continue
-            
+
             # ============ EXCLUSION CHECK (MODIFY EXCLUDED_KEYWORDS LIST ABOVE) ============
             # Skip operations based on exclusion keywords
             should_exclude_op = False
             for keyword in EXCLUDED_KEYWORDS:
-                if (keyword in str(op_id).lower() or 
-                    keyword in summary.lower() or 
-                    keyword in description.lower()):
+                if (
+                    keyword in str(op_id).lower()
+                    or keyword in summary.lower()
+                    or keyword in description.lower()
+                ):
                     should_exclude_op = True
                     break
-            
+
             if should_exclude_op:
                 skipped_non_users_groups += 1
                 continue
             # ===============================================================================
-            
+
             # Skip count operations
             if _is_count_operation(path, str(op_id), summary, description):
                 skipped_count_ops += 1
                 continue
-            
+
             # Merge parameters from path and operation
             merged_params: List[Mapping[str, Any]] = []
-            
+
             # Add path-level parameters
             for p in item.get("parameters", []):
                 if isinstance(p, Mapping):
                     merged_params.append(p)
-            
+
             # Add operation-level parameters
             for p in op.get("parameters", []):
                 if isinstance(p, Mapping):
                     merged_params.append(p)
-            
+
             ops.append(
                 UsersGroupsOperation(
                     op_id=str(op_id),
                     http_method=method.upper(),
                     path=str(path),
                     summary=summary,
-                    description=description, 
+                    description=description,
                     params=merged_params,
                     request_body=op.get("requestBody"),
-                    path_params=path_params
+                    path_params=path_params,
                 )
             )
 
@@ -702,28 +791,39 @@ def extract_users_groups_operations(spec: Mapping[str, Any]) -> List[UsersGroups
         key = f"{op.op_id}_{op.http_method}_{op.path}"
         if key not in uniq:
             uniq[key] = op
-    
-    print(f"Users Groups filtering summary (MODIFY EXCLUDED_KEYWORDS/EXCLUDED_PATHS to change):")
+
+    print(
+        f"Users Groups filtering summary (MODIFY EXCLUDED_KEYWORDS/EXCLUDED_PATHS to change):"
+    )
     print(f"  - Skipped {skipped_count_ops} count operations")
-    print(f"  - Skipped {skipped_non_users_groups} excluded operations (OneDrive, Teams, SharePoint, Outlook, etc.)")
+    print(
+        f"  - Skipped {skipped_non_users_groups} excluded operations (OneDrive, Teams, SharePoint, Outlook, etc.)"
+    )
     print(f"  - Found {len(uniq)} Users Groups operations (Users, Groups, Invitations)")
-    print(f"  - Excluded keywords: {', '.join(EXCLUDED_KEYWORDS[:10])}{'...' if len(EXCLUDED_KEYWORDS) > 10 else ''}")
-    print(f"  - Excluded paths: {', '.join(EXCLUDED_PATHS[:5])}{'...' if len(EXCLUDED_PATHS) > 5 else ''}")
-    
+    print(
+        f"  - Excluded keywords: {', '.join(EXCLUDED_KEYWORDS[:10])}{'...' if len(EXCLUDED_KEYWORDS) > 10 else ''}"
+    )
+    print(
+        f"  - Excluded paths: {', '.join(EXCLUDED_PATHS[:5])}{'...' if len(EXCLUDED_PATHS) > 5 else ''}"
+    )
+
     return sorted(uniq.values(), key=lambda o: (o.operation_type, o.path, o.op_id))
+
 
 def _path_matches_pattern(path: str, pattern: str) -> bool:
     """Check if path matches the pattern with parameter placeholders."""
     # Convert pattern to regex
     regex_pattern = re.escape(pattern)
-    regex_pattern = regex_pattern.replace(r'\{[^}]+\}', r'\{[^}]+\}')
-    regex_pattern = regex_pattern.replace(r'\\\{[^}]+\\\}', r'[^/]+')
+    regex_pattern = regex_pattern.replace(r"\{[^}]+\}", r"\{[^}]+\}")
+    regex_pattern = regex_pattern.replace(r"\\\{[^}]+\\\}", r"[^/]+")
     regex_pattern = f"^{regex_pattern}"
-    
+
     return bool(re.match(regex_pattern, path))
+
 
 # ---- Code generation helpers ----------------------------------------------
 _IDENT_RE = re.compile(r"[^0-9a-zA-Z_]")
+
 
 def sanitize_py_name(name: str) -> str:
     """Sanitize name to valid Python identifier."""
@@ -732,7 +832,7 @@ def sanitize_py_name(name: str) -> str:
     name = name.replace(".", "_")
     name = name.replace("-", "_")
     name = name.replace(":", "_")
-    
+
     n = _IDENT_RE.sub("_", name)
     if n and n[0].isdigit():
         n = f"_{n}"
@@ -742,16 +842,19 @@ def sanitize_py_name(name: str) -> str:
         n = f"_{n}"
     return n
 
+
 def to_snake(name: str) -> str:
     """Convert a possibly camelCase/mixed name to snake_case (lower)."""
     name = name.replace("$", "dollar_")
     name = name.replace("@", "at_")
     name = name.replace(".", "_").replace("-", "_").replace(":", "_")
-    
+
     out: List[str] = []
     for i, ch in enumerate(name):
         if ch.isupper():
-            if i > 0 and (name[i-1].islower() or (i+1 < len(name) and name[i+1].islower())):
+            if i > 0 and (
+                name[i - 1].islower() or (i + 1 < len(name) and name[i + 1].islower())
+            ):
                 out.append("_")
             out.append(ch.lower())
         else:
@@ -760,134 +863,173 @@ def to_snake(name: str) -> str:
     s = re.sub(r"__+", "_", s)
     return s.strip("_")
 
-def extract_operation_parameters(op: UsersGroupsOperation) -> Tuple[List[str], List[str], List[str]]:
+
+def extract_operation_parameters(
+    op: UsersGroupsOperation,
+) -> Tuple[List[str], List[str], List[str]]:
     """Extract and categorize parameters from Users Groups operation."""
     required_params = ["self"]
     optional_params = []
     param_docs = []
-    
+
     # Add path parameters first (always required)
     for path_param in op.path_params:
-        param_name = sanitize_py_name(path_param['name'])
-        param_type = path_param.get('type', 'str')
+        param_name = sanitize_py_name(path_param["name"])
+        param_type = path_param.get("type", "str")
         required_params.append(f"{param_name}: {param_type}")
-        param_docs.append(f"            {param_name} ({param_type}, required): {path_param.get('description', 'Path parameter')}")
-    
+        param_docs.append(
+            f"            {param_name} ({param_type}, required): {path_param.get('description', 'Path parameter')}"
+        )
+
     # Add other parameters from OpenAPI spec
     for param in op.params:
         if not isinstance(param, dict):
             continue
-            
-        param_name = param.get('name', '')
+
+        param_name = param.get("name", "")
         if not param_name:
             continue
-            
+
         # Skip if this is already handled as a path parameter
-        if any(path_param['original'] == param_name or path_param['name'] == param_name for path_param in op.path_params):
+        if any(
+            path_param["original"] == param_name or path_param["name"] == param_name
+            for path_param in op.path_params
+        ):
             continue
-            
+
         clean_name = sanitize_py_name(param_name)
-        param_schema = param.get('schema', {})
+        param_schema = param.get("schema", {})
         param_type = _get_python_type(param_schema)
-        param_location = param.get('in', 'query')
-        is_required = param.get('required', False)
-        description = param.get('description', f'{param_location} parameter')
-        
+        param_location = param.get("in", "query")
+        is_required = param.get("required", False)
+        description = param.get("description", f"{param_location} parameter")
+
         if is_required:
             required_params.append(f"{clean_name}: {param_type}")
-            param_docs.append(f"            {clean_name} ({param_type}, required): {description}")
+            param_docs.append(
+                f"            {clean_name} ({param_type}, required): {description}"
+            )
         else:
             optional_params.append(f"{clean_name}: Optional[{param_type}] = None")
-            param_docs.append(f"            {clean_name} ({param_type}, optional): {description}")
-    
+            param_docs.append(
+                f"            {clean_name} ({param_type}, optional): {description}"
+            )
+
     # Add Users Groups-specific OData parameters
     users_groups_odata_params = [
         "select: Optional[List[str]] = None",
-        "expand: Optional[List[str]] = None", 
+        "expand: Optional[List[str]] = None",
         "filter: Optional[str] = None",
         "orderby: Optional[str] = None",
         "search: Optional[str] = None",
         "top: Optional[int] = None",
-        "skip: Optional[int] = None"
+        "skip: Optional[int] = None",
     ]
     optional_params.extend(users_groups_odata_params)
-    
+
     # Add Users Groups OData parameter docs
     users_groups_odata_docs = [
         "            select (optional): Select specific properties to return",
         "            expand (optional): Expand related entities (e.g., manager, memberOf, directReports)",
-        "            filter (optional): Filter the results using OData syntax", 
+        "            filter (optional): Filter the results using OData syntax",
         "            orderby (optional): Order the results by specified properties",
         "            search (optional): Search for users, groups, or directory objects by content",
         "            top (optional): Limit number of results returned",
-        "            skip (optional): Skip number of results for pagination"
+        "            skip (optional): Skip number of results for pagination",
     ]
     param_docs.extend(users_groups_odata_docs)
-    
+
     # Add request body if needed (for Users Groups operations)
     has_body = op.request_body is not None
     if has_body:
         optional_params.append("request_body: Optional[Mapping[str, Any]] = None")
-        param_docs.append("            request_body (optional): Request body data for Users Groups operations")
-    
+        param_docs.append(
+            "            request_body (optional): Request body data for Users Groups operations"
+        )
+
     # Add headers parameter
     optional_params.append("headers: Optional[Dict[str, str]] = None")
-    param_docs.append("            headers (optional): Additional headers for the request")
-    
+    param_docs.append(
+        "            headers (optional): Additional headers for the request"
+    )
+
     # Add kwargs
     optional_params.append("**kwargs")
     param_docs.append("            **kwargs: Additional query parameters")
-    
+
     return required_params, optional_params, param_docs
+
 
 def _get_python_type(schema: Dict[str, Any]) -> str:
     """Convert OpenAPI schema to Python type."""
     if not schema:
         return "str"
-    
-    schema_type = schema.get('type', 'string')
-    schema_format = schema.get('format', '')
-    
+
+    schema_type = schema.get("type", "string")
+    schema_format = schema.get("format", "")
+
     type_mapping = {
-        'string': 'str',
-        'integer': 'int',
-        'number': 'float',
-        'boolean': 'bool',
-        'array': 'List[str]',
-        'object': 'Dict[str, Any]'
+        "string": "str",
+        "integer": "int",
+        "number": "float",
+        "boolean": "bool",
+        "array": "List[str]",
+        "object": "Dict[str, Any]",
     }
-    
-    base_type = type_mapping.get(schema_type, 'str')
-    
+
+    base_type = type_mapping.get(schema_type, "str")
+
     # Handle special formats
-    if schema_format in ['date-time', 'date']:
-        return 'str'  # Keep as string for easier handling
-    elif schema_format == 'binary':
-        return 'bytes'
-    
+    if schema_format in ["date-time", "date"]:
+        return "str"  # Keep as string for easier handling
+    elif schema_format == "binary":
+        return "bytes"
+
     return base_type
 
-def _get_query_param_classes(path: str, method: str) -> Tuple[Optional[str], Optional[str]]:
+
+def _get_query_param_classes(
+    path: str, method: str
+) -> Tuple[Optional[str], Optional[str]]:
     """Get the appropriate query parameter classes for the Users Groups endpoint."""
     path_lower = path.lower()
     method_lower = method.lower()
-    
+
     # Map paths to their corresponding query parameter classes
-    if '/users' in path_lower and method_lower == 'get':
-        return "UsersRequestBuilder.UsersRequestBuilderGetQueryParameters", "UsersRequestBuilder.UsersRequestBuilderGetRequestConfiguration"
-    elif '/groups' in path_lower and method_lower == 'get':
-        return "GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters", "GroupsRequestBuilder.GroupsRequestBuilderGetRequestConfiguration"
-    elif '/invitations' in path_lower and method_lower == 'get':
-        return "InvitationsRequestBuilder.InvitationsRequestBuilderGetQueryParameters", "InvitationsRequestBuilder.InvitationsRequestBuilderGetRequestConfiguration"
-    elif '/directoryobjects' in path_lower and method_lower == 'get':
-        return "DirectoryObjectsRequestBuilder.DirectoryObjectsRequestBuilderGetQueryParameters", "DirectoryObjectsRequestBuilder.DirectoryObjectsRequestBuilderGetRequestConfiguration"
-    elif '/directoryroles' in path_lower and method_lower == 'get':
-        return "DirectoryRolesRequestBuilder.DirectoryRolesRequestBuilderGetQueryParameters", "DirectoryRolesRequestBuilder.DirectoryRolesRequestBuilderGetRequestConfiguration"
-    elif '/organization' in path_lower and method_lower == 'get':
-        return "OrganizationRequestBuilder.OrganizationRequestBuilderGetQueryParameters", "OrganizationRequestBuilder.OrganizationRequestBuilderGetRequestConfiguration"
+    if "/users" in path_lower and method_lower == "get":
+        return (
+            "UsersRequestBuilder.UsersRequestBuilderGetQueryParameters",
+            "UsersRequestBuilder.UsersRequestBuilderGetRequestConfiguration",
+        )
+    elif "/groups" in path_lower and method_lower == "get":
+        return (
+            "GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters",
+            "GroupsRequestBuilder.GroupsRequestBuilderGetRequestConfiguration",
+        )
+    elif "/invitations" in path_lower and method_lower == "get":
+        return (
+            "InvitationsRequestBuilder.InvitationsRequestBuilderGetQueryParameters",
+            "InvitationsRequestBuilder.InvitationsRequestBuilderGetRequestConfiguration",
+        )
+    elif "/directoryobjects" in path_lower and method_lower == "get":
+        return (
+            "DirectoryObjectsRequestBuilder.DirectoryObjectsRequestBuilderGetQueryParameters",
+            "DirectoryObjectsRequestBuilder.DirectoryObjectsRequestBuilderGetRequestConfiguration",
+        )
+    elif "/directoryroles" in path_lower and method_lower == "get":
+        return (
+            "DirectoryRolesRequestBuilder.DirectoryRolesRequestBuilderGetQueryParameters",
+            "DirectoryRolesRequestBuilder.DirectoryRolesRequestBuilderGetRequestConfiguration",
+        )
+    elif "/organization" in path_lower and method_lower == "get":
+        return (
+            "OrganizationRequestBuilder.OrganizationRequestBuilderGetQueryParameters",
+            "OrganizationRequestBuilder.OrganizationRequestBuilderGetRequestConfiguration",
+        )
     else:
         # Fallback to generic RequestConfiguration for unmatched endpoints
         return "RequestConfiguration", "RequestConfiguration"
+
 
 def build_users_groups_method_code(op: UsersGroupsOperation) -> str:
     """Generate comprehensive async method code for Users Groups operation."""
@@ -895,7 +1037,7 @@ def build_users_groups_method_code(op: UsersGroupsOperation) -> str:
 
     # Build method signature
     all_params = required_params + optional_params
-    
+
     if len(all_params) <= 5:
         sig = ", ".join(all_params)
     else:
@@ -903,7 +1045,11 @@ def build_users_groups_method_code(op: UsersGroupsOperation) -> str:
         sig = f"\n        {params_formatted}\n    "
 
     summary = op.summary or op.op_id
-    params_doc = "\n".join(param_docs) if param_docs else "            (standard Users Groups parameters)"
+    params_doc = (
+        "\n".join(param_docs)
+        if param_docs
+        else "            (standard Users Groups parameters)"
+    )
 
     # Generate Users Groups-specific Graph SDK method call
     graph_method_call = _generate_users_groups_graph_call(op)
@@ -965,15 +1111,16 @@ def build_users_groups_method_code(op: UsersGroupsOperation) -> str:
 
     return method_code
 
+
 def _generate_users_groups_graph_call(op: UsersGroupsOperation) -> str:
     """Generate Users Groups-specific Microsoft Graph SDK method call."""
     path = op.path
     method = op.http_method.lower()
     has_body = op.request_body is not None
-    
+
     # Build request builder chain optimized for Users Groups
     request_builder = _build_users_groups_request_builder_chain(path, op.path_params)
-    
+
     # Generate method call based on HTTP method
     if method == "get":
         call = f"response = await {request_builder}.get(request_configuration=config)"
@@ -981,7 +1128,9 @@ def _generate_users_groups_graph_call(op: UsersGroupsOperation) -> str:
         if has_body:
             call = f"response = await {request_builder}.post(body=request_body, request_configuration=config)"
         else:
-            call = f"response = await {request_builder}.post(request_configuration=config)"
+            call = (
+                f"response = await {request_builder}.post(request_configuration=config)"
+            )
     elif method == "patch":
         if has_body:
             call = f"response = await {request_builder}.patch(body=request_body, request_configuration=config)"
@@ -991,34 +1140,41 @@ def _generate_users_groups_graph_call(op: UsersGroupsOperation) -> str:
         if has_body:
             call = f"response = await {request_builder}.put(body=request_body, request_configuration=config)"
         else:
-            call = f"response = await {request_builder}.put(request_configuration=config)"
+            call = (
+                f"response = await {request_builder}.put(request_configuration=config)"
+            )
     elif method == "delete":
-        call = f"response = await {request_builder}.delete(request_configuration=config)"
+        call = (
+            f"response = await {request_builder}.delete(request_configuration=config)"
+        )
     else:
         call = f"response = await {request_builder}.get(request_configuration=config)"
 
     return f"            {call}"
 
-def _build_users_groups_request_builder_chain(path: str, path_params: List[Dict[str, str]]) -> str:
+
+def _build_users_groups_request_builder_chain(
+    path: str, path_params: List[Dict[str, str]]
+) -> str:
     """Build Users Groups-optimized Microsoft Graph SDK request builder chain."""
     # Start with base client
     builder = "self.client"
-    
+
     # Split path into segments
-    segments = [seg for seg in path.split('/') if seg]
-    
+    segments = [seg for seg in path.split("/") if seg]
+
     i = 0
     while i < len(segments):
         segment = segments[i]
-        
-        if segment.startswith('{') and segment.endswith('}'):
+
+        if segment.startswith("{") and segment.endswith("}"):
             # This is a parameter - use appropriate by_* method
-            param_name = segment[1:-1].replace('-', '_')
+            param_name = segment[1:-1].replace("-", "_")
             python_param = sanitize_py_name(param_name)
-            
+
             # Get the previous segment to determine the by_* method
-            prev_segment = segments[i-1] if i > 0 else ""
-            
+            prev_segment = segments[i - 1] if i > 0 else ""
+
             if prev_segment == "users":
                 builder += f".by_user_id({python_param})"
             elif prev_segment == "groups":
@@ -1074,9 +1230,13 @@ def _build_users_groups_request_builder_chain(path: str, path_params: List[Dict[
             elif prev_segment == "windowsHelloForBusinessMethods":
                 builder += f".by_windows_hello_for_business_authentication_method_id({python_param})"
             elif prev_segment == "localizations":
-                builder += f".by_organizational_branding_localization_id({python_param})"
+                builder += (
+                    f".by_organizational_branding_localization_id({python_param})"
+                )
             elif prev_segment == "certificateBasedAuthConfiguration":
-                builder += f".by_certificate_based_auth_configuration_id({python_param})"
+                builder += (
+                    f".by_certificate_based_auth_configuration_id({python_param})"
+                )
             elif prev_segment == "serviceConfigurationRecords":
                 builder += f".by_domain_dns_record_id({python_param})"
             elif prev_segment == "verificationDnsRecords":
@@ -1084,7 +1244,7 @@ def _build_users_groups_request_builder_chain(path: str, path_params: List[Dict[
             else:
                 # Generic fallback for other Users Groups parameters
                 builder += f".by_{prev_segment[:-1] if prev_segment.endswith('s') else prev_segment}_id({python_param})"
-                
+
         elif segment == "$ref":
             # Handle special $ref endpoints for relationships
             builder += ".ref"
@@ -1273,10 +1433,11 @@ def _build_users_groups_request_builder_chain(path: str, path_params: List[Dict[
                 # Convert to snake_case for other segments
                 snake_segment = to_snake(segment)
                 builder += f".{snake_segment}"
-        
+
         i += 1
-    
+
     return builder
+
 
 def build_users_groups_class_code(ops: Sequence[UsersGroupsOperation]) -> str:
     """Generate the complete Users Groups client class."""
@@ -1286,7 +1447,7 @@ def build_users_groups_class_code(ops: Sequence[UsersGroupsOperation]) -> str:
         if op.operation_type not in methods_by_type:
             methods_by_type[op.operation_type] = []
         methods_by_type[op.operation_type].append(op)
-    
+
     class_name = "UsersGroupsDataSource"
     response_class = "UsersGroupsResponse"
 
@@ -1433,15 +1594,28 @@ class {class_name}:
 
     # Add methods organized by operation type
     methods_section = ""
-    
+
     # Define the order of operation types for better organization
-    operation_order = ['users', 'groups', 'invitations', 'directory', 'organization', 'roles', 'domains', 'extensions', 'authentication', 'settings', 'subscriptions', 'general']
-    
+    operation_order = [
+        "users",
+        "groups",
+        "invitations",
+        "directory",
+        "organization",
+        "roles",
+        "domains",
+        "extensions",
+        "authentication",
+        "settings",
+        "subscriptions",
+        "general",
+    ]
+
     for op_type in operation_order:
         if op_type in methods_by_type:
             methods = methods_by_type[op_type]
             methods_section += f"    # ========== {op_type.upper()} OPERATIONS ({len(methods)} methods) ==========\n\n"
-            
+
             for op in methods:
                 try:
                     method_code = build_users_groups_method_code(op)
@@ -1450,8 +1624,9 @@ class {class_name}:
                     logger.warning(f"Error generating method code for {op.op_id}: {e}")
                     # Skip this method and continue
                     continue
-    
+
     return header + methods_section + "\n\n"
+
 
 # ---- Public entrypoints ----------------------------------------------------
 def generate_users_groups_client(
@@ -1462,40 +1637,41 @@ def generate_users_groups_client(
 ) -> str:
     """Generate comprehensive Users Groups client. Returns file path."""
     out_filename = out_path or "users_groups_client.py"
-    
+
     print(f"Loading Microsoft Graph OpenAPI specification for Users Groups...")
     spec = load_spec(spec_url=spec_url, spec_path=spec_path)
-    
+
     print(f"Extracting Users Groups operations with comprehensive coverage...")
     ops = extract_users_groups_operations(spec)
-    
+
     print(f"Found {len(ops)} Users Groups operations with full parameter support")
-    
+
     # Show breakdown by operation type
     ops_by_type = {}
     for op in ops:
         if op.operation_type not in ops_by_type:
             ops_by_type[op.operation_type] = 0
         ops_by_type[op.operation_type] += 1
-    
+
     print("Operation breakdown:")
     for op_type, count in sorted(ops_by_type.items()):
         print(f"  - {op_type}: {count} methods")
-    
+
     print("Generating comprehensive Users Groups async client code...")
     code = build_users_groups_class_code(ops)
-    
+
     # Create microsoft directory (reuse the existing structure)
-    script_dir = Path(__file__).parent if __file__ else Path('.')
-    microsoft_dir = script_dir / 'microsoft'
+    script_dir = Path(__file__).parent if __file__ else Path(".")
+    microsoft_dir = script_dir / "microsoft"
     microsoft_dir.mkdir(exist_ok=True)
-    
+
     # Write file
     full_path = microsoft_dir / out_filename
     full_path.write_text(code, encoding="utf-8")
     print(f"Saved comprehensive Users Groups client to: {full_path}")
-    
+
     return str(full_path)
+
 
 def import_generated(path: str, symbol: str):
     """Import the generated module and return a symbol."""
@@ -1508,41 +1684,85 @@ def import_generated(path: str, symbol: str):
     spec.loader.exec_module(module)
     return getattr(module, symbol)
 
+
 # ---- CLI & Main ------------------------------------------------------------
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Generate comprehensive Users Groups API client"
     )
-    ap.add_argument("--out", help="Output .py file path (default: users_groups_client.py)")
+    ap.add_argument(
+        "--out", help="Output .py file path (default: users_groups_client.py)"
+    )
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--spec-url", default=None, help="Microsoft Graph OpenAPI spec URL")
     g.add_argument("--spec-path", help="Local spec file path (JSON/YAML)")
-    ap.add_argument("--show-patterns", action="store_true", help="Show all Users Groups path patterns")
-    
+    ap.add_argument(
+        "--show-patterns",
+        action="store_true",
+        help="Show all Users Groups path patterns",
+    )
+
     return ap.parse_args(argv)
+
 
 def _show_patterns() -> None:
     """Show all Users Groups path patterns that will be matched."""
     print("Users Groups API Path Patterns (Comprehensive Coverage):")
     print(f"Total patterns: {len(USERS_GROUPS_PATH_PATTERNS)}")
     print()
-    
+
     # Group patterns by category
     pattern_groups = {
-        "Users Core": [p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/users") and not any(x in p for x in ["authentication", "settings", "mailbox"])],
-        "Users Authentication": [p for p in USERS_GROUPS_PATH_PATTERNS if "/authentication" in p],
-        "Users Settings": [p for p in USERS_GROUPS_PATH_PATTERNS if "/settings" in p or "/mailbox" in p],
-        "Groups Core": [p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/groups") and "/settings" not in p],
-        "Group Settings": [p for p in USERS_GROUPS_PATH_PATTERNS if "/groupSettings" in p or "/groupSettingTemplates" in p],
-        "Invitations": [p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/invitations")],
-        "Directory Objects": [p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/directoryObjects")],
-        "Organization": [p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/organization")],
-        "Directory Roles": [p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/directoryRoles") or p.startswith("/directoryRoleTemplates")],
-        "Administrative Units": [p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/administrativeUnits")],
+        "Users Core": [
+            p
+            for p in USERS_GROUPS_PATH_PATTERNS
+            if p.startswith("/users")
+            and not any(x in p for x in ["authentication", "settings", "mailbox"])
+        ],
+        "Users Authentication": [
+            p for p in USERS_GROUPS_PATH_PATTERNS if "/authentication" in p
+        ],
+        "Users Settings": [
+            p for p in USERS_GROUPS_PATH_PATTERNS if "/settings" in p or "/mailbox" in p
+        ],
+        "Groups Core": [
+            p
+            for p in USERS_GROUPS_PATH_PATTERNS
+            if p.startswith("/groups") and "/settings" not in p
+        ],
+        "Group Settings": [
+            p
+            for p in USERS_GROUPS_PATH_PATTERNS
+            if "/groupSettings" in p or "/groupSettingTemplates" in p
+        ],
+        "Invitations": [
+            p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/invitations")
+        ],
+        "Directory Objects": [
+            p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/directoryObjects")
+        ],
+        "Organization": [
+            p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/organization")
+        ],
+        "Directory Roles": [
+            p
+            for p in USERS_GROUPS_PATH_PATTERNS
+            if p.startswith("/directoryRoles")
+            or p.startswith("/directoryRoleTemplates")
+        ],
+        "Administrative Units": [
+            p
+            for p in USERS_GROUPS_PATH_PATTERNS
+            if p.startswith("/administrativeUnits")
+        ],
         "Domains": [p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/domains")],
-        "Extensions & Subscriptions": [p for p in USERS_GROUPS_PATH_PATTERNS if p.startswith("/schemaExtensions") or p.startswith("/subscriptions")],
+        "Extensions & Subscriptions": [
+            p
+            for p in USERS_GROUPS_PATH_PATTERNS
+            if p.startswith("/schemaExtensions") or p.startswith("/subscriptions")
+        ],
     }
-    
+
     for group_name, patterns in pattern_groups.items():
         if patterns:
             print(f"{group_name} ({len(patterns)} patterns):")
@@ -1552,44 +1772,54 @@ def _show_patterns() -> None:
                 print(f"  ... and {len(patterns) - 5} more")
             print()
 
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     """Main CLI entry point."""
     ns = _parse_args(argv)
-    
+
     if ns.show_patterns:
         _show_patterns()
         return
-    
+
     print(f"Starting comprehensive Users Groups API client generation...")
-    
+
     try:
         out_path = generate_users_groups_client(
             out_path=ns.out,
             spec_url=ns.spec_url,
             spec_path=ns.spec_path,
         )
-        
+
         print(f"\nUsers Groups comprehensive client generation completed!")
         print(f"Generated class: UsersGroupsDataSource")
         print(f"Output file: {out_path}")
         print(f"Features:")
-        print(f"  - Complete Users Groups API endpoint coverage (Users, Groups, Invitations)")
+        print(
+            f"  - Complete Users Groups API endpoint coverage (Users, Groups, Invitations)"
+        )
         print(f"  - User operations: CRUD, profile, authentication, settings, licenses")
         print(f"  - Group operations: CRUD, membership, settings, lifecycle policies")
         print(f"  - Invitation operations: user invitations and invitation management")
-        print(f"  - Directory operations: directory objects, roles, administrative units")
+        print(
+            f"  - Directory operations: directory objects, roles, administrative units"
+        )
         print(f"  - Organization operations: settings, branding, configuration")
-        print(f"  - Advanced features: authentication methods, schema extensions, domains")
+        print(
+            f"  - Advanced features: authentication methods, schema extensions, domains"
+        )
         print(f"  - Async methods with comprehensive error handling")
         print(f"")
         print(f"🔧 TO MODIFY EXCLUSIONS:")
         print(f"  - Edit EXCLUDED_KEYWORDS list to add/remove excluded API keywords")
         print(f"  - Edit EXCLUDED_PATHS list to add/remove excluded path patterns")
-        print(f"  - Current exclusions: OneDrive, Teams, SharePoint, OneNote, Planner, Outlook")
-        
+        print(
+            f"  - Current exclusions: OneDrive, Teams, SharePoint, OneNote, Planner, Outlook"
+        )
+
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

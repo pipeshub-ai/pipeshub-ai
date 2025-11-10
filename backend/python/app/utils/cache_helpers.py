@@ -1,16 +1,15 @@
-"""
-Caching utilities for performance optimization
-"""
+"""Caching utilities for performance optimization"""
+
 import asyncio
 from collections import OrderedDict
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.base_arango_service import BaseArangoService
 
 # In-memory cache for user/org info (using OrderedDict for O(1) LRU eviction)
-_user_info_cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+_user_info_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _cache_lock = asyncio.Lock()
 
 # Cache configuration
@@ -21,10 +20,9 @@ MAX_CACHE_SIZE = 1000  # Maximum number of cached entries
 async def get_cached_user_info(
     arango_service: BaseArangoService,
     user_id: str,
-    org_id: str
-) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """
-    Get user and org info with caching to reduce database calls.
+    org_id: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Get user and org info with caching to reduce database calls.
 
     Args:
         arango_service: ArangoDB service instance
@@ -33,6 +31,7 @@ async def get_cached_user_info(
 
     Returns:
         Tuple of (user_info, org_info)
+
     """
     cache_key = f"{user_id}:{org_id}"
 
@@ -42,14 +41,13 @@ async def get_cached_user_info(
 
         if cached:
             # Check if cache is still valid
-            age = (datetime.now() - cached['timestamp']).total_seconds()
+            age = (datetime.now() - cached["timestamp"]).total_seconds()
             if age < USER_INFO_CACHE_TTL:
                 # Move to end to mark as recently used (LRU)
                 _user_info_cache.move_to_end(cache_key)
-                return cached['user_info'], cached['org_info']
-            else:
-                # Remove stale entry
-                del _user_info_cache[cache_key]
+                return cached["user_info"], cached["org_info"]
+            # Remove stale entry
+            del _user_info_cache[cache_key]
 
     # Cache miss or expired - fetch from database
     # Use asyncio.gather for parallel fetching
@@ -57,7 +55,7 @@ async def get_cached_user_info(
         user_info, org_info = await asyncio.gather(
             arango_service.get_user_by_user_id(user_id),
             arango_service.get_document(org_id, CollectionNames.ORGS.value),
-            return_exceptions=True
+            return_exceptions=True,
         )
 
         # Handle exceptions from gather
@@ -74,9 +72,9 @@ async def get_cached_user_info(
                 _user_info_cache.popitem(last=False)
 
             _user_info_cache[cache_key] = {
-                'user_info': user_info,
-                'org_info': org_info,
-                'timestamp': datetime.now()
+                "user_info": user_info,
+                "org_info": org_info,
+                "timestamp": datetime.now(),
             }
 
         return user_info, org_info
@@ -86,14 +84,16 @@ async def get_cached_user_info(
         return None, None
 
 
-async def clear_user_info_cache(user_id: Optional[str] = None, org_id: Optional[str] = None) -> None:
-    """
-    Clear user info cache entries.
+async def clear_user_info_cache(
+    user_id: str | None = None, org_id: str | None = None
+) -> None:
+    """Clear user info cache entries.
 
     Args:
         user_id: If provided, clear cache for this user only
         org_id: If provided, clear cache for this org only
         If both None, clear entire cache
+
     """
     async with _cache_lock:
         if user_id is None and org_id is None:
@@ -102,20 +102,20 @@ async def clear_user_info_cache(user_id: Optional[str] = None, org_id: Optional[
             # Clear specific entries
             keys_to_remove = []
             for key in _user_info_cache:
-                key_user_id, key_org_id = key.split(':')
-                if (user_id is None or key_user_id == user_id) and \
-                   (org_id is None or key_org_id == org_id):
+                key_user_id, key_org_id = key.split(":")
+                if (user_id is None or key_user_id == user_id) and (
+                    org_id is None or key_org_id == org_id
+                ):
                     keys_to_remove.append(key)
 
             for key in keys_to_remove:
                 del _user_info_cache[key]
 
 
-def get_cache_stats() -> Dict[str, Any]:
+def get_cache_stats() -> dict[str, Any]:
     """Get cache statistics for monitoring"""
     return {
-        'size': len(_user_info_cache),
-        'max_size': MAX_CACHE_SIZE,
-        'ttl_seconds': USER_INFO_CACHE_TTL
+        "size": len(_user_info_cache),
+        "max_size": MAX_CACHE_SIZE,
+        "ttl_seconds": USER_INFO_CACHE_TTL,
     }
-

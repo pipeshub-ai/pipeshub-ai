@@ -10,8 +10,7 @@ class XLSParser:
         pass
 
     def convert_xls_to_xlsx(self, binary: bytes) -> bytes:
-        """
-        Convert .xls file to .xlsx using LibreOffice and return the xlsx binary content
+        """Convert .xls file to .xlsx using LibreOffice and return the xlsx binary content
 
         Args:
             binary (bytes): The binary content of the XLS file
@@ -23,12 +22,15 @@ class XLSParser:
             subprocess.CalledProcessError: If LibreOffice is not installed or conversion fails
             FileNotFoundError: If the converted file is not found
             Exception: For other conversion errors
+
         """
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
                 # Check if LibreOffice is installed
                 subprocess.run(
-                    ["which", "libreoffice"], check=True, capture_output=True
+                    ["which", "libreoffice"],
+                    check=True,
+                    capture_output=True,
                 )
 
                 # Create input file path
@@ -59,7 +61,7 @@ class XLSParser:
 
                 if not os.path.exists(xlsx_file):
                     raise FileNotFoundError(
-                        "XLSX conversion failed - output file not found"
+                        "XLSX conversion failed - output file not found",
                     )
 
                 # Read the converted file as binary
@@ -75,11 +77,14 @@ class XLSParser:
                         f"\nError details: {e.stderr.decode('utf-8', errors='replace')}"
                     )
                 raise subprocess.CalledProcessError(
-                    e.returncode, e.cmd, output=e.output, stderr=error_msg.encode()
+                    e.returncode,
+                    e.cmd,
+                    output=e.output,
+                    stderr=error_msg.encode(),
                 )
             except subprocess.TimeoutExpired as e:
                 raise Exception(
-                    "LibreOffice conversion timed out after 30 seconds"
+                    "LibreOffice conversion timed out after 30 seconds",
                 ) from e
             except Exception as e:
-                raise Exception(f"Error converting .xls to .xlsx: {str(e)}") from e
+                raise Exception(f"Error converting .xls to .xlsx: {e!s}") from e

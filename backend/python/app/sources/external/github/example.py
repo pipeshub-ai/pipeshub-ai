@@ -225,7 +225,9 @@ def main() -> None:
                         issues = [issue.title for issue in repo.get_issues()]
                         print("list of issues:", issues)
                     except GithubException as e:
-                        print(f"list of issues: <GithubException - issues not found: {e}")
+                        print(
+                            f"list of issues: <GithubException - issues not found: {e}"
+                        )
                     except Exception as e:
                         print(f"list of issues: <Error fetching issues: {e}")
 

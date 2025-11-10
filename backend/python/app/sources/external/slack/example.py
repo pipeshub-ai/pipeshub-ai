@@ -10,8 +10,7 @@ def main() -> None:
     if not token:
         raise Exception("SLACK_TOKEN is not set")
 
-
-    slack_client : SlackClient = SlackClient.build_with_config(
+    slack_client: SlackClient = SlackClient.build_with_config(
         SlackTokenConfig(
             token=token,
         ),
@@ -27,7 +26,14 @@ def main() -> None:
     print(asyncio.run(slack_data_source.conversations_history(channel="xx")))
     print(asyncio.run(slack_data_source.conversations_join(channel="xx")))
     print(asyncio.run(slack_data_source.conversations_create(name="test")))
-    print(asyncio.run(slack_data_source.conversations_invite(channel="xx", users=['xx', 'xx', 'xx', 'xx', 'xx', 'xx'])))
+    print(
+        asyncio.run(
+            slack_data_source.conversations_invite(
+                channel="xx", users=["xx", "xx", "xx", "xx", "xx", "xx"]
+            )
+        )
+    )
+
 
 if __name__ == "__main__":
     main()

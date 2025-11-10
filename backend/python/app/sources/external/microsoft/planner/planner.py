@@ -1,9 +1,8 @@
-
-
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import asdict
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
@@ -29,29 +28,37 @@ from app.sources.client.microsoft.microsoft import MSGraphClient
 # Planner-specific response wrapper
 class PlannerResponse:
     """Standardized Planner API response wrapper."""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def __init__(self, success: bool, data: Optional[Dict[str, Any]] = None, error: Optional[str] = None, message: Optional[str] = None) -> None:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def __init__(
+        self,
+        success: bool,
+        data: dict[str, Any] | None = None,
+        error: str | None = None,
+        message: str | None = None,
+    ) -> None:
         self.success = success
         self.data = data
         self.error = error
         self.message = message
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
 
+
 # Set up logger
 logger = logging.getLogger(__name__)
 
+
 class PlannerDataSource:
-    """
-    Comprehensive Microsoft Planner API client with complete Plans, Buckets, and Tasks coverage.
+    """Comprehensive Microsoft Planner API client with complete Plans, Buckets, and Tasks coverage.
 
     Features:
     - Complete Planner API coverage with 318 methods organized by operation type
@@ -107,24 +114,26 @@ class PlannerDataSource:
         """Handle Planner API response with comprehensive error handling."""
         try:
             if response is None:
-                return PlannerResponse(success=False, error="Empty response from Planner API")
+                return PlannerResponse(
+                    success=False, error="Empty response from Planner API"
+                )
             success = True
             error_msg = None
 
             # Enhanced error response handling for Planner operations
-            if hasattr(response, 'error'):
+            if hasattr(response, "error"):
                 success = False
                 error_msg = str(response.error)
-            elif isinstance(response, dict) and 'error' in response:
+            elif isinstance(response, dict) and "error" in response:
                 success = False
-                error_info = response['error']
+                error_info = response["error"]
                 if isinstance(error_info, dict):
-                    error_code = error_info.get('code', 'Unknown')
-                    error_message = error_info.get('message', 'No message')
+                    error_code = error_info.get("code", "Unknown")
+                    error_message = error_info.get("message", "No message")
                     error_msg = f"{error_code}: {error_message}"
                 else:
                     error_msg = str(error_info)
-            elif hasattr(response, 'code') and hasattr(response, 'message'):
+            elif hasattr(response, "code") and hasattr(response, "message"):
                 success = False
                 error_msg = f"{response.code}: {response.message}"
 
@@ -137,7 +146,7 @@ class PlannerDataSource:
             logger.error(f"Error handling Planner response: {e}")
             return PlannerResponse(success=False, error=str(e))
 
-    def get_data_source(self) -> 'PlannerDataSource':
+    def get_data_source(self) -> "PlannerDataSource":
         """Get the underlying Planner client."""
         return self
 
@@ -146,16 +155,16 @@ class PlannerDataSource:
     async def groups_delete_planner(
         self,
         group_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property planner for groups.
         Planner operation: DELETE /groups/{group-id}/planner
@@ -207,30 +216,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.delete(request_configuration=config)
+            response = await self.client.groups.by_group_id(group_id).planner.delete(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_get_planner(
         self,
         group_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get planner from groups.
         Planner operation: GET /groups/{group-id}/planner
@@ -254,7 +265,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = PlannerRequestBuilder.PlannerRequestBuilderGetQueryParameters()
+            query_params = (
+                PlannerRequestBuilder.PlannerRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -273,7 +286,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = PlannerRequestBuilder.PlannerRequestBuilderGetRequestConfiguration()
+            config = (
+                PlannerRequestBuilder.PlannerRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -283,30 +298,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.get(request_configuration=config)
+            response = await self.client.groups.by_group_id(group_id).planner.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_update_planner(
         self,
         group_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property planner in groups.
         Planner operation: PATCH /groups/{group-id}/planner
@@ -359,29 +376,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.patch(body=request_body, request_configuration=config)
+            response = await self.client.groups.by_group_id(group_id).planner.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_create_plans(
         self,
         group_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to plans for groups.
         Planner operation: POST /groups/{group-id}/planner/plans
@@ -433,31 +452,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.post(body=request_body, request_configuration=config)
+            response = await self.client.groups.by_group_id(
+                group_id
+            ).planner.plans.post(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_list_plans(
         self,
         group_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """List plans.
         Planner operation: GET /groups/{group-id}/planner/plans
@@ -511,30 +532,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.get(request_configuration=config)
+            response = await self.client.groups.by_group_id(group_id).planner.plans.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_delete_plans(
         self,
         group_id: str,
         plannerPlan_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property plans for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}
@@ -587,31 +610,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_get_plans(
         self,
         group_id: str,
         plannerPlan_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plans from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}
@@ -665,30 +692,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_update_plans(
         self,
         group_id: str,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property plans in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}
@@ -741,30 +772,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_create_buckets(
         self,
         group_id: str,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to buckets for groups.
         Planner operation: POST /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets
@@ -817,32 +852,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.post(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_list_buckets(
         self,
         group_id: str,
         plannerPlan_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get buckets from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets
@@ -897,14 +936,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_delete_buckets(
@@ -912,16 +955,16 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property buckets for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -975,14 +1018,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_get_buckets(
@@ -990,17 +1038,17 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get buckets from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -1055,14 +1103,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_update_buckets(
@@ -1070,16 +1123,16 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property buckets in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -1133,14 +1186,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_create_tasks(
@@ -1148,16 +1206,16 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for groups.
         Planner operation: POST /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks
@@ -1211,14 +1269,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.post(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_list_tasks(
@@ -1226,18 +1289,18 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks
@@ -1293,14 +1356,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_delete_tasks(
@@ -1309,16 +1377,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -1373,14 +1441,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_get_tasks(
@@ -1389,17 +1463,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -1455,14 +1529,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_update_tasks(
@@ -1471,16 +1551,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -1535,14 +1615,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_delete_assigned_to_task_board_format(
@@ -1551,16 +1637,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -1615,14 +1701,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_get_assigned_to_task_board_format(
@@ -1631,17 +1723,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -1697,14 +1789,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_update_assigned_to_task_board_format(
@@ -1714,16 +1812,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -1779,14 +1877,22 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_delete_bucket_task_board_format(
@@ -1795,16 +1901,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -1859,14 +1965,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_get_bucket_task_board_format(
@@ -1875,17 +1987,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -1941,14 +2053,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_update_bucket_task_board_format(
@@ -1958,16 +2076,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -2023,14 +2141,22 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_delete_details(
@@ -2039,16 +2165,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -2103,14 +2229,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_get_details(
@@ -2119,17 +2251,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -2185,14 +2317,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_update_details(
@@ -2202,16 +2340,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -2267,14 +2405,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_delete_progress_task_board_format(
@@ -2283,16 +2427,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -2347,14 +2491,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_get_progress_task_board_format(
@@ -2363,17 +2513,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -2429,14 +2579,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_buckets_tasks_update_progress_task_board_format(
@@ -2446,16 +2602,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -2511,30 +2667,38 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_delete_details(
         self,
         group_id: str,
         plannerPlan_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/details
@@ -2587,31 +2751,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_get_details(
         self,
         group_id: str,
         plannerPlan_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/details
@@ -2665,14 +2833,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).details.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_update_details(
@@ -2680,16 +2852,16 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/details
@@ -2743,30 +2915,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_create_tasks(
         self,
         group_id: str,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for groups.
         Planner operation: POST /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks
@@ -2819,32 +2995,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.post(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_list_tasks(
         self,
         group_id: str,
         plannerPlan_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks
@@ -2899,14 +3079,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_delete_tasks(
@@ -2914,16 +3098,16 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -2977,14 +3161,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_get_tasks(
@@ -2992,17 +3181,17 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -3057,14 +3246,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_update_tasks(
@@ -3072,16 +3266,16 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -3135,14 +3329,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_delete_assigned_to_task_board_format(
@@ -3150,16 +3349,16 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -3213,14 +3412,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_get_assigned_to_task_board_format(
@@ -3228,17 +3432,17 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -3293,14 +3497,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_update_assigned_to_task_board_format(
@@ -3309,16 +3518,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -3373,14 +3582,21 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_delete_bucket_task_board_format(
@@ -3388,16 +3604,16 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -3451,14 +3667,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_get_bucket_task_board_format(
@@ -3466,17 +3687,17 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -3531,14 +3752,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_update_bucket_task_board_format(
@@ -3547,16 +3773,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -3611,14 +3837,21 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_delete_details(
@@ -3626,16 +3859,16 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -3689,14 +3922,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_get_details(
@@ -3704,17 +3942,17 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -3769,14 +4007,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_update_details(
@@ -3785,16 +4028,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -3849,14 +4092,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_delete_progress_task_board_format(
@@ -3864,16 +4112,16 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for groups.
         Planner operation: DELETE /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -3927,14 +4175,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_get_progress_task_board_format(
@@ -3942,17 +4195,17 @@ class PlannerDataSource:
         group_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from groups.
         Planner operation: GET /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -4007,14 +4260,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def groups_planner_plans_tasks_update_progress_task_board_format(
@@ -4023,16 +4281,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in groups.
         Planner operation: PATCH /groups/{group-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -4087,28 +4345,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.groups.by_group_id(group_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.groups.by_group_id(group_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_delete_planner(
         self,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property planner for me.
         Planner operation: DELETE /me/planner
@@ -4159,29 +4424,29 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
             response = await self.client.me.planner.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_get_planner(
         self,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get planner from me.
         Planner operation: GET /me/planner
@@ -4204,7 +4469,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = PlannerRequestBuilder.PlannerRequestBuilderGetQueryParameters()
+            query_params = (
+                PlannerRequestBuilder.PlannerRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -4223,7 +4490,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = PlannerRequestBuilder.PlannerRequestBuilderGetRequestConfiguration()
+            config = (
+                PlannerRequestBuilder.PlannerRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -4233,29 +4502,29 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
             response = await self.client.me.planner.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_update_planner(
         self,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property planner in me.
         Planner operation: PATCH /me/planner
@@ -4307,28 +4576,30 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.patch(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_create_plans(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to plans for me.
         Planner operation: POST /me/planner/plans
@@ -4379,30 +4650,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.post(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.plans.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_list_plans(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """List plans.
         Planner operation: GET /me/planner/plans
@@ -4455,29 +4728,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.get(request_configuration=config)
+            response = await self.client.me.planner.plans.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_delete_plans(
         self,
         plannerPlan_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property plans for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}
@@ -4529,30 +4804,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).delete(request_configuration=config)
+            response = await self.client.me.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_get_plans(
         self,
         plannerPlan_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plans from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}
@@ -4605,29 +4882,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).get(request_configuration=config)
+            response = await self.client.me.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_update_plans(
         self,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property plans in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}
@@ -4679,29 +4958,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_create_buckets(
         self,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to buckets for me.
         Planner operation: POST /me/planner/plans/{plannerPlan-id}/buckets
@@ -4753,31 +5034,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.post(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).buckets.post(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_list_buckets(
         self,
         plannerPlan_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get buckets from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/buckets
@@ -4831,30 +5114,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.get(request_configuration=config)
+            response = await self.client.me.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).buckets.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_delete_buckets(
         self,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property buckets for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -4907,31 +5192,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_get_buckets(
         self,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get buckets from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -4985,30 +5274,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_update_buckets(
         self,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property buckets in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -5061,30 +5354,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_create_tasks(
         self,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for me.
         Planner operation: POST /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks
@@ -5137,32 +5434,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.post(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_list_tasks(
         self,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks
@@ -5217,14 +5518,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_delete_tasks(
@@ -5232,16 +5537,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -5295,14 +5600,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_get_tasks(
@@ -5310,17 +5620,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -5375,14 +5685,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_update_tasks(
@@ -5390,16 +5705,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -5453,14 +5768,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_delete_assigned_to_task_board_format(
@@ -5468,16 +5788,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -5531,14 +5851,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_get_assigned_to_task_board_format(
@@ -5546,17 +5871,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -5611,14 +5936,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_update_assigned_to_task_board_format(
@@ -5627,16 +5957,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -5691,14 +6021,21 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_delete_bucket_task_board_format(
@@ -5706,16 +6043,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -5769,14 +6106,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_get_bucket_task_board_format(
@@ -5784,17 +6126,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -5849,14 +6191,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_update_bucket_task_board_format(
@@ -5865,16 +6212,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -5929,14 +6276,21 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_delete_details(
@@ -5944,16 +6298,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -6007,14 +6361,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_get_details(
@@ -6022,17 +6381,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -6087,14 +6446,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_update_details(
@@ -6103,16 +6467,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -6167,14 +6531,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_delete_progress_task_board_format(
@@ -6182,16 +6551,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -6245,14 +6614,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_get_progress_task_board_format(
@@ -6260,17 +6634,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -6325,14 +6699,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_buckets_tasks_update_progress_task_board_format(
@@ -6341,16 +6720,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -6405,29 +6784,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_delete_details(
         self,
         plannerPlan_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/details
@@ -6479,30 +6865,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).details.delete(request_configuration=config)
+            response = await self.client.me.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).details.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_get_details(
         self,
         plannerPlan_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/details
@@ -6555,30 +6943,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).details.get(request_configuration=config)
+            response = await self.client.me.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).details.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_update_details(
         self,
         plannerPlan_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/details
@@ -6631,29 +7021,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).details.patch(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).details.patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_create_tasks(
         self,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for me.
         Planner operation: POST /me/planner/plans/{plannerPlan-id}/tasks
@@ -6705,31 +7097,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.post(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).tasks.post(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_list_tasks(
         self,
         plannerPlan_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/tasks
@@ -6783,30 +7177,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.get(request_configuration=config)
+            response = await self.client.me.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).tasks.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_delete_tasks(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -6859,31 +7255,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_get_tasks(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -6937,30 +7337,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_update_tasks(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -7013,30 +7417,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_delete_assigned_to_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -7089,31 +7497,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_get_assigned_to_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -7167,14 +7579,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_update_assigned_to_task_board_format(
@@ -7182,16 +7598,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -7245,30 +7661,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_delete_bucket_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -7321,31 +7743,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_get_bucket_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -7399,14 +7825,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_update_bucket_task_board_format(
@@ -7414,16 +7844,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -7477,30 +7907,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_delete_details(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -7553,31 +7989,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_get_details(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -7631,14 +8071,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_update_details(
@@ -7646,16 +8090,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -7709,30 +8153,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_delete_progress_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for me.
         Planner operation: DELETE /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -7785,31 +8233,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_get_progress_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from me.
         Planner operation: GET /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -7863,14 +8315,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_plans_tasks_update_progress_task_board_format(
@@ -7878,16 +8334,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in me.
         Planner operation: PATCH /me/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -7941,28 +8397,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.me.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_create_tasks(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for me.
         Planner operation: POST /me/planner/tasks
@@ -8013,30 +8475,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.post(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.tasks.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_list_tasks(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """List tasks.
         Planner operation: GET /me/planner/tasks
@@ -8089,29 +8553,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.get(request_configuration=config)
+            response = await self.client.me.planner.tasks.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_delete_tasks(
         self,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for me.
         Planner operation: DELETE /me/planner/tasks/{plannerTask-id}
@@ -8163,30 +8629,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_get_tasks(
         self,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from me.
         Planner operation: GET /me/planner/tasks/{plannerTask-id}
@@ -8239,29 +8707,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_update_tasks(
         self,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in me.
         Planner operation: PATCH /me/planner/tasks/{plannerTask-id}
@@ -8313,29 +8783,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_delete_assigned_to_task_board_format(
         self,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for me.
         Planner operation: DELETE /me/planner/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -8387,30 +8859,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).assigned_to_task_board_format.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_get_assigned_to_task_board_format(
         self,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from me.
         Planner operation: GET /me/planner/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -8463,30 +8937,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).assigned_to_task_board_format.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_update_assigned_to_task_board_format(
         self,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in me.
         Planner operation: PATCH /me/planner/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -8539,29 +9015,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).assigned_to_task_board_format.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_delete_bucket_task_board_format(
         self,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for me.
         Planner operation: DELETE /me/planner/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -8613,30 +9093,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).bucket_task_board_format.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_get_bucket_task_board_format(
         self,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from me.
         Planner operation: GET /me/planner/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -8689,30 +9171,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).bucket_task_board_format.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_update_bucket_task_board_format(
         self,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in me.
         Planner operation: PATCH /me/planner/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -8765,29 +9249,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).bucket_task_board_format.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_delete_details(
         self,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for me.
         Planner operation: DELETE /me/planner/tasks/{plannerTask-id}/details
@@ -8839,30 +9327,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).details.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_get_details(
         self,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from me.
         Planner operation: GET /me/planner/tasks/{plannerTask-id}/details
@@ -8915,30 +9405,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).details.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_update_details(
         self,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in me.
         Planner operation: PATCH /me/planner/tasks/{plannerTask-id}/details
@@ -8991,29 +9483,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).details.patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_delete_progress_task_board_format(
         self,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for me.
         Planner operation: DELETE /me/planner/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -9065,30 +9559,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).progress_task_board_format.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_get_progress_task_board_format(
         self,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from me.
         Planner operation: GET /me/planner/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -9141,30 +9637,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).progress_task_board_format.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def me_planner_tasks_update_progress_task_board_format(
         self,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in me.
         Planner operation: PATCH /me/planner/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -9217,29 +9715,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.planner.tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = await self.client.me.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).progress_task_board_format.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_planner_get_planner(
         self,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get planner.
         Planner operation: GET /planner
@@ -9291,28 +9793,28 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
             response = await self.client.planner.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_planner_update_planner(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update planner.
         Planner operation: PATCH /planner
@@ -9363,28 +9865,30 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.patch(body=request_body, request_configuration=config)
+            response = await self.client.planner.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_create_buckets(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create plannerBucket.
         Planner operation: POST /planner/buckets
@@ -9435,30 +9939,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.post(body=request_body, request_configuration=config)
+            response = await self.client.planner.buckets.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_list_buckets(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """List buckets.
         Planner operation: GET /planner/buckets
@@ -9482,7 +9988,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            query_params = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -9501,7 +10009,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            config = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -9511,29 +10021,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.get(request_configuration=config)
+            response = await self.client.planner.buckets.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_delete_buckets(
         self,
         plannerBucket_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete plannerBucket.
         Planner operation: DELETE /planner/buckets/{plannerBucket-id}
@@ -9585,30 +10097,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).delete(request_configuration=config)
+            response = await self.client.planner.buckets.by_planner_bucket_id(
+                plannerBucket_id
+            ).delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_get_buckets(
         self,
         plannerBucket_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plannerBucket.
         Planner operation: GET /planner/buckets/{plannerBucket-id}
@@ -9632,7 +10146,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            query_params = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -9651,7 +10167,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            config = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -9661,30 +10179,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).get(request_configuration=config)
+            response = await self.client.planner.buckets.by_planner_bucket_id(
+                plannerBucket_id
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_update_buckets(
         self,
         plannerBucket_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update plannerbucket.
         Planner operation: PATCH /planner/buckets/{plannerBucket-id}
@@ -9737,29 +10257,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.planner.buckets.by_planner_bucket_id(
+                plannerBucket_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_create_tasks(
         self,
         plannerBucket_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for planner.
         Planner operation: POST /planner/buckets/{plannerBucket-id}/tasks
@@ -9811,31 +10333,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.post(body=request_body, request_configuration=config)
+            response = await self.client.planner.buckets.by_planner_bucket_id(
+                plannerBucket_id
+            ).tasks.post(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_list_tasks(
         self,
         plannerBucket_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """List tasks.
         Planner operation: GET /planner/buckets/{plannerBucket-id}/tasks
@@ -9860,7 +10384,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            query_params = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -9879,7 +10405,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            config = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -9889,30 +10417,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.get(request_configuration=config)
+            response = await self.client.planner.buckets.by_planner_bucket_id(
+                plannerBucket_id
+            ).tasks.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_delete_tasks(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for planner.
         Planner operation: DELETE /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -9965,31 +10495,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_get_tasks(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from planner.
         Planner operation: GET /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -10014,7 +10548,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            query_params = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -10033,7 +10569,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            config = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -10043,30 +10581,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_update_tasks(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in planner.
         Planner operation: PATCH /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -10119,30 +10661,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_delete_assigned_to_task_board_format(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for planner.
         Planner operation: DELETE /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -10195,31 +10741,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_get_assigned_to_task_board_format(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from planner.
         Planner operation: GET /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -10244,7 +10794,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            query_params = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -10263,7 +10815,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            config = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -10273,14 +10827,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_update_assigned_to_task_board_format(
@@ -10288,16 +10846,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in planner.
         Planner operation: PATCH /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -10351,30 +10909,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_delete_bucket_task_board_format(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for planner.
         Planner operation: DELETE /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -10427,31 +10991,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_get_bucket_task_board_format(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from planner.
         Planner operation: GET /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -10476,7 +11044,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            query_params = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -10495,7 +11065,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            config = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -10505,14 +11077,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_update_bucket_task_board_format(
@@ -10520,16 +11096,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in planner.
         Planner operation: PATCH /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -10583,30 +11159,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_delete_details(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for planner.
         Planner operation: DELETE /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -10659,31 +11241,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_get_details(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from planner.
         Planner operation: GET /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -10708,7 +11294,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            query_params = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -10727,7 +11315,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            config = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -10737,14 +11327,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_update_details(
@@ -10752,16 +11346,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in planner.
         Planner operation: PATCH /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -10815,30 +11409,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_delete_progress_task_board_format(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for planner.
         Planner operation: DELETE /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -10891,31 +11489,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_get_progress_task_board_format(
         self,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from planner.
         Planner operation: GET /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -10940,7 +11542,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            query_params = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -10959,7 +11563,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            config = (
+                BucketsRequestBuilder.BucketsRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -10969,14 +11575,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_buckets_tasks_update_progress_task_board_format(
@@ -10984,16 +11594,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in planner.
         Planner operation: PATCH /planner/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -11047,28 +11657,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_create_plans(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create plannerPlan.
         Planner operation: POST /planner/plans
@@ -11119,30 +11735,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.post(body=request_body, request_configuration=config)
+            response = await self.client.planner.plans.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_list_plans(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """List plans.
         Planner operation: GET /planner/plans
@@ -11195,29 +11813,29 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
             response = await self.client.planner.plans.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_delete_plans(
         self,
         plannerPlan_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete plannerPlan.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}
@@ -11269,30 +11887,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).delete(request_configuration=config)
+            response = await self.client.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_get_plans(
         self,
         plannerPlan_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plannerPlan.
         Planner operation: GET /planner/plans/{plannerPlan-id}
@@ -11345,29 +11965,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).get(request_configuration=config)
+            response = await self.client.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_update_plans(
         self,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update plannerPlan.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}
@@ -11419,29 +12041,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_create_buckets(
         self,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to buckets for planner.
         Planner operation: POST /planner/plans/{plannerPlan-id}/buckets
@@ -11493,31 +12117,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.post(body=request_body, request_configuration=config)
+            response = await self.client.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).buckets.post(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_list_buckets(
         self,
         plannerPlan_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """List buckets.
         Planner operation: GET /planner/plans/{plannerPlan-id}/buckets
@@ -11571,30 +12197,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.get(request_configuration=config)
+            response = await self.client.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).buckets.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_delete_buckets(
         self,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property buckets for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -11647,31 +12275,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_get_buckets(
         self,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get buckets from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -11725,30 +12357,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_update_buckets(
         self,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property buckets in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -11801,30 +12437,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_create_tasks(
         self,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for planner.
         Planner operation: POST /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks
@@ -11877,32 +12517,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.post(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_list_tasks(
         self,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks
@@ -11957,14 +12601,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_delete_tasks(
@@ -11972,16 +12620,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -12035,14 +12683,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_get_tasks(
@@ -12050,17 +12703,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -12115,14 +12768,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_update_tasks(
@@ -12130,16 +12788,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -12193,14 +12851,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_delete_assigned_to_task_board_format(
@@ -12208,16 +12871,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -12271,14 +12934,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_get_assigned_to_task_board_format(
@@ -12286,17 +12954,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -12351,14 +13019,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_update_assigned_to_task_board_format(
@@ -12367,16 +13040,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -12431,14 +13104,21 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_delete_bucket_task_board_format(
@@ -12446,16 +13126,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -12509,14 +13189,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_get_bucket_task_board_format(
@@ -12524,17 +13209,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -12589,14 +13274,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_update_bucket_task_board_format(
@@ -12605,16 +13295,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -12669,14 +13359,21 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_delete_details(
@@ -12684,16 +13381,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -12747,14 +13444,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_get_details(
@@ -12762,17 +13464,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -12827,14 +13529,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_update_details(
@@ -12843,16 +13550,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -12907,14 +13614,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_delete_progress_task_board_format(
@@ -12922,16 +13634,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -12985,14 +13697,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_get_progress_task_board_format(
@@ -13000,17 +13717,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -13065,14 +13782,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_buckets_tasks_update_progress_task_board_format(
@@ -13081,16 +13803,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -13145,29 +13867,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_delete_details(
         self,
         plannerPlan_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/details
@@ -13219,30 +13948,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).details.delete(request_configuration=config)
+            response = await self.client.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).details.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_get_details(
         self,
         plannerPlan_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plannerPlanDetails.
         Planner operation: GET /planner/plans/{plannerPlan-id}/details
@@ -13295,30 +14026,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).details.get(request_configuration=config)
+            response = await self.client.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).details.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_update_details(
         self,
         plannerPlan_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update plannerplandetails.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/details
@@ -13371,29 +14104,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).details.patch(body=request_body, request_configuration=config)
+            response = await self.client.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).details.patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_create_tasks(
         self,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for planner.
         Planner operation: POST /planner/plans/{plannerPlan-id}/tasks
@@ -13445,31 +14180,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.post(body=request_body, request_configuration=config)
+            response = await self.client.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).tasks.post(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_list_tasks(
         self,
         plannerPlan_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """List tasks.
         Planner operation: GET /planner/plans/{plannerPlan-id}/tasks
@@ -13523,30 +14260,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.get(request_configuration=config)
+            response = await self.client.planner.plans.by_planner_plan_id(
+                plannerPlan_id
+            ).tasks.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_delete_tasks(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -13599,31 +14338,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_get_tasks(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -13677,30 +14420,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_update_tasks(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -13753,30 +14500,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_delete_assigned_to_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -13829,31 +14580,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_get_assigned_to_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -13907,14 +14662,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_update_assigned_to_task_board_format(
@@ -13922,16 +14681,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -13985,30 +14744,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_delete_bucket_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -14061,31 +14826,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_get_bucket_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -14139,14 +14908,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_update_bucket_task_board_format(
@@ -14154,16 +14927,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -14217,30 +14990,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_delete_details(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -14293,31 +15072,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_get_details(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -14371,14 +15154,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_update_details(
@@ -14386,16 +15173,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -14449,30 +15236,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_delete_progress_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for planner.
         Planner operation: DELETE /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -14525,31 +15316,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_get_progress_task_board_format(
         self,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from planner.
         Planner operation: GET /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -14603,14 +15398,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_plans_tasks_update_progress_task_board_format(
@@ -14618,16 +15417,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in planner.
         Planner operation: PATCH /planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -14681,28 +15480,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_create_tasks(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create plannerTask.
         Planner operation: POST /planner/tasks
@@ -14753,30 +15558,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.post(body=request_body, request_configuration=config)
+            response = await self.client.planner.tasks.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_list_tasks(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """List plannerTask objects.
         Planner operation: GET /planner/tasks
@@ -14829,29 +15636,29 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
             response = await self.client.planner.tasks.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_delete_tasks(
         self,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete plannerTask.
         Planner operation: DELETE /planner/tasks/{plannerTask-id}
@@ -14903,30 +15710,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_get_tasks(
         self,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plannerTask.
         Planner operation: GET /planner/tasks/{plannerTask-id}
@@ -14979,30 +15788,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_update_tasks(
         self,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update plannerTask.
         Planner operation: PATCH /planner/tasks/{plannerTask-id}
@@ -15055,29 +15866,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_delete_assigned_to_task_board_format(
         self,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for planner.
         Planner operation: DELETE /planner/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -15129,30 +15942,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).assigned_to_task_board_format.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_get_assigned_to_task_board_format(
         self,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plannerAssignedToTaskBoardTaskFormat.
         Planner operation: GET /planner/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -15205,30 +16020,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).assigned_to_task_board_format.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_update_assigned_to_task_board_format(
         self,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update plannerAssignedToTaskBoardTaskFormat.
         Planner operation: PATCH /planner/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -15281,29 +16098,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).assigned_to_task_board_format.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_delete_bucket_task_board_format(
         self,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for planner.
         Planner operation: DELETE /planner/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -15355,30 +16176,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).bucket_task_board_format.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_get_bucket_task_board_format(
         self,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plannerBucketTaskBoardTaskFormat.
         Planner operation: GET /planner/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -15431,30 +16254,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).bucket_task_board_format.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_update_bucket_task_board_format(
         self,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update plannerBucketTaskBoardTaskFormat.
         Planner operation: PATCH /planner/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -15507,29 +16332,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).bucket_task_board_format.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_delete_details(
         self,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for planner.
         Planner operation: DELETE /planner/tasks/{plannerTask-id}/details
@@ -15581,30 +16410,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).details.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_get_details(
         self,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plannerTaskDetails.
         Planner operation: GET /planner/tasks/{plannerTask-id}/details
@@ -15657,30 +16488,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).details.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_update_details(
         self,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update plannertaskdetails.
         Planner operation: PATCH /planner/tasks/{plannerTask-id}/details
@@ -15733,29 +16566,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).details.patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_delete_progress_task_board_format(
         self,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for planner.
         Planner operation: DELETE /planner/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -15807,30 +16642,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).progress_task_board_format.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_get_progress_task_board_format(
         self,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plannerProgressTaskBoardTaskFormat.
         Planner operation: GET /planner/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -15883,30 +16720,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).progress_task_board_format.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def planner_tasks_update_progress_task_board_format(
         self,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update plannerProgressTaskBoardTaskFormat.
         Planner operation: PATCH /planner/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -15959,29 +16798,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.planner.tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = await self.client.planner.tasks.by_planner_task_id(
+                plannerTask_id
+            ).progress_task_board_format.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_delete_planner(
         self,
         user_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property planner for users.
         Planner operation: DELETE /users/{user-id}/planner
@@ -16033,30 +16876,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.delete(request_configuration=config)
+            response = await self.client.users.by_user_id(user_id).planner.delete(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_get_planner(
         self,
         user_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get planner from users.
         Planner operation: GET /users/{user-id}/planner
@@ -16080,7 +16925,9 @@ class PlannerDataSource:
         # Build query parameters including OData for Planner
         try:
             # Use typed query parameters
-            query_params = PlannerRequestBuilder.PlannerRequestBuilderGetQueryParameters()
+            query_params = (
+                PlannerRequestBuilder.PlannerRequestBuilderGetQueryParameters()
+            )
 
             # Set query parameters using typed object properties
             if select:
@@ -16099,7 +16946,9 @@ class PlannerDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = PlannerRequestBuilder.PlannerRequestBuilderGetRequestConfiguration()
+            config = (
+                PlannerRequestBuilder.PlannerRequestBuilderGetRequestConfiguration()
+            )
             config.query_parameters = query_params
 
             if headers:
@@ -16109,30 +16958,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.get(request_configuration=config)
+            response = await self.client.users.by_user_id(user_id).planner.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_update_planner(
         self,
         user_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property planner in users.
         Planner operation: PATCH /users/{user-id}/planner
@@ -16185,29 +17036,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.patch(body=request_body, request_configuration=config)
+            response = await self.client.users.by_user_id(user_id).planner.patch(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_create_plans(
         self,
         user_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to plans for users.
         Planner operation: POST /users/{user-id}/planner/plans
@@ -16259,31 +17112,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.post(body=request_body, request_configuration=config)
+            response = await self.client.users.by_user_id(user_id).planner.plans.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_list_plans(
         self,
         user_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plans from users.
         Planner operation: GET /users/{user-id}/planner/plans
@@ -16337,30 +17192,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.get(request_configuration=config)
+            response = await self.client.users.by_user_id(user_id).planner.plans.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_delete_plans(
         self,
         user_id: str,
         plannerPlan_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property plans for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}
@@ -16413,31 +17270,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_get_plans(
         self,
         user_id: str,
         plannerPlan_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get plans from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}
@@ -16491,30 +17352,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_update_plans(
         self,
         user_id: str,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property plans in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}
@@ -16567,30 +17432,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_create_buckets(
         self,
         user_id: str,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to buckets for users.
         Planner operation: POST /users/{user-id}/planner/plans/{plannerPlan-id}/buckets
@@ -16643,32 +17512,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.post(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_list_buckets(
         self,
         user_id: str,
         plannerPlan_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get buckets from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/buckets
@@ -16723,14 +17596,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_delete_buckets(
@@ -16738,16 +17615,16 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property buckets for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -16801,14 +17678,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_get_buckets(
@@ -16816,17 +17698,17 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get buckets from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -16881,14 +17763,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_update_buckets(
@@ -16896,16 +17783,16 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property buckets in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}
@@ -16959,14 +17846,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_create_tasks(
@@ -16974,16 +17866,16 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for users.
         Planner operation: POST /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks
@@ -17037,14 +17929,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.post(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_list_tasks(
@@ -17052,18 +17949,18 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerBucket_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks
@@ -17119,14 +18016,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_delete_tasks(
@@ -17135,16 +18037,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -17199,14 +18101,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_get_tasks(
@@ -17215,17 +18123,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -17281,14 +18189,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_update_tasks(
@@ -17297,16 +18211,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}
@@ -17361,14 +18275,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_delete_assigned_to_task_board_format(
@@ -17377,16 +18297,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -17441,14 +18361,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_get_assigned_to_task_board_format(
@@ -17457,17 +18383,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -17523,14 +18449,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_update_assigned_to_task_board_format(
@@ -17540,16 +18472,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -17605,14 +18537,22 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_delete_bucket_task_board_format(
@@ -17621,16 +18561,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -17685,14 +18625,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_get_bucket_task_board_format(
@@ -17701,17 +18647,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -17767,14 +18713,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_update_bucket_task_board_format(
@@ -17784,16 +18736,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -17849,14 +18801,22 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_delete_details(
@@ -17865,16 +18825,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -17929,14 +18889,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_get_details(
@@ -17945,17 +18911,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -18011,14 +18977,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_update_details(
@@ -18028,16 +19000,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/details
@@ -18093,14 +19065,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_delete_progress_task_board_format(
@@ -18109,16 +19087,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -18173,14 +19151,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_get_progress_task_board_format(
@@ -18189,17 +19173,17 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerBucket_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -18255,14 +19239,20 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_buckets_tasks_update_progress_task_board_format(
@@ -18272,16 +19262,16 @@ class PlannerDataSource:
         plannerBucket_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/buckets/{plannerBucket-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -18337,30 +19327,38 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).buckets.by_planner_bucket_id(plannerBucket_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .buckets.by_planner_bucket_id(plannerBucket_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_delete_details(
         self,
         user_id: str,
         plannerPlan_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/details
@@ -18413,31 +19411,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_get_details(
         self,
         user_id: str,
         plannerPlan_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/details
@@ -18491,14 +19493,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).details.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_update_details(
@@ -18506,16 +19512,16 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/details
@@ -18569,30 +19575,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_create_tasks(
         self,
         user_id: str,
         plannerPlan_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for users.
         Planner operation: POST /users/{user-id}/planner/plans/{plannerPlan-id}/tasks
@@ -18645,32 +19655,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.post(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_list_tasks(
         self,
         user_id: str,
         plannerPlan_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/tasks
@@ -18725,14 +19739,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_delete_tasks(
@@ -18740,16 +19758,16 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -18803,14 +19821,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_get_tasks(
@@ -18818,17 +19841,17 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -18883,14 +19906,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_update_tasks(
@@ -18898,16 +19926,16 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}
@@ -18961,14 +19989,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_delete_assigned_to_task_board_format(
@@ -18976,16 +20009,16 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -19039,14 +20072,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_get_assigned_to_task_board_format(
@@ -19054,17 +20092,17 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -19119,14 +20157,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_update_assigned_to_task_board_format(
@@ -19135,16 +20178,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -19199,14 +20242,21 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_delete_bucket_task_board_format(
@@ -19214,16 +20264,16 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -19277,14 +20327,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_get_bucket_task_board_format(
@@ -19292,17 +20347,17 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -19357,14 +20412,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_update_bucket_task_board_format(
@@ -19373,16 +20433,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -19437,14 +20497,21 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_delete_details(
@@ -19452,16 +20519,16 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -19515,14 +20582,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_get_details(
@@ -19530,17 +20602,17 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -19595,14 +20667,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_update_details(
@@ -19611,16 +20688,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/details
@@ -19675,14 +20752,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_delete_progress_task_board_format(
@@ -19690,16 +20772,16 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for users.
         Planner operation: DELETE /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -19753,14 +20835,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_get_progress_task_board_format(
@@ -19768,17 +20855,17 @@ class PlannerDataSource:
         user_id: str,
         plannerPlan_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from users.
         Planner operation: GET /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -19833,14 +20920,19 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_plans_tasks_update_progress_task_board_format(
@@ -19849,16 +20941,16 @@ class PlannerDataSource:
         plannerPlan_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in users.
         Planner operation: PATCH /users/{user-id}/planner/plans/{plannerPlan-id}/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -19913,29 +21005,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.plans.by_planner_plan_id(plannerPlan_id).tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.plans.by_planner_plan_id(plannerPlan_id)
+                .tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_create_tasks(
         self,
         user_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to tasks for users.
         Planner operation: POST /users/{user-id}/planner/tasks
@@ -19987,31 +21086,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.post(body=request_body, request_configuration=config)
+            response = await self.client.users.by_user_id(user_id).planner.tasks.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_list_tasks(
         self,
         user_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from users.
         Planner operation: GET /users/{user-id}/planner/tasks
@@ -20065,30 +21166,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.get(request_configuration=config)
+            response = await self.client.users.by_user_id(user_id).planner.tasks.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_delete_tasks(
         self,
         user_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property tasks for users.
         Planner operation: DELETE /users/{user-id}/planner/tasks/{plannerTask-id}
@@ -20141,31 +21244,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_get_tasks(
         self,
         user_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get tasks from users.
         Planner operation: GET /users/{user-id}/planner/tasks/{plannerTask-id}
@@ -20219,30 +21326,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_update_tasks(
         self,
         user_id: str,
         plannerTask_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property tasks in users.
         Planner operation: PATCH /users/{user-id}/planner/tasks/{plannerTask-id}
@@ -20295,30 +21406,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_delete_assigned_to_task_board_format(
         self,
         user_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property assignedToTaskBoardFormat for users.
         Planner operation: DELETE /users/{user-id}/planner/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -20371,31 +21486,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_get_assigned_to_task_board_format(
         self,
         user_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get assignedToTaskBoardFormat from users.
         Planner operation: GET /users/{user-id}/planner/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -20449,14 +21568,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_update_assigned_to_task_board_format(
@@ -20464,16 +21587,16 @@ class PlannerDataSource:
         user_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property assignedToTaskBoardFormat in users.
         Planner operation: PATCH /users/{user-id}/planner/tasks/{plannerTask-id}/assignedToTaskBoardFormat
@@ -20527,30 +21650,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).assigned_to_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .assigned_to_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_delete_bucket_task_board_format(
         self,
         user_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property bucketTaskBoardFormat for users.
         Planner operation: DELETE /users/{user-id}/planner/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -20603,31 +21732,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_get_bucket_task_board_format(
         self,
         user_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get bucketTaskBoardFormat from users.
         Planner operation: GET /users/{user-id}/planner/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -20681,14 +21814,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_update_bucket_task_board_format(
@@ -20696,16 +21833,16 @@ class PlannerDataSource:
         user_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property bucketTaskBoardFormat in users.
         Planner operation: PATCH /users/{user-id}/planner/tasks/{plannerTask-id}/bucketTaskBoardFormat
@@ -20759,30 +21896,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).bucket_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .bucket_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_delete_details(
         self,
         user_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property details for users.
         Planner operation: DELETE /users/{user-id}/planner/tasks/{plannerTask-id}/details
@@ -20835,31 +21978,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).details.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .details.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_get_details(
         self,
         user_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get details from users.
         Planner operation: GET /users/{user-id}/planner/tasks/{plannerTask-id}/details
@@ -20913,14 +22060,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).details.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .details.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_update_details(
@@ -20928,16 +22079,16 @@ class PlannerDataSource:
         user_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property details in users.
         Planner operation: PATCH /users/{user-id}/planner/tasks/{plannerTask-id}/details
@@ -20991,30 +22142,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).details.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .details.patch(body=request_body, request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_delete_progress_task_board_format(
         self,
         user_id: str,
         plannerTask_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property progressTaskBoardFormat for users.
         Planner operation: DELETE /users/{user-id}/planner/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -21067,31 +22222,35 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.delete(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.delete(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_get_progress_task_board_format(
         self,
         user_id: str,
         plannerTask_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get progressTaskBoardFormat from users.
         Planner operation: GET /users/{user-id}/planner/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -21145,14 +22304,18 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.get(request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.get(request_configuration=config)
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_planner_tasks_update_progress_task_board_format(
@@ -21160,16 +22323,16 @@ class PlannerDataSource:
         user_id: str,
         plannerTask_id: str,
         If_Match: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property progressTaskBoardFormat in users.
         Planner operation: PATCH /users/{user-id}/planner/tasks/{plannerTask-id}/progressTaskBoardFormat
@@ -21223,30 +22386,36 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).planner.tasks.by_planner_task_id(plannerTask_id).progress_task_board_format.patch(body=request_body, request_configuration=config)
+            response = (
+                await self.client.users.by_user_id(user_id)
+                .planner.tasks.by_planner_task_id(plannerTask_id)
+                .progress_task_board_format.patch(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     # ========== ASSIGNMENTS OPERATIONS (44 methods) ==========
 
     async def policies_create_role_management_policy_assignments(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to roleManagementPolicyAssignments for policies.
         Planner operation: POST /policies/roleManagementPolicyAssignments
@@ -21297,30 +22466,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.policies.role_management_policy_assignments.post(body=request_body, request_configuration=config)
+            response = (
+                await self.client.policies.role_management_policy_assignments.post(
+                    body=request_body, request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def policies_list_role_management_policy_assignments(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """List roleManagementPolicyAssignments.
         Planner operation: GET /policies/roleManagementPolicyAssignments
@@ -21373,29 +22546,33 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.policies.role_management_policy_assignments.get(request_configuration=config)
+            response = (
+                await self.client.policies.role_management_policy_assignments.get(
+                    request_configuration=config
+                )
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def policies_delete_role_management_policy_assignments(
         self,
         unifiedRoleManagementPolicyAssignment_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property roleManagementPolicyAssignments for policies.
         Planner operation: DELETE /policies/roleManagementPolicyAssignments/{unifiedRoleManagementPolicyAssignment-id}
@@ -21447,30 +22624,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.policies.role_management_policy_assignments.by_roleManagementPolicyAssignment_id(unifiedRoleManagementPolicyAssignment_id).delete(request_configuration=config)
+            response = await self.client.policies.role_management_policy_assignments.by_roleManagementPolicyAssignment_id(
+                unifiedRoleManagementPolicyAssignment_id
+            ).delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def policies_get_role_management_policy_assignments(
         self,
         unifiedRoleManagementPolicyAssignment_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get unifiedRoleManagementPolicyAssignment.
         Planner operation: GET /policies/roleManagementPolicyAssignments/{unifiedRoleManagementPolicyAssignment-id}
@@ -21523,29 +22702,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.policies.role_management_policy_assignments.by_roleManagementPolicyAssignment_id(unifiedRoleManagementPolicyAssignment_id).get(request_configuration=config)
+            response = await self.client.policies.role_management_policy_assignments.by_roleManagementPolicyAssignment_id(
+                unifiedRoleManagementPolicyAssignment_id
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def policies_update_role_management_policy_assignments(
         self,
         unifiedRoleManagementPolicyAssignment_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property roleManagementPolicyAssignments in policies.
         Planner operation: PATCH /policies/roleManagementPolicyAssignments/{unifiedRoleManagementPolicyAssignment-id}
@@ -21597,30 +22778,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.policies.role_management_policy_assignments.by_roleManagementPolicyAssignment_id(unifiedRoleManagementPolicyAssignment_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.policies.role_management_policy_assignments.by_roleManagementPolicyAssignment_id(
+                unifiedRoleManagementPolicyAssignment_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def policies_role_management_policy_assignments_get_policy(
         self,
         unifiedRoleManagementPolicyAssignment_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get policy from policies.
         Planner operation: GET /policies/roleManagementPolicyAssignments/{unifiedRoleManagementPolicyAssignment-id}/policy
@@ -21673,28 +22856,30 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.policies.role_management_policy_assignments.by_roleManagementPolicyAssignment_id(unifiedRoleManagementPolicyAssignment_id).policy.get(request_configuration=config)
+            response = await self.client.policies.role_management_policy_assignments.by_roleManagementPolicyAssignment_id(
+                unifiedRoleManagementPolicyAssignment_id
+            ).policy.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_create_role_assignment_schedule_instances(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to roleAssignmentScheduleInstances for roleManagement.
         Planner operation: POST /roleManagement/entitlementManagement/roleAssignmentScheduleInstances
@@ -21745,30 +22930,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.post(body=request_body, request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_list_role_assignment_schedule_instances(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleAssignmentScheduleInstances from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleInstances
@@ -21821,32 +23008,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedule_instances_filter_by_current_user(
         self,
         on: str,
         True_: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Invoke function filterByCurrentUser.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleInstances/filterByCurrentUser(on='{on}')
@@ -21901,29 +23090,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.filter_by_current_user(on='{on}').get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.filter_by_current_user(
+                on="{on}"
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_delete_role_assignment_schedule_instances(
         self,
         unifiedRoleAssignmentScheduleInstance_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property roleAssignmentScheduleInstances for roleManagement.
         Planner operation: DELETE /roleManagement/entitlementManagement/roleAssignmentScheduleInstances/{unifiedRoleAssignmentScheduleInstance-id}
@@ -21975,30 +23166,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(unifiedRoleAssignmentScheduleInstance_id).delete(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(
+                unifiedRoleAssignmentScheduleInstance_id
+            ).delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_get_role_assignment_schedule_instances(
         self,
         unifiedRoleAssignmentScheduleInstance_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleAssignmentScheduleInstances from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleInstances/{unifiedRoleAssignmentScheduleInstance-id}
@@ -22051,29 +23244,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(unifiedRoleAssignmentScheduleInstance_id).get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(
+                unifiedRoleAssignmentScheduleInstance_id
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_update_role_assignment_schedule_instances(
         self,
         unifiedRoleAssignmentScheduleInstance_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property roleAssignmentScheduleInstances in roleManagement.
         Planner operation: PATCH /roleManagement/entitlementManagement/roleAssignmentScheduleInstances/{unifiedRoleAssignmentScheduleInstance-id}
@@ -22125,30 +23320,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(unifiedRoleAssignmentScheduleInstance_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(
+                unifiedRoleAssignmentScheduleInstance_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedule_instances_get_app_scope(
         self,
         unifiedRoleAssignmentScheduleInstance_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get appScope from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleInstances/{unifiedRoleAssignmentScheduleInstance-id}/appScope
@@ -22201,30 +23398,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(unifiedRoleAssignmentScheduleInstance_id).app_scope.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(
+                unifiedRoleAssignmentScheduleInstance_id
+            ).app_scope.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedule_instances_get_principal(
         self,
         unifiedRoleAssignmentScheduleInstance_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get principal from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleInstances/{unifiedRoleAssignmentScheduleInstance-id}/principal
@@ -22277,30 +23476,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(unifiedRoleAssignmentScheduleInstance_id).principal.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(
+                unifiedRoleAssignmentScheduleInstance_id
+            ).principal.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedule_instances_get_role_definition(
         self,
         unifiedRoleAssignmentScheduleInstance_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleDefinition from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleInstances/{unifiedRoleAssignmentScheduleInstance-id}/roleDefinition
@@ -22353,28 +23554,30 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(unifiedRoleAssignmentScheduleInstance_id).role_definition.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_instances.by_roleAssignmentScheduleInstance_id(
+                unifiedRoleAssignmentScheduleInstance_id
+            ).role_definition.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_create_role_assignment_schedule_requests(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to roleAssignmentScheduleRequests for roleManagement.
         Planner operation: POST /roleManagement/entitlementManagement/roleAssignmentScheduleRequests
@@ -22425,30 +23628,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.post(body=request_body, request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_list_role_assignment_schedule_requests(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleAssignmentScheduleRequests from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleRequests
@@ -22501,32 +23706,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedule_requests_filter_by_current_user(
         self,
         on: str,
         True_: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Invoke function filterByCurrentUser.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleRequests/filterByCurrentUser(on='{on}')
@@ -22581,29 +23788,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.filter_by_current_user(on='{on}').get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.filter_by_current_user(
+                on="{on}"
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_delete_role_assignment_schedule_requests(
         self,
         unifiedRoleAssignmentScheduleRequest_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property roleAssignmentScheduleRequests for roleManagement.
         Planner operation: DELETE /roleManagement/entitlementManagement/roleAssignmentScheduleRequests/{unifiedRoleAssignmentScheduleRequest-id}
@@ -22655,30 +23864,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(unifiedRoleAssignmentScheduleRequest_id).delete(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(
+                unifiedRoleAssignmentScheduleRequest_id
+            ).delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_get_role_assignment_schedule_requests(
         self,
         unifiedRoleAssignmentScheduleRequest_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleAssignmentScheduleRequests from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleRequests/{unifiedRoleAssignmentScheduleRequest-id}
@@ -22731,29 +23942,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(unifiedRoleAssignmentScheduleRequest_id).get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(
+                unifiedRoleAssignmentScheduleRequest_id
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_update_role_assignment_schedule_requests(
         self,
         unifiedRoleAssignmentScheduleRequest_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property roleAssignmentScheduleRequests in roleManagement.
         Planner operation: PATCH /roleManagement/entitlementManagement/roleAssignmentScheduleRequests/{unifiedRoleAssignmentScheduleRequest-id}
@@ -22805,30 +24018,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(unifiedRoleAssignmentScheduleRequest_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(
+                unifiedRoleAssignmentScheduleRequest_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedule_requests_get_app_scope(
         self,
         unifiedRoleAssignmentScheduleRequest_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get appScope from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleRequests/{unifiedRoleAssignmentScheduleRequest-id}/appScope
@@ -22881,28 +24096,30 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(unifiedRoleAssignmentScheduleRequest_id).app_scope.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(
+                unifiedRoleAssignmentScheduleRequest_id
+            ).app_scope.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedule_requests_unified_role_assignment_schedule_request_cancel(
         self,
         unifiedRoleAssignmentScheduleRequest_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Invoke action cancel.
         Planner operation: POST /roleManagement/entitlementManagement/roleAssignmentScheduleRequests/{unifiedRoleAssignmentScheduleRequest-id}/cancel
@@ -22953,30 +24170,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(unifiedRoleAssignmentScheduleRequest_id).cancel.post(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(
+                unifiedRoleAssignmentScheduleRequest_id
+            ).cancel.post(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedule_requests_get_principal(
         self,
         unifiedRoleAssignmentScheduleRequest_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get principal from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleRequests/{unifiedRoleAssignmentScheduleRequest-id}/principal
@@ -23029,30 +24248,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(unifiedRoleAssignmentScheduleRequest_id).principal.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(
+                unifiedRoleAssignmentScheduleRequest_id
+            ).principal.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedule_requests_get_role_definition(
         self,
         unifiedRoleAssignmentScheduleRequest_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleDefinition from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleRequests/{unifiedRoleAssignmentScheduleRequest-id}/roleDefinition
@@ -23105,30 +24326,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(unifiedRoleAssignmentScheduleRequest_id).role_definition.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(
+                unifiedRoleAssignmentScheduleRequest_id
+            ).role_definition.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedule_requests_get_target_schedule(
         self,
         unifiedRoleAssignmentScheduleRequest_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get targetSchedule from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentScheduleRequests/{unifiedRoleAssignmentScheduleRequest-id}/targetSchedule
@@ -23181,28 +24404,30 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(unifiedRoleAssignmentScheduleRequest_id).target_schedule.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedule_requests.by_roleAssignmentScheduleRequest_id(
+                unifiedRoleAssignmentScheduleRequest_id
+            ).target_schedule.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_create_role_assignment_schedules(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create new navigation property to roleAssignmentSchedules for roleManagement.
         Planner operation: POST /roleManagement/entitlementManagement/roleAssignmentSchedules
@@ -23253,30 +24478,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedules.post(body=request_body, request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedules.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_list_role_assignment_schedules(
         self,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_orderby: list[str] | None = None,
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleAssignmentSchedules from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentSchedules
@@ -23329,32 +24556,34 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedules.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedules.get(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedules_filter_by_current_user(
         self,
         on: str,
         True_: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_orderby: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Invoke function filterByCurrentUser.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentSchedules/filterByCurrentUser(on='{on}')
@@ -23409,29 +24638,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedules.filter_by_current_user(on='{on}').get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedules.filter_by_current_user(
+                on="{on}"
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_delete_role_assignment_schedules(
         self,
         unifiedRoleAssignmentSchedule_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property roleAssignmentSchedules for roleManagement.
         Planner operation: DELETE /roleManagement/entitlementManagement/roleAssignmentSchedules/{unifiedRoleAssignmentSchedule-id}
@@ -23483,30 +24714,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(unifiedRoleAssignmentSchedule_id).delete(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(
+                unifiedRoleAssignmentSchedule_id
+            ).delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_get_role_assignment_schedules(
         self,
         unifiedRoleAssignmentSchedule_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleAssignmentSchedules from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentSchedules/{unifiedRoleAssignmentSchedule-id}
@@ -23559,29 +24792,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(unifiedRoleAssignmentSchedule_id).get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(
+                unifiedRoleAssignmentSchedule_id
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_update_role_assignment_schedules(
         self,
         unifiedRoleAssignmentSchedule_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property roleAssignmentSchedules in roleManagement.
         Planner operation: PATCH /roleManagement/entitlementManagement/roleAssignmentSchedules/{unifiedRoleAssignmentSchedule-id}
@@ -23633,30 +24868,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(unifiedRoleAssignmentSchedule_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(
+                unifiedRoleAssignmentSchedule_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedules_get_app_scope(
         self,
         unifiedRoleAssignmentSchedule_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get appScope from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentSchedules/{unifiedRoleAssignmentSchedule-id}/appScope
@@ -23709,30 +24946,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(unifiedRoleAssignmentSchedule_id).app_scope.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(
+                unifiedRoleAssignmentSchedule_id
+            ).app_scope.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedules_get_principal(
         self,
         unifiedRoleAssignmentSchedule_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get principal from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentSchedules/{unifiedRoleAssignmentSchedule-id}/principal
@@ -23785,30 +25024,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(unifiedRoleAssignmentSchedule_id).principal.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(
+                unifiedRoleAssignmentSchedule_id
+            ).principal.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignment_schedules_get_role_definition(
         self,
         unifiedRoleAssignmentSchedule_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleDefinition from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignmentSchedules/{unifiedRoleAssignmentSchedule-id}/roleDefinition
@@ -23861,28 +25102,30 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(unifiedRoleAssignmentSchedule_id).role_definition.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignment_schedules.by_roleAssignmentSchedule_id(
+                unifiedRoleAssignmentSchedule_id
+            ).role_definition.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_create_role_assignments(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Create unifiedRoleAssignment.
         Planner operation: POST /roleManagement/entitlementManagement/roleAssignments
@@ -23933,29 +25176,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignments.post(body=request_body, request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignments.post(
+                body=request_body, request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_delete_role_assignments(
         self,
         unifiedRoleAssignment_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property roleAssignments for roleManagement.
         Planner operation: DELETE /roleManagement/entitlementManagement/roleAssignments/{unifiedRoleAssignment-id}
@@ -24007,30 +25252,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(unifiedRoleAssignment_id).delete(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(
+                unifiedRoleAssignment_id
+            ).delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_get_role_assignments(
         self,
         unifiedRoleAssignment_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleAssignments from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignments/{unifiedRoleAssignment-id}
@@ -24083,29 +25330,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(unifiedRoleAssignment_id).get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(
+                unifiedRoleAssignment_id
+            ).get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_update_role_assignments(
         self,
         unifiedRoleAssignment_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property roleAssignments in roleManagement.
         Planner operation: PATCH /roleManagement/entitlementManagement/roleAssignments/{unifiedRoleAssignment-id}
@@ -24157,29 +25406,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(unifiedRoleAssignment_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(
+                unifiedRoleAssignment_id
+            ).patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignments_delete_app_scope(
         self,
         unifiedRoleAssignment_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        If_Match: str | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Delete navigation property appScope for roleManagement.
         Planner operation: DELETE /roleManagement/entitlementManagement/roleAssignments/{unifiedRoleAssignment-id}/appScope
@@ -24231,30 +25482,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(unifiedRoleAssignment_id).app_scope.delete(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(
+                unifiedRoleAssignment_id
+            ).app_scope.delete(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignments_get_app_scope(
         self,
         unifiedRoleAssignment_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get appScope from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignments/{unifiedRoleAssignment-id}/appScope
@@ -24307,29 +25560,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(unifiedRoleAssignment_id).app_scope.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(
+                unifiedRoleAssignment_id
+            ).app_scope.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignments_update_app_scope(
         self,
         unifiedRoleAssignment_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        request_body: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Update the navigation property appScope in roleManagement.
         Planner operation: PATCH /roleManagement/entitlementManagement/roleAssignments/{unifiedRoleAssignment-id}/appScope
@@ -24381,30 +25636,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(unifiedRoleAssignment_id).app_scope.patch(body=request_body, request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(
+                unifiedRoleAssignment_id
+            ).app_scope.patch(body=request_body, request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignments_get_principal(
         self,
         unifiedRoleAssignment_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get principal from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignments/{unifiedRoleAssignment-id}/principal
@@ -24457,30 +25714,32 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(unifiedRoleAssignment_id).principal.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(
+                unifiedRoleAssignment_id
+            ).principal.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def role_management_entitlement_management_role_assignments_get_role_definition(
         self,
         unifiedRoleAssignment_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        dollar_select: list[str] | None = None,
+        dollar_expand: list[str] | None = None,
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Get roleDefinition from roleManagement.
         Planner operation: GET /roleManagement/entitlementManagement/roleAssignments/{unifiedRoleAssignment-id}/roleDefinition
@@ -24533,29 +25792,31 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(unifiedRoleAssignment_id).role_definition.get(request_configuration=config)
+            response = await self.client.role_management.entitlement_management.role_assignments.by_roleAssignment_id(
+                unifiedRoleAssignment_id
+            ).role_definition.get(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     # ========== GENERAL OPERATIONS (2 methods) ==========
 
     async def me_reprocess_license_assignment(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Invoke action reprocessLicenseAssignment.
         Planner operation: POST /me/reprocessLicenseAssignment
@@ -24605,28 +25866,30 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.me.reprocess_license_assignment.post(request_configuration=config)
+            response = await self.client.me.reprocess_license_assignment.post(
+                request_configuration=config
+            )
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
 
     async def users_user_reprocess_license_assignment(
         self,
         user_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
+        select: list[str] | None = None,
+        expand: list[str] | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        search: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
     ) -> PlannerResponse:
         """Invoke action reprocessLicenseAssignment.
         Planner operation: POST /users/{user-id}/reprocessLicenseAssignment
@@ -24677,13 +25940,14 @@ class PlannerDataSource:
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers["ConsistencyLevel"] = "eventual"
 
-            response = await self.client.users.by_user_id(user_id).reprocess_license_assignment.post(request_configuration=config)
+            response = await self.client.users.by_user_id(
+                user_id
+            ).reprocess_license_assignment.post(request_configuration=config)
             return self._handle_planner_response(response)
         except Exception as e:
             return PlannerResponse(
                 success=False,
-                error=f"Planner API call failed: {str(e)}",
+                error=f"Planner API call failed: {e!s}",
             )
-

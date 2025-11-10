@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -16,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 class Dropbox:
     """Dropbox tool exposed to the agents"""
+
     def __init__(self, client: DropboxClient) -> None:
         """Initialize the Dropbox tool"""
         """
@@ -27,7 +27,9 @@ class Dropbox:
         self.client = DropboxDataSource(client)
         # Dedicated background event loop for running coroutines from sync context
         self._bg_loop = asyncio.new_event_loop()
-        self._bg_loop_thread = threading.Thread(target=self._start_background_loop, daemon=True)
+        self._bg_loop_thread = threading.Thread(
+            target=self._start_background_loop, daemon=True
+        )
         self._bg_loop_thread.start()
 
     def _start_background_loop(self) -> None:
@@ -35,7 +37,7 @@ class Dropbox:
         asyncio.set_event_loop(self._bg_loop)
         self._bg_loop.run_forever()
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
+    def _run_async(self, coro) -> HTTPResponse:  # type: ignore [valid method]
         """Run a coroutine safely from sync or async contexts via a dedicated loop."""
         future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
         return future.result()
@@ -43,7 +45,10 @@ class Dropbox:
     def shutdown(self) -> None:
         """Gracefully stop the background event loop and thread."""
         try:
-            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+            if (
+                getattr(self, "_bg_loop", None) is not None
+                and self._bg_loop.is_running()
+            ):
                 self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
             if getattr(self, "_bg_loop_thread", None) is not None:
                 self._bg_loop_thread.join()
@@ -56,9 +61,9 @@ class Dropbox:
         app_name="dropbox",
         tool_name="get_account_info",
         description="Get current account information",
-        parameters=[]
+        parameters=[],
     )
-    def get_account_info(self) -> Tuple[bool, str]:
+    def get_account_info(self) -> tuple[bool, str]:
         """Get current account information"""
         """
         Returns:
@@ -70,8 +75,7 @@ class Dropbox:
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
             return False, json.dumps({"error": str(e)})
@@ -85,35 +89,35 @@ class Dropbox:
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the folder to list",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="recursive",
                 type=ParameterType.BOOLEAN,
                 description="Whether to list recursively",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_media_info",
                 type=ParameterType.BOOLEAN,
                 description="Whether to include media info",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_deleted",
                 type=ParameterType.BOOLEAN,
                 description="Whether to include deleted files",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def list_folder(
         self,
         path: str,
-        recursive: Optional[bool] = None,
-        include_media_info: Optional[bool] = None,
-        include_deleted: Optional[bool] = None
-    ) -> Tuple[bool, str]:
+        recursive: bool | None = None,
+        include_media_info: bool | None = None,
+        include_deleted: bool | None = None,
+    ) -> tuple[bool, str]:
         """List contents of a folder"""
         """
         Args:
@@ -126,17 +130,18 @@ class Dropbox:
         """
         try:
             # Use DropboxDataSource method
-            response = self._run_async(self.client.files_list_folder(
-                path=path,
-                recursive=recursive,
-                include_media_info=include_media_info,
-                include_deleted=include_deleted
-            ))
+            response = self._run_async(
+                self.client.files_list_folder(
+                    path=path,
+                    recursive=recursive,
+                    include_media_info=include_media_info,
+                    include_deleted=include_deleted,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error listing folder: {e}")
             return False, json.dumps({"error": str(e)})
@@ -150,28 +155,28 @@ class Dropbox:
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the file or folder",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="include_media_info",
                 type=ParameterType.BOOLEAN,
                 description="Whether to include media info",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_deleted",
                 type=ParameterType.BOOLEAN,
                 description="Whether to include deleted files",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_metadata(
         self,
         path: str,
-        include_media_info: Optional[bool] = None,
-        include_deleted: Optional[bool] = None
-    ) -> Tuple[bool, str]:
+        include_media_info: bool | None = None,
+        include_deleted: bool | None = None,
+    ) -> tuple[bool, str]:
         """Get metadata for a file or folder"""
         """
         Args:
@@ -183,16 +188,17 @@ class Dropbox:
         """
         try:
             # Use DropboxDataSource method
-            response = self._run_async(self.client.files_get_metadata(
-                path=path,
-                include_media_info=include_media_info,
-                include_deleted=include_deleted
-            ))
+            response = self._run_async(
+                self.client.files_get_metadata(
+                    path=path,
+                    include_media_info=include_media_info,
+                    include_deleted=include_deleted,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error getting metadata: {e}")
             return False, json.dumps({"error": str(e)})
@@ -206,11 +212,11 @@ class Dropbox:
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the file to download",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def download_file(self, path: str) -> Tuple[bool, str]:
+    def download_file(self, path: str) -> tuple[bool, str]:
         """Download a file from Dropbox"""
         """
         Args:
@@ -224,8 +230,7 @@ class Dropbox:
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error downloading file: {e}")
             return False, json.dumps({"error": str(e)})
@@ -239,28 +244,28 @@ class Dropbox:
                 name="path",
                 type=ParameterType.STRING,
                 description="Path where to upload the file",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
                 description="Content of the file to upload",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="mode",
                 type=ParameterType.STRING,
                 description="Write mode (add, overwrite, update)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def upload_file(
         self,
         path: str,
         content: str,
-        mode: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        mode: str | None = None,
+    ) -> tuple[bool, str]:
         """Upload a file to Dropbox"""
         """
         Args:
@@ -272,19 +277,20 @@ class Dropbox:
         """
         try:
             # Convert textual content to bytes as required by DataSource
-            file_bytes = content.encode('utf-8')
+            file_bytes = content.encode("utf-8")
 
             # Use DropboxDataSource method (expects bytes in 'f' argument)
-            response = self._run_async(self.client.files_upload(
-                f=file_bytes,
-                path=path,
-                mode=mode if mode is not None else 'add'
-            ))
+            response = self._run_async(
+                self.client.files_upload(
+                    f=file_bytes,
+                    path=path,
+                    mode=mode if mode is not None else "add",
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error uploading file: {e}")
             return False, json.dumps({"error": str(e)})
@@ -298,11 +304,11 @@ class Dropbox:
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the file or folder to delete",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def delete_file(self, path: str) -> Tuple[bool, str]:
+    def delete_file(self, path: str) -> tuple[bool, str]:
         """Delete a file or folder from Dropbox"""
         """
         Args:
@@ -316,8 +322,7 @@ class Dropbox:
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error deleting file: {e}")
             return False, json.dumps({"error": str(e)})
@@ -331,11 +336,11 @@ class Dropbox:
                 name="path",
                 type=ParameterType.STRING,
                 description="Path where to create the folder",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def create_folder(self, path: str) -> Tuple[bool, str]:
+    def create_folder(self, path: str) -> tuple[bool, str]:
         """Create a folder in Dropbox"""
         """
         Args:
@@ -349,8 +354,7 @@ class Dropbox:
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error creating folder: {e}")
             return False, json.dumps({"error": str(e)})
@@ -364,28 +368,28 @@ class Dropbox:
                 name="query",
                 type=ParameterType.STRING,
                 description="Search query",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="path",
                 type=ParameterType.STRING,
                 description="Path to search in",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum number of results",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def search(
         self,
         query: str,
-        path: Optional[str] = None,
-        max_results: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        path: str | None = None,
+        max_results: int | None = None,
+    ) -> tuple[bool, str]:
         """Search for files and folders"""
         """
         Args:
@@ -397,16 +401,17 @@ class Dropbox:
         """
         try:
             # Use DropboxDataSource method
-            response = self._run_async(self.client.files_search_v2(
-                query=query,
-                path=path,
-                max_results=max_results
-            ))
+            response = self._run_async(
+                self.client.files_search_v2(
+                    query=query,
+                    path=path,
+                    max_results=max_results,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error searching: {e}")
             return False, json.dumps({"error": str(e)})
@@ -420,21 +425,21 @@ class Dropbox:
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the file or folder",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="settings",
                 type=ParameterType.STRING,
                 description="Settings for the shared link",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_shared_link(
         self,
         path: str,
-        settings: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        settings: str | None = None,
+    ) -> tuple[bool, str]:
         """Get a shared link for a file or folder"""
         """
         Args:
@@ -445,15 +450,16 @@ class Dropbox:
         """
         try:
             # Use DropboxDataSource method
-            response = self._run_async(self.client.sharing_create_shared_link_with_settings(
-                path=path,
-                settings=settings
-            ))
+            response = self._run_async(
+                self.client.sharing_create_shared_link_with_settings(
+                    path=path,
+                    settings=settings,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error getting shared link: {e}")
             return False, json.dumps({"error": str(e)})

@@ -55,6 +55,7 @@ class Connectors(Enum):
 
     UNKNOWN = "UNKNOWN"
 
+
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
     NOTION = "Notion"
@@ -65,9 +66,11 @@ class AppGroups(Enum):
     WEB = "Web"
     BOOKSTACK = "BookStack"
 
+
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"
+
 
 class LegacyCollectionNames(Enum):
     KNOWLEDGE_BASE = "knowledgeBase"
@@ -75,11 +78,14 @@ class LegacyCollectionNames(Enum):
     BELONGS_TO_KNOWLEDGE_BASE = "belongsToKnowledgeBase"
     BELONGS_TO_KB = "belongsToKB"
 
+
 class LegacyGraphNames(Enum):
     FILE_ACCESS_GRAPH = "fileAccessGraph"
 
+
 class GraphNames(Enum):
     KNOWLEDGE_GRAPH = "knowledgeGraph"
+
 
 class CollectionNames(Enum):
     # Records and Record relations
@@ -102,7 +108,7 @@ class CollectionNames(Enum):
     FILES = "files"
     LINKS = "links"
     MAILS = "mails"
-    #MESSAGES = "messages"
+    # MESSAGES = "messages"
     WEBPAGES = "webpages"
     TICKETS = "tickets"
 
@@ -149,13 +155,14 @@ class CollectionNames(Enum):
     # WEBPAGE_COMMENT_RECORD="webpageCommentRecord"
 
     # NOTION_DATABASE_RECORD="notionDatabaseRecord"
-    BELONGS_TO_RECORD_GROUP="belongsToRecordGroup"
+    BELONGS_TO_RECORD_GROUP = "belongsToRecordGroup"
 
     # Storage mappings
     VIRTUAL_RECORD_TO_DOC_ID_MAPPING = "virtualRecordToDocIdMapping"
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
+
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
@@ -181,6 +188,7 @@ class ExtensionTypes(Enum):
     SVG = "svg"
     HEIC = "heic"
     HEIF = "heif"
+
 
 class MimeTypes(Enum):
     PDF = "application/pdf"
@@ -221,6 +229,7 @@ class MimeTypes(Enum):
     ZIP = "application/zip"
     GIF = "image/gif"
 
+
 class ProgressStatus(Enum):
     NOT_STARTED = "NOT_STARTED"
     PAUSED = "PAUSED"
@@ -229,6 +238,7 @@ class ProgressStatus(Enum):
     FAILED = "FAILED"
     FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
     AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
+
 
 class RecordTypes(Enum):
     FILE = "FILE"
@@ -245,10 +255,12 @@ class RecordTypes(Enum):
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
 
+
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
+
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"
@@ -256,6 +268,7 @@ class EventTypes(Enum):
     DELETE_RECORD = "deleteRecord"
     REINDEX_RECORD = "reindexRecord"
     REINDEX_FAILED = "reindexFailed"
+
 
 class AccountType(Enum):
     INDIVIDUAL = "individual"

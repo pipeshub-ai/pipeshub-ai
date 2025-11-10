@@ -19,19 +19,22 @@ from app.utils.logger import create_logger
 def is_valid_email(email: str) -> bool:
     return email is not None and email != "" and "@" in email
 
+
 async def test_run() -> None:
     user_email = os.getenv("TEST_USER_EMAIL")
     org_id = "org_1"
-    async def create_test_users(user_email: str, arango_service: BaseArangoService) -> None:
-        org = {
-                "_key": org_id,
-                "accountType": "enterprise",
-                "name": "Test Org",
-                "isActive": True,
-                "createdAtTimestamp": 1718745600,
-                "updatedAtTimestamp": 1718745600,
-            }
 
+    async def create_test_users(
+        user_email: str, arango_service: BaseArangoService
+    ) -> None:
+        org = {
+            "_key": org_id,
+            "accountType": "enterprise",
+            "name": "Test Org",
+            "isActive": True,
+            "createdAtTimestamp": 1718745600,
+            "updatedAtTimestamp": 1718745600,
+        }
 
         await arango_service.batch_upsert_nodes([org], CollectionNames.ORGS.value)
         user = {
@@ -45,14 +48,18 @@ async def test_run() -> None:
         }
 
         await arango_service.batch_upsert_nodes([user], CollectionNames.USERS.value)
-        await arango_service.batch_create_edges([{
-            "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "_to": f"{CollectionNames.ORGS.value}/{org_id}",
-            "entityType": "ORGANIZATION",
-            "createdAtTimestamp": 1718745600,
-            "updatedAtTimestamp": 1718745600,
-        }], CollectionNames.BELONGS_TO.value)
-
+        await arango_service.batch_create_edges(
+            [
+                {
+                    "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
+                    "_to": f"{CollectionNames.ORGS.value}/{org_id}",
+                    "entityType": "ORGANIZATION",
+                    "createdAtTimestamp": 1718745600,
+                    "updatedAtTimestamp": 1718745600,
+                }
+            ],
+            CollectionNames.BELONGS_TO.value,
+        )
 
     logger = create_logger("onedrive_connector")
     # base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -62,7 +69,9 @@ async def test_run() -> None:
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
     arango_client = ArangoClient()
-    arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
+    arango_service = BaseArangoService(
+        logger, arango_client, config_service, kafka_service
+    )
     await arango_service.connect()
     data_store_provider = ArangoDataStore(logger, arango_service)
     if user_email:
@@ -76,9 +85,12 @@ async def test_run() -> None:
     }
 
     await key_value_store.create_key("/services/connectors/onedrive/config", config)
-    connector: BaseConnector = await OneDriveConnector.create_connector(logger, data_store_provider, config_service)
+    connector: BaseConnector = await OneDriveConnector.create_connector(
+        logger, data_store_provider, config_service
+    )
     await connector.init()
     await connector.run_sync()
+
 
 if __name__ == "__main__":
     asyncio.run(test_run())

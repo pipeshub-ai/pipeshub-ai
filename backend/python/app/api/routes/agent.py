@@ -1,7 +1,8 @@
 import json
 import uuid
+from collections.abc import AsyncGenerator
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -21,16 +22,16 @@ router = APIRouter()
 
 class ChatQuery(BaseModel):
     query: str
-    limit: Optional[int] = 50
-    previousConversations: List[Dict] = []
+    limit: int | None = 50
+    previousConversations: list[dict] = []
     quickMode: bool = False
-    filters: Optional[Dict[str, Any]] = None
-    retrievalMode: Optional[str] = "HYBRID"
-    systemPrompt: Optional[str] = None
-    tools: Optional[List[str]] = None
+    filters: dict[str, Any] | None = None
+    retrievalMode: str | None = "HYBRID"
+    systemPrompt: str | None = None
+    tools: list[str] | None = None
 
 
-async def get_services(request: Request) -> Dict[str, Any]:
+async def get_services(request: Request) -> dict[str, Any]:
     """Get all required services from the container"""
     container = request.app.container
 
@@ -60,7 +61,13 @@ async def get_services(request: Request) -> Dict[str, Any]:
         "llm": llm,
     }
 
-async def get_user_org_info(request: Request, user_info: Dict[str, Any], arango_service: BaseArangoService, logger: Logger) -> Dict[str, Any]:
+
+async def get_user_org_info(
+    request: Request,
+    user_info: dict[str, Any],
+    arango_service: BaseArangoService,
+    logger: Logger,
+) -> dict[str, Any]:
     """Get user and org info from request"""
     org_info = None
     try:
@@ -79,27 +86,35 @@ async def get_user_org_info(request: Request, user_info: Dict[str, Any], arango_
         user_info["_key"] = user.get("_key")
 
         # Get organization document
-        org_doc = await arango_service.get_document(user_info.get("orgId"), CollectionNames.ORGS.value)
+        org_doc = await arango_service.get_document(
+            user_info.get("orgId"), CollectionNames.ORGS.value
+        )
         if not org_doc or not isinstance(org_doc, dict):
             raise HTTPException(status_code=404, detail="Organization not found")
 
         # Determine account type
         raw_account_type = str(org_doc.get("accountType", "")).lower()
-        account_type = "enterprise" if raw_account_type == "enterprise" else ("individual" if raw_account_type == "individual" else "")
+        account_type = (
+            "enterprise"
+            if raw_account_type == "enterprise"
+            else ("individual" if raw_account_type == "individual" else "")
+        )
         if account_type == "":
             raise HTTPException(status_code=400, detail="Invalid account type")
 
         org_info = {
             "orgId": user_info.get("orgId"),
-            "accountType": account_type
+            "accountType": account_type,
         }
         return org_info
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching user/org info: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch user/org information")
+        logger.error(f"Error fetching user/org info: {e!s}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail="Failed to fetch user/org information"
+        )
 
 
 @router.post("/agent-chat")
@@ -141,7 +156,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
 
         config = {"recursion_limit": 50}
 
-        final_state = await agent_graph.ainvoke(initial_state, config=config)  # Using async invoke
+        final_state = await agent_graph.ainvoke(
+            initial_state, config=config
+        )  # Using async invoke
 
         # Check for errors
         if final_state.get("error"):
@@ -150,7 +167,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 status_code=error.get("status_code", 500),
                 content={
                     "status": error.get("status", "error"),
-                    "message": error.get("message", error.get("detail", "An error occurred")),
+                    "message": error.get(
+                        "message", error.get("detail", "An error occurred")
+                    ),
                     "searchResults": [],
                     "records": [],
                 },
@@ -163,19 +182,19 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         # Re-raise HTTP exceptions with their original status codes
         raise he
     except Exception as e:
-        logger.error(f"Error in askAI: {str(e)}", exc_info=True)
+        logger.error(f"Error in askAI: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
 async def stream_response(
-    query_info: Dict[str, Any],
-    user_info: Dict[str, Any],
+    query_info: dict[str, Any],
+    user_info: dict[str, Any],
     llm: BaseChatModel,
     logger: Logger,
     retrieval_service: RetrievalService,
     arango_service: BaseArangoService,
     reranker_service: RerankerService,
-    org_info: Dict[str, Any] = None,
+    org_info: dict[str, Any] = None,
 ) -> AsyncGenerator[str, None]:
     # Build initial state
     initial_state = build_initial_state(
@@ -195,7 +214,9 @@ async def stream_response(
 
     config = {"recursion_limit": 50}  # Increased from default 25 to 50
 
-    async for chunk in agent_graph.astream(initial_state, config=config, stream_mode="custom"):
+    async for chunk in agent_graph.astream(
+        initial_state, config=config, stream_mode="custom"
+    ):
         if isinstance(chunk, dict) and "event" in chunk:
             # Convert dict to JSON string for streaming
             yield f"event: {chunk['event']}\ndata: {json.dumps(chunk['data'])}\n\n"
@@ -226,7 +247,14 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         # Stream the response
         return StreamingResponse(
             stream_response(
-                query_info.model_dump(), user_info, llm, logger, retrieval_service, arango_service, reranker_service, org_info
+                query_info.model_dump(),
+                user_info,
+                llm,
+                logger,
+                retrieval_service,
+                arango_service,
+                reranker_service,
+                org_info,
             ),
             media_type="text/event-stream",
         )
@@ -234,7 +262,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
     except HTTPException as he:
         raise he
     except Exception as e:
-        logger.error(f"Error in askAIStream: {str(e)}", exc_info=True)
+        logger.error(f"Error in askAIStream: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -248,13 +276,15 @@ async def create_agent_template(request: Request) -> JSONResponse:
         arango_service = services["arango_service"]
 
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
 
         # Validate required fields
         required_fields = ["name", "description", "systemPrompt"]
         for field in required_fields:
             if not body_dict.get(field) or not body_dict.get(field).strip():
-                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+                raise HTTPException(
+                    status_code=400, detail=f"Missing required field: {field}"
+                )
 
         # Extract user info from request
         user_info = {
@@ -275,7 +305,8 @@ async def create_agent_template(request: Request) -> JSONResponse:
             "_key": template_key,
             "name": body_dict.get("name").strip(),
             "description": body_dict.get("description").strip(),
-            "startMessage": body_dict.get("startMessage", "").strip() or "Hello! How can I help you today?",  # Provide default
+            "startMessage": body_dict.get("startMessage", "").strip()
+            or "Hello! How can I help you today?",  # Provide default
             "systemPrompt": body_dict.get("systemPrompt").strip(),
             "tools": body_dict.get("tools", []),
             "models": body_dict.get("models", []),
@@ -301,13 +332,21 @@ async def create_agent_template(request: Request) -> JSONResponse:
         }
 
         # Create the template
-        result = await arango_service.batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
+        result = await arango_service.batch_upsert_nodes(
+            [template], CollectionNames.AGENT_TEMPLATES.value
+        )
         if not result:
-            raise HTTPException(status_code=400, detail="Failed to create agent template")
+            raise HTTPException(
+                status_code=400, detail="Failed to create agent template"
+            )
 
-        result = await arango_service.batch_create_edges([user_template_access], CollectionNames.PERMISSION.value)
+        result = await arango_service.batch_create_edges(
+            [user_template_access], CollectionNames.PERMISSION.value
+        )
         if not result:
-            raise HTTPException(status_code=400, detail="Failed to create agent template access")
+            raise HTTPException(
+                status_code=400, detail="Failed to create agent template access"
+            )
 
         return JSONResponse(
             status_code=200,
@@ -320,8 +359,9 @@ async def create_agent_template(request: Request) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in create_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in create_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @router.get("/template/list")
 async def get_agent_templates(request: Request) -> JSONResponse:
@@ -340,7 +380,9 @@ async def get_agent_templates(request: Request) -> JSONResponse:
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for getting agent templates")
+            raise HTTPException(
+                status_code=404, detail="User not found for getting agent templates"
+            )
         # Get all templates
         templates = await arango_service.get_all_agent_templates(user.get("_key"))
         if not templates:
@@ -361,7 +403,7 @@ async def get_agent_templates(request: Request) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in get_agent_templates: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_agent_templates: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -382,7 +424,9 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for getting agent template")
+            raise HTTPException(
+                status_code=404, detail="User not found for getting agent template"
+            )
         # Get the template access
         template = await arango_service.get_template(template_id, user.get("_key"))
         if template is None:
@@ -396,11 +440,17 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
             },
         )
     except Exception as e:
-        logger.error(f"Error in get_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @router.post("/share-template/{template_id}")
-async def share_agent_template(request: Request, template_id: str, user_ids: List[str] = Body(...), team_ids: List[str] = Body(...)) -> JSONResponse:
+async def share_agent_template(
+    request: Request,
+    template_id: str,
+    user_ids: list[str] = Body(...),
+    team_ids: list[str] = Body(...),
+) -> JSONResponse:
     """Share an agent template"""
     try:
         # Get all services
@@ -416,15 +466,21 @@ async def share_agent_template(request: Request, template_id: str, user_ids: Lis
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for sharing agent template")
+            raise HTTPException(
+                status_code=404, detail="User not found for sharing agent template"
+            )
         # Get the template
         template = await arango_service.get_template(template_id, user.get("_key"))
         if not template:
             raise HTTPException(status_code=404, detail="Agent template not found")
         # Share the template
-        result = await arango_service.share_agent_template(template_id, user.get("_key"), user_ids, team_ids)
+        result = await arango_service.share_agent_template(
+            template_id, user.get("_key"), user_ids, team_ids
+        )
         if not result:
-            raise HTTPException(status_code=400, detail="Failed to share agent template")
+            raise HTTPException(
+                status_code=400, detail="Failed to share agent template"
+            )
         return JSONResponse(
             status_code=200,
             content={
@@ -433,8 +489,9 @@ async def share_agent_template(request: Request, template_id: str, user_ids: Lis
             },
         )
     except Exception as e:
-        logger.error(f"Error in share_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in share_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.post("/template/{template_id}/clone")
 async def clone_agent_template(request: Request, template_id: str) -> JSONResponse:
@@ -447,7 +504,9 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
         # Clone the template
         cloned_template_id = await arango_service.clone_agent_template(template_id)
         if cloned_template_id is None:
-            raise HTTPException(status_code=400, detail="Failed to clone agent template")
+            raise HTTPException(
+                status_code=400, detail="Failed to clone agent template"
+            )
         return JSONResponse(
             status_code=200,
             content={
@@ -457,8 +516,9 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
             },
         )
     except Exception as e:
-        logger.error(f"Error in clone_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in clone_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.delete("/template/{template_id}")
 async def delete_agent_template(request: Request, template_id: str) -> JSONResponse:
@@ -476,11 +536,17 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for deleting agent template")
+            raise HTTPException(
+                status_code=404, detail="User not found for deleting agent template"
+            )
         # Delete the template
-        result = await arango_service.delete_agent_template(template_id,user.get("_key"))
+        result = await arango_service.delete_agent_template(
+            template_id, user.get("_key")
+        )
         if not result:
-            raise HTTPException(status_code=400, detail="Failed to delete agent template")
+            raise HTTPException(
+                status_code=400, detail="Failed to delete agent template"
+            )
         return JSONResponse(
             status_code=200,
             content={
@@ -489,8 +555,9 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
             },
         )
     except Exception as e:
-        logger.error(f"Error in delete_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in delete_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.put("/template/{template_id}")
 async def update_agent_template(request: Request, template_id: str) -> JSONResponse:
@@ -506,15 +573,21 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
             "userId": request.state.user.get("userId"),
         }
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         # Update the template
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for updating agent template")
-        result = await arango_service.update_agent_template(template_id, body_dict, user.get("_key"))
+            raise HTTPException(
+                status_code=404, detail="User not found for updating agent template"
+            )
+        result = await arango_service.update_agent_template(
+            template_id, body_dict, user.get("_key")
+        )
         if not result:
-            raise HTTPException(status_code=400, detail="Failed to update agent template")
+            raise HTTPException(
+                status_code=400, detail="Failed to update agent template"
+            )
         return JSONResponse(
             status_code=200,
             content={
@@ -523,8 +596,9 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
             },
         )
     except Exception as e:
-        logger.error(f"Error in update_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in update_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.post("/create")
 async def create_agent(request: Request) -> JSONResponse:
@@ -542,11 +616,13 @@ async def create_agent(request: Request) -> JSONResponse:
         }
         time = get_epoch_timestamp_in_ms()
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for creating agent")
+            raise HTTPException(
+                status_code=404, detail="User not found for creating agent"
+            )
 
         # Validate that at least one reasoning model is present
         models = body_dict.get("models", [])
@@ -559,7 +635,7 @@ async def create_agent(request: Request) -> JSONResponse:
             if not has_reasoning_model:
                 raise HTTPException(
                     status_code=400,
-                    detail="At least one reasoning model must be present in the models array. Please add a reasoning model to your agent configuration."
+                    detail="At least one reasoning model must be present in the models array. Please add a reasoning model to your agent configuration.",
                 )
 
         agent = {
@@ -581,7 +657,9 @@ async def create_agent(request: Request) -> JSONResponse:
             "isDeleted": False,
         }
         # Create the agent
-        result = await arango_service.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value)
+        result = await arango_service.batch_upsert_nodes(
+            [agent], CollectionNames.AGENT_INSTANCES.value
+        )
         if not result:
             raise HTTPException(status_code=400, detail="Failed to create agent")
         # create user/teams agent edge
@@ -593,9 +671,13 @@ async def create_agent(request: Request) -> JSONResponse:
             "createdAtTimestamp": time,
             "updatedAtTimestamp": time,
         }
-        result = await arango_service.batch_create_edges([edge], CollectionNames.PERMISSION.value)
+        result = await arango_service.batch_create_edges(
+            [edge], CollectionNames.PERMISSION.value
+        )
         if not result:
-            raise HTTPException(status_code=400, detail="Failed to create agent permission")
+            raise HTTPException(
+                status_code=400, detail="Failed to create agent permission"
+            )
 
         return JSONResponse(
             status_code=200,
@@ -609,8 +691,9 @@ async def create_agent(request: Request) -> JSONResponse:
         # Re-raise HTTP exceptions with their original status codes
         raise he
     except Exception as e:
-        logger.error(f"Error in create_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in create_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.get("/{agent_id}")
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -628,9 +711,11 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for getting agent")
+            raise HTTPException(
+                status_code=404, detail="User not found for getting agent"
+            )
 
-        agent =  await arango_service.get_agent(agent_id, user.get("_key"))
+        agent = await arango_service.get_agent(agent_id, user.get("_key"))
         if agent is None:
             raise HTTPException(status_code=404, detail="Agent not found")
         return JSONResponse(
@@ -642,8 +727,9 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in get_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.get("/")
 async def get_agents(request: Request) -> JSONResponse:
@@ -661,7 +747,9 @@ async def get_agents(request: Request) -> JSONResponse:
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for getting agents")
+            raise HTTPException(
+                status_code=404, detail="User not found for getting agents"
+            )
         # Get all agents
         agents = await arango_service.get_all_agents(user.get("_key"))
         if agents is None or len(agents) == 0:
@@ -675,8 +763,9 @@ async def get_agents(request: Request) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in get_agents: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_agents: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.put("/{agent_id}")
 async def update_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -692,24 +781,32 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             "userId": request.state.user.get("userId"),
         }
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for updating agent")
+            raise HTTPException(
+                status_code=404, detail="User not found for updating agent"
+            )
 
         # Check if user has access to the agent and can edit it
-        agent_with_permission = await arango_service.get_agent(agent_id, user.get("_key"))
+        agent_with_permission = await arango_service.get_agent(
+            agent_id, user.get("_key")
+        )
         if agent_with_permission is None:
             raise HTTPException(status_code=404, detail="Agent not found")
 
         # Only OWNER can edit the agent
         if not agent_with_permission.get("can_edit", False):
-            raise HTTPException(status_code=403, detail="Only the owner can edit this agent")
+            raise HTTPException(
+                status_code=403, detail="Only the owner can edit this agent"
+            )
 
         # Update the agent
-        result = await arango_service.update_agent(agent_id, body_dict, user.get("_key"))
+        result = await arango_service.update_agent(
+            agent_id, body_dict, user.get("_key")
+        )
         if not result:
             raise HTTPException(status_code=400, detail="Failed to update agent")
         return JSONResponse(
@@ -720,8 +817,9 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in update_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in update_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.delete("/{agent_id}")
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -739,16 +837,22 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for deleting agent")
+            raise HTTPException(
+                status_code=404, detail="User not found for deleting agent"
+            )
 
         # Check if user has access to the agent and can delete it
-        agent_with_permission = await arango_service.get_agent(agent_id, user.get("_key"))
+        agent_with_permission = await arango_service.get_agent(
+            agent_id, user.get("_key")
+        )
         if agent_with_permission is None:
             raise HTTPException(status_code=404, detail="Agent not found")
 
         # Only OWNER can delete the agent
         if not agent_with_permission.get("can_delete", False):
-            raise HTTPException(status_code=403, detail="Only the owner can delete this agent")
+            raise HTTPException(
+                status_code=403, detail="Only the owner can delete this agent"
+            )
 
         # Delete the agent
         result = await arango_service.delete_agent(agent_id, user.get("_key"))
@@ -763,8 +867,9 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in delete_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in delete_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.post("/{agent_id}/share")
 async def share_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -776,7 +881,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         arango_service = services["arango_service"]
 
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         user_ids = body_dict.get("userIds", [])
         team_ids = body_dict.get("teamIds", [])
 
@@ -789,18 +894,26 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for sharing agent")
+            raise HTTPException(
+                status_code=404, detail="User not found for sharing agent"
+            )
 
         # Check if user has permission to share the agent
-        agent_with_permission = await arango_service.get_agent(agent_id, user.get("_key"))
+        agent_with_permission = await arango_service.get_agent(
+            agent_id, user.get("_key")
+        )
         if agent_with_permission is None:
             raise HTTPException(status_code=404, detail="Agent not found")
 
         # Only OWNER and ORGANIZER can share the agent
         if not agent_with_permission.get("can_share", False):
-            raise HTTPException(status_code=403, detail="You don't have permission to share this agent")
+            raise HTTPException(
+                status_code=403, detail="You don't have permission to share this agent"
+            )
 
-        result = await arango_service.share_agent(agent_id, user.get("_key"), user_ids, team_ids)
+        result = await arango_service.share_agent(
+            agent_id, user.get("_key"), user_ids, team_ids
+        )
         if not result:
             raise HTTPException(status_code=400, detail="Failed to share agent")
 
@@ -812,8 +925,9 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in share_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in share_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.post("/{agent_id}/unshare")
 async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -824,7 +938,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         logger = services["logger"]
         arango_service = services["arango_service"]
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         user_ids = body_dict.get("userIds", [])
         team_ids = body_dict.get("teamIds", [])
 
@@ -837,19 +951,28 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for unsharing agent")
+            raise HTTPException(
+                status_code=404, detail="User not found for unsharing agent"
+            )
 
         # Check if user has permission to unshare the agent
-        agent_with_permission = await arango_service.get_agent(agent_id, user.get("_key"))
+        agent_with_permission = await arango_service.get_agent(
+            agent_id, user.get("_key")
+        )
         if agent_with_permission is None:
             raise HTTPException(status_code=404, detail="Agent not found")
 
         # Only OWNER and ORGANIZER can unshare the agent
         if not agent_with_permission.get("can_share", False):
-            raise HTTPException(status_code=403, detail="You don't have permission to unshare this agent")
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have permission to unshare this agent",
+            )
 
         # Unshare the agent
-        result = await arango_service.unshare_agent(agent_id, user.get("_key"), user_ids, team_ids)
+        result = await arango_service.unshare_agent(
+            agent_id, user.get("_key"), user_ids, team_ids
+        )
         if not result:
             raise HTTPException(status_code=400, detail="Failed to unshare agent")
 
@@ -861,7 +984,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in unshare_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in unshare_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -883,12 +1006,19 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for viewing agent permissions")
+            raise HTTPException(
+                status_code=404, detail="User not found for viewing agent permissions"
+            )
 
         # Get agent permissions (only OWNER can view all permissions)
-        permissions = await arango_service.get_agent_permissions(agent_id, user.get("_key"))
+        permissions = await arango_service.get_agent_permissions(
+            agent_id, user.get("_key")
+        )
         if permissions is None:
-            raise HTTPException(status_code=403, detail="You don't have permission to view permissions for this agent")
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have permission to view permissions for this agent",
+            )
 
         return JSONResponse(
             status_code=200,
@@ -899,7 +1029,7 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
             },
         )
     except Exception as e:
-        logger.error(f"Error in get_agent_permissions: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_agent_permissions: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -919,7 +1049,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
         }
 
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         user_ids = body_dict.get("userIds", [])
         team_ids = body_dict.get("teamIds", [])
         role = body_dict.get("role")
@@ -927,12 +1057,18 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for updating agent permission")
+            raise HTTPException(
+                status_code=404, detail="User not found for updating agent permission"
+            )
 
         # Update the permission (only OWNER can do this)
-        result = await arango_service.update_agent_permission(agent_id, user.get("_key"), user_ids, team_ids, role)
+        result = await arango_service.update_agent_permission(
+            agent_id, user.get("_key"), user_ids, team_ids, role
+        )
         if not result:
-            raise HTTPException(status_code=400, detail="Failed to update agent permission")
+            raise HTTPException(
+                status_code=400, detail="Failed to update agent permission"
+            )
 
         return JSONResponse(
             status_code=200,
@@ -942,8 +1078,9 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
             },
         )
     except Exception as e:
-        logger.error(f"Error in update_agent_permission: {str(e)}", exc_info=True)
+        logger.error(f"Error in update_agent_permission: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.post("/{agent_id}/chat")
 async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONResponse:
@@ -968,7 +1105,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         org_info = await get_user_org_info(request, user_info, arango_service, logger)
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for chatting with agent")
+            raise HTTPException(
+                status_code=404, detail="User not found for chatting with agent"
+            )
 
         # Get the agent
         agent = await arango_service.get_agent(agent_id, user.get("_key"))
@@ -985,7 +1124,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             filters = {
                 "apps": agent.get("apps"),
                 "kb": agent.get("kb"),
-                "vectorDBs": agent.get("vectorDBs")
+                "vectorDBs": agent.get("vectorDBs"),
             }
 
         # Override individual filter values if they exist in chat query
@@ -1028,7 +1167,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
 
         config = {"recursion_limit": 50}  # Increased from default 25 to 50
 
-        final_state = await agent_graph.ainvoke(initial_state, config=config)  # Using async invoke
+        final_state = await agent_graph.ainvoke(
+            initial_state, config=config
+        )  # Using async invoke
 
         # Check for errors
         if final_state.get("error"):
@@ -1037,7 +1178,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 status_code=error.get("status_code", 500),
                 content={
                     "status": error.get("status", "error"),
-                    "message": error.get("message", error.get("detail", "An error occurred")),
+                    "message": error.get(
+                        "message", error.get("detail", "An error occurred")
+                    ),
                     "searchResults": [],
                     "records": [],
                 },
@@ -1047,8 +1190,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         return final_state["response"]
 
     except Exception as e:
-        logger.error(f"Error in chat: {str(e)}", exc_info=True)
+        logger.error(f"Error in chat: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.post("/{agent_id}/chat/stream")
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
@@ -1075,14 +1219,16 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         # Get the agent
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         if user is None:
-            raise HTTPException(status_code=404, detail="User not found for chatting with agent")
+            raise HTTPException(
+                status_code=404, detail="User not found for chatting with agent"
+            )
 
         agent = await arango_service.get_agent(agent_id, user.get("_key"))
         if agent is None:
             raise HTTPException(status_code=404, detail="Agent not found")
 
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
 
         logger.info(f"body_dict: {body_dict}")
         chat_query = ChatQuery(**body_dict)
@@ -1099,7 +1245,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             filters = {
                 "apps": agent.get("apps"),
                 "kb": agent.get("kb"),
-                "vectorDBs": agent.get("vectorDBs")
+                "vectorDBs": agent.get("vectorDBs"),
             }
 
         # Override individual filter values if they exist in chat query
@@ -1138,10 +1284,17 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         return StreamingResponse(
             stream_response(
-                query_info, user_info, llm, logger, retrieval_service, arango_service, reranker_service, org_info
+                query_info,
+                user_info,
+                llm,
+                logger,
+                retrieval_service,
+                arango_service,
+                reranker_service,
+                org_info,
             ),
             media_type="text/event-stream",
         )
     except Exception as e:
-        logger.error(f"Error in chat_stream: {str(e)}", exc_info=True)
+        logger.error(f"Error in chat_stream: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))

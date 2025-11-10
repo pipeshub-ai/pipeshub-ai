@@ -17,6 +17,7 @@ class config_node_constants(Enum):
     # Non-service paths
     # LOG_LEVEL = "/logLevel"
 
+
 class TokenScopes(Enum):
     """Constants for token scopes"""
 
@@ -37,6 +38,7 @@ class DefaultEndpoints(Enum):
     NODEJS_ENDPOINT = "http://localhost:3000"
     FRONTEND_ENDPOINT = "http://localhost:3001"
     STORAGE_ENDPOINT = "http://localhost:3000"
+
 
 class Routes(Enum):
     """Constants for routes"""

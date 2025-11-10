@@ -250,7 +250,9 @@ class PagerDutyDataSource:
             logger.exception(f"Error updating incident {incident_id}")
             return PagerDutyResponse(success=False, error=str(e))
 
-    def acknowledge_incident(self, incident_id: str, from_email: str) -> PagerDutyResponse:
+    def acknowledge_incident(
+        self, incident_id: str, from_email: str
+    ) -> PagerDutyResponse:
         """Acknowledge an incident (mark as being worked on).
 
         Args:
@@ -480,7 +482,9 @@ class PagerDutyDataSource:
             logger.exception("Error getting services")
             return PagerDutyResponse(success=False, error=str(e))
 
-    def get_service(self, service_id: str, include: list[str] | None = None) -> PagerDutyResponse:
+    def get_service(
+        self, service_id: str, include: list[str] | None = None
+    ) -> PagerDutyResponse:
         """Get details of a specific service.
 
         Args:
@@ -544,7 +548,9 @@ class PagerDutyDataSource:
             if auto_resolve_timeout is not None:
                 service_data["service"]["auto_resolve_timeout"] = auto_resolve_timeout
             if acknowledgement_timeout is not None:
-                service_data["service"]["acknowledgement_timeout"] = acknowledgement_timeout
+                service_data["service"]["acknowledgement_timeout"] = (
+                    acknowledgement_timeout
+                )
 
             response = self.sdk.post("/services", json=service_data)
             return PagerDutyResponse(success=True, data=response.json())
@@ -652,7 +658,9 @@ class PagerDutyDataSource:
             logger.exception("Error getting users")
             return PagerDutyResponse(success=False, error=str(e))
 
-    def get_user(self, user_id: str, include: list[str] | None = None) -> PagerDutyResponse:
+    def get_user(
+        self, user_id: str, include: list[str] | None = None
+    ) -> PagerDutyResponse:
         """Get details of a specific user.
 
         Args:

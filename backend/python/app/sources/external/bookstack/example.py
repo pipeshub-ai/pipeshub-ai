@@ -34,32 +34,29 @@ async def main() -> None:
     """Simple example of using BookStackDataSource to call the API."""
     # Configure and build the BookStack client
     config = BookStackTokenConfig(
-        base_url=BASE_URL,
-        token_id=TOKEN_ID,
-        token_secret=TOKEN_SECRET
+        base_url=BASE_URL, token_id=TOKEN_ID, token_secret=TOKEN_SECRET
     )
     try:
         client = await BookStackClient.build_and_validate(config)
     except ValueError as e:
         print(f"Error: Failed to initialize BookStack client.")
         print(f"Details: {e}")
-        return # Exit the main function
+        return  # Exit the main function
 
     # Create the data source
     data_source = BookStackDataSource(client)
 
-    
     # print("\nCreating a new book:")
     # create_response = await data_source.create_book(name="Test Book")
     # print(create_response)
 
-    #List all users
+    # List all users
     print("\nList users:")
-    users = await data_source.list_users(filter={"email":"harshit@pipeshub.app"})
+    users = await data_source.list_users(filter={"email": "harshit@pipeshub.app"})
     print(users)
 
     # response = await data_source.list_users(
-    #             count=50, 
+    #             count=50,
     #             offset=0
     #         )
     # print(response)
@@ -103,7 +100,6 @@ async def main() -> None:
     # book = await data_source.get_book(book_id=1)
     # print(book)
 
-    
     print("\nList all chapters")
     chapters = await data_source.list_chapters()
     print(chapters)
@@ -121,38 +117,39 @@ async def main() -> None:
     # print(page)
 
     print("\nList Permissions")
-    permissions = await data_source.get_content_permissions(content_type="page", content_id=12)
+    permissions = await data_source.get_content_permissions(
+        content_type="page", content_id=12
+    )
     print(permissions)
 
     print("\nAudit log")
     audit_log = await data_source.list_audit_log(
-        filter={
-            'type': 'permissions_update',
-            'created_at:gte': '2025-10-22T14:00:00Z'
-        }
+        filter={"type": "permissions_update", "created_at:gte": "2025-10-22T14:00:00Z"}
     )
     print(audit_log)
 
-    if audit_log.success and audit_log.data and audit_log.data.get('data'):
+    if audit_log.success and audit_log.data and audit_log.data.get("data"):
         # 1. Access the first log entry in the list
-        log_entry = audit_log.data['data'][0]
+        log_entry = audit_log.data["data"][0]
 
         # 2. Get the 'detail' string, which is '(5) Harshit'
-        detail_string = log_entry['detail']
+        detail_string = log_entry["detail"]
 
         # 3. Parse the string to get the name and ID
         # We split by the first space to separate the ID part from the name part.
         try:
-            id_part, user_name = detail_string.split(' ', 1)
+            id_part, user_name = detail_string.split(" ", 1)
 
             # Remove the parentheses from the ID part and convert it to an integer
-            user_id = int(id_part.strip('()'))
+            user_id = int(id_part.strip("()"))
 
             print(f"The user created is: {user_name}")
             print(f"The user ID from detail is: {user_id}")
 
         except (IndexError, ValueError):
-            print(f"Could not parse the user name and ID from detail: '{detail_string}'")
+            print(
+                f"Could not parse the user name and ID from detail: '{detail_string}'"
+            )
 
     else:
         print("No 'user_create' logs found in the response or the request failed.")

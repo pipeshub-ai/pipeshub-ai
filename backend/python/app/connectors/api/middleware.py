@@ -1,6 +1,4 @@
-"""
-src/api/middleware.py
-"""
+"""src/api/middleware.py"""
 
 from ipaddress import ip_address, ip_network
 

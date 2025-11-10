@@ -1,7 +1,7 @@
 import asyncio
 import json
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -11,7 +11,8 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 
-async def get_services(request: Request) -> Dict[str, Any]:
+
+async def get_services(request: Request) -> dict[str, Any]:
     """Get all required services from the container"""
     container = request.app.container
 
@@ -33,7 +34,7 @@ async def create_team(request: Request) -> JSONResponse:
     logger = services["logger"]
 
     body = await request.body()
-    body_dict = json.loads(body.decode('utf-8'))
+    body_dict = json.loads(body.decode("utf-8"))
     logger.info(f"Creating team: {body_dict}")
 
     user_info = {
@@ -50,7 +51,7 @@ async def create_team(request: Request) -> JSONResponse:
         "_key": team_key,
         "name": body_dict.get("name"),
         "description": body_dict.get("description"),
-        "createdBy": user['_key'],
+        "createdBy": user["_key"],
         "orgId": user_info.get("orgId"),
         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -61,16 +62,18 @@ async def create_team(request: Request) -> JSONResponse:
     logger.info(f"Creating team with users: body_dict: {body_dict}")
     user_team_edges = []
     for user_id in user_ids:
-        user_team_edges.append({
-            "_from": f"{CollectionNames.USERS.value}/{user_id}",
-            "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
-            "type": "USER",
-            "role": role,
-            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-        })
+        user_team_edges.append(
+            {
+                "_from": f"{CollectionNames.USERS.value}/{user_id}",
+                "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+        )
 
-    if user['_key'] not in user_ids:
+    if user["_key"] not in user_ids:
         # Add creator to team permissions
         creator_permission = {
             "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
@@ -89,25 +92,33 @@ async def create_team(request: Request) -> JSONResponse:
             write=[
                 CollectionNames.TEAMS.value,
                 CollectionNames.PERMISSION.value,
-            ]
+            ],
         )
 
         # Create the team first
-        result = await arango_service.batch_upsert_nodes([team_body], CollectionNames.TEAMS.value, transaction)
+        result = await arango_service.batch_upsert_nodes(
+            [team_body], CollectionNames.TEAMS.value, transaction
+        )
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create team")
-        result = await arango_service.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value, transaction)
+        result = await arango_service.batch_create_edges(
+            user_team_edges, CollectionNames.PERMISSION.value, transaction
+        )
         if not result:
-            raise HTTPException(status_code=500, detail="Failed to create creator permissions")
+            raise HTTPException(
+                status_code=500, detail="Failed to create creator permissions"
+            )
 
         await asyncio.to_thread(lambda: transaction.commit_transaction())
         logger.info(f"Team created successfully: {team_body}")
 
         # Fetch the created team with users and permissions
-        team_with_users = await get_team_with_users(arango_service, team_key, user['_key'])
+        team_with_users = await get_team_with_users(
+            arango_service, team_key, user["_key"]
+        )
 
     except Exception as e:
-        logger.error(f"Error in create_team: {str(e)}", exc_info=True)
+        logger.error(f"Error in create_team: {e!s}", exc_info=True)
         if transaction:
             await asyncio.to_thread(lambda: transaction.abort_transaction())
         raise HTTPException(status_code=500, detail=str(e))
@@ -117,16 +128,17 @@ async def create_team(request: Request) -> JSONResponse:
         content={
             "status": "success",
             "message": "Team created successfully",
-            "data": team_with_users
-        }
+            "data": team_with_users,
+        },
     )
+
 
 @router.get("/team/list")
 async def get_teams(
     request: Request,
-    search: Optional[str] = Query(None, description="Search teams by name"),
+    search: str | None = Query(None, description="Search teams by name"),
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(10, ge=1, le=100, description="Number of items per page")
+    limit: int = Query(10, ge=1, le=100, description="Number of items per page"),
 ) -> JSONResponse:
     """Get all teams for the current user's organization with pagination and search"""
     services = await get_services(request)
@@ -209,7 +221,9 @@ async def get_teams(
         if search:
             count_params["search"] = search
 
-        count_result = arango_service.db.aql.execute(count_query, bind_vars=count_params)
+        count_result = arango_service.db.aql.execute(
+            count_query, bind_vars=count_params
+        )
         count_list = list(count_result)
         total_count = count_list[0] if count_list else 0
 
@@ -218,7 +232,7 @@ async def get_teams(
             "orgId": user_info.get("orgId"),
             "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}",
             "offset": offset,
-            "limit": limit
+            "limit": limit,
         }
         if search:
             teams_params["search"] = search
@@ -237,9 +251,9 @@ async def get_teams(
                         "page": page,
                         "limit": limit,
                         "total": total_count,
-                        "pages": 0
-                    }
-                }
+                        "pages": 0,
+                    },
+                },
             )
 
         # Calculate total pages
@@ -257,15 +271,18 @@ async def get_teams(
                     "total": total_count,
                     "pages": total_pages,
                     "hasNext": page < total_pages,
-                    "hasPrev": page > 1
-                }
-            }
+                    "hasPrev": page > 1,
+                },
+            },
         )
     except Exception as e:
-        logger.error(f"Error in get_teams: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_teams: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch teams")
 
-async def get_team_with_users(arango_service, team_key: str, user_key: str) -> Optional[Dict]:
+
+async def get_team_with_users(
+    arango_service, team_key: str, user_key: str
+) -> dict | None:
     """Helper function to get team with users and permissions"""
     team_query = f"""
     FOR team IN {CollectionNames.TEAMS.value}
@@ -311,11 +328,12 @@ async def get_team_with_users(arango_service, team_key: str, user_key: str) -> O
         team_query,
         bind_vars={
             "teamId": team_key,
-            "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
-        }
+            "currentUserId": f"{CollectionNames.USERS.value}/{user_key}",
+        },
     )
     result_list = list(result)
     return result_list[0] if result_list else None
+
 
 @router.get("/team/{team_id}")
 async def get_team(request: Request, team_id: str) -> JSONResponse:
@@ -333,7 +351,7 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail="User not found")
     try:
         # Query to get team with current user's permission and team members (same structure as get_teams)
-        result = await get_team_with_users(arango_service, team_id, user['_key'])
+        result = await get_team_with_users(arango_service, team_id, user["_key"])
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -342,13 +360,13 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
             content={
                 "status": "success",
                 "message": "Team fetched successfully",
-                "team": result
-            }
+                "team": result,
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in get_team: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_team: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team")
 
 
@@ -371,16 +389,20 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
     permission = await arango_service.get_edge(
         f"{CollectionNames.USERS.value}/{user['_key']}",
         f"{CollectionNames.TEAMS.value}/{team_id}",
-        CollectionNames.PERMISSION.value
+        CollectionNames.PERMISSION.value,
     )
     if not permission:
-        raise HTTPException(status_code=403, detail="User does not have permission to update this team")
+        raise HTTPException(
+            status_code=403, detail="User does not have permission to update this team"
+        )
 
     if permission.get("role") != "OWNER":
-        raise HTTPException(status_code=403, detail="User does not have permission to update this team")
+        raise HTTPException(
+            status_code=403, detail="User does not have permission to update this team"
+        )
 
     body = await request.body()
-    body_dict = json.loads(body.decode('utf-8'))
+    body_dict = json.loads(body.decode("utf-8"))
     logger.info(f"Updating team: {body_dict}")
 
     # Filter out None values to avoid overwriting with null
@@ -394,26 +416,29 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         updates["description"] = body_dict.get("description")
 
     try:
-        result = await arango_service.update_node(team_id, updates, CollectionNames.TEAMS.value)
+        result = await arango_service.update_node(
+            team_id, updates, CollectionNames.TEAMS.value
+        )
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+        updated_team = await get_team_with_users(arango_service, team_id, user["_key"])
 
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
                 "message": "Team updated successfully",
-                "team": updated_team
-            }
+                "team": updated_team,
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in update_team: {str(e)}", exc_info=True)
+        logger.error(f"Error in update_team: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update team")
+
 
 @router.post("/team/{team_id}/users")
 async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
@@ -432,15 +457,24 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail="User not found")
 
     # Check if user has permission to update the team
-    permission = await arango_service.get_edge(f"{CollectionNames.USERS.value}/{user['_key']}", f"{CollectionNames.TEAMS.value}/{team_id}", CollectionNames.PERMISSION.value)
+    permission = await arango_service.get_edge(
+        f"{CollectionNames.USERS.value}/{user['_key']}",
+        f"{CollectionNames.TEAMS.value}/{team_id}",
+        CollectionNames.PERMISSION.value,
+    )
     if not permission:
-        raise HTTPException(status_code=403, detail="User does not have permission to update this team")
+        raise HTTPException(
+            status_code=403, detail="User does not have permission to update this team"
+        )
 
     if permission.get("role") != "OWNER":
-        raise HTTPException(status_code=403, detail="User does not have permission to add users to this team")
+        raise HTTPException(
+            status_code=403,
+            detail="User does not have permission to add users to this team",
+        )
 
     body = await request.body()
-    body_dict = json.loads(body.decode('utf-8'))
+    body_dict = json.loads(body.decode("utf-8"))
     logger.info(f"Adding users to team: {body_dict}")
 
     user_ids = body_dict.get("userIds", [])
@@ -451,35 +485,39 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
 
     user_team_edges = []
     for user_id in user_ids:
-        user_team_edges.append({
-            "_from": f"{CollectionNames.USERS.value}/{user_id}",
-            "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
-            "type": "USER",
-            "role": role,
-            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-        })
+        user_team_edges.append(
+            {
+                "_from": f"{CollectionNames.USERS.value}/{user_id}",
+                "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+        )
 
     try:
-        result = await arango_service.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
+        result = await arango_service.batch_create_edges(
+            user_team_edges, CollectionNames.PERMISSION.value
+        )
         if not result:
             raise HTTPException(status_code=500, detail="Failed to add users to team")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id,user['_key'])
+        updated_team = await get_team_with_users(arango_service, team_id, user["_key"])
 
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
                 "message": "Users added to team successfully",
-                "team" : updated_team
-            }
+                "team": updated_team,
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in add_users_to_team: {str(e)}", exc_info=True)
+        logger.error(f"Error in add_users_to_team: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to add users to team")
 
 
@@ -491,7 +529,7 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
     logger = services["logger"]
 
     body = await request.body()
-    body_dict = json.loads(body.decode('utf-8'))
+    body_dict = json.loads(body.decode("utf-8"))
     logger.info(f"Removing users from team: {body_dict}")
 
     user_ids = body_dict.get("userIds", [])
@@ -511,17 +549,24 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
     permission = await arango_service.get_edge(
         f"{CollectionNames.USERS.value}/{user['_key']}",
         f"{CollectionNames.TEAMS.value}/{team_id}",
-        CollectionNames.PERMISSION.value
+        CollectionNames.PERMISSION.value,
     )
     if not permission:
-        raise HTTPException(status_code=403, detail="User does not have permission to update this team")
+        raise HTTPException(
+            status_code=403, detail="User does not have permission to update this team"
+        )
 
     if permission.get("role") != "OWNER":
-        raise HTTPException(status_code=403, detail="User does not have permission to remove users from this team")
+        raise HTTPException(
+            status_code=403,
+            detail="User does not have permission to remove users from this team",
+        )
 
     # Prevent removing the team owner
-    if user['_key'] in user_ids:
-        raise HTTPException(status_code=400, detail="Cannot remove team owner from team")
+    if user["_key"] in user_ids:
+        raise HTTPException(
+            status_code=400, detail="Cannot remove team owner from team"
+        )
 
     logger.info(f"Removing users {user_ids} from team {team_id}")
 
@@ -539,33 +584,38 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
             delete_query,
             bind_vars={
                 "userIds": user_ids,
-                "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
-            }
+                "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
+            },
         )
 
         # Convert cursor to list if needed
         deleted_list = list(deleted_permissions)
         if not deleted_list:
-            raise HTTPException(status_code=404, detail="No users found in team to remove")
+            raise HTTPException(
+                status_code=404, detail="No users found in team to remove"
+            )
 
-        logger.info(f"Successfully removed {len(deleted_list)} users from team {team_id}")
+        logger.info(
+            f"Successfully removed {len(deleted_list)} users from team {team_id}"
+        )
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id,user['_key'])
+        updated_team = await get_team_with_users(arango_service, team_id, user["_key"])
 
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
                 "message": f"Successfully removed {len(deleted_list)} user(s) from team",
-                "team": updated_team
-            }
+                "team": updated_team,
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in remove_user_from_team: {str(e)}", exc_info=True)
+        logger.error(f"Error in remove_user_from_team: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to remove user from team")
+
 
 @router.put("/team/{team_id}/users/permissions")
 async def update_user_permissions(request: Request, team_id: str) -> JSONResponse:
@@ -587,16 +637,20 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
     permission = await arango_service.get_edge(
         f"{CollectionNames.USERS.value}/{user['_key']}",
         f"{CollectionNames.TEAMS.value}/{team_id}",
-        CollectionNames.PERMISSION.value
+        CollectionNames.PERMISSION.value,
     )
     if not permission:
-        raise HTTPException(status_code=403, detail="User does not have permission to update this team")
+        raise HTTPException(
+            status_code=403, detail="User does not have permission to update this team"
+        )
 
     if permission.get("role") != "OWNER":
-        raise HTTPException(status_code=403, detail="User does not have permission to update this team")
+        raise HTTPException(
+            status_code=403, detail="User does not have permission to update this team"
+        )
 
     body = await request.body()
-    body_dict = json.loads(body.decode('utf-8'))
+    body_dict = json.loads(body.decode("utf-8"))
     logger.info(f"Updating user permissions: {body_dict}")
 
     user_ids = body_dict.get("userIds", [])
@@ -606,7 +660,7 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
         raise HTTPException(status_code=400, detail="No user IDs provided")
 
     # Prevent changing the team owner's role
-    if user['_key'] in user_ids:
+    if user["_key"] in user_ids:
         raise HTTPException(status_code=400, detail="Cannot change team owner's role")
 
     try:
@@ -631,19 +685,23 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
             "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
             "user_ids": user_ids,
             "role": role,
-            "timestamp": get_epoch_timestamp_in_ms()
+            "timestamp": get_epoch_timestamp_in_ms(),
         }
 
         cursor = arango_service.db.aql.execute(batch_update_query, bind_vars=bind_vars)
         updated_permissions = list(cursor)
 
         if not updated_permissions:
-            raise HTTPException(status_code=404, detail="No user permissions found to update")
+            raise HTTPException(
+                status_code=404, detail="No user permissions found to update"
+            )
 
-        logger.info(f"Updated {len(updated_permissions)} user permissions to role {role}")
+        logger.info(
+            f"Updated {len(updated_permissions)} user permissions to role {role}"
+        )
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+        updated_team = await get_team_with_users(arango_service, team_id, user["_key"])
 
         return JSONResponse(
             status_code=200,
@@ -651,13 +709,13 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
                 "status": "success",
                 "message": "User permissions updated successfully",
                 "team": updated_team,
-                "updated_count": len(updated_permissions)
-            }
+                "updated_count": len(updated_permissions),
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in update_user_permissions: {str(e)}", exc_info=True)
+        logger.error(f"Error in update_user_permissions: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update user permissions")
 
 
@@ -680,13 +738,17 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     permission = await arango_service.get_edge(
         f"{CollectionNames.USERS.value}/{user['_key']}",
         f"{CollectionNames.TEAMS.value}/{team_id}",
-        CollectionNames.PERMISSION.value
+        CollectionNames.PERMISSION.value,
     )
     if not permission:
-        raise HTTPException(status_code=403, detail="User does not have permission to delete this team")
+        raise HTTPException(
+            status_code=403, detail="User does not have permission to delete this team"
+        )
 
     if permission.get("role") != "OWNER":
-        raise HTTPException(status_code=403, detail="User does not have permission to delete this team")
+        raise HTTPException(
+            status_code=403, detail="User does not have permission to delete this team"
+        )
 
     logger.info(f"Deleting team: {team_id}")
 
@@ -701,12 +763,14 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
 
         permissions = arango_service.db.aql.execute(
             delete_query,
-            bind_vars={"teamId": f"{CollectionNames.TEAMS.value}/{team_id}"}
+            bind_vars={"teamId": f"{CollectionNames.TEAMS.value}/{team_id}"},
         )
         permissions = list(permissions)
 
         # Delete the team
-        result = await arango_service.delete_nodes([team_id], CollectionNames.TEAMS.value)
+        result = await arango_service.delete_nodes(
+            [team_id], CollectionNames.TEAMS.value
+        )
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -715,12 +779,12 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
             content={
                 "status": "success",
                 "message": "Team deleted successfully",
-            }
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in delete_team: {str(e)}", exc_info=True)
+        logger.error(f"Error in delete_team: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete team")
 
 
@@ -785,8 +849,8 @@ async def get_user_teams(request: Request) -> JSONResponse:
             bind_vars={
                 "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
                 "@permission_collection": CollectionNames.PERMISSION.value,
-                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
-            }
+                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+            },
         )
         result_list = list(result)
         if not result_list:
@@ -795,27 +859,28 @@ async def get_user_teams(request: Request) -> JSONResponse:
                 content={
                     "status": "success",
                     "message": "No teams found",
-                    "teams": []
-                }
+                    "teams": [],
+                },
             )
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
                 "message": "User teams fetched successfully",
-                "teams": result_list
-            }
+                "teams": result_list,
+            },
         )
     except Exception as e:
-        logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_user_teams: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user teams")
+
 
 @router.get("/user/list")
 async def get_users(
     request: Request,
-    search: Optional[str] = Query(None, description="Search users by name or email"),
+    search: str | None = Query(None, description="Search users by name or email"),
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(100, ge=1, le=100, description="Number of items per page")
+    limit: int = Query(100, ge=1, le=100, description="Number of items per page"),
 ) -> JSONResponse:
     """Get all users in the current user's organization with pagination and search"""
     services = await get_services(request)
@@ -879,7 +944,9 @@ async def get_users(
         if search:
             count_params["search"] = search
 
-        count_result = arango_service.db.aql.execute(count_query, bind_vars=count_params)
+        count_result = arango_service.db.aql.execute(
+            count_query, bind_vars=count_params
+        )
         count_list = list(count_result)
         total_count = count_list[0] if count_list else 0
 
@@ -887,7 +954,7 @@ async def get_users(
         users_params = {
             "orgId": user_info.get("orgId"),
             "offset": offset,
-            "limit": limit
+            "limit": limit,
         }
         if search:
             users_params["search"] = search
@@ -905,9 +972,9 @@ async def get_users(
                         "page": page,
                         "limit": limit,
                         "total": total_count,
-                        "pages": 0
-                    }
-                }
+                        "pages": 0,
+                    },
+                },
             )
 
         # Calculate total pages
@@ -925,13 +992,14 @@ async def get_users(
                     "total": total_count,
                     "pages": total_pages,
                     "hasNext": page < total_pages,
-                    "hasPrev": page > 1
-                }
-            }
+                    "hasPrev": page > 1,
+                },
+            },
         )
     except Exception as e:
-        logger.error(f"Error in get_users: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_users: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch users")
+
 
 @router.get("/team/{team_id}/users")
 async def get_team_users(request: Request, team_id: str) -> JSONResponse:
@@ -996,8 +1064,8 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
             bind_vars={
                 "teamId": team_id,
                 "orgId": user_info.get("orgId"),
-                "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}"
-            }
+                "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}",
+            },
         )
         result_list = list(result)
         result = result_list[0] if result_list else None
@@ -1010,14 +1078,15 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
             content={
                 "status": "success",
                 "message": "Team users fetched successfully",
-                "team": result
-            }
+                "team": result,
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_team_users: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team users")
+
 
 @router.post("/team/{team_id}/bulk-users")
 async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse:
@@ -1036,7 +1105,7 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
         raise HTTPException(status_code=404, detail="User not found")
 
     body = await request.body()
-    body_dict = json.loads(body.decode('utf-8'))
+    body_dict = json.loads(body.decode("utf-8"))
     logger.info(f"Bulk managing team users: {body_dict}")
 
     add_user_ids = body_dict.get("addUserIds", [])
@@ -1049,7 +1118,9 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
     try:
         # Prevent removing the team owner
         if remove_user_ids and user["_key"] in remove_user_ids:
-            raise HTTPException(status_code=400, detail="Cannot remove team owner from team")
+            raise HTTPException(
+                status_code=400, detail="Cannot remove team owner from team"
+            )
 
         # Remove users if specified
         if remove_user_ids:
@@ -1062,33 +1133,48 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
             """
             permissions = arango_service.db.aql.execute(
                 delete_query,
-                {"teamId": f"{CollectionNames.TEAMS.value}/{team_id}", "userIds": remove_user_ids}
+                {
+                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
+                    "userIds": remove_user_ids,
+                },
             )
             permissions = list(permissions)
             if not permissions:
-                raise HTTPException(status_code=404, detail="No users found in team to remove")
-            logger.info(f"Successfully removed {len(permissions)} users from team {team_id}")
+                raise HTTPException(
+                    status_code=404, detail="No users found in team to remove"
+                )
+            logger.info(
+                f"Successfully removed {len(permissions)} users from team {team_id}"
+            )
 
         # Add users if specified
         if add_user_ids:
             user_team_edges = []
             for user_id in add_user_ids:
-                user_team_edges.append({
-                    "_from": f"{CollectionNames.USERS.value}/{user_id}",
-                    "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
-                    "type": "USER",
-                    "role": role,
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                })
+                user_team_edges.append(
+                    {
+                        "_from": f"{CollectionNames.USERS.value}/{user_id}",
+                        "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
+                        "type": "USER",
+                        "role": role,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                )
             logger.info(f"Adding {len(add_user_ids)} users to team {team_id}")
-            result = await arango_service.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
+            result = await arango_service.batch_create_edges(
+                user_team_edges, CollectionNames.PERMISSION.value
+            )
             if not result:
-                raise HTTPException(status_code=500, detail="Failed to add users to team")
-            logger.info(f"Successfully added {len(add_user_ids)} users to team {team_id}")
+                raise HTTPException(
+                    status_code=500, detail="Failed to add users to team"
+                )
+            logger.info(
+                f"Successfully added {len(add_user_ids)} users to team {team_id}"
+            )
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+        updated_team = await get_team_with_users(arango_service, team_id, user["_key"])
 
         return JSONResponse(
             status_code=200,
@@ -1098,13 +1184,14 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
                 "team": updated_team,
                 "added": len(add_user_ids) if add_user_ids else 0,
                 "removed": len(remove_user_ids) if remove_user_ids else 0,
-            }
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in bulk_manage_team_users: {str(e)}", exc_info=True)
+        logger.error(f"Error in bulk_manage_team_users: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update team users")
+
 
 @router.get("/team/search")
 async def search_teams(request: Request) -> JSONResponse:
@@ -1183,8 +1270,8 @@ async def search_teams(request: Request) -> JSONResponse:
                 "query": query,
                 "limit": limit,
                 "offset": offset,
-                "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}"
-            }
+                "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}",
+            },
         )
         result = list(result)
         return JSONResponse(
@@ -1196,9 +1283,9 @@ async def search_teams(request: Request) -> JSONResponse:
                 "query": query,
                 "limit": limit,
                 "offset": offset,
-                "count": len(result)
-            }
+                "count": len(result),
+            },
         )
     except Exception as e:
-        logger.error(f"Error in search_teams: {str(e)}", exc_info=True)
+        logger.error(f"Error in search_teams: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to search teams")

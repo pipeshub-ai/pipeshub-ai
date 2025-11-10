@@ -4,7 +4,7 @@ import io
 import json
 import logging
 import threading
-from typing import Coroutine, Optional, Tuple
+from collections.abc import Coroutine
 
 from box_sdk_gen.managers.files import UpdateFileByIdParent
 from box_sdk_gen.managers.uploads import UploadFileAttributes
@@ -30,13 +30,14 @@ class Box:
 
         Args:
             client: An initialized `BoxClient` instance
+
         """
         self.client = BoxDataSource(client)
         # Dedicated background event loop for running coroutines from sync context
         self._bg_loop = asyncio.new_event_loop()
         self._bg_loop_thread = threading.Thread(
             target=self._start_background_loop,
-            daemon=True
+            daemon=True,
         )
         self._bg_loop_thread.start()
 
@@ -53,7 +54,10 @@ class Box:
     def shutdown(self) -> None:
         """Gracefully stop the background event loop and thread."""
         try:
-            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+            if (
+                getattr(self, "_bg_loop", None) is not None
+                and self._bg_loop.is_running()
+            ):
                 self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
             if getattr(self, "_bg_loop_thread", None) is not None:
                 self._bg_loop_thread.join()
@@ -65,18 +69,19 @@ class Box:
     def _handle_response(
         self,
         response,
-        success_message: str
-    ) -> Tuple[bool, str]:
+        success_message: str,
+    ) -> tuple[bool, str]:
         """Handle Box response and return standardized format."""
         try:
-            if hasattr(response, 'success') and response.success:
-                return True, json.dumps({
-                    "message": success_message,
-                    "data": response.data or {}
-                })
-            else:
-                error_msg = getattr(response, 'error', 'Unknown error')
-                return False, json.dumps({"error": error_msg})
+            if hasattr(response, "success") and response.success:
+                return True, json.dumps(
+                    {
+                        "message": success_message,
+                        "data": response.data or {},
+                    }
+                )
+            error_msg = getattr(response, "error", "Unknown error")
+            return False, json.dumps({"error": error_msg})
         except Exception as e:
             logger.error(f"Error handling response: {e}")
             return False, json.dumps({"error": str(e)})
@@ -89,16 +94,16 @@ class Box:
             ToolParameter(
                 name="file_id",
                 type=ParameterType.STRING,
-                description="The ID of the file to retrieve"
-            )
+                description="The ID of the file to retrieve",
+            ),
         ],
-        returns="JSON with file data"
+        returns="JSON with file data",
     )
-    def get_file(self, file_id: str) -> Tuple[bool, str]:
+    def get_file(self, file_id: str) -> tuple[bool, str]:
         """Get file information by ID from Box."""
         try:
             response = self._run_async(
-                self.client.files_get_file_by_id(file_id=file_id)
+                self.client.files_get_file_by_id(file_id=file_id),
             )
             return self._handle_response(response, "File retrieved successfully")
         except Exception as e:
@@ -113,29 +118,29 @@ class Box:
             ToolParameter(
                 name="file_id",
                 type=ParameterType.STRING,
-                description="The ID of the file to update"
+                description="The ID of the file to update",
             ),
             ToolParameter(
                 name="name",
                 type=ParameterType.STRING,
                 description="The new name of the file",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="parent_id",
                 type=ParameterType.STRING,
                 description="The new parent folder ID",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with file update result"
+        returns="JSON with file update result",
     )
     def update_file(
         self,
         file_id: str,
-        name: Optional[str] = None,
-        parent_id: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        name: str | None = None,
+        parent_id: str | None = None,
+    ) -> tuple[bool, str]:
         """Update file information in Box."""
         try:
             # Create parent object if parent_id is provided
@@ -147,8 +152,8 @@ class Box:
                 self.client.files_update_file_by_id(
                     file_id=file_id,
                     name=name,
-                    parent=parent
-                )
+                    parent=parent,
+                ),
             )
             return self._handle_response(response, "File updated successfully")
         except Exception as e:
@@ -163,16 +168,16 @@ class Box:
             ToolParameter(
                 name="file_id",
                 type=ParameterType.STRING,
-                description="The ID of the file to delete"
-            )
+                description="The ID of the file to delete",
+            ),
         ],
-        returns="JSON with deletion result"
+        returns="JSON with deletion result",
     )
-    def delete_file(self, file_id: str) -> Tuple[bool, str]:
+    def delete_file(self, file_id: str) -> tuple[bool, str]:
         """Delete a file from Box."""
         try:
             response = self._run_async(
-                self.client.files_delete_file_by_id(file_id=file_id)
+                self.client.files_delete_file_by_id(file_id=file_id),
             )
             return self._handle_response(response, "File deleted successfully")
         except Exception as e:
@@ -187,37 +192,36 @@ class Box:
             ToolParameter(
                 name="file_name",
                 type=ParameterType.STRING,
-                description="The name of the file to upload"
+                description="The name of the file to upload",
             ),
             ToolParameter(
                 name="parent_folder_id",
                 type=ParameterType.STRING,
-                description="The ID of the parent folder"
+                description="The ID of the parent folder",
             ),
             ToolParameter(
                 name="file_content",
                 type=ParameterType.STRING,
-                description="Base64 encoded file content"
+                description="Base64 encoded file content",
             ),
             ToolParameter(
                 name="file_description",
                 type=ParameterType.STRING,
                 description="Description of the file",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with upload result"
+        returns="JSON with upload result",
     )
     def upload_file(
         self,
         file_name: str,
         parent_folder_id: str,
         file_content: str,
-        file_description: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        file_description: str | None = None,
+    ) -> tuple[bool, str]:
         """Upload a file to Box."""
         try:
-
             # Decode base64 content
             try:
                 decoded_content = base64.b64decode(file_content)
@@ -230,7 +234,7 @@ class Box:
             # Create upload attributes
             attributes = UploadFileAttributes(
                 name=file_name,
-                parent=UploadFileAttributes.Parent(id=parent_folder_id)
+                parent=UploadFileAttributes.Parent(id=parent_folder_id),
             )
             if file_description:
                 attributes.description = file_description
@@ -238,8 +242,8 @@ class Box:
             response = self._run_async(
                 self.client.uploads_upload_file(
                     attributes=attributes,
-                    file=file_obj
-                )
+                    file=file_obj,
+                ),
             )
             return self._handle_response(response, "File uploaded successfully")
         except Exception as e:
@@ -254,57 +258,57 @@ class Box:
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
-                description="Search query string"
+                description="Search query string",
             ),
             ToolParameter(
                 name="limit",
                 type=ParameterType.INTEGER,
                 description="Maximum number of results to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="offset",
                 type=ParameterType.INTEGER,
                 description="Number of results to skip",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="scope",
                 type=ParameterType.STRING,
                 description="Search scope (e.g., 'user_content', 'enterprise_content')",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="file_extensions",
                 type=ParameterType.STRING,
                 description="JSON array of file extensions to filter by: ['pdf', 'docx']",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="content_types",
                 type=ParameterType.STRING,
                 description="JSON array of content types: ['name', 'description']",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="ancestor_folder_ids",
                 type=ParameterType.STRING,
                 description="JSON array of folder IDs to search within: ['123', '456']",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with search results"
+        returns="JSON with search results",
     )
     def search_content(
         self,
         query: str,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        scope: Optional[str] = None,
-        file_extensions: Optional[str] = None,
-        content_types: Optional[str] = None,
-        ancestor_folder_ids: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        limit: int | None = None,
+        offset: int | None = None,
+        scope: str | None = None,
+        file_extensions: str | None = None,
+        content_types: str | None = None,
+        ancestor_folder_ids: str | None = None,
+    ) -> tuple[bool, str]:
         """Search for content in Box."""
         try:
             # Parse JSON arrays if provided
@@ -315,7 +319,9 @@ class Box:
                     if not isinstance(file_ext_list, list):
                         raise ValueError("file_extensions must be a JSON array")
                 except json.JSONDecodeError as exc:
-                    return False, json.dumps({"error": f"Invalid JSON for file_extensions: {exc}"})
+                    return False, json.dumps(
+                        {"error": f"Invalid JSON for file_extensions: {exc}"}
+                    )
 
             content_types_list = None
             if content_types:
@@ -324,7 +330,9 @@ class Box:
                     if not isinstance(content_types_list, list):
                         raise ValueError("content_types must be a JSON array")
                 except json.JSONDecodeError as exc:
-                    return False, json.dumps({"error": f"Invalid JSON for content_types: {exc}"})
+                    return False, json.dumps(
+                        {"error": f"Invalid JSON for content_types: {exc}"}
+                    )
 
             ancestor_folder_ids_list = None
             if ancestor_folder_ids:
@@ -333,7 +341,9 @@ class Box:
                     if not isinstance(ancestor_folder_ids_list, list):
                         raise ValueError("ancestor_folder_ids must be a JSON array")
                 except json.JSONDecodeError as exc:
-                    return False, json.dumps({"error": f"Invalid JSON for ancestor_folder_ids: {exc}"})
+                    return False, json.dumps(
+                        {"error": f"Invalid JSON for ancestor_folder_ids: {exc}"}
+                    )
 
             response = self._run_async(
                 self.client.search_search_for_content(
@@ -343,8 +353,8 @@ class Box:
                     scope=scope,
                     file_extensions=file_ext_list,
                     content_types=content_types_list,
-                    ancestor_folder_ids=ancestor_folder_ids_list
-                )
+                    ancestor_folder_ids=ancestor_folder_ids_list,
+                ),
             )
             return self._handle_response(response, "Search completed successfully")
         except Exception as e:

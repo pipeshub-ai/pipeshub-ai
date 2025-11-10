@@ -2,6 +2,7 @@
 """
 Example script to demonstrate how to use the Google Drive API
 """
+
 import asyncio
 import logging
 
@@ -13,10 +14,15 @@ from app.sources.external.google.drive.drive import GoogleDriveDataSource
 
 async def main() -> None:
     # create configuration service client
-    etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(logger=logging.getLogger(__name__))
+    etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(
+        logger=logging.getLogger(__name__)
+    )
 
     # create configuration service
-    config_service = ConfigurationService(logger=logging.getLogger(__name__), key_value_store=etcd3_encrypted_key_value_store)
+    config_service = ConfigurationService(
+        logger=logging.getLogger(__name__),
+        key_value_store=etcd3_encrypted_key_value_store,
+    )
 
     # individual google account
     individual_google_client = await GoogleClient.build_from_services(
@@ -43,6 +49,7 @@ async def main() -> None:
     print("Listing files")
     results = await google_drive_client.files_list()
     print(results)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

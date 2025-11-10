@@ -1,17 +1,14 @@
-"""
-Enhanced tool registry with metadata support and advanced search capabilities.
-"""
+"""Enhanced tool registry with metadata support and advanced search capabilities."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.agents.tools.config import ToolCategory, ToolMetadata
 from app.agents.tools.models import Tool
 
 
 class ToolRegistry:
-    """
-    Enhanced registry for managing tools with metadata support.
+    """Enhanced registry for managing tools with metadata support.
 
     Features:
     - Tool registration with metadata
@@ -22,18 +19,18 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         """Initialize the tool registry"""
-        self._tools: Dict[str, Tool] = {}
-        self._metadata: Dict[str, ToolMetadata] = {}
-        self._categories: Dict[ToolCategory, List[str]] = {}
+        self._tools: dict[str, Tool] = {}
+        self._metadata: dict[str, ToolMetadata] = {}
+        self._categories: dict[ToolCategory, list[str]] = {}
         self.logger = logging.getLogger(__name__)
 
-    def register(self, tool: Tool, metadata: Optional[ToolMetadata] = None) -> None:
-        """
-        Register a tool with optional metadata.
+    def register(self, tool: Tool, metadata: ToolMetadata | None = None) -> None:
+        """Register a tool with optional metadata.
 
         Args:
             tool: Tool object to register
             metadata: Optional metadata for the tool
+
         """
         full_name = f"{tool.app_name}.{tool.tool_name}"
 
@@ -54,9 +51,8 @@ class ToolRegistry:
 
         self.logger.debug(f"Registered tool: {full_name}")
 
-    def get_tool(self, app_name: str, tool_name: str) -> Optional[Tool]:
-        """
-        Get a tool by app and tool name.
+    def get_tool(self, app_name: str, tool_name: str) -> Tool | None:
+        """Get a tool by app and tool name.
 
         Args:
             app_name: Name of the application
@@ -64,76 +60,77 @@ class ToolRegistry:
 
         Returns:
             Tool if found, None otherwise
+
         """
         return self._tools.get(f"{app_name}.{tool_name}")
 
-    def get_tools_by_category(self, category: ToolCategory) -> List[Tool]:
-        """
-        Get all tools in a specific category.
+    def get_tools_by_category(self, category: ToolCategory) -> list[Tool]:
+        """Get all tools in a specific category.
 
         Args:
             category: Category to filter by
 
         Returns:
             List of tools in the category
+
         """
         tool_names = self._categories.get(category, [])
         return [self._tools[name] for name in tool_names if name in self._tools]
 
-    def get_tools_by_app(self, app_name: str) -> List[Tool]:
-        """
-        Get all tools for a specific app.
+    def get_tools_by_app(self, app_name: str) -> list[Tool]:
+        """Get all tools for a specific app.
 
         Args:
             app_name: Name of the application
 
         Returns:
             List of tools for the app
+
         """
         return [
-            tool for name, tool in self._tools.items()
+            tool
+            for name, tool in self._tools.items()
             if name.startswith(f"{app_name}.")
         ]
 
-    def list_tools(self) -> List[str]:
-        """
-        List all registered tool names.
+    def list_tools(self) -> list[str]:
+        """List all registered tool names.
 
         Returns:
             List of tool names in format "app_name.tool_name"
+
         """
         return list(self._tools.keys())
 
-    def get_all_tools(self) -> Dict[str, Tool]:
-        """
-        Get all registered tools.
+    def get_all_tools(self) -> dict[str, Tool]:
+        """Get all registered tools.
 
         Returns:
             Dictionary of all tools
+
         """
         return self._tools.copy()
 
-    def get_metadata(self, tool_name: str) -> Optional[ToolMetadata]:
-        """
-        Get metadata for a tool.
+    def get_metadata(self, tool_name: str) -> ToolMetadata | None:
+        """Get metadata for a tool.
 
         Args:
             tool_name: Full name of the tool
 
         Returns:
             ToolMetadata if found, None otherwise
+
         """
         return self._metadata.get(tool_name)
 
     def search_tools(
         self,
-        query: Optional[str] = None,
-        category: Optional[ToolCategory] = None,
-        tags: Optional[List[str]] = None,
-        essential_only: bool = False
-    ) -> List[Tool]:
-        """
-        Search for tools based on multiple criteria.
+        query: str | None = None,
+        category: ToolCategory | None = None,
+        tags: list[str] | None = None,
+        essential_only: bool = False,
+    ) -> list[Tool]:
+        """Search for tools based on multiple criteria.
 
         Args:
             query: Search query for name/description
@@ -143,6 +140,7 @@ class ToolRegistry:
 
         Returns:
             List of matching tools
+
         """
         results = []
 
@@ -165,27 +163,29 @@ class ToolRegistry:
             # Filter by query
             if query:
                 query_lower = query.lower()
-                if (query_lower not in name.lower() and
-                    query_lower not in tool.description.lower()):
+                if (
+                    query_lower not in name.lower()
+                    and query_lower not in tool.description.lower()
+                ):
                     continue
 
             results.append(tool)
 
         return results
 
-    def get_statistics(self) -> Dict[str, Any]:
-        """
-        Get statistics about registered tools.
+    def get_statistics(self) -> dict[str, Any]:
+        """Get statistics about registered tools.
 
         Returns:
             Dictionary with statistics
+
         """
         stats = {
             "total_tools": len(self._tools),
             "by_category": {},
             "by_app": {},
             "essential_count": 0,
-            "requires_auth_count": 0
+            "requires_auth_count": 0,
         }
 
         # Count by category
@@ -206,12 +206,12 @@ class ToolRegistry:
 
         return stats
 
-    def generate_openai_schema(self) -> List[Dict]:
-        """
-        Generate OpenAI-compatible function schemas.
+    def generate_openai_schema(self) -> list[dict]:
+        """Generate OpenAI-compatible function schemas.
 
         Returns:
             List of OpenAI function schemas
+
         """
         schemas = []
 
@@ -224,13 +224,13 @@ class ToolRegistry:
                     "parameters": {
                         "type": "object",
                         "properties": {},
-                        "required": []
-                    }
-                }
+                        "required": [],
+                    },
+                },
             }
 
             for param in tool.parameters:
-                prop: Dict[str, Any] = {"type": param.type.value}
+                prop: dict[str, Any] = {"type": param.type.value}
                 if param.description:
                     prop["description"] = param.description
                 if param.enum:
@@ -248,12 +248,12 @@ class ToolRegistry:
 
         return schemas
 
-    def generate_anthropic_schema(self) -> List[Dict]:
-        """
-        Generate Anthropic Claude-compatible tool schemas.
+    def generate_anthropic_schema(self) -> list[dict]:
+        """Generate Anthropic Claude-compatible tool schemas.
 
         Returns:
             List of Anthropic tool schemas
+
         """
         schemas = []
 
@@ -264,12 +264,12 @@ class ToolRegistry:
                 "input_schema": {
                     "type": "object",
                     "properties": {},
-                    "required": []
-                }
+                    "required": [],
+                },
             }
 
             for param in tool.parameters:
-                prop: Dict[str, Any] = {"type": param.type.value}
+                prop: dict[str, Any] = {"type": param.type.value}
                 if param.description:
                     prop["description"] = param.description
                 if param.enum:

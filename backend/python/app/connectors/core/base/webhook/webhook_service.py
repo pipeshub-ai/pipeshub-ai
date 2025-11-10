@@ -1,6 +1,6 @@
 import logging
 from abc import ABC
-from typing import Any, Dict, List
+from typing import Any
 
 from app.connectors.core.interfaces.webhook.iwebhook import IWebhookService
 
@@ -11,14 +11,20 @@ class BaseWebhookService(IWebhookService, ABC):
     def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
 
-    async def create_webhook(self, events: List[str], callback_url: str) -> Dict[str, Any]:
+    async def create_webhook(
+        self, events: list[str], callback_url: str
+    ) -> dict[str, Any]:
         """Create a webhook subscription"""
         try:
             self.logger.info(f"Creating webhook for events: {events}")
             # This should be implemented by specific webhook services
-            return {"webhook_id": "placeholder", "events": events, "callback_url": callback_url}
+            return {
+                "webhook_id": "placeholder",
+                "events": events,
+                "callback_url": callback_url,
+            }
         except Exception as e:
-            self.logger.error(f"Failed to create webhook: {str(e)}")
+            self.logger.error(f"Failed to create webhook: {e!s}")
             return {}
 
     async def delete_webhook(self, webhook_id: str) -> bool:
@@ -28,25 +34,27 @@ class BaseWebhookService(IWebhookService, ABC):
             # This should be implemented by specific webhook services
             return True
         except Exception as e:
-            self.logger.error(f"Failed to delete webhook: {str(e)}")
+            self.logger.error(f"Failed to delete webhook: {e!s}")
             return False
 
-    async def list_webhooks(self) -> List[Dict[str, Any]]:
+    async def list_webhooks(self) -> list[dict[str, Any]]:
         """List all webhook subscriptions"""
         try:
             self.logger.info("Listing webhooks")
             # This should be implemented by specific webhook services
             return []
         except Exception as e:
-            self.logger.error(f"Failed to list webhooks: {str(e)}")
+            self.logger.error(f"Failed to list webhooks: {e!s}")
             return []
 
-    async def process_webhook_event(self, event_data: Dict[str, Any]) -> bool:
+    async def process_webhook_event(self, event_data: dict[str, Any]) -> bool:
         """Process incoming webhook event"""
         try:
-            self.logger.info(f"Processing webhook event: {event_data.get('type', 'unknown')}")
+            self.logger.info(
+                f"Processing webhook event: {event_data.get('type', 'unknown')}"
+            )
             # This should be implemented by specific webhook services
             return True
         except Exception as e:
-            self.logger.error(f"Failed to process webhook event: {str(e)}")
+            self.logger.error(f"Failed to process webhook event: {e!s}")
             return False

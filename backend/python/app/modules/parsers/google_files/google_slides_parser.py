@@ -1,6 +1,6 @@
 """Google Slides Parser module for parsing Google Slides content"""
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
 from app.connectors.utils.decorators import exponential_backoff
@@ -13,8 +13,8 @@ class GoogleSlidesParser:
     def __init__(
         self,
         logger,
-        admin_service: Optional[GoogleAdminService] = None,
-        user_service: Optional[ParserUserService] = None,
+        admin_service: GoogleAdminService | None = None,
+        user_service: ParserUserService | None = None,
     ) -> None:
         """Initialize with either admin or user service"""
         self.logger = logger
@@ -23,30 +23,37 @@ class GoogleSlidesParser:
         self.service = None
 
     async def connect_service(
-        self, user_email: str = None, org_id: str = None, user_id: str = None, app_name: str = "drive"
+        self,
+        user_email: str = None,
+        org_id: str = None,
+        user_id: str = None,
+        app_name: str = "drive",
     ) -> None:
         if self.user_service:
-            if not await self.user_service.connect_individual_user(org_id, user_id,app_name=app_name):
+            if not await self.user_service.connect_individual_user(
+                org_id, user_id, app_name=app_name
+            ):
                 self.logger.error("❌ Failed to connect to Google Slides service")
-                return None
+                return
 
             self.service = self.user_service.slides_service
             self.logger.info("🚀 Connected to Google Slides service: %s", self.service)
         elif self.admin_service:
             user_service = await self.admin_service.create_parser_user_service(
-                user_email
+                user_email,
             )
             self.service = user_service.slides_service
             self.logger.info("🚀 Connected to Google Slides service: %s", self.service)
 
-    async def _process_slide(self, slide: Dict) -> Dict[str, Any]:
+    async def _process_slide(self, slide: dict) -> dict[str, Any]:
         """Process individual slide content"""
         try:
             slide_data = {
                 "slideId": slide.get("objectId", ""),
                 "layout": slide.get("slideProperties", {}).get("layoutObjectId", ""),
                 "masterObjectId": slide.get("slideProperties", {}).get(
-                    "masterObjectId", ""
+                    "masterObjectId",
+                    "",
                 ),
                 "notesPageId": slide.get("slideProperties", {})
                 .get("notesPage", {})
@@ -54,13 +61,16 @@ class GoogleSlidesParser:
                 .get("speakerNotesObjectId", ""),
                 "slideProperties": {
                     "displayName": slide.get("slideProperties", {}).get(
-                        "displayName", ""
+                        "displayName",
+                        "",
                     ),
                     "layoutProperties": slide.get("slideProperties", {}).get(
-                        "layoutProperties", {}
+                        "layoutProperties",
+                        {},
                     ),
                     "masterProperties": slide.get("slideProperties", {}).get(
-                        "masterProperties", {}
+                        "masterProperties",
+                        {},
                     ),
                 },
                 "elements": [],
@@ -77,7 +87,7 @@ class GoogleSlidesParser:
             self.logger.error("❌ Failed to process slide: %s", str(e))
             return None
 
-    async def _process_element(self, element: Dict) -> Dict[str, Any]:
+    async def _process_element(self, element: dict) -> dict[str, Any]:
         """Process individual page element"""
         try:
             element_data = {
@@ -105,21 +115,21 @@ class GoogleSlidesParser:
             self.logger.error("❌ Failed to process element: %s", str(e))
             return None
 
-    def _get_element_type(self, element: Dict) -> str:
+    def _get_element_type(self, element: dict) -> str:
         """Determine element type"""
         if "shape" in element:
             return "shape"
-        elif "table" in element:
+        if "table" in element:
             return "table"
-        elif "image" in element:
+        if "image" in element:
             return "image"
-        elif "video" in element:
+        if "video" in element:
             return "video"
-        elif "line" in element:
+        if "line" in element:
             return "line"
         return "unknown"
 
-    async def _process_shape(self, element: Dict) -> Dict[str, Any]:
+    async def _process_shape(self, element: dict) -> dict[str, Any]:
         """Process shape element"""
         shape = element.get("shape", {})
         shape_data = {
@@ -128,14 +138,15 @@ class GoogleSlidesParser:
             "placeholder": shape.get("placeholder", {}),
             "style": {
                 "shapeBackgroundFill": shape.get("shapeProperties", {}).get(
-                    "shapeBackgroundFill", {}
+                    "shapeBackgroundFill",
+                    {},
                 ),
                 "outline": shape.get("shapeProperties", {}).get("outline", {}),
             },
         }
         return shape_data
 
-    async def _process_table(self, element: Dict) -> Dict[str, Any]:
+    async def _process_table(self, element: dict) -> dict[str, Any]:
         """Process table element"""
         table = element.get("table", {})
         table_data = {
@@ -156,7 +167,7 @@ class GoogleSlidesParser:
 
         return table_data
 
-    async def _process_image(self, element: Dict) -> Dict[str, Any]:
+    async def _process_image(self, element: dict) -> dict[str, Any]:
         """Process image element"""
         image = element.get("image", {})
         return {
@@ -165,7 +176,7 @@ class GoogleSlidesParser:
             "imageProperties": image.get("imageProperties", {}),
         }
 
-    async def _process_video(self, element: Dict) -> Dict[str, Any]:
+    async def _process_video(self, element: dict) -> dict[str, Any]:
         """Process video element"""
         video = element.get("video", {})
         return {
@@ -175,7 +186,7 @@ class GoogleSlidesParser:
             "videoProperties": video.get("videoProperties", {}),
         }
 
-    async def _process_line(self, element: Dict) -> Dict[str, Any]:
+    async def _process_line(self, element: dict) -> dict[str, Any]:
         """Process line element"""
         line = element.get("line", {})
         return {
@@ -183,7 +194,7 @@ class GoogleSlidesParser:
             "lineProperties": line.get("lineProperties", {}),
         }
 
-    async def _extract_text_content(self, text_element: Dict) -> Dict[str, Any]:
+    async def _extract_text_content(self, text_element: dict) -> dict[str, Any]:
         """Extract text content and styling"""
         if not text_element:
             return {"content": "", "style": {}}
@@ -212,7 +223,7 @@ class GoogleSlidesParser:
                         {
                             "url": text_run["link"].get("url", ""),
                             "text": text_run.get("content", ""),
-                        }
+                        },
                     )
 
             elif "paragraphMarker" in element:
@@ -221,21 +232,24 @@ class GoogleSlidesParser:
                     text_content["lists"].append(
                         {
                             "glyph": element["paragraphMarker"]["bullet"].get(
-                                "glyph", ""
+                                "glyph",
+                                "",
                             ),
                             "listId": element["paragraphMarker"]["bullet"].get(
-                                "listId", ""
+                                "listId",
+                                "",
                             ),
                             "nestingLevel": element["paragraphMarker"]["bullet"].get(
-                                "nestingLevel", 0
+                                "nestingLevel",
+                                0,
                             ),
-                        }
+                        },
                     )
 
         return text_content
 
     @exponential_backoff()
-    async def process_presentation(self, presentation_id: str) -> Dict[str, Any]:
+    async def process_presentation(self, presentation_id: str) -> dict[str, Any]:
         """Process an entire presentation including all slides"""
         try:
             if not self.service:
@@ -271,15 +285,17 @@ class GoogleSlidesParser:
                             "slideNumber": index,
                             "totalSlides": len(presentation.get("slides", [])),
                             "hasNotesPage": bool(
-                                slide.get("slideProperties", {}).get("notesPage")
+                                slide.get("slideProperties", {}).get("notesPage"),
                             ),
                             "masterProperties": slide.get("slideProperties", {}).get(
-                                "masterProperties", {}
+                                "masterProperties",
+                                {},
                             ),
                             "layoutProperties": slide.get("slideProperties", {}).get(
-                                "layoutProperties", {}
+                                "layoutProperties",
+                                {},
                             ),
-                        }
+                        },
                     )
                     processed_slides.append(slide_data)
 

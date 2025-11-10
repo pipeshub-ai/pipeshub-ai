@@ -1,5 +1,4 @@
 from enum import Enum
-from typing import Dict
 
 import aiohttp
 from tenacity import (
@@ -16,8 +15,9 @@ class CredentialKeys(Enum):
     ACCESS_TOKEN = "access_token"
     REFRESH_TOKEN = "refresh_token"
 
+
 class GoogleTokenHandler:
-    def __init__(self, logger, config_service, arango_service,key_value_store) -> None:
+    def __init__(self, logger, config_service, arango_service, key_value_store) -> None:
         self.logger = logger
         self.token_expiry = None
         self.service = None
@@ -25,32 +25,36 @@ class GoogleTokenHandler:
         self.arango_service = arango_service
         self.key_value_store = key_value_store
 
-    async def _get_connector_config(self, app_name: str) -> Dict:
+    async def _get_connector_config(self, app_name: str) -> dict:
         """Fetch connector config from etcd for the given app."""
         try:
             filtered_app_name = app_name.replace(" ", "").lower()
             config = await self.config_service.get_config(
-                f"/services/connectors/{filtered_app_name}/config"
+                f"/services/connectors/{filtered_app_name}/config",
             )
             return config or {}
         except Exception as e:
             self.logger.error(f"❌ Failed to get connector config for {app_name}: {e}")
             return {}
 
-    async def get_individual_credentials_from_config(self, app_name: str) -> Dict:
+    async def get_individual_credentials_from_config(self, app_name: str) -> dict:
         """Get individual OAuth credentials stored in etcd for the connector."""
         config = await self._get_connector_config(app_name)
         creds = config.get("credentials") or {}
         if not creds:
-            self.logger.info(f"No individual credentials found in config for {app_name}")
+            self.logger.info(
+                f"No individual credentials found in config for {app_name}"
+            )
         return creds
 
-    async def get_enterprise_credentials_from_config(self, app_name: str) -> Dict:
+    async def get_enterprise_credentials_from_config(self, app_name: str) -> dict:
         """Get enterprise/service account credentials stored in etcd for the connector."""
         config = await self._get_connector_config(app_name)
         auth = config.get("auth") or {}
         if not auth:
-            self.logger.info(f"No enterprise credentials found in config for {app_name}")
+            self.logger.info(
+                f"No enterprise credentials found in config for {app_name}"
+            )
         return auth
 
     @retry(
@@ -71,11 +75,13 @@ class GoogleTokenHandler:
             if creds:
                 # Return a merged view including client info for SDK constructors
                 merged = dict(creds)
-                merged['clientId'] = auth_cfg.get("clientId")
-                merged['clientSecret'] = auth_cfg.get("clientSecret")
+                merged["clientId"] = auth_cfg.get("clientId")
+                merged["clientSecret"] = auth_cfg.get("clientSecret")
                 return merged
         except Exception as e:
-            self.logger.error(f"❌ Failed to get individual token for {app_name}: {str(e)}")
+            self.logger.error(
+                f"❌ Failed to get individual token for {app_name}: {e!s}"
+            )
             raise
 
     @retry(
@@ -100,7 +106,9 @@ class GoogleTokenHandler:
             refresh_token = credentials.get("refresh_token")
             if not refresh_token:
                 # Nothing to refresh; rely on existing access token
-                self.logger.info("No refresh_token present for %s; skipping refresh", app_name)
+                self.logger.info(
+                    "No refresh_token present for %s; skipping refresh", app_name
+                )
                 return
 
             auth_cfg = (config or {}).get("auth") or {}
@@ -116,13 +124,15 @@ class GoogleTokenHandler:
                 redirect_uri=auth_cfg.get("redirectUri", ""),
                 authorize_url=auth_cfg.get("authorizeUrl", ""),
                 token_url=auth_cfg.get("tokenUrl", ""),
-                scope=' '.join(auth_cfg.get("scopes", [])) if auth_cfg.get("scopes") else ''
+                scope=" ".join(auth_cfg.get("scopes", []))
+                if auth_cfg.get("scopes")
+                else "",
             )
 
             provider = OAuthProvider(
                 config=oauth_config,
                 key_value_store=self.key_value_store,  # type: ignore
-                credentials_path=config_key
+                credentials_path=config_key,
             )
 
             try:
@@ -137,7 +147,7 @@ class GoogleTokenHandler:
             self.logger.info("✅ Successfully refreshed access token for %s", app_name)
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to refresh token for {app_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to refresh token for {app_name}: {e!s}")
             raise
 
     @retry(
@@ -157,4 +167,6 @@ class GoogleTokenHandler:
         """Get account scopes for a specific connector (gmail/drive)."""
         config = await self._get_connector_config(app_name)
         # Try multiple paths for scopes
-        return config.get("auth", {}).get("scopes", []) or config.get("config", {}).get("auth", {}).get("scopes", [])
+        return config.get("auth", {}).get("scopes", []) or config.get("config", {}).get(
+            "auth", {}
+        ).get("scopes", [])

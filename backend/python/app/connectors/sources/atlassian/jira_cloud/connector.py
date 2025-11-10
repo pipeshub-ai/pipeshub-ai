@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import aiohttp
 from fastapi.responses import StreamingResponse
@@ -42,20 +42,23 @@ BASE_URL = "https://api.atlassian.com/ex/jira"
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 
-def adf_to_text(adf_content: Dict[str, Any]) -> str:
-    """
-    Convert Atlassian Document Format (ADF) to plain text.
+
+def adf_to_text(adf_content: dict[str, Any]) -> str:
+    """Convert Atlassian Document Format (ADF) to plain text.
+
     Args:
         adf_content: ADF content (dict or None)
+
     Returns:
         Plain text representation of the ADF content
+
     """
     if not adf_content or not isinstance(adf_content, dict):
         return ""
 
     text_parts = []
 
-    def extract_text(node: Dict[str, Any]) -> str:
+    def extract_text(node: dict[str, Any]) -> str:
         """Recursively extract text from ADF nodes."""
         if not isinstance(node, dict):
             return ""
@@ -188,7 +191,7 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
     result = "".join(text_parts)
 
     # Clean up multiple consecutive newlines
-    result = re.sub(r'\n{3,}', '\n\n', result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
 
     return result.strip()
 
@@ -196,11 +199,13 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
 @dataclass
 class AtlassianCloudResource:
     """Represents an Atlassian Cloud resource (site)"""
+
     id: str
     name: str
     url: str
-    scopes: List[str]
-    avatar_url: Optional[str] = None
+    scopes: list[str]
+    avatar_url: str | None = None
+
 
 class JiraClient:
     def __init__(self, logger: Logger, config_service: ConfigurationService) -> None:
@@ -244,8 +249,8 @@ class JiraClient:
         self,
         method: str,
         url: str,
-        **kwargs
-    ) -> Dict[str, Any]:
+        **kwargs,
+    ) -> dict[str, Any]:
         """Make authenticated API request and return JSON response"""
         config = await self.config_service.get_config(f"{OAUTH_JIRA_CONFIG_PATH}")
         token = None
@@ -261,30 +266,29 @@ class JiraClient:
 
         token = {
             "token_type": credentials_config.get("token_type"),
-            "access_token": credentials_config.get("access_token")
+            "access_token": credentials_config.get("access_token"),
         }
 
         headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"{token.get('token_type')} {token.get('access_token')}"
+        headers["Authorization"] = (
+            f"{token.get('token_type')} {token.get('access_token')}"
+        )
 
         session = await self._ensure_session()
         async with session.request(method, url, headers=headers, **kwargs) as response:
             response.raise_for_status()
             return await response.json()
 
-
-    async def get_accessible_resources(self) -> List[AtlassianCloudResource]:
-        """
-        Get list of Atlassian sites (Confluence/Jira instances) accessible to the user
+    async def get_accessible_resources(self) -> list[AtlassianCloudResource]:
+        """Get list of Atlassian sites (Confluence/Jira instances) accessible to the user
         Args:
             None
         Returns:
             List of accessible Atlassian Cloud resources
         """
-
         response = await self.make_authenticated_json_request(
             "GET",
-            RESOURCE_URL
+            RESOURCE_URL,
         )
 
         return [
@@ -293,17 +297,21 @@ class JiraClient:
                 name=resource.get("name", ""),
                 url=resource["url"],
                 scopes=resource.get("scopes", []),
-                avatar_url=resource.get("avatarUrl")
+                avatar_url=resource.get("avatarUrl"),
             )
             for resource in response
         ]
 
-    async def fetch_issues_with_permissions(self, project_key: str, project_id: str, user: AppUser) -> List[Tuple[Record, List[Permission]]]:
+    async def fetch_issues_with_permissions(
+        self, project_key: str, project_id: str, user: AppUser
+    ) -> list[tuple[Record, list[Permission]]]:
         url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/search"
         issues = []
 
         while True:
-            issues_batch = await self.make_authenticated_json_request("GET", url, params={"projectKey": project_key, "maxResults": 25})
+            issues_batch = await self.make_authenticated_json_request(
+                "GET", url, params={"projectKey": project_key, "maxResults": 25}
+            )
             issues = issues + issues_batch.get("issues", [])
             next_url = issues_batch.get("_links", {}).get("next", None)
             if not next_url:
@@ -323,11 +331,13 @@ class JiraClient:
 
             if creator_email is None:
                 creator_email = user.email
-            permissions = [Permission(
-                entity_type=EntityType.USER,
-                email=creator_email,
-                type=PermissionType.OWNER,
-            )]
+            permissions = [
+                Permission(
+                    entity_type=EntityType.USER,
+                    email=creator_email,
+                    type=PermissionType.OWNER,
+                )
+            ]
             atlassian_domain = self.accessible_resources[0].url
 
             issue_record = TicketRecord(
@@ -345,18 +355,27 @@ class JiraClient:
                 external_record_group_id=project_id,
                 version=0,
                 mime_type=MimeTypes.PLAIN_TEXT.value,
-                weburl=f"{atlassian_domain}/browse/{issue.get('key')}"
+                weburl=f"{atlassian_domain}/browse/{issue.get('key')}",
             )
             issue_records.append((issue_record, permissions))
 
         return issue_records
 
-    async def fetch_projects_with_permissions(self) -> List[Tuple[RecordGroup, List[Permission]]]:
+    async def fetch_projects_with_permissions(
+        self,
+    ) -> list[tuple[RecordGroup, list[Permission]]]:
         url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/project/search"
 
         projects = []
         while True:
-            projects_batch = await self.make_authenticated_json_request("GET", url, params={"maxResults": 25, "expand": "description,url,permissions,issueTypes"})
+            projects_batch = await self.make_authenticated_json_request(
+                "GET",
+                url,
+                params={
+                    "maxResults": 25,
+                    "expand": "description,url,permissions,issueTypes",
+                },
+            )
             projects = projects + projects_batch.get("values", [])
             next_url = projects_batch.get("nextPage", None)
             if not next_url:
@@ -382,7 +401,7 @@ class JiraClient:
 
         return record_groups
 
-    async def fetch_users(self) -> List[AppUser]:
+    async def fetch_users(self) -> list[AppUser]:
         url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/users/search"
         users = []
         base_url = f"{BASE_URL}/{self.cloud_id}"
@@ -393,7 +412,14 @@ class JiraClient:
             if not next_url:
                 break
             url = f"{base_url}/{next_url}"
-        return [AppUser(email=user["emailAddress"], org_id=self.org_id, source_user_id=user["accountId"]) for user in users]
+        return [
+            AppUser(
+                email=user["emailAddress"],
+                org_id=self.org_id,
+                source_user_id=user["accountId"],
+            )
+            for user in users
+        ]
 
     async def fetch_issue_content(
         self,
@@ -408,58 +434,83 @@ class JiraClient:
 
         # convert description ADF(Atlassian Document Format) to text
         summary_text = f"Title: {summary}" if summary else ""
-        description_text = f"Description: {adf_to_text(description)}" if description else ""
+        description_text = (
+            f"Description: {adf_to_text(description)}" if description else ""
+        )
         combined_text = f"# {summary_text}\n\n{description_text}"
 
         return combined_text
 
-@ConnectorBuilder("Jira")\
-    .in_group("Atlassian")\
-    .with_auth_type("OAUTH")\
-    .with_description("Sync issues from Jira Cloud")\
-    .with_categories(["Storage"])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/jira.svg")
-        .add_documentation_link(DocumentationLink(
-            "Jira Cloud API Setup",
-            "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/jira/jira',
-            'pipeshub'
-        ))
+
+@(
+    ConnectorBuilder("Jira")
+    .in_group("Atlassian")
+    .with_auth_type("OAUTH")
+    .with_description("Sync issues from Jira Cloud")
+    .with_categories(["Storage"])
+    .configure(
+        lambda builder: builder.with_icon("/assets/icons/connectors/jira.svg")
+        .add_documentation_link(
+            DocumentationLink(
+                "Jira Cloud API Setup",
+                "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",
+                "setup",
+            )
+        )
+        .add_documentation_link(
+            DocumentationLink(
+                "Pipeshub Documentation",
+                "https://docs.pipeshub.com/connectors/jira/jira",
+                "pipeshub",
+            )
+        )
         .with_redirect_uri("connectors/oauth/callback/Jira", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Atlassian Cloud Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Atlassian Cloud Client Secret",
-            description="The Client Secret from Azure AD App Registration",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="domain",
-            display_name="Atlassian Domain",
-            description="https://your-domain.atlassian.net"
-        ))
+        .add_auth_field(
+            AuthField(
+                name="clientId",
+                display_name="Application (Client) ID",
+                placeholder="Enter your Atlassian Cloud Application ID",
+                description="The Application (Client) ID from Azure AD App Registration",
+            )
+        )
+        .add_auth_field(
+            AuthField(
+                name="clientSecret",
+                display_name="Client Secret",
+                placeholder="Enter your Atlassian Cloud Client Secret",
+                description="The Client Secret from Azure AD App Registration",
+                field_type="PASSWORD",
+                is_secret=True,
+            )
+        )
+        .add_auth_field(
+            AuthField(
+                name="domain",
+                display_name="Atlassian Domain",
+                description="https://your-domain.atlassian.net",
+            )
+        )
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access())
-
-    )\
+        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access()),
+    )
     .build_decorator()
+)
 class JiraConnector(BaseConnector):
-    def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
-                 data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
-        super().__init__(JiraApp(), logger, data_entities_processor, data_store_provider, config_service)
+    def __init__(
+        self,
+        logger: Logger,
+        data_entities_processor: DataSourceEntitiesProcessor,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+    ) -> None:
+        super().__init__(
+            JiraApp(),
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+        )
         self.provider = None
 
     async def init(self) -> None:
@@ -479,12 +530,13 @@ class JiraConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(projects)
 
             for project, permissions in projects:
-                issues = await jira_client.fetch_issues_with_permissions(project.short_name, project.external_group_id, user)
+                issues = await jira_client.fetch_issues_with_permissions(
+                    project.short_name, project.external_group_id, user
+                )
                 await self.data_entities_processor.on_new_records(issues)
 
         except Exception as e:
             self.logger.error(f"Error processing user {user.email}: {e}")
-
 
     async def get_jira_client(self) -> JiraClient:
         jira_client = JiraClient(self.logger, self.config_service)
@@ -493,14 +545,10 @@ class JiraConnector(BaseConnector):
         return jira_client
 
     async def get_signed_url(self, record: Record) -> str:
-        """
-        Create a signed URL for a specific record.
-        """
-        pass
+        """Create a signed URL for a specific record."""
 
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to Jira."""
-        pass
 
     async def run_incremental_sync(self) -> None:
         pass
@@ -508,19 +556,30 @@ class JiraConnector(BaseConnector):
     async def cleanup(self) -> None:
         pass
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: dict) -> None:
         pass
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         jira_client = await self.get_jira_client()
         issue_content = await jira_client.fetch_issue_content(record.external_record_id)
         return StreamingResponse(
-            iter([issue_content]), media_type=MimeTypes.PLAIN_TEXT.value, headers={}
+            iter([issue_content]),
+            media_type=MimeTypes.PLAIN_TEXT.value,
+            headers={},
         )
 
     @classmethod
-    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> "BaseConnector":
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
+    async def create_connector(
+        cls,
+        logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+    ) -> "BaseConnector":
+        data_entities_processor = DataSourceEntitiesProcessor(
+            logger, data_store_provider, config_service
+        )
         await data_entities_processor.initialize()
 
-        return JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
+        return JiraConnector(
+            logger, data_entities_processor, data_store_provider, config_service
+        )

@@ -1,9 +1,9 @@
 import base64
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -61,7 +61,9 @@ from app.sources.external.microsoft.users_groups.users_groups import (
 )
 
 # Thread detection constants
-THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
+THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = (
+    22  # Length (in bytes) of conversation_index for root email in a thread
+)
 
 
 @dataclass
@@ -72,77 +74,99 @@ class OutlookCredentials:
     has_admin_consent: bool = False
 
 
-@ConnectorBuilder("Outlook")\
-    .in_group("Microsoft 365")\
-    .with_auth_type("OAUTH_ADMIN_CONSENT")\
-    .with_description("Sync emails from Outlook")\
-    .with_categories(["Email"])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/outlook.svg")
-        .add_documentation_link(DocumentationLink(
-            "Azure AD App Registration Setup",
-            "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/microsoft-365/outlook',
-            'pipeshub'
-        ))
+@(
+    ConnectorBuilder("Outlook")
+    .in_group("Microsoft 365")
+    .with_auth_type("OAUTH_ADMIN_CONSENT")
+    .with_description("Sync emails from Outlook")
+    .with_categories(["Email"])
+    .configure(
+        lambda builder: builder.with_icon("/assets/icons/connectors/outlook.svg")
+        .add_documentation_link(
+            DocumentationLink(
+                "Azure AD App Registration Setup",
+                "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
+                "setup",
+            )
+        )
+        .add_documentation_link(
+            DocumentationLink(
+                "Pipeshub Documentation",
+                "https://docs.pipeshub.com/connectors/microsoft-365/outlook",
+                "pipeshub",
+            )
+        )
         .with_redirect_uri("connectors/Outlook/oauth/callback", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Azure AD Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Azure AD Client Secret",
-            description="The Client Secret from Azure AD App Registration",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="tenantId",
-            display_name="Directory (Tenant) ID",
-            placeholder="Enter your Azure AD Tenant ID",
-            description="The Directory (Tenant) ID from Azure AD"
-        ))
-        .add_auth_field(AuthField(
-            name="hasAdminConsent",
-            display_name="Has Admin Consent",
-            description="Check if admin consent has been granted for the application",
-            field_type="CHECKBOX",
-            required=True,
-            default_value=False
-        ))
-        .add_auth_field(AuthField(
-            name="redirectUri",
-            display_name="Redirect URI",
-            placeholder="connectors/Outlook/oauth/callback",
-            description="The redirect URI for OAuth authentication",
-            field_type="URL",
-            required=False,
-            max_length=2000
-        ))
+        .add_auth_field(
+            AuthField(
+                name="clientId",
+                display_name="Application (Client) ID",
+                placeholder="Enter your Azure AD Application ID",
+                description="The Application (Client) ID from Azure AD App Registration",
+            )
+        )
+        .add_auth_field(
+            AuthField(
+                name="clientSecret",
+                display_name="Client Secret",
+                placeholder="Enter your Azure AD Client Secret",
+                description="The Client Secret from Azure AD App Registration",
+                field_type="PASSWORD",
+                is_secret=True,
+            )
+        )
+        .add_auth_field(
+            AuthField(
+                name="tenantId",
+                display_name="Directory (Tenant) ID",
+                placeholder="Enter your Azure AD Tenant ID",
+                description="The Directory (Tenant) ID from Azure AD",
+            )
+        )
+        .add_auth_field(
+            AuthField(
+                name="hasAdminConsent",
+                display_name="Has Admin Consent",
+                description="Check if admin consent has been granted for the application",
+                field_type="CHECKBOX",
+                required=True,
+                default_value=False,
+            )
+        )
+        .add_auth_field(
+            AuthField(
+                name="redirectUri",
+                display_name="Redirect URI",
+                placeholder="connectors/Outlook/oauth/callback",
+                description="The redirect URI for OAuth authentication",
+                field_type="URL",
+                required=False,
+                max_length=2000,
+            )
+        )
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        .add_filter_field(FilterField(
-            name="mailFolders",
-            display_name="Mail Folders",
-            description="Select mail folders to sync"
-        ), "static")
-        .add_filter_field(FilterField(
-            name="dateRange",
-            display_name="Date Range",
-            description="Select date range for emails",
-            field_type="DATERANGE"
-        ), "static")
-    )\
+        .add_filter_field(
+            FilterField(
+                name="mailFolders",
+                display_name="Mail Folders",
+                description="Select mail folders to sync",
+            ),
+            "static",
+        )
+        .add_filter_field(
+            FilterField(
+                name="dateRange",
+                display_name="Date Range",
+                description="Select date range for emails",
+                field_type="DATERANGE",
+            ),
+            "static",
+        ),
+    )
     .build_decorator()
+)
 class OutlookConnector(BaseConnector):
     """Microsoft Outlook connector for syncing emails and attachments."""
 
@@ -151,7 +175,7 @@ class OutlookConnector(BaseConnector):
         logger: Logger,
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
     ) -> None:
         super().__init__(
             OutlookApp(),
@@ -161,46 +185,47 @@ class OutlookConnector(BaseConnector):
             config_service,
         )
         self.rate_limiter = AsyncLimiter(50, 1)
-        self.external_outlook_client: Optional[OutlookCalendarContactsDataSource] = None
-        self.external_users_client: Optional[UsersGroupsDataSource] = None
-        self.credentials: Optional[OutlookCredentials] = None
+        self.external_outlook_client: OutlookCalendarContactsDataSource | None = None
+        self.external_users_client: UsersGroupsDataSource | None = None
+        self.credentials: OutlookCredentials | None = None
 
         # User cache for performance optimization
-        self._user_cache: Dict[str, str] = {}  # email -> source_user_id mapping
-        self._user_cache_timestamp: Optional[int] = None
+        self._user_cache: dict[str, str] = {}  # email -> source_user_id mapping
+        self._user_cache_timestamp: int | None = None
         self._user_cache_ttl: int = 3600  # 1 hour TTL in seconds
 
         self.email_delta_sync_point = SyncPoint(
             connector_name=Connectors.OUTLOOK,
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
-            data_store_provider=self.data_store_provider
+            data_store_provider=self.data_store_provider,
         )
-
 
     async def init(self) -> bool:
         """Initialize the Outlook connector with credentials and Graph client."""
         try:
-
             org_id = self.data_entities_processor.org_id
 
             # Load credentials
             self.credentials = await self._get_credentials(org_id)
 
             # Create shared MSGraph client
-            external_client: ExternalMSGraphClient = ExternalMSGraphClient.build_with_config(
-                MSGraphClientWithClientIdSecretConfig(
-                    self.credentials.client_id,
-                    self.credentials.client_secret,
-                    self.credentials.tenant_id
-                ),
-                mode=GraphMode.APP
+            external_client: ExternalMSGraphClient = (
+                ExternalMSGraphClient.build_with_config(
+                    MSGraphClientWithClientIdSecretConfig(
+                        self.credentials.client_id,
+                        self.credentials.client_secret,
+                        self.credentials.tenant_id,
+                    ),
+                    mode=GraphMode.APP,
+                )
             )
 
             # Create both data source clients
-            self.external_outlook_client = OutlookCalendarContactsDataSource(external_client)
+            self.external_outlook_client = OutlookCalendarContactsDataSource(
+                external_client
+            )
             self.external_users_client = UsersGroupsDataSource(external_client)
-
 
             # Test connection
             if not await self.test_connection_and_access():
@@ -216,19 +241,27 @@ class OutlookConnector(BaseConnector):
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to external APIs."""
         try:
-            if not self.external_outlook_client or not self.external_users_client or not self.credentials:
+            if (
+                not self.external_outlook_client
+                or not self.external_users_client
+                or not self.credentials
+            ):
                 return False
 
-            if not (self.credentials.tenant_id and
-                    self.credentials.client_id and
-                    self.credentials.client_secret):
+            if not (
+                self.credentials.tenant_id
+                and self.credentials.client_id
+                and self.credentials.client_secret
+            ):
                 return False
 
             try:
                 # Get just 1 user with minimal fields to test connection
-                response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
-                    top=1,
-                    select=["id"]
+                response: UsersGroupsResponse = (
+                    await self.external_users_client.users_user_list_user(
+                        top=1,
+                        select=["id"],
+                    )
                 )
 
                 if not response.success:
@@ -271,9 +304,11 @@ class OutlookConnector(BaseConnector):
             current_time = int(datetime.now(timezone.utc).timestamp())
 
             # Check if cache is still valid
-            if (self._user_cache_timestamp and
-                current_time - self._user_cache_timestamp < self._user_cache_ttl and
-                self._user_cache):
+            if (
+                self._user_cache_timestamp
+                and current_time - self._user_cache_timestamp < self._user_cache_ttl
+                and self._user_cache
+            ):
                 return
 
             self.logger.info("Refreshing user cache...")
@@ -292,7 +327,7 @@ class OutlookConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to populate user cache: {e}")
 
-    async def _get_user_id_from_email(self, email: str) -> Optional[str]:
+    async def _get_user_id_from_email(self, email: str) -> str | None:
         """Get user ID from email using cache."""
         try:
             # Ensure cache is populated
@@ -303,7 +338,6 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting user ID from cache for {email}: {e}")
             return None
 
-
     async def run_sync(self) -> None:
         """Run full Outlook sync - emails and attachments from all folders."""
         try:
@@ -312,7 +346,9 @@ class OutlookConnector(BaseConnector):
 
             # Ensure external clients are initialized
             if not self.external_outlook_client or not self.external_users_client:
-                raise Exception("External API clients not initialized. Call init() first.")
+                raise Exception(
+                    "External API clients not initialized. Call init() first."
+                )
 
             all_enterprise_users = await self._get_all_users_external()
             all_active_users = await self.data_entities_processor.get_all_active_users()
@@ -345,14 +381,16 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error during Outlook sync: {e}")
             raise
 
-    async def _get_all_users_external(self) -> List[AppUser]:
+    async def _get_all_users_external(self) -> list[AppUser]:
         """Get all users using external Users Groups API."""
         try:
             if not self.external_users_client:
                 raise Exception("External Users Groups client not initialized")
 
             # Use external API to get users
-            response: UsersGroupsResponse = await self.external_users_client.users_user_list_user()
+            response: UsersGroupsResponse = (
+                await self.external_users_client.users_user_list_user()
+            )
 
             if not response.success or not response.data:
                 self.logger.error(f"Failed to get users: {response.error}")
@@ -360,23 +398,30 @@ class OutlookConnector(BaseConnector):
 
             users = []
             # Handle UserCollectionResponse object
-            user_data = self._safe_get_attr(response.data, 'value', [])
+            user_data = self._safe_get_attr(response.data, "value", [])
 
             for user in user_data:
-                display_name = self._safe_get_attr(user, 'display_name') or ''
-                given_name = self._safe_get_attr(user, 'given_name') or ''
-                surname = self._safe_get_attr(user, 'surname') or ''
+                display_name = self._safe_get_attr(user, "display_name") or ""
+                given_name = self._safe_get_attr(user, "given_name") or ""
+                surname = self._safe_get_attr(user, "surname") or ""
 
                 # Create full_name from available name parts
-                full_name = display_name if display_name else f"{given_name} {surname}".strip()
+                full_name = (
+                    display_name if display_name else f"{given_name} {surname}".strip()
+                )
                 if not full_name:
-                    full_name = self._safe_get_attr(user, 'mail') or self._safe_get_attr(user, 'user_principal_name') or 'Unknown User'
+                    full_name = (
+                        self._safe_get_attr(user, "mail")
+                        or self._safe_get_attr(user, "user_principal_name")
+                        or "Unknown User"
+                    )
 
                 app_user = AppUser(
                     app_name=Connectors.OUTLOOK,
-                    source_user_id=self._safe_get_attr(user, 'id'),
-                    email=self._safe_get_attr(user, 'mail') or self._safe_get_attr(user, 'user_principal_name'),
-                    full_name=full_name
+                    source_user_id=self._safe_get_attr(user, "id"),
+                    email=self._safe_get_attr(user, "mail")
+                    or self._safe_get_attr(user, "user_principal_name"),
+                    full_name=full_name,
                 )
                 users.append(app_user)
 
@@ -386,17 +431,19 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting users from external API: {e}")
             return []
 
-    async def _process_users(self, org_id: str, users: List[AppUser]) -> AsyncGenerator[str, None]:
+    async def _process_users(
+        self, org_id: str, users: list[AppUser]
+    ) -> AsyncGenerator[str, None]:
         """Process users sequentially."""
         for i, user in enumerate(users):
-            self.logger.info(f"Processing user {i+1}/{len(users)}: {user.email}")
+            self.logger.info(f"Processing user {i + 1}/{len(users)}: {user.email}")
             try:
                 # Process emails from all folders (includes folder discovery)
                 email_result = await self._process_user_emails(org_id, user)
-                yield f"User {i+1}/{len(users)}: {email_result}"
+                yield f"User {i + 1}/{len(users)}: {email_result}"
             except Exception as e:
                 self.logger.error(f"Error processing user {user.email}: {e}")
-                yield f"User {i+1}/{len(users)}: Failed - {str(e)}"
+                yield f"User {i + 1}/{len(users)}: Failed - {e!s}"
 
     async def _process_user_emails(self, org_id: str, user: AppUser) -> str:
         """Process emails from all folders sequentially."""
@@ -415,9 +462,14 @@ class OutlookConnector(BaseConnector):
 
             # Process folders sequentially instead of concurrently
             for folder in folders:
-                folder_name = self._safe_get_attr(folder, 'display_name', 'Unnamed Folder')
+                folder_name = self._safe_get_attr(
+                    folder, "display_name", "Unnamed Folder"
+                )
                 try:
-                    result, folder_mail_records = await self._process_single_folder_messages(org_id, user, folder)
+                    (
+                        result,
+                        folder_mail_records,
+                    ) = await self._process_single_folder_messages(org_id, user, folder)
                     folder_results.append(f"{folder_name}: {result} messages")
                     total_processed += result
                     all_mail_records.extend(folder_mail_records)  # Collect mail records
@@ -427,19 +479,29 @@ class OutlookConnector(BaseConnector):
 
             # After all folders are processed, create email thread edges using collected records
             try:
-                thread_edges_created = await self._create_all_thread_edges_for_user(org_id, user, all_mail_records)
+                thread_edges_created = await self._create_all_thread_edges_for_user(
+                    org_id, user, all_mail_records
+                )
                 if thread_edges_created > 0:
-                    self.logger.info(f"Created {thread_edges_created} thread edges for user {user.email}")
+                    self.logger.info(
+                        f"Created {thread_edges_created} thread edges for user {user.email}"
+                    )
             except Exception as e:
-                self.logger.error(f"Error creating thread edges for user {user.email}: {e}")
+                self.logger.error(
+                    f"Error creating thread edges for user {user.email}: {e}"
+                )
 
             return f"Processed {total_processed} items across {len(folders)} folders: {'; '.join(folder_results)}"
 
         except Exception as e:
-            self.logger.error(f"Error processing all folders for user {user.email}: {e}")
-            return f"Failed to process folders for {user.email}: {str(e)}"
+            self.logger.error(
+                f"Error processing all folders for user {user.email}: {e}"
+            )
+            return f"Failed to process folders for {user.email}: {e!s}"
 
-    async def _find_parent_by_conversation_index_from_db(self, conversation_index: str, thread_id: str, org_id: str, user: AppUser) -> Optional[str]:
+    async def _find_parent_by_conversation_index_from_db(
+        self, conversation_index: str, thread_id: str, org_id: str, user: AppUser
+    ) -> str | None:
         """Find parent message ID using conversation index by searching ArangoDB."""
         if not conversation_index:
             self.logger.debug(f"No conversation_index provided for thread {thread_id}")
@@ -455,8 +517,10 @@ class OutlookConnector(BaseConnector):
 
             # Get parent index by removing last 5 bytes
             parent_bytes = index_bytes[:-5]
-            parent_index = base64.b64encode(parent_bytes).decode('utf-8')
-            self.logger.debug(f"Thread {thread_id}: Looking for parent with conversation_index={parent_index}")
+            parent_index = base64.b64encode(parent_bytes).decode("utf-8")
+            self.logger.debug(
+                f"Thread {thread_id}: Looking for parent with conversation_index={parent_index}"
+            )
 
             # Search in ArangoDB for parent message
             async with self.data_store_provider.transaction() as tx_store:
@@ -465,19 +529,22 @@ class OutlookConnector(BaseConnector):
                     conversation_index=parent_index,
                     thread_id=thread_id,
                     org_id=org_id,
-                    user_id=user.user_id
+                    user_id=user.user_id,
                 )
 
                 if parent_record:
                     return parent_record.id
-                else:
-                    return None
+                return None
 
         except Exception as e:
-            self.logger.error(f"Error finding parent by conversation index from DB for thread {thread_id}: {e}")
+            self.logger.error(
+                f"Error finding parent by conversation index from DB for thread {thread_id}: {e}"
+            )
             return None
 
-    async def _create_all_thread_edges_for_user(self, org_id: str, user: AppUser, user_mail_records: List[Record]) -> int:
+    async def _create_all_thread_edges_for_user(
+        self, org_id: str, user: AppUser, user_mail_records: list[Record]
+    ) -> int:
         """Create thread edges for all email messages of a user by searching ArangoDB for parents."""
         try:
             if not user_mail_records:
@@ -489,22 +556,25 @@ class OutlookConnector(BaseConnector):
 
             # Process each mail record to find its parent
             for record in user_mail_records:
-                if (hasattr(record, 'conversation_index') and record.conversation_index and
-                    hasattr(record, 'thread_id') and record.thread_id):
-
+                if (
+                    hasattr(record, "conversation_index")
+                    and record.conversation_index
+                    and hasattr(record, "thread_id")
+                    and record.thread_id
+                ):
                     # Find parent using ArangoDB lookup
                     parent_id = await self._find_parent_by_conversation_index_from_db(
                         record.conversation_index,
                         record.thread_id,
                         org_id,
-                        user
+                        user,
                     )
 
                     if parent_id:
                         edge = {
                             "_from": f"records/{parent_id}",
                             "_to": f"records/{record.id}",
-                            "relationType": "SIBLING"
+                            "relationType": "SIBLING",
                         }
                         edges.append(edge)
                         processed_count += 1
@@ -513,26 +583,34 @@ class OutlookConnector(BaseConnector):
             if edges:
                 try:
                     async with self.data_store_provider.transaction() as tx_store:
-                        await tx_store.batch_create_edges(edges, collection=CollectionNames.RECORD_RELATIONS.value)
+                        await tx_store.batch_create_edges(
+                            edges, collection=CollectionNames.RECORD_RELATIONS.value
+                        )
                 except Exception as e:
-                    self.logger.error(f"Error creating thread edges batch for user {user.email}: {e}")
+                    self.logger.error(
+                        f"Error creating thread edges batch for user {user.email}: {e}"
+                    )
                     processed_count = 0
 
             return processed_count
 
         except Exception as e:
-            self.logger.error(f"Error creating all thread edges for user {user.email}: {e}")
+            self.logger.error(
+                f"Error creating all thread edges for user {user.email}: {e}"
+            )
             return 0
 
-    async def _get_all_folders_for_user(self, user_id: str) -> List[Dict]:
+    async def _get_all_folders_for_user(self, user_id: str) -> list[dict]:
         """Get all top-level folders for a user."""
         try:
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
             # Use the existing folder delta method but ignore delta_link for simplicity
-            response: OutlookMailFoldersResponse = await self.external_outlook_client.users_list_mail_folders(
-                user_id=user_id
+            response: OutlookMailFoldersResponse = (
+                await self.external_outlook_client.users_list_mail_folders(
+                    user_id=user_id,
+                )
             )
 
             if not response.success:
@@ -540,32 +618,42 @@ class OutlookConnector(BaseConnector):
                 return []
 
             data = response.data or {}
-            folders = data.get('value', [])
+            folders = data.get("value", [])
 
             return folders
         except Exception as e:
             self.logger.error(f"Error getting folders for user {user_id}: {e}")
             return []
 
-    async def _process_single_folder_messages(self, org_id: str, user: AppUser, folder: Dict) -> tuple[int, List[Record]]:
+    async def _process_single_folder_messages(
+        self, org_id: str, user: AppUser, folder: dict
+    ) -> tuple[int, list[Record]]:
         """Process messages using batch processing with automatic pagination."""
         try:
             user_id = user.source_user_id
-            folder_id = self._safe_get_attr(folder, 'id')
-            folder_name = self._safe_get_attr(folder, 'display_name', 'Unnamed Folder')
+            folder_id = self._safe_get_attr(folder, "id")
+            folder_name = self._safe_get_attr(folder, "display_name", "Unnamed Folder")
 
             # Create folder-specific sync point
             sync_point_key = generate_record_sync_point_key(
-                RecordType.MAIL.value, "folders", f"{user_id}_{folder_id}"
+                RecordType.MAIL.value,
+                "folders",
+                f"{user_id}_{folder_id}",
             )
-            sync_point = await self.email_delta_sync_point.read_sync_point(sync_point_key)
-            delta_link = sync_point.get('delta_link') if sync_point else None
+            sync_point = await self.email_delta_sync_point.read_sync_point(
+                sync_point_key
+            )
+            delta_link = sync_point.get("delta_link") if sync_point else None
 
             # Get messages for this folder using delta sync
-            result = await self._get_all_messages_delta_external(user_id, folder_id, delta_link)
-            messages = result['messages']
+            result = await self._get_all_messages_delta_external(
+                user_id, folder_id, delta_link
+            )
+            messages = result["messages"]
 
-            self.logger.info(f"Retrieved {len(messages)} total message changes from folder '{folder_name}' for user {user.email}")
+            self.logger.info(
+                f"Retrieved {len(messages)} total message changes from folder '{folder_name}' for user {user.email}"
+            )
 
             if not messages:
                 self.logger.info(f"No messages to process in folder '{folder_name}'")
@@ -577,7 +665,9 @@ class OutlookConnector(BaseConnector):
             mail_records = []  # Collect mail records for thread processing
 
             for message in messages:
-                record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
+                record_updates = await self._process_single_message(
+                    org_id, user, message, folder_id, folder_name
+                )
                 all_updates.extend(record_updates)
 
             # Process records in batches
@@ -590,7 +680,10 @@ class OutlookConnector(BaseConnector):
                     batch_records.append((update.record, permissions))
 
                     # Collect mail records (not attachments) for thread processing
-                    if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
+                    if (
+                        hasattr(update.record, "record_type")
+                        and update.record.record_type == RecordType.MAIL
+                    ):
                         mail_records.append(update.record)
 
                 if len(batch_records) >= batch_size:
@@ -605,24 +698,34 @@ class OutlookConnector(BaseConnector):
 
             # Update folder-specific sync point only if all batches were processed successfully
             sync_point_data = {
-                'delta_link': result.get('delta_link'),
-                'last_sync_timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
-                'folder_id': folder_id,
-                'folder_name': folder_name
+                "delta_link": result.get("delta_link"),
+                "last_sync_timestamp": int(
+                    datetime.now(timezone.utc).timestamp() * 1000
+                ),
+                "folder_id": folder_id,
+                "folder_name": folder_name,
             }
 
-            await self.email_delta_sync_point.update_sync_point(sync_point_key, sync_point_data)
+            await self.email_delta_sync_point.update_sync_point(
+                sync_point_key, sync_point_data
+            )
 
             # Log final summary
-            self.logger.info(f"Folder '{folder_name}' completed: {processed_count} records processed from {len(messages)} messages")
+            self.logger.info(
+                f"Folder '{folder_name}' completed: {processed_count} records processed from {len(messages)} messages"
+            )
 
             return processed_count, mail_records
 
         except Exception as e:
-            self.logger.error(f"Error processing messages in folder '{folder_name}' for user {user.email}: {e}")
+            self.logger.error(
+                f"Error processing messages in folder '{folder_name}' for user {user.email}: {e}"
+            )
             return 0, []
 
-    async def _get_all_messages_delta_external(self, user_id: str, folder_id: str, delta_link: Optional[str] = None) -> Dict:
+    async def _get_all_messages_delta_external(
+        self, user_id: str, folder_id: str, delta_link: str | None = None
+    ) -> dict:
         """Get folder messages using delta sync with automatic pagination from external Outlook API.
 
         This method handles both initial sync and incremental sync:
@@ -643,88 +746,120 @@ class OutlookConnector(BaseConnector):
             Dict with:
                 - messages: List of all messages across all pages
                 - delta_link: New deltaLink to save for next sync
+
         """
         try:
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
             # Use the new fetch_all_messages_delta method that handles pagination automatically
-            messages, new_delta_link = await self.external_outlook_client.fetch_all_messages_delta(
+            (
+                messages,
+                new_delta_link,
+            ) = await self.external_outlook_client.fetch_all_messages_delta(
                 user_id=user_id,
                 mailFolder_id=folder_id,
                 saved_delta_link=delta_link,
                 page_size=100,
-                select = [
-                    'id',
-                    'subject',
-                    'hasAttachments',
-                    'createdDateTime',
-                    'lastModifiedDateTime',
-                    'webLink',
-                    'from',
-                    'toRecipients',
-                    'ccRecipients',
-                    'bccRecipients',
-                    'conversationId',
-                    'internetMessageId',
-                    'conversationIndex'
-                ]
+                select=[
+                    "id",
+                    "subject",
+                    "hasAttachments",
+                    "createdDateTime",
+                    "lastModifiedDateTime",
+                    "webLink",
+                    "from",
+                    "toRecipients",
+                    "ccRecipients",
+                    "bccRecipients",
+                    "conversationId",
+                    "internetMessageId",
+                    "conversationIndex",
+                ],
             )
 
-            self.logger.info(f"Delta sync completed for folder {folder_id}: retrieved {len(messages)} total messages across all pages")
+            self.logger.info(
+                f"Delta sync completed for folder {folder_id}: retrieved {len(messages)} total messages across all pages"
+            )
 
             return {
-                'messages': messages,
-                'delta_link': new_delta_link
+                "messages": messages,
+                "delta_link": new_delta_link,
             }
 
         except Exception as e:
-            self.logger.error(f"Error getting messages delta for folder {folder_id}: {e}", exc_info=True)
-            return {'messages': [], 'delta_link': None, 'next_link': None}
+            self.logger.error(
+                f"Error getting messages delta for folder {folder_id}: {e}",
+                exc_info=True,
+            )
+            return {"messages": [], "delta_link": None, "next_link": None}
 
-    async def _process_single_message(self, org_id: str, user: AppUser, message, folder_id: str, folder_name: str) -> List[RecordUpdate]:
+    async def _process_single_message(
+        self, org_id: str, user: AppUser, message, folder_id: str, folder_name: str
+    ) -> list[RecordUpdate]:
         """Process one message and its attachments together."""
         updates = []
 
         try:
-            message_id = self._safe_get_attr(message, 'id')
+            message_id = self._safe_get_attr(message, "id")
 
             # Check if message is deleted
-            additional_data = self._safe_get_attr(message, 'additional_data', {})
-            is_deleted = (additional_data.get('@removed', {}).get('reason') == 'deleted')
+            additional_data = self._safe_get_attr(message, "additional_data", {})
+            is_deleted = additional_data.get("@removed", {}).get("reason") == "deleted"
 
             if is_deleted:
-                self.logger.info(f"Deleting message: {message_id} and its attachments from folder {folder_name}")
+                self.logger.info(
+                    f"Deleting message: {message_id} and its attachments from folder {folder_name}"
+                )
                 async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.delete_record_by_external_id(Connectors.OUTLOOK, message_id, user.user_id)
+                    await tx_store.delete_record_by_external_id(
+                        Connectors.OUTLOOK, message_id, user.user_id
+                    )
                 return updates
 
             # Process email with attachments
-            email_update = await self._process_single_email_with_folder(org_id, user, message, folder_id, folder_name)
+            email_update = await self._process_single_email_with_folder(
+                org_id, user, message, folder_id, folder_name
+            )
             if email_update:
                 updates.append(email_update)
 
                 # Process attachments if any
-                has_attachments = self._safe_get_attr(message, 'has_attachments', False)
+                has_attachments = self._safe_get_attr(message, "has_attachments", False)
                 if has_attachments:
-                    email_permissions = await self._extract_email_permissions(message, None, user)
-                    attachment_updates = await self._process_email_attachments_with_folder(
-                        org_id, user, message, email_permissions, folder_id, folder_name
+                    email_permissions = await self._extract_email_permissions(
+                        message, None, user
+                    )
+                    attachment_updates = (
+                        await self._process_email_attachments_with_folder(
+                            org_id,
+                            user,
+                            message,
+                            email_permissions,
+                            folder_id,
+                            folder_name,
+                        )
                     )
                     if attachment_updates:
                         updates.extend(attachment_updates)
             else:
-                self.logger.debug(f"Skipping attachment processing for unchanged email {message_id}")
+                self.logger.debug(
+                    f"Skipping attachment processing for unchanged email {message_id}"
+                )
 
         except Exception as e:
-            self.logger.error(f"Error processing message {self._safe_get_attr(message, 'id', 'unknown')}: {e}")
+            self.logger.error(
+                f"Error processing message {self._safe_get_attr(message, 'id', 'unknown')}: {e}"
+            )
 
         return updates
 
-    async def _process_single_email_with_folder(self, org_id: str, user: AppUser, message, folder_id: str, folder_name: str) -> Optional[RecordUpdate]:
+    async def _process_single_email_with_folder(
+        self, org_id: str, user: AppUser, message, folder_id: str, folder_name: str
+    ) -> RecordUpdate | None:
         """Process a single email with folder information."""
         try:
-            message_id = self._safe_get_attr(message, 'id')
+            message_id = self._safe_get_attr(message, "id")
 
             existing_record = await self._get_existing_record(org_id, message_id)
             is_new = existing_record is None
@@ -740,7 +875,9 @@ class OutlookConnector(BaseConnector):
                 if existing_folder_id and current_folder_id != existing_folder_id:
                     metadata_changed = True
                     is_updated = True
-                    self.logger.info(f"Email {message_id} moved from folder {existing_folder_id} to {current_folder_id}")
+                    self.logger.info(
+                        f"Email {message_id} moved from folder {existing_folder_id} to {current_folder_id}"
+                    )
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
@@ -748,32 +885,55 @@ class OutlookConnector(BaseConnector):
             email_record = MailRecord(
                 id=record_id,
                 org_id=org_id,
-                record_name=self._safe_get_attr(message, 'subject', 'No Subject') or 'No Subject',
+                record_name=self._safe_get_attr(message, "subject", "No Subject")
+                or "No Subject",
                 record_type=RecordType.MAIL,
                 external_record_id=message_id,
-                external_revision_id=self._safe_get_attr(message, 'e_tag'),
+                external_revision_id=self._safe_get_attr(message, "e_tag"),
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.OUTLOOK,
-                source_created_at=self._parse_datetime(self._safe_get_attr(message, 'created_date_time')),
-                source_updated_at=self._parse_datetime(self._safe_get_attr(message, 'last_modified_date_time')),
-                weburl=self._safe_get_attr(message, 'web_link', ''),
+                source_created_at=self._parse_datetime(
+                    self._safe_get_attr(message, "created_date_time")
+                ),
+                source_updated_at=self._parse_datetime(
+                    self._safe_get_attr(message, "last_modified_date_time")
+                ),
+                weburl=self._safe_get_attr(message, "web_link", ""),
                 mime_type=MimeTypes.HTML.value,
                 parent_external_record_id=None,
                 external_record_group_id=folder_id,
                 record_group_type=RecordGroupType.MAILBOX,
-                subject=self._safe_get_attr(message, 'subject', 'No Subject') or 'No Subject',
-                from_email=self._extract_email_from_recipient(self._safe_get_attr(message, 'from_', None)),
-                to_emails=[self._extract_email_from_recipient(r) for r in self._safe_get_attr(message, 'to_recipients', [])],
-                cc_emails=[self._extract_email_from_recipient(r) for r in self._safe_get_attr(message, 'cc_recipients', [])],
-                bcc_emails=[self._extract_email_from_recipient(r) for r in self._safe_get_attr(message, 'bcc_recipients', [])],
-                thread_id=self._safe_get_attr(message, 'conversation_id', ''),
+                subject=self._safe_get_attr(message, "subject", "No Subject")
+                or "No Subject",
+                from_email=self._extract_email_from_recipient(
+                    self._safe_get_attr(message, "from_", None)
+                ),
+                to_emails=[
+                    self._extract_email_from_recipient(r)
+                    for r in self._safe_get_attr(message, "to_recipients", [])
+                ],
+                cc_emails=[
+                    self._extract_email_from_recipient(r)
+                    for r in self._safe_get_attr(message, "cc_recipients", [])
+                ],
+                bcc_emails=[
+                    self._extract_email_from_recipient(r)
+                    for r in self._safe_get_attr(message, "bcc_recipients", [])
+                ],
+                thread_id=self._safe_get_attr(message, "conversation_id", ""),
                 is_parent=False,
-                internet_message_id=self._safe_get_attr(message, 'internet_message_id', ''),
-                conversation_index=self._safe_get_attr(message, 'conversation_index', ''),
+                internet_message_id=self._safe_get_attr(
+                    message, "internet_message_id", ""
+                ),
+                conversation_index=self._safe_get_attr(
+                    message, "conversation_index", ""
+                ),
             )
 
-            permissions = await self._extract_email_permissions(message, email_record.id, user)
+            permissions = await self._extract_email_permissions(
+                message, email_record.id, user
+            )
 
             return RecordUpdate(
                 record=email_record,
@@ -788,21 +948,25 @@ class OutlookConnector(BaseConnector):
             )
 
         except Exception as e:
-            self.logger.error(f"Error processing email {self._safe_get_attr(message, 'id', 'unknown')}: {str(e)}")
+            self.logger.error(
+                f"Error processing email {self._safe_get_attr(message, 'id', 'unknown')}: {e!s}"
+            )
             return None
 
-    async def _extract_email_permissions(self, message: Dict, record_id: Optional[str], inbox_owner: AppUser) -> List[Permission]:
+    async def _extract_email_permissions(
+        self, message: dict, record_id: str | None, inbox_owner: AppUser
+    ) -> list[Permission]:
         """Extract permissions from email recipients, with special handling for inbox owner."""
         permissions = []
 
         try:
             all_recipients = []
-            all_recipients.extend(self._safe_get_attr(message, 'to_recipients', []))
-            all_recipients.extend(self._safe_get_attr(message, 'cc_recipients', []))
-            all_recipients.extend(self._safe_get_attr(message, 'bcc_recipients', []))
+            all_recipients.extend(self._safe_get_attr(message, "to_recipients", []))
+            all_recipients.extend(self._safe_get_attr(message, "cc_recipients", []))
+            all_recipients.extend(self._safe_get_attr(message, "bcc_recipients", []))
 
             # Add sender as well (they have access to the email)
-            from_recipient = self._safe_get_attr(message, 'from_')
+            from_recipient = self._safe_get_attr(message, "from_")
             if from_recipient:
                 all_recipients.append(from_recipient)
 
@@ -828,9 +992,10 @@ class OutlookConnector(BaseConnector):
                         )
                         permissions.append(permission)
 
-
                 except Exception as e:
-                    self.logger.warning(f"Failed to extract email from recipient {recipient}: {e}")
+                    self.logger.warning(
+                        f"Failed to extract email from recipient {recipient}: {e}"
+                    )
                     continue
 
             return permissions
@@ -839,31 +1004,46 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error extracting permissions: {e}")
             return []
 
-    async def _process_email_attachments_with_folder(self, org_id: str, user: AppUser, message: Dict,
-                                                   email_permissions: List[Permission], folder_id: str, folder_name: str) -> List[RecordUpdate]:
+    async def _process_email_attachments_with_folder(
+        self,
+        org_id: str,
+        user: AppUser,
+        message: dict,
+        email_permissions: list[Permission],
+        folder_id: str,
+        folder_name: str,
+    ) -> list[RecordUpdate]:
         """Process email attachments with folder information."""
         attachment_updates = []
 
         try:
             user_id = user.source_user_id
-            message_id = self._safe_get_attr(message, 'id')
+            message_id = self._safe_get_attr(message, "id")
 
-            attachments = await self._get_message_attachments_external(user_id, message_id)
+            attachments = await self._get_message_attachments_external(
+                user_id, message_id
+            )
 
             for i, attachment in enumerate(attachments):
-                attachment_id = self._safe_get_attr(attachment, 'id')
+                attachment_id = self._safe_get_attr(attachment, "id")
                 existing_record = await self._get_existing_record(org_id, attachment_id)
                 is_new = existing_record is None
 
-                content_type = self._safe_get_attr(attachment, 'content_type', 'application/octet-stream')
+                content_type = self._safe_get_attr(
+                    attachment, "content_type", "application/octet-stream"
+                )
                 mime_type = self._get_mime_type_enum(content_type)
 
-                file_name = self._safe_get_attr(attachment, 'name', 'Unnamed Attachment')
+                file_name = self._safe_get_attr(
+                    attachment, "name", "Unnamed Attachment"
+                )
                 extension = None
-                if '.' in file_name:
-                    extension = file_name.split('.')[-1].lower()
+                if "." in file_name:
+                    extension = file_name.split(".")[-1].lower()
 
-                attachment_record_id = existing_record.id if existing_record else str(uuid.uuid4())
+                attachment_record_id = (
+                    existing_record.id if existing_record else str(uuid.uuid4())
+                )
 
                 attachment_record = FileRecord(
                     id=attachment_record_id,
@@ -871,12 +1051,16 @@ class OutlookConnector(BaseConnector):
                     record_name=file_name,
                     record_type=RecordType.FILE,
                     external_record_id=attachment_id,
-                    external_revision_id=self._safe_get_attr(attachment, 'e_tag'),
+                    external_revision_id=self._safe_get_attr(attachment, "e_tag"),
                     version=0 if is_new else existing_record.version + 1,
                     origin=OriginTypes.CONNECTOR,
                     connector_name=Connectors.OUTLOOK,
-                    source_created_at=self._parse_datetime(self._safe_get_attr(attachment, 'last_modified_date_time')),
-                    source_updated_at=self._parse_datetime(self._safe_get_attr(attachment, 'last_modified_date_time')),
+                    source_created_at=self._parse_datetime(
+                        self._safe_get_attr(attachment, "last_modified_date_time")
+                    ),
+                    source_updated_at=self._parse_datetime(
+                        self._safe_get_attr(attachment, "last_modified_date_time")
+                    ),
                     mime_type=mime_type,
                     parent_external_record_id=message_id,
                     parent_record_type=RecordType.MAIL,
@@ -884,105 +1068,140 @@ class OutlookConnector(BaseConnector):
                     record_group_type=RecordGroupType.MAILBOX,
                     weburl="",
                     is_file=True,
-                    size_in_bytes=self._safe_get_attr(attachment, 'size', 0),
+                    size_in_bytes=self._safe_get_attr(attachment, "size", 0),
                     extension=extension,
                 )
 
-                attachment_updates.append(RecordUpdate(
-                    record=attachment_record,
-                    is_new=is_new,
-                    is_updated=False,
-                    is_deleted=False,
-                    metadata_changed=False,
-                    content_changed=False,
-                    permissions_changed=bool(email_permissions),
-                    new_permissions=email_permissions,  # Inherit permissions from parent email
-                    external_record_id=attachment_id,
-                ))
+                attachment_updates.append(
+                    RecordUpdate(
+                        record=attachment_record,
+                        is_new=is_new,
+                        is_updated=False,
+                        is_deleted=False,
+                        metadata_changed=False,
+                        content_changed=False,
+                        permissions_changed=bool(email_permissions),
+                        new_permissions=email_permissions,  # Inherit permissions from parent email
+                        external_record_id=attachment_id,
+                    )
+                )
 
             return attachment_updates
 
         except Exception as e:
-            self.logger.error(f"Error processing attachments for email {self._safe_get_attr(message, 'id', 'unknown')}: {e}")
+            self.logger.error(
+                f"Error processing attachments for email {self._safe_get_attr(message, 'id', 'unknown')}: {e}"
+            )
             return []
 
-    async def _get_message_attachments_external(self, user_id: str, message_id: str) -> List[Dict]:
+    async def _get_message_attachments_external(
+        self, user_id: str, message_id: str
+    ) -> list[dict]:
         """Get message attachments using external Outlook API."""
         try:
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_list_attachments(
-                user_id=user_id,
-                message_id=message_id
+            response: OutlookCalendarContactsResponse = (
+                await self.external_outlook_client.users_messages_list_attachments(
+                    user_id=user_id,
+                    message_id=message_id,
+                )
             )
 
-
             if not response.success:
-                self.logger.error(f"Failed to get attachments for message {message_id}: {response.error}")
+                self.logger.error(
+                    f"Failed to get attachments for message {message_id}: {response.error}"
+                )
                 return []
 
             # Handle response object (similar to users and messages)
-            return self._safe_get_attr(response.data, 'value', [])
+            return self._safe_get_attr(response.data, "value", [])
 
         except Exception as e:
-            self.logger.error(f"Error getting attachments for message {message_id}: {e}")
+            self.logger.error(
+                f"Error getting attachments for message {message_id}: {e}"
+            )
             return []
 
-    async def _get_existing_record(self, org_id: str, external_record_id: str) -> Optional[Record]:
+    async def _get_existing_record(
+        self, org_id: str, external_record_id: str
+    ) -> Record | None:
         """Get existing record from data store."""
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_name=Connectors.OUTLOOK,
-                    external_id=external_record_id
+                    external_id=external_record_id,
                 )
                 return existing_record
         except Exception as e:
-            self.logger.error(f"Error getting existing record {external_record_id}: {e}")
+            self.logger.error(
+                f"Error getting existing record {external_record_id}: {e}"
+            )
             return None
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream record content (email or attachment)."""
         try:
             if not self.external_outlook_client:
-                raise HTTPException(status_code=500, detail="External Outlook client not initialized")
+                raise HTTPException(
+                    status_code=500, detail="External Outlook client not initialized"
+                )
 
             # Get the mailbox owner's Graph User ID from permission edges
             user_id = None
 
             async with self.data_store_provider.transaction() as tx_store:
-                user_email = await tx_store.get_record_owner_source_user_email(record.id)
+                user_email = await tx_store.get_record_owner_source_user_email(
+                    record.id
+                )
                 user_id = await self._get_user_id_from_email(user_email)
 
                 if user_id:
-                    self.logger.debug(f"Found Graph user ID {user_id} for record {record.id} from permission edges")
+                    self.logger.debug(
+                        f"Found Graph user ID {user_id} for record {record.id} from permission edges"
+                    )
                 else:
-                    self.logger.warning(f"Could not find owner for record {record.id} in permission edges")
+                    self.logger.warning(
+                        f"Could not find owner for record {record.id} in permission edges"
+                    )
 
             if not user_id:
-                raise HTTPException(status_code=400, detail="Could not determine user context for this record.")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Could not determine user context for this record.",
+                )
 
             if record.record_type == RecordType.MAIL:
-                message = await self._get_message_by_id_external(user_id, record.external_record_id)
+                message = await self._get_message_by_id_external(
+                    user_id, record.external_record_id
+                )
                 # Extract email body content from ItemBody object
-                body_obj = self._safe_get_attr(message, 'body')
-                email_body = self._safe_get_attr(body_obj, 'content', '') if body_obj else ''
+                body_obj = self._safe_get_attr(message, "body")
+                email_body = (
+                    self._safe_get_attr(body_obj, "content", "") if body_obj else ""
+                )
 
                 async def generate_email() -> AsyncGenerator[bytes, None]:
-                    yield email_body.encode('utf-8')
+                    yield email_body.encode("utf-8")
 
-                return StreamingResponse(generate_email(), media_type='text/html')
+                return StreamingResponse(generate_email(), media_type="text/html")
 
-            elif record.record_type == RecordType.FILE:
+            if record.record_type == RecordType.FILE:
                 # Download attachment using stored parent message ID
                 attachment_id = record.external_record_id
                 parent_message_id = record.parent_external_record_id
 
                 if not parent_message_id:
-                    raise HTTPException(status_code=404, detail="No parent message ID stored for attachment")
+                    raise HTTPException(
+                        status_code=404,
+                        detail="No parent message ID stored for attachment",
+                    )
 
-                attachment_data = await self._download_attachment_external(user_id, parent_message_id, attachment_id)
+                attachment_data = await self._download_attachment_external(
+                    user_id, parent_message_id, attachment_id
+                )
 
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
                     yield attachment_data
@@ -990,29 +1209,38 @@ class OutlookConnector(BaseConnector):
                 # Set proper filename and content type
                 filename = record.record_name or "attachment"
                 headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-                media_type = record.mime_type or 'application/octet-stream'
+                media_type = record.mime_type or "application/octet-stream"
 
-                return StreamingResponse(generate_attachment(), media_type=media_type, headers=headers)
+                return StreamingResponse(
+                    generate_attachment(), media_type=media_type, headers=headers
+                )
 
-            else:
-                raise HTTPException(status_code=400, detail="Unsupported record type for streaming")
+            raise HTTPException(
+                status_code=400, detail="Unsupported record type for streaming"
+            )
 
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to stream record: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to stream record: {e!s}"
+            )
 
-    async def _get_message_by_id_external(self, user_id: str, message_id: str) -> Dict:
+    async def _get_message_by_id_external(self, user_id: str, message_id: str) -> dict:
         """Get a specific message by ID using external Outlook API."""
         try:
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_get_messages(
-                user_id=user_id,
-                message_id=message_id
+            response: OutlookCalendarContactsResponse = (
+                await self.external_outlook_client.users_get_messages(
+                    user_id=user_id,
+                    message_id=message_id,
+                )
             )
 
             if not response.success:
-                self.logger.error(f"Failed to get message {message_id}: {response.error}")
+                self.logger.error(
+                    f"Failed to get message {message_id}: {response.error}"
+                )
                 return {}
 
             return response.data or {}
@@ -1021,50 +1249,56 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting message {message_id}: {e}")
             return {}
 
-    async def _download_attachment_external(self, user_id: str, message_id: str, attachment_id: str) -> bytes:
+    async def _download_attachment_external(
+        self, user_id: str, message_id: str, attachment_id: str
+    ) -> bytes:
         """Download attachment content using external Outlook API."""
         try:
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_get_attachments(
-                user_id=user_id,
-                message_id=message_id,
-                attachment_id=attachment_id
+            response: OutlookCalendarContactsResponse = (
+                await self.external_outlook_client.users_messages_get_attachments(
+                    user_id=user_id,
+                    message_id=message_id,
+                    attachment_id=attachment_id,
+                )
             )
 
             if not response.success or not response.data:
-                return b''
+                return b""
 
             # Extract attachment content from FileAttachment object
             attachment_data = response.data
-            content_bytes = (self._safe_get_attr(attachment_data, 'content_bytes') or
-                           self._safe_get_attr(attachment_data, 'contentBytes'))
+            content_bytes = self._safe_get_attr(
+                attachment_data, "content_bytes"
+            ) or self._safe_get_attr(attachment_data, "contentBytes")
 
             if not content_bytes:
-                return b''
+                return b""
 
             # Decode base64 content
             return base64.b64decode(content_bytes)
 
         except Exception as e:
-            self.logger.error(f"Error downloading attachment {attachment_id} for message {message_id}: {e}")
-            return b''
+            self.logger.error(
+                f"Error downloading attachment {attachment_id} for message {message_id}: {e}"
+            )
+            return b""
 
-
-    def get_signed_url(self, record: Record) -> Optional[str]:
+    def get_signed_url(self, record: Record) -> str | None:
         """Get signed URL for record access. Not supported for Outlook."""
         return None
 
-
-    async def handle_webhook_notification(self, org_id: str, notification: Dict) -> bool:
+    async def handle_webhook_notification(
+        self, org_id: str, notification: dict
+    ) -> bool:
         """Handle webhook notifications from Microsoft Graph."""
         try:
             return True
         except Exception as e:
             self.logger.error(f"Error handling webhook notification: {e}")
             return False
-
 
     def cleanup(self) -> None:
         """Clean up resources used by the connector."""
@@ -1078,61 +1312,60 @@ class OutlookConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error during Outlook connector cleanup: {e}")
 
-
     async def run_incremental_sync(self) -> None:
         """Run incremental synchronization for Outlook emails."""
         # Delegate to full sync - incremental is handled by delta links
         await self.run_sync()
 
-
     def _extract_email_from_recipient(self, recipient) -> str:
         """Extract email address from a Recipient object."""
         if not recipient:
-            return ''
+            return ""
 
         # Handle Recipient objects with emailAddress property
-        email_addr = self._safe_get_attr(recipient, 'email_address') or self._safe_get_attr(recipient, 'emailAddress')
+        email_addr = self._safe_get_attr(
+            recipient, "email_address"
+        ) or self._safe_get_attr(recipient, "emailAddress")
         if email_addr:
-            return self._safe_get_attr(email_addr, 'address', '')
+            return self._safe_get_attr(email_addr, "address", "")
 
         # Fallback to string representation
-        return str(recipient) if recipient else ''
+        return str(recipient) if recipient else ""
 
-    def _safe_get_attr(self, obj, attr_name: str, default=None) -> Optional[object]:
+    def _safe_get_attr(self, obj, attr_name: str, default=None) -> object | None:
         """Safely get attribute from object that could be a class instance or dictionary."""
         if hasattr(obj, attr_name):
             return getattr(obj, attr_name, default)
-        elif hasattr(obj, 'get'):
+        if hasattr(obj, "get"):
             return obj.get(attr_name, default)
-        else:
-            return default
+        return default
 
     def _get_mime_type_enum(self, content_type: str) -> MimeTypes:
         """Map content type string to MimeTypes enum."""
         content_type_lower = content_type.lower()
 
         mime_type_map = {
-            'text/plain': MimeTypes.PLAIN_TEXT,
-            'text/html': MimeTypes.HTML,
-            'text/csv': MimeTypes.CSV,
-            'application/pdf': MimeTypes.PDF,
-            'application/msword': MimeTypes.DOC,
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': MimeTypes.DOCX,
-            'application/vnd.ms-excel': MimeTypes.XLS,
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': MimeTypes.XLSX,
-            'application/vnd.ms-powerpoint': MimeTypes.PPT,
-            'application/vnd.openxmlformats-officedocument.presentationml.presentation': MimeTypes.PPTX,
+            "text/plain": MimeTypes.PLAIN_TEXT,
+            "text/html": MimeTypes.HTML,
+            "text/csv": MimeTypes.CSV,
+            "application/pdf": MimeTypes.PDF,
+            "application/msword": MimeTypes.DOC,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": MimeTypes.DOCX,
+            "application/vnd.ms-excel": MimeTypes.XLS,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": MimeTypes.XLSX,
+            "application/vnd.ms-powerpoint": MimeTypes.PPT,
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation": MimeTypes.PPTX,
         }
 
         return mime_type_map.get(content_type_lower, MimeTypes.BIN)
 
-    def _parse_datetime(self, dt_obj) -> Optional[int]:
+    def _parse_datetime(self, dt_obj) -> int | None:
         """Parse datetime object or string to epoch timestamp in milliseconds."""
         if not dt_obj:
             return None
         try:
             if isinstance(dt_obj, str):
-                dt = datetime.fromisoformat(dt_obj.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(dt_obj.replace("Z", "+00:00"))
             else:
                 dt = dt_obj
             return int(dt.timestamp() * 1000)
@@ -1146,16 +1379,23 @@ class OutlookConnector(BaseConnector):
         try:
             if isinstance(dt_obj, str):
                 return dt_obj
-            else:
-                return dt_obj.isoformat()
+            return dt_obj.isoformat()
         except Exception:
             return ""
 
-
     @classmethod
-    async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> 'OutlookConnector':
+    async def create_connector(
+        cls,
+        logger: Logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+    ) -> "OutlookConnector":
         """Factory method to create and initialize OutlookConnector."""
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
+        data_entities_processor = DataSourceEntitiesProcessor(
+            logger, data_store_provider, config_service
+        )
         await data_entities_processor.initialize()
 
-        return OutlookConnector(logger, data_entities_processor, data_store_provider, config_service)
+        return OutlookConnector(
+            logger, data_entities_processor, data_store_provider, config_service
+        )

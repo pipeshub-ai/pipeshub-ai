@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from typing import List, Optional
 
 from app.agents.actions.google.gmail.utils import GmailUtils
 from app.agents.tools.decorator import tool
@@ -13,8 +12,10 @@ from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
 logger = logging.getLogger(__name__)
 
+
 class Gmail:
     """Gmail tool exposed to the agents using GoogleGmailDataSource"""
+
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Gmail tool"""
         """
@@ -25,12 +26,13 @@ class Gmail:
         """
         self.client = GoogleGmailDataSource(client)
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
+    def _run_async(self, coro) -> HTTPResponse:  # type: ignore [valid method]
         """Helper method to run async operations in sync context"""
         try:
             asyncio.get_running_loop()
             # We're in an async context, use asyncio.run in a thread
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(asyncio.run, coro)
                 return future.result()
@@ -46,66 +48,66 @@ class Gmail:
                 name="message_id",
                 type=ParameterType.STRING,
                 description="The ID of the email to reply to",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="mail_to",
                 type=ParameterType.ARRAY,
                 description="List of email addresses to send the reply to",
                 required=True,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="mail_subject",
                 type=ParameterType.STRING,
                 description="The subject of the reply email",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="mail_cc",
                 type=ParameterType.ARRAY,
                 description="List of email addresses to CC",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="mail_bcc",
                 type=ParameterType.ARRAY,
                 description="List of email addresses to BCC",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="mail_body",
                 type=ParameterType.STRING,
                 description="The body content of the reply email",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="mail_attachments",
                 type=ParameterType.ARRAY,
                 description="List of file paths to attach",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="thread_id",
                 type=ParameterType.STRING,
                 description="The thread ID to maintain conversation context",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def reply(
         self,
         message_id: str,
-        mail_to: List[str],
+        mail_to: list[str],
         mail_subject: str,
-        mail_cc: Optional[List[str]] = None,
-        mail_bcc: Optional[List[str]] = None,
-        mail_body: Optional[str] = None,
-        mail_attachments: Optional[List[str]] = None,
-        thread_id: Optional[str] = None,
+        mail_cc: list[str] | None = None,
+        mail_bcc: list[str] | None = None,
+        mail_body: str | None = None,
+        mail_attachments: list[str] | None = None,
+        thread_id: str | None = None,
     ) -> tuple[bool, str]:
         """Reply to an email"""
         """
@@ -134,14 +136,18 @@ class Gmail:
             )
 
             # Use GoogleGmailDataSource method
-            message = self._run_async(self.client.users_messages_send(
-                userId="me",
-                body=message_body
-            ))
-            return True, json.dumps({
-                "message_id": message.get("id", ""),
-                "message": message,
-            })
+            message = self._run_async(
+                self.client.users_messages_send(
+                    userId="me",
+                    body=message_body,
+                )
+            )
+            return True, json.dumps(
+                {
+                    "message_id": message.get("id", ""),
+                    "message": message,
+                }
+            )
         except Exception as e:
             logger.error(f"Failed to send reply: {e}")
             return False, json.dumps({"error": str(e)})
@@ -155,51 +161,51 @@ class Gmail:
                 type=ParameterType.ARRAY,
                 description="List of email addresses to send the email to",
                 required=True,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="mail_subject",
                 type=ParameterType.STRING,
                 description="The subject of the email",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="mail_cc",
                 type=ParameterType.ARRAY,
                 description="List of email addresses to CC",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="mail_bcc",
                 type=ParameterType.ARRAY,
                 description="List of email addresses to BCC",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="mail_body",
                 type=ParameterType.STRING,
                 description="The body content of the email",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="mail_attachments",
                 type=ParameterType.ARRAY,
                 description="List of file paths to attach",
                 required=False,
-                items={"type": "string"}
-            )
-        ]
+                items={"type": "string"},
+            ),
+        ],
     )
     def draft_email(
         self,
-        mail_to: List[str],
+        mail_to: list[str],
         mail_subject: str,
-        mail_cc: Optional[List[str]] = None,
-        mail_bcc: Optional[List[str]] = None,
-        mail_body: Optional[str] = None,
-        mail_attachments: Optional[List[str]] = None,
+        mail_cc: list[str] | None = None,
+        mail_bcc: list[str] | None = None,
+        mail_body: str | None = None,
+        mail_attachments: list[str] | None = None,
     ) -> tuple[bool, str]:
         """Draft an email"""
         """
@@ -224,14 +230,18 @@ class Gmail:
             )
 
             # Use GoogleGmailDataSource method
-            draft = self._run_async(self.client.users_drafts_create(
-                userId="me",
-                body={"message": message_body}
-            ))
-            return True, json.dumps({
-                "draft_id": draft.get("id", ""),
-                "draft": draft,
-            })
+            draft = self._run_async(
+                self.client.users_drafts_create(
+                    userId="me",
+                    body={"message": message_body},
+                )
+            )
+            return True, json.dumps(
+                {
+                    "draft_id": draft.get("id", ""),
+                    "draft": draft,
+                }
+            )
         except Exception as e:
             logger.error(f"Failed to create draft: {e}")
             return False, json.dumps({"error": str(e)})
@@ -245,65 +255,65 @@ class Gmail:
                 type=ParameterType.ARRAY,
                 description="List of email addresses to send the email to",
                 required=True,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="mail_subject",
                 type=ParameterType.STRING,
                 description="The subject of the email",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="mail_cc",
                 type=ParameterType.ARRAY,
                 description="List of email addresses to CC",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="mail_bcc",
                 type=ParameterType.ARRAY,
                 description="List of email addresses to BCC",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="mail_body",
                 type=ParameterType.STRING,
                 description="The body content of the email",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="mail_attachments",
                 type=ParameterType.ARRAY,
                 description="List of file paths to attach",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="thread_id",
                 type=ParameterType.STRING,
                 description="The thread ID to maintain conversation context",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="message_id",
                 type=ParameterType.STRING,
                 description="The message ID for threading",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def send_email(
         self,
-        mail_to: List[str],
+        mail_to: list[str],
         mail_subject: str,
-        mail_cc: Optional[List[str]] = None,
-        mail_bcc: Optional[List[str]] = None,
-        mail_body: Optional[str] = None,
-        mail_attachments: Optional[List[str]] = None,
-        thread_id: Optional[str] = None,
-        message_id: Optional[str] = None,
+        mail_cc: list[str] | None = None,
+        mail_bcc: list[str] | None = None,
+        mail_body: str | None = None,
+        mail_attachments: list[str] | None = None,
+        thread_id: str | None = None,
+        message_id: str | None = None,
     ) -> tuple[bool, str]:
         """Send an email"""
         """
@@ -332,14 +342,18 @@ class Gmail:
             )
 
             # Use GoogleGmailDataSource method
-            message = self._run_async(self.client.users_messages_send(
-                userId="me",
-                body=message_body
-            ))
-            return True, json.dumps({
-                "message_id": message.get("id", ""),
-                "message": message,
-            })
+            message = self._run_async(
+                self.client.users_messages_send(
+                    userId="me",
+                    body=message_body,
+                )
+            )
+            return True, json.dumps(
+                {
+                    "message_id": message.get("id", ""),
+                    "message": message,
+                }
+            )
         except Exception as e:
             logger.error(f"Failed to send email: {e}")
             return False, json.dumps({"error": str(e)})
@@ -352,27 +366,27 @@ class Gmail:
                 name="query",
                 type=ParameterType.STRING,
                 description="The search query to find emails (Gmail search syntax)",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum number of emails to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page_token",
                 type=ParameterType.STRING,
                 description="Token for pagination to get next page of results",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def search_emails(
         self,
         query: str,
-        max_results: Optional[int] = 10,
-        page_token: Optional[str] = None,
+        max_results: int | None = 10,
+        page_token: str | None = None,
     ) -> tuple[bool, str]:
         """Search for emails in Gmail"""
         """
@@ -385,12 +399,14 @@ class Gmail:
         """
         try:
             # Use GoogleGmailDataSource method
-            messages = self._run_async(self.client.users_messages_list(
-                userId="me",
-                q=query,
-                maxResults=max_results,
-                pageToken=page_token,
-            ))
+            messages = self._run_async(
+                self.client.users_messages_list(
+                    userId="me",
+                    q=query,
+                    maxResults=max_results,
+                    pageToken=page_token,
+                )
+            )
             return True, json.dumps(messages)
         except Exception as e:
             logger.error(f"Failed to search emails: {e}")
@@ -404,9 +420,9 @@ class Gmail:
                 name="message_id",
                 type=ParameterType.STRING,
                 description="The ID of the email to get details for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_email_details(
         self,
@@ -421,11 +437,13 @@ class Gmail:
         """
         try:
             # Use GoogleGmailDataSource method
-            message = self._run_async(self.client.users_messages_get(
-                userId="me",
-                id=message_id,
-                format="full",
-            ))
+            message = self._run_async(
+                self.client.users_messages_get(
+                    userId="me",
+                    id=message_id,
+                    format="full",
+                )
+            )
             return True, json.dumps(message)
         except Exception as e:
             logger.error(f"Failed to get email details for {message_id}: {e}")
@@ -439,9 +457,9 @@ class Gmail:
                 name="message_id",
                 type=ParameterType.STRING,
                 description="The ID of the email to get attachments for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_email_attachments(
         self,
@@ -456,22 +474,26 @@ class Gmail:
         """
         try:
             # Use GoogleGmailDataSource method to get message details
-            message = self._run_async(self.client.users_messages_get(
-                userId="me",
-                id=message_id,
-                format="full",
-            ))
+            message = self._run_async(
+                self.client.users_messages_get(
+                    userId="me",
+                    id=message_id,
+                    format="full",
+                )
+            )
 
             attachments = []
             if "payload" in message and "parts" in message["payload"]:
                 for part in message["payload"]["parts"]:
                     if part.get("filename"):
-                        attachments.append({
-                            "attachment_id": part["body"]["attachmentId"],
-                            "filename": part["filename"],
-                            "mime_type": part["mimeType"],
-                            "size": part["body"]["size"]
-                        })
+                        attachments.append(
+                            {
+                                "attachment_id": part["body"]["attachmentId"],
+                                "filename": part["filename"],
+                                "mime_type": part["mimeType"],
+                                "size": part["body"]["size"],
+                            }
+                        )
 
             return True, json.dumps(attachments)
         except Exception as e:
@@ -486,15 +508,15 @@ class Gmail:
                 name="message_id",
                 type=ParameterType.STRING,
                 description="The ID of the email to download the attachment for",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="attachment_id",
                 type=ParameterType.STRING,
                 description="The ID of the attachment to download",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def download_email_attachment(
         self,
@@ -510,14 +532,18 @@ class Gmail:
         """
         try:
             # Use GoogleGmailDataSource method
-            attachment = self._run_async(self.client.users_messages_attachments_get(
-                userId="me",
-                messageId=message_id,
-                id=attachment_id,
-            ))
+            attachment = self._run_async(
+                self.client.users_messages_attachments_get(
+                    userId="me",
+                    messageId=message_id,
+                    id=attachment_id,
+                )
+            )
             return True, json.dumps(attachment)
         except Exception as e:
-            logger.error(f"Failed to download attachment {attachment_id} from message {message_id}: {e}")
+            logger.error(
+                f"Failed to download attachment {attachment_id} from message {message_id}: {e}"
+            )
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -528,13 +554,13 @@ class Gmail:
                 name="user_id",
                 type=ParameterType.STRING,
                 description="The user ID (use 'me' for authenticated user)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_user_profile(
         self,
-        user_id: Optional[str] = "me",
+        user_id: str | None = "me",
     ) -> tuple[bool, str]:
         """Get the current user's Gmail profile"""
         """
@@ -545,15 +571,19 @@ class Gmail:
         """
         try:
             # Use GoogleGmailDataSource method
-            profile = self._run_async(self.client.users_get_profile(
-                userId=user_id
-            ))
-            return True, json.dumps({
-                "email_address": profile.get("emailAddress", ""),
-                "messages_total": profile.get("messagesTotal", 0),
-                "threads_total": profile.get("threadsTotal", 0),
-                "history_id": profile.get("historyId", "")
-            })
+            profile = self._run_async(
+                self.client.users_get_profile(
+                    userId=user_id,
+                )
+            )
+            return True, json.dumps(
+                {
+                    "email_address": profile.get("emailAddress", ""),
+                    "messages_total": profile.get("messagesTotal", 0),
+                    "threads_total": profile.get("threadsTotal", 0),
+                    "history_id": profile.get("historyId", ""),
+                }
+            )
         except Exception as e:
             logger.error(f"Failed to get user profile: {e}")
             return False, json.dumps({"error": str(e)})

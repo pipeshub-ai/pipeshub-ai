@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from logging import Logger
-from typing import AsyncContextManager, Dict, List, Optional
+from typing import AsyncContextManager
 
 from arango.database import TransactionDatabase
 
@@ -27,131 +27,204 @@ from app.models.entities import (
 from app.models.permission import Permission
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-read_collections = [
-    collection.value for collection in CollectionNames
-]
+read_collections = [collection.value for collection in CollectionNames]
 
-write_collections = [
-    collection.value for collection in CollectionNames
-]
+write_collections = [collection.value for collection in CollectionNames]
+
 
 class ArangoTransactionStore(TransactionStore):
     """ArangoDB transaction-aware data store"""
 
-    def __init__(self, arango_service: BaseArangoService, txn: TransactionDatabase) -> None:
+    def __init__(
+        self, arango_service: BaseArangoService, txn: TransactionDatabase
+    ) -> None:
         self.arango_service = arango_service
         self.txn = txn
         self.logger = arango_service.logger
 
-    async def batch_upsert_nodes(self, nodes: List[Dict], collection: str) -> bool | None:
-        return await self.arango_service.batch_upsert_nodes(nodes, collection, transaction=self.txn)
+    async def batch_upsert_nodes(
+        self, nodes: list[dict], collection: str
+    ) -> bool | None:
+        return await self.arango_service.batch_upsert_nodes(
+            nodes, collection, transaction=self.txn
+        )
 
-    async def get_record_by_path(self, connector_name: Connectors, path: str) -> Optional[Record]:
-        return await self.arango_service.get_record_by_path(connector_name, path, transaction=self.txn)
+    async def get_record_by_path(
+        self, connector_name: Connectors, path: str
+    ) -> Record | None:
+        return await self.arango_service.get_record_by_path(
+            connector_name, path, transaction=self.txn
+        )
 
-    async def get_record_by_key(self, key: str) -> Optional[Record]:
+    async def get_record_by_key(self, key: str) -> Record | None:
         return await self.arango_service.get_record_by_id(key, transaction=self.txn)
 
-    async def get_record_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[Record]:
-        return await self.arango_service.get_record_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def get_record_by_external_id(
+        self, connector_name: Connectors, external_id: str
+    ) -> Record | None:
+        return await self.arango_service.get_record_by_external_id(
+            connector_name, external_id, transaction=self.txn
+        )
 
-    async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
-        return await self.arango_service.get_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def get_record_group_by_external_id(
+        self, connector_name: Connectors, external_id: str
+    ) -> RecordGroup | None:
+        return await self.arango_service.get_record_group_by_external_id(
+            connector_name, external_id, transaction=self.txn
+        )
 
-    async def get_file_record_by_id(self, id: str) -> Optional[FileRecord]:
+    async def get_file_record_by_id(self, id: str) -> FileRecord | None:
         return await self.arango_service.get_file_record_by_id(id, transaction=self.txn)
 
-    async def get_record_group_by_id(self, id: str) -> Optional[RecordGroup]:
-        return await self.arango_service.get_record_group_by_id(id, transaction=self.txn)
+    async def get_record_group_by_id(self, id: str) -> RecordGroup | None:
+        return await self.arango_service.get_record_group_by_id(
+            id, transaction=self.txn
+        )
 
-    async def create_record_groups_relation(self, child_id: str, parent_id: str) -> None:
-        await self.arango_service.batch_create_edges([{
-            "_from": f"{CollectionNames.RECORD_GROUPS.value}/{child_id}",
-            "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_id}",
-            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-        }], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn)
+    async def create_record_groups_relation(
+        self, child_id: str, parent_id: str
+    ) -> None:
+        await self.arango_service.batch_create_edges(
+            [
+                {
+                    "_from": f"{CollectionNames.RECORD_GROUPS.value}/{child_id}",
+                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_id}",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
+            ],
+            collection=CollectionNames.BELONGS_TO.value,
+            transaction=self.txn,
+        )
 
-    async def get_or_create_app_by_name(self, app_name: str, org_id: str) -> Optional[Dict]:
+    async def get_or_create_app_by_name(
+        self, app_name: str, org_id: str
+    ) -> dict | None:
         return await self.arango_service.get_or_create_app_by_name(app_name, org_id)
 
-    async def get_user_by_email(self, email: str) -> Optional[User]:
+    async def get_user_by_email(self, email: str) -> User | None:
         return await self.arango_service.get_user_by_email(email, transaction=self.txn)
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_name: Connectors) -> Optional[User]:
-        return await self.arango_service.get_user_by_source_id(source_user_id, connector_name, transaction=self.txn)
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_name: Connectors
+    ) -> User | None:
+        return await self.arango_service.get_user_by_source_id(
+            source_user_id, connector_name, transaction=self.txn
+        )
 
-    async def get_app_user_by_email(self, email: str, app_name: Connectors) -> Optional[AppUser]:
-        return await self.arango_service.get_app_user_by_email(email, app_name, transaction=self.txn)
+    async def get_app_user_by_email(
+        self, email: str, app_name: Connectors
+    ) -> AppUser | None:
+        return await self.arango_service.get_app_user_by_email(
+            email, app_name, transaction=self.txn
+        )
 
-    async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
-        return await self.arango_service.get_record_owner_source_user_email(record_id, transaction=self.txn)
+    async def get_record_owner_source_user_email(self, record_id: str) -> str | None:
+        return await self.arango_service.get_record_owner_source_user_email(
+            record_id, transaction=self.txn
+        )
 
-    async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
+    async def get_user_by_user_id(self, user_id: str) -> User | None:
         return await self.arango_service.get_user_by_user_id(user_id)
 
     async def delete_record_by_key(self, key: str) -> None:
         return await self.arango_service.delete_record(key, transaction=self.txn)
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
-        return await self.arango_service.delete_record_by_external_id(connector_name, external_id, user_id)
+    async def delete_record_by_external_id(
+        self, connector_name: Connectors, external_id: str, user_id: str
+    ) -> None:
+        return await self.arango_service.delete_record_by_external_id(
+            connector_name, external_id, user_id
+        )
 
-    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
-        return await self.arango_service.remove_user_access_to_record(connector_name, external_id, user_id)
+    async def remove_user_access_to_record(
+        self, connector_name: Connectors, external_id: str, user_id: str
+    ) -> None:
+        return await self.arango_service.remove_user_access_to_record(
+            connector_name, external_id, user_id
+        )
 
-    async def delete_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
-        return await self.arango_service.delete_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def delete_record_group_by_external_id(
+        self, connector_name: Connectors, external_id: str
+    ) -> None:
+        return await self.arango_service.delete_record_group_by_external_id(
+            connector_name, external_id, transaction=self.txn
+        )
 
     async def delete_edge(self, from_key: str, to_key: str, collection: str) -> None:
-        return await self.arango_service.delete_edge(from_key, to_key, collection, transaction=self.txn)
+        return await self.arango_service.delete_edge(
+            from_key, to_key, collection, transaction=self.txn
+        )
 
-    async def delete_nodes(self, keys: List[str], collection: str) -> None:
-        return await self.arango_service.delete_nodes(keys, collection, transaction=self.txn)
+    async def delete_nodes(self, keys: list[str], collection: str) -> None:
+        return await self.arango_service.delete_nodes(
+            keys, collection, transaction=self.txn
+        )
 
     async def delete_edges_from(self, from_key: str, collection: str) -> None:
-        return await self.arango_service.delete_edges_from(from_key, collection, transaction=self.txn)
+        return await self.arango_service.delete_edges_from(
+            from_key, collection, transaction=self.txn
+        )
 
     async def delete_edges_to(self, to_key: str, collection: str) -> None:
-        return await self.arango_service.delete_edges_to(to_key, collection, transaction=self.txn)
+        return await self.arango_service.delete_edges_to(
+            to_key, collection, transaction=self.txn
+        )
 
     async def delete_edges_to_groups(self, from_key: str, collection: str) -> None:
-        return await self.arango_service.delete_edges_to_groups(from_key, collection, transaction=self.txn)
+        return await self.arango_service.delete_edges_to_groups(
+            from_key, collection, transaction=self.txn
+        )
 
-    async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
-        return await self.arango_service.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
+    async def delete_nodes_and_edges(self, keys: list[str], collection: str) -> None:
+        return await self.arango_service.delete_nodes_and_edges(
+            keys, collection, graph_name="knowledgeGraph", transaction=self.txn
+        )
 
-    async def get_user_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppUserGroup]:
-        return await self.arango_service.get_user_group_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def get_user_group_by_external_id(
+        self, connector_name: Connectors, external_id: str
+    ) -> AppUserGroup | None:
+        return await self.arango_service.get_user_group_by_external_id(
+            connector_name, external_id, transaction=self.txn
+        )
 
-    async def get_users(self, org_id: str, active: bool = True) -> List[User]:
+    async def get_users(self, org_id: str, active: bool = True) -> list[User]:
         return await self.arango_service.get_users(org_id, active)
 
-    async def get_app_users(self, org_id: str, app_name: str) -> List[AppUser]:
+    async def get_app_users(self, org_id: str, app_name: str) -> list[AppUser]:
         return await self.arango_service.get_app_users(org_id, app_name)
 
-    async def get_user_groups(self, app_name: Connectors, org_id: str) -> List[AppUserGroup]:
-        return await self.arango_service.get_user_groups(app_name, org_id, transaction=self.txn)
+    async def get_user_groups(
+        self, app_name: Connectors, org_id: str
+    ) -> list[AppUserGroup]:
+        return await self.arango_service.get_user_groups(
+            app_name, org_id, transaction=self.txn
+        )
 
     async def create_user_group_hierarchy(
         self,
         child_external_id: str,
         parent_external_id: str,
-        connector_name: Connectors
+        connector_name: Connectors,
     ) -> bool:
         """Create BELONGS_TO edge between child and parent user groups"""
         try:
             # Lookup both groups
-            child_group = await self.get_user_group_by_external_id(connector_name, child_external_id)
+            child_group = await self.get_user_group_by_external_id(
+                connector_name, child_external_id
+            )
             if not child_group:
                 self.logger.warning(
-                    f"Child user group not found: {child_external_id} (connector: {connector_name.value})"
+                    f"Child user group not found: {child_external_id} (connector: {connector_name.value})",
                 )
                 return False
 
-            parent_group = await self.get_user_group_by_external_id(connector_name, parent_external_id)
+            parent_group = await self.get_user_group_by_external_id(
+                connector_name, parent_external_id
+            )
             if not parent_group:
                 self.logger.warning(
-                    f"Parent user group not found: {parent_external_id} (connector: {connector_name.value})"
+                    f"Parent user group not found: {parent_external_id} (connector: {connector_name.value})",
                 )
                 return False
 
@@ -166,16 +239,18 @@ class ArangoTransactionStore(TransactionStore):
             await self.arango_service.batch_create_edges(
                 [edge],
                 collection=CollectionNames.BELONGS_TO.value,
-                transaction=self.txn
+                transaction=self.txn,
             )
 
-            self.logger.debug(f"Created user group hierarchy: {child_group.name} -> {parent_group.name}")
+            self.logger.debug(
+                f"Created user group hierarchy: {child_group.name} -> {parent_group.name}"
+            )
             return True
 
         except Exception as e:
             self.logger.error(
-                f"Failed to create user group hierarchy ({child_external_id} -> {parent_external_id}): {str(e)}",
-                exc_info=True
+                f"Failed to create user group hierarchy ({child_external_id} -> {parent_external_id}): {e!s}",
+                exc_info=True,
             )
             return False
 
@@ -183,7 +258,7 @@ class ArangoTransactionStore(TransactionStore):
         self,
         user_source_id: str,
         group_external_id: str,
-        connector_name: Connectors
+        connector_name: Connectors,
     ) -> bool:
         """Create BELONGS_TO edge from user to group using source IDs"""
         try:
@@ -191,15 +266,17 @@ class ArangoTransactionStore(TransactionStore):
             user = await self.get_user_by_source_id(user_source_id, connector_name)
             if not user:
                 self.logger.warning(
-                    f"User not found: {user_source_id} (connector: {connector_name.value})"
+                    f"User not found: {user_source_id} (connector: {connector_name.value})",
                 )
                 return False
 
             # Lookup group
-            group = await self.get_user_group_by_external_id(connector_name, group_external_id)
+            group = await self.get_user_group_by_external_id(
+                connector_name, group_external_id
+            )
             if not group:
                 self.logger.warning(
-                    f"User group not found: {group_external_id} (connector: {connector_name.value})"
+                    f"User group not found: {group_external_id} (connector: {connector_name.value})",
                 )
                 return False
 
@@ -214,34 +291,56 @@ class ArangoTransactionStore(TransactionStore):
             await self.arango_service.batch_create_edges(
                 [edge],
                 collection=CollectionNames.BELONGS_TO.value,
-                transaction=self.txn
+                transaction=self.txn,
             )
 
-            self.logger.debug(f"Created user group membership: {user.email} -> {group.name}")
+            self.logger.debug(
+                f"Created user group membership: {user.email} -> {group.name}"
+            )
             return True
 
         except Exception as e:
             self.logger.error(
-                f"Failed to create user group membership ({user_source_id} -> {group_external_id}): {str(e)}",
-                exc_info=True
+                f"Failed to create user group membership ({user_source_id} -> {group_external_id}): {e!s}",
+                exc_info=True,
             )
             return False
 
-    async def get_first_user_with_permission_to_node(self, node_key: str) -> Optional[str]:
-        return await self.arango_service.get_first_user_with_permission_to_node(node_key, transaction=self.txn)
+    async def get_first_user_with_permission_to_node(self, node_key: str) -> str | None:
+        return await self.arango_service.get_first_user_with_permission_to_node(
+            node_key, transaction=self.txn
+        )
 
-    async def get_users_with_permission_to_node(self, node_key: str) -> List[str]:
-        return await self.arango_service.get_users_with_permission_to_node(node_key, transaction=self.txn)
+    async def get_users_with_permission_to_node(self, node_key: str) -> list[str]:
+        return await self.arango_service.get_users_with_permission_to_node(
+            node_key, transaction=self.txn
+        )
 
-    async def get_edge(self, from_key: str, to_key: str, collection: str) -> Optional[Dict]:
-        return await self.arango_service.get_edge(from_key, to_key, collection, transaction=self.txn)
+    async def get_edge(
+        self, from_key: str, to_key: str, collection: str
+    ) -> dict | None:
+        return await self.arango_service.get_edge(
+            from_key, to_key, collection, transaction=self.txn
+        )
 
-    async def get_record_by_conversation_index(self, connector_name: Connectors, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
-        return await self.arango_service.get_record_by_conversation_index(connector_name, conversation_index, thread_id, org_id, user_id, transaction=self.txn)
+    async def get_record_by_conversation_index(
+        self,
+        connector_name: Connectors,
+        conversation_index: str,
+        thread_id: str,
+        org_id: str,
+        user_id: str,
+    ) -> Record | None:
+        return await self.arango_service.get_record_by_conversation_index(
+            connector_name,
+            conversation_index,
+            thread_id,
+            org_id,
+            user_id,
+            transaction=self.txn,
+        )
 
-
-    async def batch_upsert_records(self, records: List[Record]) -> None:
-
+    async def batch_upsert_records(self, records: list[Record]) -> None:
         record_ids = [r.id for r in records]
         duplicates = [x for x in record_ids if record_ids.count(x) > 1]
         if duplicates:
@@ -285,11 +384,23 @@ class ArangoTransactionStore(TransactionStore):
                 }
 
                 # Upsert base record
-                await self.arango_service.batch_upsert_nodes([record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=self.txn)
+                await self.arango_service.batch_upsert_nodes(
+                    [record.to_arango_base_record()],
+                    collection=CollectionNames.RECORDS.value,
+                    transaction=self.txn,
+                )
                 # Upsert specific record type if it has a specific method
-                await self.arango_service.batch_upsert_nodes([record.to_arango_record()], collection=config["collection"], transaction=self.txn)
+                await self.arango_service.batch_upsert_nodes(
+                    [record.to_arango_record()],
+                    collection=config["collection"],
+                    transaction=self.txn,
+                )
                 # Create IS_OF_TYPE edge
-                await self.arango_service.batch_create_edges([is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=self.txn)
+                await self.arango_service.batch_create_edges(
+                    [is_of_type_record],
+                    collection=CollectionNames.IS_OF_TYPE.value,
+                    transaction=self.txn,
+                )
 
             self.logger.info(" Successfully upserted records ")
             return True
@@ -298,30 +409,41 @@ class ArangoTransactionStore(TransactionStore):
 
             return False
 
-    async def batch_upsert_record_groups(self, record_groups: List[RecordGroup]) -> None:
+    async def batch_upsert_record_groups(
+        self, record_groups: list[RecordGroup]
+    ) -> None:
         return await self.arango_service.batch_upsert_nodes(
-                [record_group.to_arango_base_record_group() for record_group in record_groups],
-                collection=CollectionNames.RECORD_GROUPS.value,
-                transaction=self.txn
-            )
+            [
+                record_group.to_arango_base_record_group()
+                for record_group in record_groups
+            ],
+            collection=CollectionNames.RECORD_GROUPS.value,
+            transaction=self.txn,
+        )
 
-    async def batch_upsert_record_permissions(self, record_id: str, permissions: List[Permission]) -> None:
-        return await self.arango_service.batch_upsert_record_permissions(record_id, permissions, transaction=self.txn)
+    async def batch_upsert_record_permissions(
+        self, record_id: str, permissions: list[Permission]
+    ) -> None:
+        return await self.arango_service.batch_upsert_record_permissions(
+            record_id, permissions, transaction=self.txn
+        )
 
-    async def batch_create_user_app_edges(self, edges: List[Dict]) -> int:
+    async def batch_create_user_app_edges(self, edges: list[dict]) -> int:
         return await self.arango_service.batch_create_user_app_edges(edges)
 
-    async def batch_upsert_user_groups(self, user_groups: List[AppUserGroup]) -> None:
+    async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         return await self.arango_service.batch_upsert_nodes(
-                            [user_group.to_arango_base_user_group() for user_group in user_groups],
-                            collection=CollectionNames.GROUPS.value,
-                            transaction=self.txn
-                        )
+            [user_group.to_arango_base_user_group() for user_group in user_groups],
+            collection=CollectionNames.GROUPS.value,
+            transaction=self.txn,
+        )
 
-    async def batch_upsert_app_users(self, users: List[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: list[AppUser]) -> None:
         orgs = await self.arango_service.get_all_orgs()
         if not orgs:
-            raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
+            raise Exception(
+                "No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor."
+            )
         org_id = orgs[0]["_key"]
         app_name = users[0].app_name.value
 
@@ -336,12 +458,20 @@ class ArangoTransactionStore(TransactionStore):
 
             if not user_record:
                 await self.arango_service.batch_upsert_nodes(
-                    [{**user.to_arango_base_user(), "orgId": org_id, "isActive": False}],
+                    [
+                        {
+                            **user.to_arango_base_user(),
+                            "orgId": org_id,
+                            "isActive": False,
+                        }
+                    ],
                     collection=CollectionNames.USERS.value,
-                    transaction=self.txn
+                    transaction=self.txn,
                 )
 
-                user_record = await self.arango_service.get_user_by_email(user.email, transaction=self.txn)
+                user_record = await self.arango_service.get_user_by_email(
+                    user.email, transaction=self.txn
+                )
 
                 # Create a edge between the user and the org if it doesn't exist
                 user_org_relation = {
@@ -352,7 +482,9 @@ class ArangoTransactionStore(TransactionStore):
                     "entityType": "ORGANIZATION",
                 }
                 await self.arango_service.batch_create_edges(
-                    [user_org_relation], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn
+                    [user_org_relation],
+                    collection=CollectionNames.BELONGS_TO.value,
+                    transaction=self.txn,
                 )
 
             user_key = user_record.id
@@ -369,23 +501,35 @@ class ArangoTransactionStore(TransactionStore):
             await self.arango_service.batch_create_edges(
                 [user_app_relation],
                 collection=CollectionNames.USER_APP_RELATION.value,
-                transaction=self.txn
+                transaction=self.txn,
             )
 
-    async def batch_upsert_orgs(self, orgs: List[Org]) -> None:
+    async def batch_upsert_orgs(self, orgs: list[Org]) -> None:
         return await self.arango_service.batch_upsert_orgs(orgs, transaction=self.txn)
 
-    async def batch_upsert_domains(self, domains: List[Domain]) -> None:
-        return await self.arango_service.batch_upsert_domains(domains, transaction=self.txn)
+    async def batch_upsert_domains(self, domains: list[Domain]) -> None:
+        return await self.arango_service.batch_upsert_domains(
+            domains, transaction=self.txn
+        )
 
-    async def batch_upsert_anyone(self, anyone: List[Anyone]) -> None:
-        return await self.arango_service.batch_upsert_anyone(anyone, transaction=self.txn)
+    async def batch_upsert_anyone(self, anyone: list[Anyone]) -> None:
+        return await self.arango_service.batch_upsert_anyone(
+            anyone, transaction=self.txn
+        )
 
-    async def batch_upsert_anyone_with_link(self, anyone_with_link: List[AnyoneWithLink]) -> None:
-        return await self.arango_service.batch_upsert_anyone_with_link(anyone_with_link, transaction=self.txn)
+    async def batch_upsert_anyone_with_link(
+        self, anyone_with_link: list[AnyoneWithLink]
+    ) -> None:
+        return await self.arango_service.batch_upsert_anyone_with_link(
+            anyone_with_link, transaction=self.txn
+        )
 
-    async def batch_upsert_anyone_same_org(self, anyone_same_org: List[AnyoneSameOrg]) -> None:
-        return await self.arango_service.batch_upsert_anyone_same_org(anyone_same_org, transaction=self.txn)
+    async def batch_upsert_anyone_same_org(
+        self, anyone_same_org: list[AnyoneSameOrg]
+    ) -> None:
+        return await self.arango_service.batch_upsert_anyone_same_org(
+            anyone_same_org, transaction=self.txn
+        )
 
     async def commit(self) -> None:
         """Commit the ArangoDB transaction"""
@@ -395,108 +539,194 @@ class ArangoTransactionStore(TransactionStore):
         """Rollback the ArangoDB transaction"""
         self.txn.abort_transaction()
 
-    async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str) -> None:
+    async def create_record_relation(
+        self, from_record_id: str, to_record_id: str, relation_type: str
+    ) -> None:
         record_edge = {
-                    "_from": f"{CollectionNames.RECORDS.value}/{from_record_id}",
-                    "_to": f"{CollectionNames.RECORDS.value}/{to_record_id}",
-                    "relationshipType": relation_type,
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
+            "_from": f"{CollectionNames.RECORDS.value}/{from_record_id}",
+            "_to": f"{CollectionNames.RECORDS.value}/{to_record_id}",
+            "relationshipType": relation_type,
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
 
         await self.arango_service.batch_create_edges(
-            [record_edge], collection=CollectionNames.RECORD_RELATIONS.value, transaction=self.txn
-        )
-    async def create_record_group_relation(self, record_id: str, record_group_id: str) -> None:
-        record_edge = {
-                    "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}",
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
-        await self.arango_service.batch_create_edges(
-            [record_edge], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn
+            [record_edge],
+            collection=CollectionNames.RECORD_RELATIONS.value,
+            transaction=self.txn,
         )
 
-    async def create_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str) -> None:
+    async def create_record_group_relation(
+        self, record_id: str, record_group_id: str
+    ) -> None:
         record_edge = {
-                    "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}",
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
+            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+            "_to": f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}",
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
         await self.arango_service.batch_create_edges(
-            [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
+            [record_edge],
+            collection=CollectionNames.BELONGS_TO.value,
+            transaction=self.txn,
         )
-    async def create_inherit_permissions_relation_record(self, child_record_id: str, parent_record_id: str) -> None:
-        record_edge = {
-                    "_from": f"{CollectionNames.RECORDS.value}/{child_record_id}",
-                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_record_id}",
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
-        await self.arango_service.batch_create_edges(
-            [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
-        )
-    async def get_sync_point(self, sync_point_key: str) -> Optional[Dict]:
-        return await self.arango_service.get_sync_point(sync_point_key, CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
-    async def get_all_orgs(self) -> List[Org]:
+    async def create_inherit_permissions_relation_record_group(
+        self, record_id: str, record_group_id: str
+    ) -> None:
+        record_edge = {
+            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+            "_to": f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}",
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+        await self.arango_service.batch_create_edges(
+            [record_edge],
+            collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            transaction=self.txn,
+        )
+
+    async def create_inherit_permissions_relation_record(
+        self, child_record_id: str, parent_record_id: str
+    ) -> None:
+        record_edge = {
+            "_from": f"{CollectionNames.RECORDS.value}/{child_record_id}",
+            "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_record_id}",
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+        await self.arango_service.batch_create_edges(
+            [record_edge],
+            collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            transaction=self.txn,
+        )
+
+    async def get_sync_point(self, sync_point_key: str) -> dict | None:
+        return await self.arango_service.get_sync_point(
+            sync_point_key, CollectionNames.SYNC_POINTS.value, transaction=self.txn
+        )
+
+    async def get_all_orgs(self) -> list[Org]:
         return await self.arango_service.get_all_orgs()
 
-    async def create_record_permissions(self, record_id: str, permissions: List[Permission]) -> None:
-        return await self.arango_service.batch_create_edges([permission.to_arango_permission() for permission in permissions],
-                    collection=CollectionNames.PERMISSIONS.value, transaction=self.txn)
+    async def create_record_permissions(
+        self, record_id: str, permissions: list[Permission]
+    ) -> None:
+        return await self.arango_service.batch_create_edges(
+            [permission.to_arango_permission() for permission in permissions],
+            collection=CollectionNames.PERMISSIONS.value,
+            transaction=self.txn,
+        )
 
-    async def create_record_group_permissions(self, record_group_id: str, permissions: List[Permission]) -> None:
-        return await self.arango_service.batch_create_edges([permission.to_arango_permission() for permission in permissions],
-                    collection=CollectionNames.PERMISSIONS.value, transaction=self.txn)
+    async def create_record_group_permissions(
+        self, record_group_id: str, permissions: list[Permission]
+    ) -> None:
+        return await self.arango_service.batch_create_edges(
+            [permission.to_arango_permission() for permission in permissions],
+            collection=CollectionNames.PERMISSIONS.value,
+            transaction=self.txn,
+        )
 
-    async def create_user_groups(self, user_groups: List[AppUserGroup]) -> None:
-        return await self.arango_service.batch_upsert_nodes([user_group.to_arango_base_user_group() for user_group in user_groups],
-                    collection=CollectionNames.GROUPS.value, transaction=self.txn)
+    async def create_user_groups(self, user_groups: list[AppUserGroup]) -> None:
+        return await self.arango_service.batch_upsert_nodes(
+            [user_group.to_arango_base_user_group() for user_group in user_groups],
+            collection=CollectionNames.GROUPS.value,
+            transaction=self.txn,
+        )
 
-    async def create_users(self, users: List[AppUser]) -> None:
-        return await self.arango_service.batch_upsert_nodes([user.to_arango_base_user() for user in users],
-                    collection=CollectionNames.USERS.value, transaction=self.txn)
+    async def create_users(self, users: list[AppUser]) -> None:
+        return await self.arango_service.batch_upsert_nodes(
+            [user.to_arango_base_user() for user in users],
+            collection=CollectionNames.USERS.value,
+            transaction=self.txn,
+        )
 
-    async def create_orgs(self, orgs: List[Org]) -> None:
-        return await self.arango_service.batch_upsert_nodes([org.to_arango_base_org() for org in orgs],
-                    collection=CollectionNames.ORGS.value, transaction=self.txn)
+    async def create_orgs(self, orgs: list[Org]) -> None:
+        return await self.arango_service.batch_upsert_nodes(
+            [org.to_arango_base_org() for org in orgs],
+            collection=CollectionNames.ORGS.value,
+            transaction=self.txn,
+        )
 
-    async def create_domains(self, domains: List[Domain]) -> None:
-        return await self.arango_service.batch_upsert_nodes([domain.to_arango_base_domain() for domain in domains],
-                    collection=CollectionNames.DOMAINS.value, transaction=self.txn)
+    async def create_domains(self, domains: list[Domain]) -> None:
+        return await self.arango_service.batch_upsert_nodes(
+            [domain.to_arango_base_domain() for domain in domains],
+            collection=CollectionNames.DOMAINS.value,
+            transaction=self.txn,
+        )
 
-    async def create_anyone(self, anyone: List[Anyone]) -> None:
-        return await self.arango_service.batch_upsert_nodes([anyone.to_arango_base_anyone() for anyone in anyone],
-                    collection=CollectionNames.ANYONE.value, transaction=self.txn)
+    async def create_anyone(self, anyone: list[Anyone]) -> None:
+        return await self.arango_service.batch_upsert_nodes(
+            [anyone.to_arango_base_anyone() for anyone in anyone],
+            collection=CollectionNames.ANYONE.value,
+            transaction=self.txn,
+        )
 
-    async def create_anyone_with_link(self, anyone_with_link: List[AnyoneWithLink]) -> None:
-        return await self.arango_service.batch_upsert_nodes([anyone_with_link.to_arango_base_anyone_with_link() for anyone_with_link in anyone_with_link],
-                    collection=CollectionNames.ANYONE_WITH_LINK.value, transaction=self.txn)
+    async def create_anyone_with_link(
+        self, anyone_with_link: list[AnyoneWithLink]
+    ) -> None:
+        return await self.arango_service.batch_upsert_nodes(
+            [
+                anyone_with_link.to_arango_base_anyone_with_link()
+                for anyone_with_link in anyone_with_link
+            ],
+            collection=CollectionNames.ANYONE_WITH_LINK.value,
+            transaction=self.txn,
+        )
 
-    async def create_anyone_same_org(self, anyone_same_org: List[AnyoneSameOrg]) -> None:
-        return await self.arango_service.batch_upsert_nodes([anyone_same_org.to_arango_base_anyone_same_org() for anyone_same_org in anyone_same_org],
-                    collection=CollectionNames.ANYONE_SAME_ORG.value, transaction=self.txn)
+    async def create_anyone_same_org(
+        self, anyone_same_org: list[AnyoneSameOrg]
+    ) -> None:
+        return await self.arango_service.batch_upsert_nodes(
+            [
+                anyone_same_org.to_arango_base_anyone_same_org()
+                for anyone_same_org in anyone_same_org
+            ],
+            collection=CollectionNames.ANYONE_SAME_ORG.value,
+            transaction=self.txn,
+        )
 
-    async def create_sync_point(self, sync_point_key: str, sync_point_data: Dict) -> None:
-        return await self.arango_service.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+    async def create_sync_point(
+        self, sync_point_key: str, sync_point_data: dict
+    ) -> None:
+        return await self.arango_service.upsert_sync_point(
+            sync_point_key,
+            sync_point_data,
+            collection=CollectionNames.SYNC_POINTS.value,
+            transaction=self.txn,
+        )
 
     async def delete_sync_point(self, sync_point_key: str) -> None:
-        return await self.arango_service.remove_sync_point([sync_point_key],
-                    collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
-    async def read_sync_point(self, sync_point_key: str) -> None:
-        return await self.arango_service.get_sync_point(sync_point_key, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+        return await self.arango_service.remove_sync_point(
+            [sync_point_key],
+            collection=CollectionNames.SYNC_POINTS.value,
+            transaction=self.txn,
+        )
 
-    async def update_sync_point(self, sync_point_key: str, sync_point_data: Dict) -> None:
-        return await self.arango_service.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+    async def read_sync_point(self, sync_point_key: str) -> None:
+        return await self.arango_service.get_sync_point(
+            sync_point_key,
+            collection=CollectionNames.SYNC_POINTS.value,
+            transaction=self.txn,
+        )
+
+    async def update_sync_point(
+        self, sync_point_key: str, sync_point_data: dict
+    ) -> None:
+        return await self.arango_service.upsert_sync_point(
+            sync_point_key,
+            sync_point_data,
+            collection=CollectionNames.SYNC_POINTS.value,
+            transaction=self.txn,
+        )
 
     async def batch_upsert_record_group_permissions(
-        self, record_group_id: str, permissions: List[Permission], connector_name: Connectors
+        self,
+        record_group_id: str,
+        permissions: list[Permission],
+        connector_name: Connectors,
     ) -> None:
-        """
-        Batch upsert permissions for a record group.
+        """Batch upsert permissions for a record group.
 
         Creates permission edges from users/groups to the record group.
         Looks up users by email and groups by external_id, then creates
@@ -506,6 +736,7 @@ class ArangoTransactionStore(TransactionStore):
             record_group_id: Internal ID (_key) of the record group
             permissions: List of Permission objects
             connector_name: Connector enum for scoped group lookups
+
         """
         if not permissions:
             return
@@ -526,7 +757,7 @@ class ArangoTransactionStore(TransactionStore):
                     from_collection = f"{CollectionNames.USERS.value}/{user.id}"
                 else:
                     self.logger.warning(
-                        f"User not found for email: {permission.email}"
+                        f"User not found for email: {permission.email}",
                     )
                     continue
 
@@ -535,48 +766,51 @@ class ArangoTransactionStore(TransactionStore):
                 user_group = None
                 if permission.external_id:
                     user_group = await self.get_user_group_by_external_id(
-                        connector_name, permission.external_id
+                        connector_name,
+                        permission.external_id,
                     )
 
                 if user_group:
                     from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
                 else:
                     self.logger.warning(
-                        f"Group not found for external_id: {permission.external_id}"
+                        f"Group not found for external_id: {permission.external_id}",
                     )
                     continue
 
             if from_collection:
                 permission_edges.append(
-                    permission.to_arango_permission(from_collection, to_collection)
+                    permission.to_arango_permission(from_collection, to_collection),
                 )
 
         if permission_edges:
             await self.arango_service.batch_create_edges(
                 permission_edges,
                 collection=CollectionNames.PERMISSION.value,
-                transaction=self.txn
+                transaction=self.txn,
             )
 
-    async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
-        return await self.arango_service.batch_create_edges(edges, collection=collection, transaction=self.txn)
+    async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
+        return await self.arango_service.batch_create_edges(
+            edges, collection=collection, transaction=self.txn
+        )
+
 
 class ArangoDataStore(DataStoreProvider):
     """ArangoDB data store"""
+
     def __init__(self, logger: Logger, arango_service: BaseArangoService) -> None:
         self.arango_service = arango_service
 
     @asynccontextmanager
     async def transaction(self) -> AsyncContextManager["TransactionStore"]:
-        """
-        Create an ArangoDB transaction store context manager.
-        """
+        """Create an ArangoDB transaction store context manager."""
         db = self.arango_service.db
 
         # Begin transaction
         txn = db.begin_transaction(
             read=read_collections,
-            write=write_collections
+            write=write_collections,
         )
 
         tx_store = ArangoTransactionStore(self.arango_service, txn)

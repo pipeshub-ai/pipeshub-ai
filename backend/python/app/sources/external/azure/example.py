@@ -3,11 +3,17 @@
 Simple Azure Blob API search example.
 No pagination, no complexity - just search and print results.
 """
+
 import asyncio
 import os
 
-from app.sources.client.azure.azure_blob import AzureBlobAccountKeyConfig, AzureBlobClient, AzureBlobResponse
+from app.sources.client.azure.azure_blob import (
+    AzureBlobAccountKeyConfig,
+    AzureBlobClient,
+    AzureBlobResponse,
+)
 from app.sources.external.azure.azure_blob import AzureBlobDataSource
+
 
 async def main():
     # Azure Blob credentials
@@ -15,7 +21,9 @@ async def main():
     ACCOUNT_KEY = os.getenv("AZURE_BLOB_ACCOUNT_KEY")
     BUCKET = os.getenv("AZURE_BLOB_CONTAINER_NAME")
     # Create client
-    config = AzureBlobAccountKeyConfig(accountName=ACCOUNT_NAME, accountKey=ACCOUNT_KEY, containerName=BUCKET)
+    config = AzureBlobAccountKeyConfig(
+        accountName=ACCOUNT_NAME, accountKey=ACCOUNT_KEY, containerName=BUCKET
+    )
 
     print("config", config)
     client = AzureBlobClient.build_with_account_key_config(config)

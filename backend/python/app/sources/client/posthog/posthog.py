@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -11,12 +11,13 @@ from app.sources.client.iclient import IClient
 
 class PostHogResponse(BaseModel):
     """Standardized PostHog API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return self.dict()
 
@@ -39,13 +40,13 @@ class PostHogGraphQLClientViaToken:
         api_key: str,
         endpoint: str = "https://app.posthog.com/api/graphql",
         timeout: int = 30,
-        use_header_auth: bool = True
+        use_header_auth: bool = True,
     ) -> None:
         self.api_key = api_key
         self.endpoint = endpoint
         self.timeout = timeout
         self.use_header_auth = use_header_auth
-        self._client: Optional[GraphQLClient] = None
+        self._client: GraphQLClient | None = None
 
     def create_client(self) -> GraphQLClient:
         """Create and configure the GraphQL client"""
@@ -58,7 +59,7 @@ class PostHogGraphQLClientViaToken:
         self._client = GraphQLClient(
             endpoint=self.endpoint,
             headers=headers,
-            timeout=self.timeout
+            timeout=self.timeout,
         )
         return self._client
 
@@ -87,6 +88,7 @@ class PostHogTokenConfig(BaseModel):
         use_header_auth: If True, use Authorization header; if False, use request body
         ssl: Whether to use SSL (always True for PostHog Cloud)
     """
+
     api_key: str
     endpoint: str = "https://app.posthog.com/api/graphql"
     timeout: int = 30
@@ -98,7 +100,7 @@ class PostHogTokenConfig(BaseModel):
             api_key=self.api_key,
             endpoint=self.endpoint,
             timeout=self.timeout,
-            use_header_auth=self.use_header_auth
+            use_header_auth=self.use_header_auth,
         )
 
     def to_dict(self) -> dict:
@@ -146,7 +148,6 @@ class PostHogClient(IClient):
         Returns:
             PostHogClient instance
         """
-
         config = await cls._get_connector_config(logger, config_service)
         if not config:
             raise ValueError("Failed to get PostHog connector configuration")
@@ -154,21 +155,32 @@ class PostHogClient(IClient):
         auth_config = config.get("auth", {})
         if auth_type == "API_TOKEN":
             token = auth_config.get("apiKey", "")
-            endpoint = auth_config.get("endpoint", "https://app.posthog.com/api/graphql")
+            endpoint = auth_config.get(
+                "endpoint", "https://app.posthog.com/api/graphql"
+            )
             timeout = auth_config.get("timeout", 30)
             use_header_auth = auth_config.get("useHeaderAuth", True)
             if not token:
                 raise ValueError("Token required for token auth type")
-            client = PostHogTokenConfig(api_key=token, endpoint=endpoint, timeout=timeout, use_header_auth=use_header_auth).create_client()
+            client = PostHogTokenConfig(
+                api_key=token,
+                endpoint=endpoint,
+                timeout=timeout,
+                use_header_auth=use_header_auth,
+            ).create_client()
         else:
             raise ValueError(f"Invalid auth type: {auth_type}")
         return cls(client)
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(
+        logger: logging.Logger, config_service: ConfigurationService
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for PostHog."""
         try:
-            config = await config_service.get_config("/services/connectors/posthog/config")
+            config = await config_service.get_config(
+                "/services/connectors/posthog/config"
+            )
             return config or {}
         except Exception as e:
             logger.error(f"Failed to get PostHog connector config: {e}")

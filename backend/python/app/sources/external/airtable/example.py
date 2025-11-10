@@ -7,6 +7,7 @@ from app.sources.external.airtable.airtable import AirtableDataSource
 
 ACCESS_TOKEN = os.getenv("AIRTABLE_TOKEN")
 
+
 async def main() -> None:
     if not ACCESS_TOKEN:
         raise Exception("AIRTABLE_TOKEN is not set")
@@ -18,7 +19,7 @@ async def main() -> None:
     print("getting current user:")
     workspace = await data_source.get_current_user()
     print(workspace.success)
-    print(workspace.data) # type: ignore
+    print(workspace.data)  # type: ignore
 
 
 if __name__ == "__main__":

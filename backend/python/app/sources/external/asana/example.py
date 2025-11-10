@@ -1,5 +1,4 @@
-"""
-Example usage of AsanaClient and AsanaDataSource
+"""Example usage of AsanaClient and AsanaDataSource
 
 This demonstrates how to:
 1. Create an Asana client with token authentication
@@ -29,7 +28,7 @@ def _print_response(title: str, response: AsanaResponse, max_items: int = 25) ->
         return
 
     # Handle generator (convert to list for display)
-    if hasattr(data, '__iter__') and not isinstance(data, (dict, str)):
+    if hasattr(data, "__iter__") and not isinstance(data, (dict, str)):
         # This handles both generators and lists
         try:
             data_list = list(data) if not isinstance(data, list) else data
@@ -50,7 +49,6 @@ def _print_response(title: str, response: AsanaResponse, max_items: int = 25) ->
 
 async def example_with_token() -> None:
     """Example using Personal Access Token authentication"""
-
     # Get token from environment
     token = os.getenv("ASANA_TOKEN")
     workspace_gid = os.getenv("ASANA_WORKSPACE_GID")
@@ -95,7 +93,7 @@ async def example_with_token() -> None:
     # Example 2: Get workspaces
     print("\n--- Getting workspaces ---")
     workspaces_response = await asana_datasource.get_workspaces(
-        opts={"opt_fields": "gid,name,resource_type"}
+        opts={"opt_fields": "gid,name,resource_type"},
     )
     _print_response("Workspaces:", workspaces_response)
 
@@ -117,14 +115,16 @@ async def example_with_token() -> None:
             "name": "Test task from API",
             "notes": "This task was created via the Asana API",
             "workspace": workspace_gid,
-        }
+        },
     }
     create_response = await asana_datasource.create_task(
-        body=task_data, opts={"opt_fields": "gid,name,created_at,resource_type"}
+        body=task_data,
+        opts={"opt_fields": "gid,name,created_at,resource_type"},
     )
     _print_response("Created task:", create_response)
     if getattr(create_response, "success", False) and isinstance(
-        create_response.data, dict
+        create_response.data,
+        dict,
     ):
         task_gid = create_response.data.get("gid")
 
@@ -132,7 +132,8 @@ async def example_with_token() -> None:
         print(f"\n--- Updating task {task_gid} ---")
         update_data = {"data": {"completed": True}}
         update_response = await asana_datasource.update_task(
-            body=update_data, task_gid=task_gid
+            body=update_data,
+            task_gid=task_gid,
         )
         _print_response("Updated task:", update_response)
 

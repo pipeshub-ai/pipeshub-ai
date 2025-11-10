@@ -1,5 +1,4 @@
 import json
-from typing import List, Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -9,6 +8,7 @@ from app.utils.time_conversion import prepare_iso_timestamps
 
 class GoogleCalendar:
     """Google Calendar tool exposed to the agents"""
+
     def __init__(self, client: object, calendar_id: str = "primary") -> None:
         """Initialize the Google Calendar tool"""
         """
@@ -23,7 +23,7 @@ class GoogleCalendar:
 
     @tool(
         app_name="google_calendar",
-        tool_name="get_calendar_events"
+        tool_name="get_calendar_events",
     )
     def get_calendar_events(
         self,
@@ -37,11 +37,10 @@ class GoogleCalendar:
         """
         try:
             # TODO: Add pagination
-            events = self.client.events().list(calendarId=self.calendar_id).execute() # type: ignore
+            events = self.client.events().list(calendarId=self.calendar_id).execute()  # type: ignore
             return True, json.dumps(events)
         except Exception as e:
             return False, json.dumps({"error": str(e)})
-
 
     @tool(
         app_name="google_calendar",
@@ -51,75 +50,75 @@ class GoogleCalendar:
                 name="event_start_time",
                 type=ParameterType.STRING,
                 description="The start time of the event (ISO format or timestamp)",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="event_end_time",
                 type=ParameterType.STRING,
                 description="The end time of the event (ISO format or timestamp)",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="event_title",
                 type=ParameterType.STRING,
                 description="The title/summary of the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_description",
                 type=ParameterType.STRING,
                 description="The description of the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_location",
                 type=ParameterType.STRING,
                 description="The location of the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_organizer",
                 type=ParameterType.STRING,
                 description="The email of the event organizer",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_attendees_emails",
                 type=ParameterType.ARRAY,
                 description="List of email addresses for event attendees",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="event_meeting_link",
                 type=ParameterType.STRING,
                 description="The meeting link/URL for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_timezone",
                 type=ParameterType.STRING,
                 description="The timezone for the event (default: UTC)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_all_day",
                 type=ParameterType.BOOLEAN,
                 description="Whether the event is an all-day event",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def create_calendar_event(
         self,
         event_start_time: str,
         event_end_time: str,
-        event_title: Optional[str] = None,
-        event_description: Optional[str] = None,
-        event_location: Optional[str] = None,
-        event_organizer: Optional[str] = None,
-        event_attendees_emails: Optional[List[str]] = None,
-        event_meeting_link: Optional[str] = None,
+        event_title: str | None = None,
+        event_description: str | None = None,
+        event_location: str | None = None,
+        event_organizer: str | None = None,
+        event_attendees_emails: list[str] | None = None,
+        event_meeting_link: str | None = None,
         event_timezone: str = "UTC",
         event_all_day: bool = False,
     ) -> tuple[bool, str]:
@@ -145,7 +144,9 @@ class GoogleCalendar:
             if not event_end_time:
                 return False, json.dumps({"error": "Event end time is required"})
 
-            event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(event_start_time, event_end_time)
+            event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(
+                event_start_time, event_end_time
+            )
 
             event_config = {
                 "summary": event_title,
@@ -160,7 +161,9 @@ class GoogleCalendar:
                 "organizer": {
                     "email": event_organizer,
                 },
-                "attendees": [{"email": email} for email in event_attendees_emails] if event_attendees_emails else [],
+                "attendees": [{"email": email} for email in event_attendees_emails]
+                if event_attendees_emails
+                else [],
                 "timeZone": event_timezone,
             }
 
@@ -177,23 +180,31 @@ class GoogleCalendar:
             if event_all_day:
                 event_config["start"] = {"date": event_start_time_iso.split("T")[0]}
                 event_config["end"] = {"date": event_end_time_iso.split("T")[0]}
-            event = self.client.events().insert( # type: ignore
-                calendarId=self.calendar_id,
-                body=event_config,
-            ).execute() # type: ignore
+            event = (
+                self.client.events()
+                .insert(  # type: ignore
+                    calendarId=self.calendar_id,
+                    body=event_config,
+                )
+                .execute()
+            )  # type: ignore
 
-            return True, json.dumps({
-                "event_id": event.get("id", ""),
-                "event_title": event.get("summary", ""),
-                "event_start_time": event.get("start", {}).get("dateTime", ""),
-                "event_end_time": event.get("end", {}).get("dateTime", ""),
-                "event_location": event.get("location", ""),
-                "event_organizer": event.get("organizer", {}).get("email", ""),
-                "event_attendees": event.get("attendees", []),
-                "event_meeting_link": event.get("conferenceData", {}).get("entryPoints", [{}])[0].get("uri", ""),
-                "event_timezone": event.get("timeZone", ""),
-                "event_all_day": event_all_day,
-            })
+            return True, json.dumps(
+                {
+                    "event_id": event.get("id", ""),
+                    "event_title": event.get("summary", ""),
+                    "event_start_time": event.get("start", {}).get("dateTime", ""),
+                    "event_end_time": event.get("end", {}).get("dateTime", ""),
+                    "event_location": event.get("location", ""),
+                    "event_organizer": event.get("organizer", {}).get("email", ""),
+                    "event_attendees": event.get("attendees", []),
+                    "event_meeting_link": event.get("conferenceData", {})
+                    .get("entryPoints", [{}])[0]
+                    .get("uri", ""),
+                    "event_timezone": event.get("timeZone", ""),
+                    "event_all_day": event_all_day,
+                }
+            )
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
@@ -205,82 +216,82 @@ class GoogleCalendar:
                 name="event_id",
                 type=ParameterType.STRING,
                 description="The ID of the event to update",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="event_title",
                 type=ParameterType.STRING,
                 description="The new title/summary for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_description",
                 type=ParameterType.STRING,
                 description="The new description for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_start_time",
                 type=ParameterType.STRING,
                 description="The new start time for the event (ISO format or timestamp)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_end_time",
                 type=ParameterType.STRING,
                 description="The new end time for the event (ISO format or timestamp)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_location",
                 type=ParameterType.STRING,
                 description="The new location for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_organizer",
                 type=ParameterType.STRING,
                 description="The new organizer email for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_attendees_emails",
                 type=ParameterType.ARRAY,
                 description="The new list of attendee emails for the event",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="event_meeting_link",
                 type=ParameterType.STRING,
                 description="The new meeting link/URL for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_timezone",
                 type=ParameterType.STRING,
                 description="The new timezone for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_all_day",
                 type=ParameterType.BOOLEAN,
                 description="Whether the event should be an all-day event",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def update_calendar_event(
         self,
         event_id: str,
-        event_title: Optional[str] = None,
-        event_description: Optional[str] = None,
-        event_start_time: Optional[str] = None,
-        event_end_time: Optional[str] = None,
-        event_location: Optional[str] = None,
-        event_organizer: Optional[str] = None,
-        event_attendees_emails: Optional[List[str]] = None,
-        event_meeting_link: Optional[str] = None,
+        event_title: str | None = None,
+        event_description: str | None = None,
+        event_start_time: str | None = None,
+        event_end_time: str | None = None,
+        event_location: str | None = None,
+        event_organizer: str | None = None,
+        event_attendees_emails: list[str] | None = None,
+        event_meeting_link: str | None = None,
         event_timezone: str = "UTC",
         event_all_day: bool = False,
     ) -> tuple[bool, str]:
@@ -302,10 +313,14 @@ class GoogleCalendar:
             tuple[bool, str]: True if the event is updated, False otherwise
         """
         try:
-            event = self.client.events().get( # type: ignore
-                calendarId=self.calendar_id,
-                eventId=event_id,
-            ).execute() # type: ignore
+            event = (
+                self.client.events()
+                .get(  # type: ignore
+                    calendarId=self.calendar_id,
+                    eventId=event_id,
+                )
+                .execute()
+            )  # type: ignore
 
             if event_title:
                 event["summary"] = event_title
@@ -316,21 +331,25 @@ class GoogleCalendar:
             if event_organizer:
                 event["organizer"] = {"email": event_organizer}
             if event_attendees_emails:
-                event["attendees"] = [{"email": email} for email in event_attendees_emails]
+                event["attendees"] = [
+                    {"email": email} for email in event_attendees_emails
+                ]
             if event_meeting_link:
                 event["conferenceData"] = {
                     "entryPoints": [
                         {
                             "entryPointType": "video",
                             "uri": event_meeting_link,
-                        }
+                        },
                     ],
                 }
             if event_timezone:
                 event["timeZone"] = event_timezone
 
             if event_start_time and event_end_time:
-                event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(event_start_time, event_end_time)
+                event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(
+                    event_start_time, event_end_time
+                )
                 if event_all_day:
                     event["start"] = {"date": event_start_time_iso.split("T")[0]}
                     event["end"] = {"date": event_end_time_iso.split("T")[0]}
@@ -338,24 +357,36 @@ class GoogleCalendar:
                     event["start"] = {"dateTime": event_start_time_iso}
                     event["end"] = {"dateTime": event_end_time_iso}
 
-            updated_event = self.client.events().update( # type: ignore
-                calendarId=self.calendar_id,
-                eventId=event_id,
-                body=event,
-            ).execute() # type: ignore
+            updated_event = (
+                self.client.events()
+                .update(  # type: ignore
+                    calendarId=self.calendar_id,
+                    eventId=event_id,
+                    body=event,
+                )
+                .execute()
+            )  # type: ignore
 
-            return True, json.dumps({
-                "event_id": updated_event.get("id", ""),
-                "event_title": updated_event.get("summary", ""),
-                "event_start_time": updated_event.get("start", {}).get("dateTime", ""),
-                "event_end_time": updated_event.get("end", {}).get("dateTime", ""),
-                "event_location": updated_event.get("location", ""),
-                "event_organizer": updated_event.get("organizer", {}).get("email", ""),
-                "event_attendees": updated_event.get("attendees", []),
-                "event_meeting_link": updated_event.get("conferenceData", {}).get("entryPoints", [{}])[0].get("uri", ""),
-                "event_timezone": updated_event.get("timeZone", ""),
-                "event_all_day": event_all_day,
-            })
+            return True, json.dumps(
+                {
+                    "event_id": updated_event.get("id", ""),
+                    "event_title": updated_event.get("summary", ""),
+                    "event_start_time": updated_event.get("start", {}).get(
+                        "dateTime", ""
+                    ),
+                    "event_end_time": updated_event.get("end", {}).get("dateTime", ""),
+                    "event_location": updated_event.get("location", ""),
+                    "event_organizer": updated_event.get("organizer", {}).get(
+                        "email", ""
+                    ),
+                    "event_attendees": updated_event.get("attendees", []),
+                    "event_meeting_link": updated_event.get("conferenceData", {})
+                    .get("entryPoints", [{}])[0]
+                    .get("uri", ""),
+                    "event_timezone": updated_event.get("timeZone", ""),
+                    "event_all_day": event_all_day,
+                }
+            )
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
@@ -367,9 +398,9 @@ class GoogleCalendar:
                 name="event_id",
                 type=ParameterType.STRING,
                 description="The ID of the event to delete",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def delete_calendar_event(
         self,
@@ -383,20 +414,22 @@ class GoogleCalendar:
             tuple[bool, str]: True if the event is deleted, False otherwise
         """
         try:
-            self.client.events().delete( # type: ignore
+            self.client.events().delete(  # type: ignore
                 calendarId=self.calendar_id,
                 eventId=event_id,
-            ).execute() # type: ignore
+            ).execute()  # type: ignore
 
-            return True, json.dumps({
-                "message": f"Event {event_id} deleted successfully"
-            })
+            return True, json.dumps(
+                {
+                    "message": f"Event {event_id} deleted successfully",
+                }
+            )
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
     @tool(
         app_name="google_calendar",
-        tool_name="get_calendar_list"
+        tool_name="get_calendar_list",
     )
     def get_calendar_list(self) -> tuple[bool, str]:
         """Get the list of available calendars"""
@@ -405,17 +438,17 @@ class GoogleCalendar:
             tuple[bool, str]: True if the calendar list is retrieved, False otherwise
         """
         try:
-            calendars = self.client.calendarList().list().execute() # type: ignore
+            calendars = self.client.calendarList().list().execute()  # type: ignore
             return True, json.dumps(calendars)
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
     @tool(
         app_name="google_calendar",
-        tool_name="get_calendar_list_by_id"
+        tool_name="get_calendar_list_by_id",
     )
     def get_calendar_list_by_id(
-        self
+        self,
     ) -> tuple[bool, str]:
         """Get the current calendar by ID"""
         """
@@ -423,7 +456,9 @@ class GoogleCalendar:
             tuple[bool, str]: True if the calendar is retrieved, False otherwise
         """
         try:
-            calendar = self.client.calendars().get(calendarId=self.calendar_id).execute() # type: ignore
+            calendar = (
+                self.client.calendars().get(calendarId=self.calendar_id).execute()
+            )  # type: ignore
             return True, json.dumps(calendar)
         except Exception as e:
             return False, json.dumps({"error": str(e)})

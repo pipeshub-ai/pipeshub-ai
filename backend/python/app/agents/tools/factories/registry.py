@@ -1,8 +1,4 @@
-"""
-Registry for managing client factories.
-"""
-
-from typing import Dict, Optional
+"""Registry for managing client factories."""
 
 from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.factories.base import ClientFactory
@@ -30,36 +26,35 @@ from app.agents.tools.factories.slack import SlackClientFactory
 
 
 class ClientFactoryRegistry:
-    """
-    Registry for managing client factories.
+    """Registry for managing client factories.
 
     Provides centralized access to client factories and automatic initialization.
     """
 
-    _factories: Dict[str, ClientFactory] = {}
+    _factories: dict[str, ClientFactory] = {}
     _initialized: bool = False
 
     @classmethod
     def register(cls, app_name: str, factory: ClientFactory) -> None:
-        """
-        Register a client factory.
+        """Register a client factory.
 
         Args:
             app_name: Name of the application
             factory: ClientFactory instance
+
         """
         cls._factories[app_name] = factory
 
     @classmethod
-    def get_factory(cls, app_name: str) -> Optional[ClientFactory]:
-        """
-        Get a client factory by app name.
+    def get_factory(cls, app_name: str) -> ClientFactory | None:
+        """Get a client factory by app name.
 
         Args:
             app_name: Name of the application
 
         Returns:
             ClientFactory if found, None otherwise
+
         """
         if not cls._initialized:
             cls.initialize_default_factories()
@@ -68,22 +63,22 @@ class ClientFactoryRegistry:
 
     @classmethod
     def unregister(cls, app_name: str) -> None:
-        """
-        Unregister a client factory.
+        """Unregister a client factory.
 
         Args:
             app_name: Name of the application
+
         """
         if app_name in cls._factories:
             del cls._factories[app_name]
 
     @classmethod
     def list_factories(cls) -> list[str]:
-        """
-        List all registered factory names.
+        """List all registered factory names.
 
         Returns:
             List of registered app names
+
         """
         if not cls._initialized:
             cls.initialize_default_factories()
@@ -92,8 +87,7 @@ class ClientFactoryRegistry:
 
     @classmethod
     def initialize_default_factories(cls) -> None:
-        """
-        Initialize default client factories based on configuration.
+        """Initialize default client factories based on configuration.
         This is called automatically on first access.
         """
         if cls._initialized:
@@ -110,8 +104,8 @@ class ClientFactoryRegistry:
                         subdir,
                         GoogleClientFactory(
                             service_config["service_name"],
-                            service_config["version"]
-                        )
+                            service_config["version"],
+                        ),
                     )
 
             elif app_name == "jira":

@@ -19,10 +19,13 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 # OpenAPI fetch & model gen
 # ---------------------------
 
+
 def download_spec(connector: str, url: str, spec_file: Path) -> None:
     """Download OpenAPI spec JSON to a local file."""
     # If the url looks like a local file path, just copy/read it
-    if url.startswith("file://") or (not url.lower().startswith("http://") and not url.lower().startswith("https://")):
+    if url.startswith("file://") or (
+        not url.lower().startswith("http://") and not url.lower().startswith("https://")
+    ):
         src_path = Path(url.replace("file://", ""))
         if not src_path.exists():
             raise FileNotFoundError(f"Spec file not found: {src_path}")
@@ -30,11 +33,14 @@ def download_spec(connector: str, url: str, spec_file: Path) -> None:
         # Convert YAML to JSON if needed
         if src_path.suffix in [".yaml", ".yml"] and spec_file.suffix == ".json":
             import yaml
+
             with open(src_path, "r", encoding="utf-8") as f:
                 yaml_data = yaml.safe_load(f)
             with open(spec_file, "w", encoding="utf-8") as f:
                 json.dump(yaml_data, f, indent=2)
-            print(f"✅ {connector.capitalize()} OpenAPI YAML converted to JSON at {spec_file}")
+            print(
+                f"✅ {connector.capitalize()} OpenAPI YAML converted to JSON at {spec_file}"
+            )
         else:
             spec_file.write_text(src_path.read_text(encoding="utf-8"), encoding="utf-8")
             print(f"✅ {connector.capitalize()} OpenAPI spec copied to {spec_file}")
@@ -56,17 +62,26 @@ def download_spec(connector: str, url: str, spec_file: Path) -> None:
 
 def generate_models(connector: str, spec_file: Path, model_file: Path) -> None:
     """Generate Pydantic v2 models from the OpenAPI spec."""
-    subprocess.run([sys.executable, "-m", "pip", "install", "datamodel-code-generator"], check=True)
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "datamodel-code-generator"], check=True
+    )
     print("✅ Installed datamodel-code-generator")
 
     cmd = [
-        sys.executable, "-m", "datamodel_code_generator",
-        "--input", str(spec_file),
-        "--input-file-type", "openapi",
-        "--output", str(model_file),
-        "--target-python-version", "3.10",
+        sys.executable,
+        "-m",
+        "datamodel_code_generator",
+        "--input",
+        str(spec_file),
+        "--input-file-type",
+        "openapi",
+        "--output",
+        str(model_file),
+        "--target-python-version",
+        "3.10",
         "--use-standard-collections",
-        "--output-model-type", "pydantic_v2.BaseModel",
+        "--output-model-type",
+        "pydantic_v2.BaseModel",
     ]
     print(f"🚀 Generating Pydantic v2 models for {connector.capitalize()}...")
     subprocess.run(cmd, check=True)
@@ -88,19 +103,36 @@ def fix_constr_calls(file_path: str) -> None:
         match = re.search(r"(^((?:from|import)[^\n]*\n)+)", content, flags=re.MULTILINE)
         if match:
             insert_pos = match.end()
-            content = content[:insert_pos] + "\n".join(imports_to_add) + "\n\n" + content[insert_pos:]
+            content = (
+                content[:insert_pos]
+                + "\n".join(imports_to_add)
+                + "\n\n"
+                + content[insert_pos:]
+            )
         else:
             content = "\n".join(imports_to_add) + "\n\n" + content
 
     patterns = [
-        (r'constr\(min_length=(\d+),\s*max_length=(\d+)\)', r'Annotated[str, StringConstraints(min_length=\1, max_length=\2)]'),
-        (r'constr\(max_length=(\d+)\)', r'Annotated[str, StringConstraints(max_length=\1)]'),
-        (r'constr\(min_length=(\d+)\)', r'Annotated[str, StringConstraints(min_length=\1)]'),
-        (r'constr\(regex=["\']([^"\']+)["\']\)', r'Annotated[str, StringConstraints(pattern=r"\1")]'),
-        (r'StrictStr', r'Annotated[str, Field(strict=True)]'),
-        (r'StrictInt', r'Annotated[int, Field(strict=True)]'),
-        (r'StrictFloat', r'Annotated[float, Field(strict=True)]'),
-        (r'StrictBool', r'Annotated[bool, Field(strict=True)]'),
+        (
+            r"constr\(min_length=(\d+),\s*max_length=(\d+)\)",
+            r"Annotated[str, StringConstraints(min_length=\1, max_length=\2)]",
+        ),
+        (
+            r"constr\(max_length=(\d+)\)",
+            r"Annotated[str, StringConstraints(max_length=\1)]",
+        ),
+        (
+            r"constr\(min_length=(\d+)\)",
+            r"Annotated[str, StringConstraints(min_length=\1)]",
+        ),
+        (
+            r'constr\(regex=["\']([^"\']+)["\']\)',
+            r'Annotated[str, StringConstraints(pattern=r"\1")]',
+        ),
+        (r"StrictStr", r"Annotated[str, Field(strict=True)]"),
+        (r"StrictInt", r"Annotated[int, Field(strict=True)]"),
+        (r"StrictFloat", r"Annotated[float, Field(strict=True)]"),
+        (r"StrictBool", r"Annotated[bool, Field(strict=True)]"),
     ]
     before = content
     for pattern, replacement in patterns:
@@ -118,8 +150,17 @@ def fix_constr_calls(file_path: str) -> None:
 #  Helpers for params
 # --------------------
 
-_PY_RESERVED = set(keyword.kwlist) | {"from", "global", "async", "await", "None", "self", "cls"}
+_PY_RESERVED = set(keyword.kwlist) | {
+    "from",
+    "global",
+    "async",
+    "await",
+    "None",
+    "self",
+    "cls",
+}
 _ALWAYS_RESERVED_NAMES = {"self", "headers", "body", "body_additional"}
+
 
 def _ensure_unique(base: str, used: set, suffix: str) -> str:
     """
@@ -136,6 +177,7 @@ def _ensure_unique(base: str, used: set, suffix: str) -> str:
         name = candidate
     used.add(name)
     return name
+
 
 def _dedupe_param_names(
     path_params: List[dict],
@@ -160,6 +202,7 @@ def _dedupe_param_names(
     # Body fields
     for bf in body_fields:
         bf["py_name"] = _ensure_unique(bf["py_name"], used, "body")
+
 
 def _sanitize_name(name: str) -> str:
     name = name.replace("-", "_")
@@ -218,7 +261,9 @@ def _resolve_ref(ref: str, root: Dict[str, Any]) -> Dict[str, Any]:
     return node if isinstance(node, dict) else {}
 
 
-def _deep_resolve_schema(schema: Dict[str, Any], root: Dict[str, Any], _seen: Optional[set] = None) -> Dict[str, Any]:
+def _deep_resolve_schema(
+    schema: Dict[str, Any], root: Dict[str, Any], _seen: Optional[set] = None
+) -> Dict[str, Any]:
     """
     Recursively resolve $ref and merge simple allOf object shapes (properties + required).
     Keeps other combinators as-is.
@@ -252,7 +297,9 @@ def _deep_resolve_schema(schema: Dict[str, Any], root: Dict[str, Any], _seen: Op
     return schema
 
 
-def _collect_operation_params(details: dict) -> Tuple[List[dict], List[dict], List[dict]]:
+def _collect_operation_params(
+    details: dict,
+) -> Tuple[List[dict], List[dict], List[dict]]:
     """
     Return (path_params, query_params, header_params)
     each item: {name, py_name, type, required, description, style, explode}
@@ -264,7 +311,7 @@ def _collect_operation_params(details: dict) -> Tuple[List[dict], List[dict], Li
     for p in details.get("parameters", []) or []:
         where = (p.get("in") or "").lower()
         name = p.get("name") or ""
-        schema = (p.get("schema") or {})
+        schema = p.get("schema") or {}
         py_type = _schema_to_py_type(schema)
         desc = p.get("description") or ""
         item = {
@@ -312,7 +359,9 @@ def _collect_request_body(
         "multipart/form-data",
         "application/octet-stream",
     ]
-    media = next((m for m in prefer if m in content), None) or (next(iter(content.keys()), None))
+    media = next((m for m in prefer if m in content), None) or (
+        next(iter(content.keys()), None)
+    )
     if not media:
         return True, [], "Any", "", False
 
@@ -331,14 +380,20 @@ def _collect_request_body(
             required_props = set(schema.get("required") or [])
             fields: List[dict] = []
             for name, prop_schema in props.items():
-                prop_schema = _deep_resolve_schema(prop_schema if isinstance(prop_schema, dict) else {}, root)
-                fields.append({
-                    "name": name,
-                    "py_name": _sanitize_name(name),
-                    "type": _schema_to_py_type(prop_schema),
-                    "required": name in required_props,
-                    "description": (prop_schema.get("description") or "") if isinstance(prop_schema, dict) else "",
-                })
+                prop_schema = _deep_resolve_schema(
+                    prop_schema if isinstance(prop_schema, dict) else {}, root
+                )
+                fields.append(
+                    {
+                        "name": name,
+                        "py_name": _sanitize_name(name),
+                        "type": _schema_to_py_type(prop_schema),
+                        "required": name in required_props,
+                        "description": (prop_schema.get("description") or "")
+                        if isinstance(prop_schema, dict)
+                        else "",
+                    }
+                )
             return True, fields, None, media, allow_additional
 
         # object without explicit properties but with additionalProperties => map-like
@@ -366,6 +421,7 @@ def _safe_format_url(template: str, params: Dict[str, object]) -> str:
     class _SafeDict(dict):
         def __missing__(self, key):  # type: ignore
             return "{" + key + "}"
+
     try:
         return template.format_map(_SafeDict(params))
     except Exception:
@@ -395,13 +451,16 @@ def _as_str_dict(d: Dict[str, Any]) -> Dict[str, str]:
 #  Client generation with default __init__
 # ------------------------------------------------------
 
+
 def generate_client_methods(
     connector: str,
     spec_file: Path,
     client_file: Path,
     path_prefixes: Optional[List[str]] = None,
 ) -> None:
-    print(f"⚙️ Generating API client methods for {connector.capitalize()} (typed params, full body support incl. additionalProperties)...")
+    print(
+        f"⚙️ Generating API client methods for {connector.capitalize()} (typed params, full body support incl. additionalProperties)..."
+    )
 
     spec = json.loads(spec_file.read_text(encoding="utf-8"))
     paths: Dict[str, Dict[str, dict]] = spec.get("paths", {})  # type: ignore
@@ -417,7 +476,7 @@ def generate_client_methods(
         f"from app.sources.client.{connector}.{connector} import {Title}Client\n\n",
         f"class {Title}DataSource:\n",
         f"    def __init__(self, client: {Title}Client) -> None:\n",
-        "        \"\"\"Default init for the connector-specific data source.\"\"\"\n",
+        '        """Default init for the connector-specific data source."""\n',
         "        self._client = client\n",
         "        self.http = client.get_client()\n",
         "        if self.http is None:\n",
@@ -442,15 +501,22 @@ def generate_client_methods(
                 continue
 
             # method name (prefer operationId)
-            func_name = details.get("operationId") or f"{http_method}_{raw_path.strip('/').replace('/', '_')}"
-            func_name = _to_snake_case(re.sub(r'[^0-9a-zA-Z_]', '_', func_name))
+            func_name = (
+                details.get("operationId")
+                or f"{http_method}_{raw_path.strip('/').replace('/', '_')}"
+            )
+            func_name = _to_snake_case(re.sub(r"[^0-9a-zA-Z_]", "_", func_name))
             func_name = _sanitize_name(func_name)
 
             summary = (details.get("summary") or "").strip()
 
             # params
-            path_params, query_params, header_params = _collect_operation_params(details)
-            has_body, body_fields, raw_body_type, body_ct, allow_additional = _collect_request_body(details, spec)
+            path_params, query_params, header_params = _collect_operation_params(
+                details
+            )
+            has_body, body_fields, raw_body_type, body_ct, allow_additional = (
+                _collect_request_body(details, spec)
+            )
             # dedupe names across all arg sources to prevent collisions like 'id' vs body 'id'
             _dedupe_param_names(path_params, query_params, header_params, body_fields)
             # -----------------------
@@ -487,13 +553,23 @@ def generate_client_methods(
             # optional body fields OR raw body
             if has_body and body_fields:
                 for bf in (bf for bf in body_fields if not bf["required"]):
-                    optional_parts.append(f"{bf['py_name']}: Optional[{bf['type']}] = None")
+                    optional_parts.append(
+                        f"{bf['py_name']}: Optional[{bf['type']}] = None"
+                    )
             elif has_body and raw_body_type:
                 optional_parts.append(f"body: Optional[Dict[str, Any]] = None")
 
             # map-like additionalProperties support
-            if has_body and (body_fields or (raw_body_type and raw_body_type.startswith("Dict["))) and allow_additional:
-                optional_parts.append("body_additional: Optional[Dict[str, Any]] = None")
+            if (
+                has_body
+                and (
+                    body_fields or (raw_body_type and raw_body_type.startswith("Dict["))
+                )
+                and allow_additional
+            ):
+                optional_parts.append(
+                    "body_additional: Optional[Dict[str, Any]] = None"
+                )
 
             # always allow extra headers
             optional_parts.append("headers: Optional[Dict[str, Any]] = None")
@@ -504,7 +580,9 @@ def generate_client_methods(
             # Docstring
             # -----------------------
             doc_lines = [
-                f'Auto-generated from OpenAPI: {summary}' if summary else "Auto-generated from OpenAPI",
+                f"Auto-generated from OpenAPI: {summary}"
+                if summary
+                else "Auto-generated from OpenAPI",
                 "",
                 f"HTTP {http_method.upper()} {raw_path}",
             ]
@@ -529,9 +607,13 @@ def generate_client_methods(
                         req = "required" if bf["required"] else "optional"
                         doc_lines.append(f"  - {bf['name']} ({bf['type']}, {req})")
                     if allow_additional:
-                        doc_lines.append("  - additionalProperties allowed (pass via body_additional)")
+                        doc_lines.append(
+                            "  - additionalProperties allowed (pass via body_additional)"
+                        )
                 else:
-                    doc_lines.append(f"Body: {body_ct or 'application/json'} ({raw_body_type or 'Any'})")
+                    doc_lines.append(
+                        f"Body: {body_ct or 'application/json'} ({raw_body_type or 'Any'})"
+                    )
 
             doc = "\\n".join(doc_lines)
 
@@ -543,9 +625,11 @@ def generate_client_methods(
                 comma = "," if i < len(sig_parts) - 1 else ""
                 lines.append(f"        {part}{comma}\n")
             lines.append("    ) -> HTTPResponse:\n")
-            lines.append(f"        \"\"\"{doc}\"\"\"\n")
+            lines.append(f'        """{doc}"""\n')
             lines.append("        if self.http is None:\n")
-            lines.append("            raise ValueError('HTTP client is not initialized')\n")
+            lines.append(
+                "            raise ValueError('HTTP client is not initialized')\n"
+            )
             lines.append("        _headers: Dict[str, Any] = dict(headers or {})\n")
 
             # Build header params into headers
@@ -560,7 +644,9 @@ def generate_client_methods(
                         lines.append(f"            _headers['{nm}'] = {py}\n")
 
             if has_body and body_ct:
-                lines.append(f"        _headers.setdefault('Content-Type', '{body_ct}')\n")
+                lines.append(
+                    f"        _headers.setdefault('Content-Type', '{body_ct}')\n"
+                )
 
             # Path dict
             if path_params:
@@ -591,12 +677,18 @@ def generate_client_methods(
                     lines.append("        _body: Dict[str, Any] = {}\n")
                     for bf in body_fields:
                         if bf["required"]:
-                            lines.append(f"        _body['{bf['name']}'] = {bf['py_name']}\n")
+                            lines.append(
+                                f"        _body['{bf['name']}'] = {bf['py_name']}\n"
+                            )
                         else:
                             lines.append(f"        if {bf['py_name']} is not None:\n")
-                            lines.append(f"            _body['{bf['name']}'] = {bf['py_name']}\n")
+                            lines.append(
+                                f"            _body['{bf['name']}'] = {bf['py_name']}\n"
+                            )
                     if allow_additional:
-                        lines.append("        if 'body_additional' in locals() and body_additional:\n")
+                        lines.append(
+                            "        if 'body_additional' in locals() and body_additional:\n"
+                        )
                         lines.append("            _body.update(body_additional)\n")
                 else:
                     lines.append("        _body = body\n")
@@ -605,7 +697,9 @@ def generate_client_methods(
 
             # URL + HTTPRequest
             lines.append(f"        rel_path = '{raw_path}'\n")
-            lines.append("        url = self.base_url + _safe_format_url(rel_path, _path)\n")
+            lines.append(
+                "        url = self.base_url + _safe_format_url(rel_path, _path)\n"
+            )
             lines.append("        req = HTTPRequest(\n")
             lines.append(f"            method='{http_method.upper()}',\n")
             lines.append("            url=url,\n")
@@ -623,7 +717,9 @@ def generate_client_methods(
 
     # Helpers included in generated module
     lines.append("# ---- Helpers used by generated methods ----\n")
-    lines.append("def _safe_format_url(template: str, params: Dict[str, object]) -> str:\n")
+    lines.append(
+        "def _safe_format_url(template: str, params: Dict[str, object]) -> str:\n"
+    )
     lines.append("    class _SafeDict(dict):\n")
     lines.append("        def __missing__(self, key: str) -> str:\n")
     lines.append("            return '{' + key + '}'\n")
@@ -645,7 +741,9 @@ def generate_client_methods(
     lines.append("    return _to_bool_str(v)\n")
     lines.append("\n")
     lines.append("def _as_str_dict(d: Dict[str, Any]) -> Dict[str, str]:\n")
-    lines.append("    return {str(k): _serialize_value(v) for k, v in (d or {}).items()}\n")
+    lines.append(
+        "    return {str(k): _serialize_value(v) for k, v in (d or {}).items()}\n"
+    )
 
     client_file.write_text("".join(lines), encoding="utf-8")
 
@@ -691,5 +789,7 @@ def process_connector(
     download_spec(connector, url, spec_file)
     generate_models(connector, spec_file, model_file)
     fix_constr_calls(str(model_file))
-    generate_client_methods(connector, spec_file, client_file, path_prefixes=path_prefixes)
+    generate_client_methods(
+        connector, spec_file, client_file, path_prefixes=path_prefixes
+    )
     inspect_models(connector, model_file)

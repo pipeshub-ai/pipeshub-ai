@@ -13,6 +13,7 @@ import logging
 
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 
+
 async def main():
     # Set up logging
     logger = logging.getLogger(__name__)
@@ -22,7 +23,9 @@ async def main():
     etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(logger=logger)
 
     # create configuration service
-    config_service = ConfigurationService(logger=logger, key_value_store=etcd3_encrypted_key_value_store)
+    config_service = ConfigurationService(
+        logger=logger, key_value_store=etcd3_encrypted_key_value_store
+    )
 
     # Build Jira client using configuration service (await the async method)
     try:
@@ -35,23 +38,25 @@ async def main():
         logger.error(f"Failed to create Jira client: {e}")
         print(f"❌ Error creating Jira client: {e}")
         return
-    
+
     # Create data source and use it
     jira_data_source = JiraDataSource(jira_client)
-    
+
     # Get all projects
     response: HTTPResponse = await jira_data_source.get_all_projects()
     print(f"Response status: {response.status}")
     print(f"Response headers: {response.headers}")
-    
+
     if response.status == 200:
         projects = response.json()
         print(f"Found {len(projects)} projects:")
         for project in projects[:5]:  # Show first 5 projects
-            print(f"  - {project.get('name', 'Unknown')} ({project.get('key', 'No key')})")
+            print(
+                f"  - {project.get('name', 'Unknown')} ({project.get('key', 'No key')})"
+            )
     else:
         print(f"Error response: {response.text}")
 
+
 if __name__ == "__main__":
     asyncio.run(main())
-

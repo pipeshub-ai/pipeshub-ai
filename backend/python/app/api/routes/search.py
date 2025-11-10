@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -18,20 +18,20 @@ router = APIRouter()
 # Pydantic models
 class SearchQuery(BaseModel):
     query: str
-    limit: Optional[int] = 5
-    filters: Optional[Dict[str, Any]] = {}
+    limit: int | None = 5
+    filters: dict[str, Any] | None = {}
 
 
 class SimilarDocumentQuery(BaseModel):
     document_id: str
-    limit: Optional[int] = 5
-    filters: Optional[Dict[str, Any]] = None
+    limit: int | None = 5
+    filters: dict[str, Any] | None = None
 
 
 class SearchRequest(BaseModel):
     query: str
     topK: int = 20
-    filtersV1: List[Dict[str, List[str]]]
+    filtersV1: list[dict[str, list[str]]]
 
 
 async def get_retrieval_service(request: Request) -> RetrievalService:
@@ -59,7 +59,7 @@ async def search(
     body: SearchQuery,
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
     arango_service: BaseArangoService = Depends(get_arango_service),
-)-> JSONResponse :
+) -> JSONResponse:
     """Perform semantic search across documents"""
     try:
         container = request.app.container
@@ -74,7 +74,7 @@ async def search(
                 )
 
         # Extract KB IDs from filters if present
-        kb_ids = body.filters.get('kb') if body.filters else None
+        kb_ids = body.filters.get("kb") if body.filters else None
         updated_filters = body.filters
         # Validate KB IDs if provided
         if kb_ids:
@@ -84,7 +84,7 @@ async def search(
             kb_validation = await arango_service.validate_user_kb_access(
                 user_id=request.state.user.get("userId"),
                 org_id=request.state.user.get("orgId"),
-                kb_ids=kb_ids
+                kb_ids=kb_ids,
             )
 
             accessible_kbs = kb_validation.get("accessible", [])
@@ -100,8 +100,8 @@ async def search(
                         "status": "ACCESS_DENIED",
                         "status_code": 403,
                         "message": "You don't have access to any of the specified knowledge bases.",
-                        "inaccessible_kbs": inaccessible_kbs
-                    }
+                        "inaccessible_kbs": inaccessible_kbs,
+                    },
                 )
 
             if inaccessible_kbs:
@@ -109,7 +109,7 @@ async def search(
 
             # Update filters with only accessible KBs
             updated_filters = body.filters.copy() if body.filters else {}
-            updated_filters['kb'] = accessible_kbs
+            updated_filters["kb"] = accessible_kbs
             logger.info(f"✅ Using accessible KBs for search: {accessible_kbs}")
 
         # Setup query transformation
@@ -117,7 +117,8 @@ async def search(
 
         # Run query transformations in parallel
         rewritten_query, expanded_queries = await asyncio.gather(
-            rewrite_chain.ainvoke(body.query), expansion_chain.ainvoke(body.query)
+            rewrite_chain.ainvoke(body.query),
+            expansion_chain.ainvoke(body.query),
         )
 
         logger.debug(f"Rewritten query: {rewritten_query}")
@@ -147,7 +148,7 @@ async def search(
                 "accessible_kbs": accessible_kbs,
                 "inaccessible_kbs": inaccessible_kbs,
                 "total_requested": len(kb_ids),
-                "total_accessible": len(accessible_kbs)
+                "total_accessible": len(accessible_kbs),
             }
 
         logger.info(f"Results: {results}")
@@ -159,6 +160,6 @@ async def search(
 
 
 @router.get("/health")
-async def health_check() -> Dict[str, str]:
+async def health_check() -> dict[str, str]:
     """Health check endpoint"""
     return {"status": "healthy"}

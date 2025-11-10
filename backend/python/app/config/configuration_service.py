@@ -3,7 +3,6 @@ import hashlib
 import os
 import threading
 import time
-from typing import Union
 
 import dotenv
 from cachetools import LRUCache
@@ -13,7 +12,6 @@ from app.config.key_value_store import KeyValueStore
 from app.utils.encryption.encryption_service import EncryptionService
 
 dotenv.load_dotenv()
-
 
 
 class ConfigurationService:
@@ -34,7 +32,9 @@ class ConfigurationService:
         self.logger.debug("🔑 Secret key hashed to 32 bytes and converted to hex")
 
         self.encryption_service = EncryptionService.get_instance(
-            "aes-256-gcm", hex_key, logger
+            "aes-256-gcm",
+            hex_key,
+            logger,
         )
         self.logger.debug("🔐 Initialized EncryptionService")
 
@@ -50,7 +50,12 @@ class ConfigurationService:
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None, use_cache: bool = True) -> Union[str, int, float, bool, dict, list, None]:
+    async def get_config(
+        self,
+        key: str,
+        default: str | float | bool | dict | list | None = None,
+        use_cache: bool = True,
+    ) -> str | int | float | bool | dict | list | None:
         """Get configuration value with LRU cache and environment variable fallback"""
         try:
             # Check cache first
@@ -63,7 +68,9 @@ class ConfigurationService:
                 # Try environment variable fallback for specific services
                 env_fallback = self._get_env_fallback(key)
                 if env_fallback is not None:
-                    self.logger.debug("📦 Using environment variable fallback for key: %s", key)
+                    self.logger.debug(
+                        "📦 Using environment variable fallback for key: %s", key
+                    )
                     self.cache[key] = env_fallback
                     return env_fallback
 
@@ -76,11 +83,14 @@ class ConfigurationService:
             # Try environment variable fallback on error
             env_fallback = self._get_env_fallback(key)
             if env_fallback is not None:
-                self.logger.debug("📦 Using environment variable fallback due to error for key: %s", key)
+                self.logger.debug(
+                    "📦 Using environment variable fallback due to error for key: %s",
+                    key,
+                )
                 return env_fallback
             return default
 
-    def _get_env_fallback(self, key: str) -> Union[dict, None]:
+    def _get_env_fallback(self, key: str) -> dict | None:
         """Get environment variable fallback for specific configuration keys"""
         if key == config_node_constants.KAFKA.value:
             # Kafka configuration fallback
@@ -88,11 +98,15 @@ class ConfigurationService:
             if kafka_brokers:
                 brokers_list = [broker.strip() for broker in kafka_brokers.split(",")]
                 return {
-                    "host": brokers_list[0].split(":")[0] if ":" in brokers_list[0] else brokers_list[0],
-                    "port": int(brokers_list[0].split(":")[1]) if ":" in brokers_list[0] else 9092,
+                    "host": brokers_list[0].split(":")[0]
+                    if ":" in brokers_list[0]
+                    else brokers_list[0],
+                    "port": int(brokers_list[0].split(":")[1])
+                    if ":" in brokers_list[0]
+                    else 9092,
                     "topic": "records",
                     "bootstrap_servers": brokers_list,
-                    "brokers": brokers_list
+                    "brokers": brokers_list,
                 }
         elif key == config_node_constants.ARANGODB.value:
             # ArangoDB configuration fallback
@@ -102,7 +116,7 @@ class ConfigurationService:
                     "url": arango_url,
                     "username": os.getenv("ARANGO_USERNAME", "root"),
                     "password": os.getenv("ARANGO_PASSWORD"),
-                    "db": os.getenv("ARANGO_DB_NAME", "es")
+                    "db": os.getenv("ARANGO_DB_NAME", "es"),
                 }
         elif key == config_node_constants.REDIS.value:
             # Redis configuration fallback
@@ -112,7 +126,9 @@ class ConfigurationService:
                 return {
                     "host": redis_host,
                     "port": int(os.getenv("REDIS_PORT", "6379")),
-                    "password": redis_password if redis_password and redis_password.strip() else None
+                    "password": redis_password
+                    if redis_password and redis_password.strip()
+                    else None,
                 }
         elif key == config_node_constants.QDRANT.value:
             # Qdrant configuration fallback
@@ -121,7 +137,7 @@ class ConfigurationService:
                 return {
                     "host": qdrant_host,
                     "grpcPort": int(os.getenv("QDRANT_GRPC_PORT", "6333")),
-                    "apiKey": os.getenv("QDRANT_API_KEY", "qdrant")
+                    "apiKey": os.getenv("QDRANT_API_KEY", "qdrant"),
                 }
         return None
 
@@ -130,31 +146,40 @@ class ConfigurationService:
 
         def watch_etcd() -> None:
             # Expect store implementations to expose .client directly
-            if hasattr(self.store, 'client'):
+            if hasattr(self.store, "client"):
                 # Wait for client to be ready
-                while getattr(self.store, 'client', None) is None:
+                while getattr(self.store, "client", None) is None:
                     time.sleep(3)
                 try:
-                    self.store.client.add_watch_prefix_callback("/", self._watch_callback)
-                    self.logger.debug("👀 ETCD prefix watch registered for cache invalidation")
+                    self.store.client.add_watch_prefix_callback(
+                        "/", self._watch_callback
+                    )
+                    self.logger.debug(
+                        "👀 ETCD prefix watch registered for cache invalidation"
+                    )
                 except Exception as e:
                     self.logger.error("❌ Failed to register ETCD watch: %s", str(e))
             else:
-                self.logger.debug("📋 Store doesn't expose an ETCD client; skipping watch setup")
+                self.logger.debug(
+                    "📋 Store doesn't expose an ETCD client; skipping watch setup"
+                )
 
         self.watch_thread = threading.Thread(target=watch_etcd, daemon=True)
         self.watch_thread.start()
 
-    async def set_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
+    async def set_config(
+        self, key: str, value: str | float | bool | dict | list
+    ) -> bool:
         """Set configuration value with optional encryption"""
         try:
-
             # Store in etcd
             try:
                 await self.store.create_key(key, value, overwrite=True)
                 success = True
             except Exception as store_error:
-                self.logger.error("❌ Failed to create key in store: %s", str(store_error))
+                self.logger.error(
+                    "❌ Failed to create key in store: %s", str(store_error)
+                )
                 success = False
 
             if success:
@@ -170,7 +195,9 @@ class ConfigurationService:
             self.logger.error("❌ Failed to set config %s: %s", key, str(e))
             return False
 
-    async def update_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
+    async def update_config(
+        self, key: str, value: str | float | bool | dict | list
+    ) -> bool:
         """Update configuration value with optional encryption"""
         try:
             # Check if key exists
@@ -184,7 +211,9 @@ class ConfigurationService:
                 await self.store.update_value(key, value)
                 success = True
             except Exception as store_error:
-                self.logger.error("❌ Failed to update key in store: %s", str(store_error))
+                self.logger.error(
+                    "❌ Failed to update key in store: %s", str(store_error)
+                )
                 success = False
 
             if success:

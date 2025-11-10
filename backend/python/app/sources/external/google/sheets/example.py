@@ -2,6 +2,7 @@
 """
 Example script to demonstrate how to use the Google Meet API
 """
+
 import asyncio
 import logging
 
@@ -13,10 +14,15 @@ from app.sources.external.google.sheets.sheets import GoogleSheetsDataSource
 
 async def main() -> None:
     # create configuration service client
-    etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(logger=logging.getLogger(__name__))
+    etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(
+        logger=logging.getLogger(__name__)
+    )
 
     # create configuration service
-    config_service = ConfigurationService(logger=logging.getLogger(__name__), key_value_store=etcd3_encrypted_key_value_store)
+    config_service = ConfigurationService(
+        logger=logging.getLogger(__name__),
+        key_value_store=etcd3_encrypted_key_value_store,
+    )
 
     sheets_google_client = await GoogleClient.build_from_services(
         service_name="sheets",
@@ -29,11 +35,12 @@ async def main() -> None:
         ],
     )
 
-    google_sheets_data_source = GoogleSheetsDataSource(sheets_google_client.get_client())
+    google_sheets_data_source = GoogleSheetsDataSource(
+        sheets_google_client.get_client()
+    )
     print("google_sheets_data_source", google_sheets_data_source)
     results = await google_sheets_data_source.spreadsheets_create()
     print("Created spreadsheet:", results)
-
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import base64
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib.parse import urlencode
 
 from pydantic import BaseModel  # type: ignore
@@ -14,12 +14,13 @@ from app.sources.client.iclient import IClient
 
 class AirtableResponse(BaseModel):
     """Standardized Airtable API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return self.model_dump()
 
@@ -35,13 +36,17 @@ class AirtableRESTClientViaToken(HTTPClient):
         base_url: The base URL of the Airtable API
     """
 
-    def __init__(self, token: str, base_url: str = "https://api.airtable.com/v0") -> None:
+    def __init__(
+        self, token: str, base_url: str = "https://api.airtable.com/v0"
+    ) -> None:
         super().__init__(token, "Bearer")
         self.base_url = base_url
         # Add Airtable-specific headers
-        self.headers.update({
-            "Content-Type": "application/json"
-        })
+        self.headers.update(
+            {
+                "Content-Type": "application/json",
+            }
+        )
 
     def get_base_url(self) -> str:
         """Get the base URL"""
@@ -63,8 +68,8 @@ class AirtableRESTClientViaOAuth(HTTPClient):
         client_id: str,
         client_secret: str,
         redirect_uri: str,
-        access_token: Optional[str] = None,
-        base_url: str = "https://api.airtable.com/v0"
+        access_token: str | None = None,
+        base_url: str = "https://api.airtable.com/v0",
     ) -> None:
         # Initialize with empty token first, will be set after OAuth flow
         super().__init__(access_token or "", "Bearer")
@@ -77,9 +82,11 @@ class AirtableRESTClientViaOAuth(HTTPClient):
         self.access_token = access_token
 
         # Add Airtable-specific headers
-        self.headers.update({
-            "Content-Type": "application/json"
-        })
+        self.headers.update(
+            {
+                "Content-Type": "application/json",
+            }
+        )
 
         # If no access token provided, we'll need to go through OAuth flow
         self._oauth_completed = access_token is not None
@@ -92,19 +99,25 @@ class AirtableRESTClientViaOAuth(HTTPClient):
         """Check if OAuth flow has been completed"""
         return self._oauth_completed
 
-    def get_authorization_url(self, state: Optional[str] = None, scope: str = "data.records:read data.records:write") -> str:
+    def get_authorization_url(
+        self,
+        state: str | None = None,
+        scope: str = "data.records:read data.records:write",
+    ) -> str:
         """Generate OAuth authorization URL
         Args:
             state: Optional state parameter for security
             scope: OAuth scopes (default: read/write records)
+
         Returns:
             Authorization URL
+
         """
         params = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
             "response_type": "code",
-            "scope": scope
+            "scope": scope,
         }
 
         if state:
@@ -112,7 +125,7 @@ class AirtableRESTClientViaOAuth(HTTPClient):
 
         return f"{self.oauth_base_url}/authorize?{urlencode(params)}"
 
-    async def initiate_oauth_flow(self, authorization_code: str) -> Optional[str]:
+    async def initiate_oauth_flow(self, authorization_code: str) -> str | None:
         """Complete OAuth flow with authorization code
         Args:
             authorization_code: The code received from OAuth callback
@@ -121,7 +134,7 @@ class AirtableRESTClientViaOAuth(HTTPClient):
         """
         return await self._exchange_code_for_token(authorization_code)
 
-    async def refresh_token(self, refresh_token: str) -> Optional[str]:
+    async def refresh_token(self, refresh_token: str) -> str | None:
         """Refresh OAuth access token
         Args:
             refresh_token: The refresh token from previous OAuth flow
@@ -133,19 +146,19 @@ class AirtableRESTClientViaOAuth(HTTPClient):
 
         headers = {
             "Authorization": f"Basic {encoded_credentials}",
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded",
         }
 
         data = {
             "grant_type": "refresh_token",
-            "refresh_token": refresh_token
+            "refresh_token": refresh_token,
         }
 
         request = HTTPRequest(
             method="POST",
             url=f"{self.oauth_base_url}/token",
             headers=headers,
-            body=data
+            body=data,
         )
 
         async with HTTPClient(token="") as client:
@@ -158,9 +171,11 @@ class AirtableRESTClientViaOAuth(HTTPClient):
         if self.access_token:
             self.headers["Authorization"] = f"Bearer {self.access_token}"
 
-        return token_data.get("access_token") if token_data.get("access_token") else None
+        return (
+            token_data.get("access_token") if token_data.get("access_token") else None
+        )
 
-    async def _exchange_code_for_token(self, code: str) -> Optional[str]:
+    async def _exchange_code_for_token(self, code: str) -> str | None:
         """Exchange authorization code for access token
         Args:
             code: Authorization code from callback
@@ -173,27 +188,29 @@ class AirtableRESTClientViaOAuth(HTTPClient):
 
         headers = {
             "Authorization": f"Basic {encoded_credentials}",
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded",
         }
 
         data = {
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": self.redirect_uri
+            "redirect_uri": self.redirect_uri,
         }
 
         request = HTTPRequest(
             method="POST",
             url=f"{self.oauth_base_url}/token",
             headers=headers,
-            body=data
+            body=data,
         )
 
         response = await self.execute(request)
 
         # Check response status before parsing JSON
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            raise Exception(f"Token request failed with status {response.status}: {response.text}")
+            raise Exception(
+                f"Token request failed with status {response.status}: {response.text}"
+            )
 
         token_data = response.json()
 
@@ -204,7 +221,9 @@ class AirtableRESTClientViaOAuth(HTTPClient):
             self.headers["Authorization"] = f"Bearer {self.access_token}"
             self._oauth_completed = True
 
-        return token_data.get("access_token") if token_data.get("access_token") else None
+        return (
+            token_data.get("access_token") if token_data.get("access_token") else None
+        )
 
 
 class AirtableTokenConfig(BaseModel):
@@ -214,6 +233,7 @@ class AirtableTokenConfig(BaseModel):
         base_url: The base URL of the Airtable API
         ssl: Whether to use SSL (always True for Airtable)
     """
+
     token: str
     base_url: str = "https://api.airtable.com/v0"
     ssl: bool = True
@@ -236,10 +256,11 @@ class AirtableOAuthConfig(BaseModel):
         base_url: The base URL of the Airtable API
         ssl: Whether to use SSL (always True for Airtable)
     """
+
     client_id: str
     client_secret: str
     redirect_uri: str
-    access_token: Optional[str] = None
+    access_token: str | None = None
     base_url: str = "https://api.airtable.com/v0"
     ssl: bool = True
 
@@ -249,7 +270,7 @@ class AirtableOAuthConfig(BaseModel):
             self.client_secret,
             self.redirect_uri,
             self.access_token,
-            self.base_url
+            self.base_url,
         )
 
     def to_dict(self) -> dict:
@@ -260,7 +281,9 @@ class AirtableOAuthConfig(BaseModel):
 class AirtableClient(IClient):
     """Builder class for Airtable clients with different construction methods"""
 
-    def __init__(self, client: AirtableRESTClientViaToken | AirtableRESTClientViaOAuth) -> None:
+    def __init__(
+        self, client: AirtableRESTClientViaToken | AirtableRESTClientViaOAuth
+    ) -> None:
         """Initialize with an Airtable client object"""
         self.client = client
 
@@ -273,7 +296,9 @@ class AirtableClient(IClient):
         return self.client.get_base_url()
 
     @classmethod
-    def build_with_config(cls, config: AirtableTokenConfig | AirtableOAuthConfig) -> "AirtableClient":
+    def build_with_config(
+        cls, config: AirtableTokenConfig | AirtableOAuthConfig
+    ) -> "AirtableClient":
         """Build AirtableClient with configuration
         Args:
             config: AirtableTokenConfig or AirtableOAuthConfig instance
@@ -317,14 +342,16 @@ class AirtableClient(IClient):
                 access_token = credentials.get("access_token", "")
 
                 if not client_id or not client_secret or not redirect_uri:
-                    raise ValueError("Client ID, client secret, and redirect URI required for OAuth auth type")
+                    raise ValueError(
+                        "Client ID, client secret, and redirect URI required for OAuth auth type"
+                    )
 
                 client = AirtableRESTClientViaOAuth(
                     client_id=client_id,
                     client_secret=client_secret,
                     redirect_uri=redirect_uri,
                     access_token=access_token,
-                    base_url=base_url
+                    base_url=base_url,
                 )
 
             elif auth_type == "API_TOKEN":  # Default to token auth
@@ -339,14 +366,18 @@ class AirtableClient(IClient):
             return cls(client)
 
         except Exception as e:
-            logger.error(f"Failed to build Airtable client from services: {str(e)}")
+            logger.error(f"Failed to build Airtable client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(
+        logger: logging.Logger, config_service: ConfigurationService
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for Airtable."""
         try:
-            config = await config_service.get_config("/services/connectors/airtable/config")
+            config = await config_service.get_config(
+                "/services/connectors/airtable/config"
+            )
             return config or {}
         except Exception as e:
             logger.error(f"Failed to get Airtable connector config: {e}")

@@ -3,6 +3,7 @@
 Simple Notion API search example.
 No pagination, no complexity - just search and print results.
 """
+
 import asyncio
 import os
 
@@ -11,6 +12,7 @@ from app.sources.client.discord.discord import DiscordResponse, DiscordTokenConf
 from app.config.configuration_service import ConfigurationService
 import logging
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+
 
 async def main():
     # Set up logging
@@ -21,7 +23,9 @@ async def main():
     etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(logger=logger)
 
     # create configuration service
-    config_service = ConfigurationService(logger=logger, key_value_store=etcd3_encrypted_key_value_store)
+    config_service = ConfigurationService(
+        logger=logger, key_value_store=etcd3_encrypted_key_value_store
+    )
 
     # Build Discord client using configuration service (await the async method)
     try:
@@ -34,7 +38,7 @@ async def main():
         logger.error(f"Failed to create Discord client: {e}")
         print(f"❌ Error creating Discord client: {e}")
         return
-    
+
     # Create data source and use it
     discord_data_source = DiscordDataSource(discord_client)
 
@@ -48,6 +52,7 @@ async def main():
     finally:
         # Properly close the client session
         await discord_client.get_client().close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

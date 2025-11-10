@@ -1,5 +1,5 @@
 import base64
-from typing import Any, Dict, Optional, Union
+from typing import Any
 from urllib.parse import urlencode
 
 from pydantic import BaseModel  # type: ignore
@@ -13,12 +13,13 @@ from app.sources.client.iclient import IClient
 
 class ZendeskResponse(BaseModel):
     """Standardized Zendesk API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return self.model_dump()
 
@@ -34,6 +35,7 @@ class ZendeskRESTClientViaToken(HTTPClient):
         token: The personal access token or API token
         email: The email address associated with the token
     """
+
     def __init__(self, subdomain: str, token: str, email: str) -> None:
         # For Zendesk API token authentication, we need to use Basic auth with email/token
         credentials = f"{email}/token:{token}"
@@ -45,7 +47,7 @@ class ZendeskRESTClientViaToken(HTTPClient):
         # Set the correct Basic authentication header
         self.headers = {
             "Authorization": f"Basic {encoded_credentials}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
 
     def get_base_url(self) -> str:
@@ -66,13 +68,14 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
         redirect_uri: The redirect URI for OAuth flow
         access_token: Optional existing access token
     """
+
     def __init__(
         self,
         subdomain: str,
         client_id: str,
         client_secret: str,
         redirect_uri: str,
-        access_token: Optional[str] = None
+        access_token: str | None = None,
     ) -> None:
         # Initialize with empty token first, will be set after OAuth flow
         super().__init__(access_token or "", "Bearer")
@@ -86,9 +89,11 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
         self.access_token = access_token
 
         # Add Zendesk-specific headers
-        self.headers.update({
-            "Content-Type": "application/json"
-        })
+        self.headers.update(
+            {
+                "Content-Type": "application/json",
+            }
+        )
 
         # If no access token provided, we'll need to go through OAuth flow
         self._oauth_completed = access_token is not None
@@ -108,9 +113,9 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
     def get_authorization_url(
         self,
         scope: str = "read",
-        state: Optional[str] = None,
-        code_challenge: Optional[str] = None,
-        code_challenge_method: str = "S256"
+        state: str | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str = "S256",
     ) -> str:
         """Generate OAuth authorization URL
         Args:
@@ -125,7 +130,7 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
             "response_type": "code",
             "redirect_uri": self.redirect_uri,
             "client_id": self.client_id,
-            "scope": scope
+            "scope": scope,
         }
 
         if state:
@@ -141,10 +146,10 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
         self,
         authorization_code: str,
         scope: str = "read",
-        code_verifier: Optional[str] = None,
-        expires_in: Optional[int] = None,
-        refresh_token_expires_in: Optional[int] = None
-    ) -> Optional[str]:
+        code_verifier: str | None = None,
+        expires_in: int | None = None,
+        refresh_token_expires_in: int | None = None,
+    ) -> str | None:
         """Complete OAuth flow with authorization code
         Args:
             authorization_code: The code received from OAuth callback
@@ -156,26 +161,32 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
             Access token from OAuth exchange
         """
         return await self._exchange_code_for_token(
-            authorization_code, scope, code_verifier, expires_in, refresh_token_expires_in
+            authorization_code,
+            scope,
+            code_verifier,
+            expires_in,
+            refresh_token_expires_in,
         )
 
     async def get_token_via_client_credentials(
         self,
         scope: str = "read",
-        expires_in: Optional[int] = None
-    ) -> Optional[str]:
+        expires_in: int | None = None,
+    ) -> str | None:
         """Get token using client credentials grant type (for confidential clients)
+
         Args:
             scope: OAuth scopes
             expires_in: Optional token expiration in seconds
         Returns:
             Access token from client credentials flow
+
         """
         data = {
             "grant_type": "client_credentials",
             "client_id": self.client_id,
             "client_secret": self.client_secret,
-            "scope": scope
+            "scope": scope,
         }
 
         if expires_in:
@@ -185,15 +196,19 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
             method="POST",
             url=f"{self.oauth_base_url}/tokens",
             headers={"Content-Type": "application/json"},
-            body=data
+            body=data,
         )
 
         response = await self.execute(request)
 
         # Check response status before parsing JSON
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            error_text = await response.text() if hasattr(response, 'text') else "Unknown error"
-            raise Exception(f"Token request failed with status {response.status}: {error_text}")
+            error_text = (
+                await response.text() if hasattr(response, "text") else "Unknown error"
+            )
+            raise Exception(
+                f"Token request failed with status {response.status}: {error_text}"
+            )
 
         token_data = response.json()
         self.access_token = token_data.get("access_token")
@@ -205,7 +220,7 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
 
         return self.access_token
 
-    async def refresh_token(self, refresh_token: str) -> Optional[str]:
+    async def refresh_token(self, refresh_token: str) -> str | None:
         """Refresh OAuth access token
         Args:
             refresh_token: The refresh token from previous OAuth flow
@@ -216,21 +231,23 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "client_id": self.client_id,
-            "client_secret": self.client_secret
+            "client_secret": self.client_secret,
         }
 
         request = HTTPRequest(
             method="POST",
             url=f"{self.oauth_base_url}/tokens",
             headers={"Content-Type": "application/json"},
-            body=data
+            body=data,
         )
 
         response = await self.execute(request)
 
         # Check response status before parsing JSON
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            raise Exception(f"Token refresh failed with status {response.status}: {response.text}")
+            raise Exception(
+                f"Token refresh failed with status {response.status}: {response.text}"
+            )
 
         token_data = response.json()
 
@@ -246,10 +263,10 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
         self,
         code: str,
         scope: str = "read",
-        code_verifier: Optional[str] = None,
-        expires_in: Optional[int] = None,
-        refresh_token_expires_in: Optional[int] = None
-    ) -> Optional[str]:
+        code_verifier: str | None = None,
+        expires_in: int | None = None,
+        refresh_token_expires_in: int | None = None,
+    ) -> str | None:
         """Exchange authorization code for access token
         Args:
             code: Authorization code from callback
@@ -266,7 +283,7 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
             "client_id": self.client_id,
             "client_secret": self.client_secret,
             "redirect_uri": self.redirect_uri,
-            "scope": scope
+            "scope": scope,
         }
 
         if code_verifier:
@@ -282,14 +299,16 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
             method="POST",
             url=f"{self.oauth_base_url}/tokens",
             headers={"Content-Type": "application/json"},
-            body=data
+            body=data,
         )
 
         response = await self.execute(request)
 
         # Check response status before parsing JSON
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            raise Exception(f"Token exchange failed with status {response.status}: {response.text}")
+            raise Exception(
+                f"Token exchange failed with status {response.status}: {response.text}"
+            )
 
         token_data = response.json()
         self.access_token = token_data.get("access_token")
@@ -310,6 +329,7 @@ class ZendeskTokenConfig(BaseModel):
         email: The email address associated with the token
         ssl: Whether to use SSL (always True for Zendesk)
     """
+
     subdomain: str
     token: str
     email: str
@@ -333,11 +353,12 @@ class ZendeskOAuthConfig(BaseModel):
         access_token: Optional existing access token
         ssl: Whether to use SSL (always True for Zendesk)
     """
+
     subdomain: str
     client_id: str
     client_secret: str
     redirect_uri: str
-    access_token: Optional[str] = None
+    access_token: str | None = None
     ssl: bool = True
 
     def create_client(self) -> ZendeskRESTClientViaOAuth:
@@ -346,7 +367,7 @@ class ZendeskOAuthConfig(BaseModel):
             self.client_id,
             self.client_secret,
             self.redirect_uri,
-            self.access_token
+            self.access_token,
         )
 
     def to_dict(self) -> dict:
@@ -359,12 +380,12 @@ class ZendeskClient(IClient):
 
     def __init__(
         self,
-        client: Union[ZendeskRESTClientViaToken, ZendeskRESTClientViaOAuth]
+        client: ZendeskRESTClientViaToken | ZendeskRESTClientViaOAuth,
     ) -> None:
         """Initialize with a Zendesk client object"""
         self.client = client
 
-    def get_client(self) -> Union[ZendeskRESTClientViaToken, ZendeskRESTClientViaOAuth]:
+    def get_client(self) -> ZendeskRESTClientViaToken | ZendeskRESTClientViaOAuth:
         """Return the Zendesk client object"""
         return self.client
 
@@ -379,7 +400,7 @@ class ZendeskClient(IClient):
     @classmethod
     def build_with_config(
         cls,
-        config: Union[ZendeskTokenConfig, ZendeskOAuthConfig]
+        config: ZendeskTokenConfig | ZendeskOAuthConfig,
     ) -> "ZendeskClient":
         """Build ZendeskClient with configuration
         Args:
@@ -413,9 +434,8 @@ class ZendeskClient(IClient):
                 client = ZendeskRESTClientViaToken(
                     subdomain=auth_config.get("subdomain"),
                     token=auth_config.get("apiToken"),
-                    email=auth_config.get("email")
+                    email=auth_config.get("email"),
                 )
-
 
             elif auth_type == "OAUTH":
                 credentials_config = auth_config.get("credentials", {})
@@ -424,7 +444,7 @@ class ZendeskClient(IClient):
                     client_id=auth_config.get("clientId"),
                     client_secret=auth_config.get("clientSecret"),
                     redirect_uri=auth_config.get("redirectUri"),
-                    access_token=credentials_config.get("access_token")
+                    access_token=credentials_config.get("access_token"),
                 )
 
             else:
@@ -433,14 +453,18 @@ class ZendeskClient(IClient):
             return cls(client)
 
         except Exception as e:
-            logger.error(f"Failed to build Zendesk client from services: {str(e)}")
+            logger.error(f"Failed to build Zendesk client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(
+        logger, config_service: ConfigurationService
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for Zendesk."""
         try:
-            config = await config_service.get_config("/services/connectors/zendesk/config")
+            config = await config_service.get_config(
+                "/services/connectors/zendesk/config"
+            )
             return config or {}
         except Exception as e:
             logger.error(f"Failed to get Zendesk connector config: {e}")

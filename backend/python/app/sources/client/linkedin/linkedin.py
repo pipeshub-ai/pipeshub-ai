@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from linkedin_api.clients.restli.client import RestliClient
 from pydantic import BaseModel
@@ -18,12 +18,15 @@ class LinkedInOAuth2Config(BaseModel):
         version_string: Optional API version string in format YYYYMM or YYYYMM.RR
                        (e.g., "202406", "202412"). If provided, uses versioned
                        APIs base URL (https://api.linkedin.com/rest)
+
     """
+
     access_token: str
-    version_string: Optional[str] = None
+    version_string: str | None = None
 
     class Config:
         """Pydantic configuration"""
+
         arbitrary_types_allowed = True
 
     def to_dict(self) -> dict:
@@ -56,18 +59,20 @@ class LinkedInClient(IClient):
         ...     access_token=client.access_token,
         ...     version_string=client.version_string
         ... )
+
     """
 
     def __init__(
         self,
         access_token: str,
-        version_string: Optional[str] = None
+        version_string: str | None = None,
     ) -> None:
         """Initialize LinkedIn client with OAuth2 credentials
 
         Args:
             access_token: OAuth 2.0 access token
             version_string: Optional API version (e.g., "202406")
+
         """
         self.access_token = access_token
         self.version_string = version_string
@@ -78,11 +83,12 @@ class LinkedInClient(IClient):
 
         Returns:
             RestliClient instance from official LinkedIn SDK
+
         """
         return self._restli_client
 
     @classmethod
-    def build_with_config(cls, config: LinkedInOAuth2Config) -> 'LinkedInClient':
+    def build_with_config(cls, config: LinkedInOAuth2Config) -> "LinkedInClient":
         """Build LinkedInClient with configuration
 
         Args:
@@ -90,10 +96,11 @@ class LinkedInClient(IClient):
 
         Returns:
             LinkedInClient instance
+
         """
         return cls(
             access_token=config.access_token,
-            version_string=config.version_string
+            version_string=config.version_string,
         )
 
     @classmethod
@@ -101,7 +108,7 @@ class LinkedInClient(IClient):
         cls,
         logger: object,
         config_service: ConfigurationService,
-    ) -> 'LinkedInClient':
+    ) -> "LinkedInClient":
         """Build LinkedInClient using configuration service
 
         Args:
@@ -110,6 +117,7 @@ class LinkedInClient(IClient):
 
         Returns:
             LinkedInClient instance
+
         """
         config = await cls._get_connector_config(logger, config_service)
         if not config:
@@ -126,10 +134,14 @@ class LinkedInClient(IClient):
         return cls(client)
 
     @staticmethod
-    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(
+        logger, config_service: ConfigurationService
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for LinkedIn."""
         try:
-            config = await config_service.get_config("/services/connectors/linkedin/config")
+            config = await config_service.get_config(
+                "/services/connectors/linkedin/config"
+            )
             return config or {}
         except Exception as e:
             logger.error(f"Failed to get LinkedIn connector config: {e}")

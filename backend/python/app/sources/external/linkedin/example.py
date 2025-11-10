@@ -1,8 +1,8 @@
 """LinkedIn API Test - All OpenID Connect Methods"""
+
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import requests
 
@@ -11,73 +11,100 @@ HTTP_SUCCESS_THRESHOLD = 400
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv(Path(__file__).parent.parent.parent.parent.parent / ".env")
 except Exception:
     pass
 
-def call_api(endpoint: str, token: str, method: str = "GET", data: Optional[dict] = None, headers_override: Optional[dict] = None) -> dict:
-    headers = headers_override or {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+def call_api(
+    endpoint: str,
+    token: str,
+    method: str = "GET",
+    data: dict | None = None,
+    headers_override: dict | None = None,
+) -> dict:
+    headers = headers_override or {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
     url = f"https://api.linkedin.com{endpoint}"
     r = requests.request(method, url, headers=headers, json=data)
-    return {"status": r.status_code, "ok": r.status_code < HTTP_SUCCESS_THRESHOLD, "data": r.json() if r.text and 'application/json' in r.headers.get('content-type', '') else r.text}
+    return {
+        "status": r.status_code,
+        "ok": r.status_code < HTTP_SUCCESS_THRESHOLD,
+        "data": r.json()
+        if r.text and "application/json" in r.headers.get("content-type", "")
+        else r.text,
+    }
 
-def test_userinfo(token: str) -> Optional[str]:
+
+def test_userinfo(token: str) -> str | None:
     """Get user profile information via OpenID Connect"""
     print("\n1. TESTING: User Info (/v2/userinfo)")
     r = call_api("/v2/userinfo", token)
     if r["ok"]:
-        data = r['data']
+        data = r["data"]
         print(f"   ✅ {r['status']} - Name: {data.get('name')}")
         print(f"      Email: {data.get('email')}")
         print(f"      User ID: {data.get('sub')}")
         print(f"      Locale: {data.get('locale')}")
-        return data.get('sub')
+        return data.get("sub")
     print(f"   ❌ {r['status']} - {r['data']}")
     return None
 
-def test_media_upload(token: str, user_id: str) -> Optional[str]:
+
+def test_media_upload(token: str, user_id: str) -> str | None:
     """Register an image upload (Step 1 of media upload process)"""
     print("\n2. TESTING: Media Upload Registration (/v2/assets?action=registerUpload)")
     data = {
         "registerUploadRequest": {
             "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
             "owner": f"urn:li:person:{user_id}",
-            "serviceRelationships": [{
-                "relationshipType": "OWNER",
-                "identifier": "urn:li:userGeneratedContent"
-            }]
-        }
+            "serviceRelationships": [
+                {
+                    "relationshipType": "OWNER",
+                    "identifier": "urn:li:userGeneratedContent",
+                }
+            ],
+        },
     }
     r = call_api("/v2/assets?action=registerUpload", token, "POST", data)
     if r["ok"]:
         print(f"   ✅ {r['status']} - Upload registered")
-        asset_id = r['data']['value']['asset']
+        asset_id = r["data"]["value"]["asset"]
         print(f"      Asset ID: {asset_id}")
         return asset_id
     print(f"   ❌ {r['status']} - {r['data']}")
     return None
 
-def test_video_upload_registration(token: str, user_id: str) -> Optional[str]:
+
+def test_video_upload_registration(token: str, user_id: str) -> str | None:
     """Register a video upload (Step 1 of video upload process)"""
     print("\n3. TESTING: Video Upload Registration (/v2/assets?action=registerUpload)")
     data = {
         "registerUploadRequest": {
             "recipes": ["urn:li:digitalmediaRecipe:feedshare-video"],
             "owner": f"urn:li:person:{user_id}",
-            "serviceRelationships": [{
-                "relationshipType": "OWNER",
-                "identifier": "urn:li:userGeneratedContent"
-            }]
-        }
+            "serviceRelationships": [
+                {
+                    "relationshipType": "OWNER",
+                    "identifier": "urn:li:userGeneratedContent",
+                }
+            ],
+        },
     }
     r = call_api("/v2/assets?action=registerUpload", token, "POST", data)
     if r["ok"]:
         print(f"   ✅ {r['status']} - Video upload registered")
-        return r['data']['value']['asset']
+        return r["data"]["value"]["asset"]
     print(f"   ❌ {r['status']} - {r['data']}")
     return None
 
-def test_ugc_post_creation(token: str, user_id: str, asset_id: Optional[str] = None) -> Optional[str]:
+
+def test_ugc_post_creation(
+    token: str, user_id: str, asset_id: str | None = None
+) -> str | None:
     """Create a UGC post (requires w_member_social scope)"""
     print("\n4. TESTING: Create UGC Post (/v2/ugcPosts)")
 
@@ -90,33 +117,38 @@ def test_ugc_post_creation(token: str, user_id: str, asset_id: Optional[str] = N
         "specificContent": {
             "com.linkedin.ugc.ShareContent": {
                 "shareCommentary": {
-                    "text": f"Test post from LinkedIn OpenID Connect API 🚀 [{timestamp}]"
+                    "text": f"Test post from LinkedIn OpenID Connect API 🚀 [{timestamp}]",
                 },
-                "shareMediaCategory": "NONE"
-            }
+                "shareMediaCategory": "NONE",
+            },
         },
         "visibility": {
-            "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
-        }
+            "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC",
+        },
     }
 
     # Add media if asset provided
     if asset_id:
-        post_data["specificContent"]["com.linkedin.ugc.ShareContent"]["shareMediaCategory"] = "IMAGE"
-        post_data["specificContent"]["com.linkedin.ugc.ShareContent"]["media"] = [{
-            "status": "READY",
-            "media": asset_id
-        }]
+        post_data["specificContent"]["com.linkedin.ugc.ShareContent"][
+            "shareMediaCategory"
+        ] = "IMAGE"
+        post_data["specificContent"]["com.linkedin.ugc.ShareContent"]["media"] = [
+            {
+                "status": "READY",
+                "media": asset_id,
+            }
+        ]
 
     r = call_api("/v2/ugcPosts", token, "POST", post_data)
     if r["ok"]:
-        post_id = r['data'].get('id')
+        post_id = r["data"].get("id")
         print(f"   ✅ {r['status']} - Post created: {post_id}")
         return post_id
     print(f"   ❌ {r['status']} - {r['data']}")
     return None
 
-def test_multi_image_upload(token: str, user_id: str) -> Optional[list]:
+
+def test_multi_image_upload(token: str, user_id: str) -> list | None:
     """Register multiple images for carousel post"""
     print("\n5. TESTING: Multi-Image Upload Registration (Carousel)")
     assets = []
@@ -125,21 +157,24 @@ def test_multi_image_upload(token: str, user_id: str) -> Optional[list]:
             "registerUploadRequest": {
                 "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
                 "owner": f"urn:li:person:{user_id}",
-                "serviceRelationships": [{
-                    "relationshipType": "OWNER",
-                    "identifier": "urn:li:userGeneratedContent"
-                }]
-            }
+                "serviceRelationships": [
+                    {
+                        "relationshipType": "OWNER",
+                        "identifier": "urn:li:userGeneratedContent",
+                    }
+                ],
+            },
         }
         r = call_api("/v2/assets?action=registerUpload", token, "POST", data)
         if r["ok"]:
-            assets.append(r['data']['value']['asset'])
+            assets.append(r["data"]["value"]["asset"])
 
     if assets:
         print(f"   ✅ Registered {len(assets)} images for carousel")
         return assets
     print("   ❌ Failed to register images")
     return None
+
 
 def main() -> None:
     token = os.getenv("LINKEDIN_ACCESS_TOKEN")
@@ -168,7 +203,9 @@ def main() -> None:
 
     # Test 5: Create post with image (if upload succeeded)
     if asset_id:
-        print("\n   NOTE: To complete image post, upload image to URL, then create post")
+        print(
+            "\n   NOTE: To complete image post, upload image to URL, then create post"
+        )
 
     # Test 5: Multi-image carousel registration
     carousel_assets = test_multi_image_upload(token, user_id)
@@ -183,6 +220,7 @@ def main() -> None:
     print(f"  Post Creation: {'✅' if post_id else '❌'}")
     print(f"  Carousel Images: {'✅' if carousel_assets else '❌'}")
     print("\nNOTE: w_member_social scope required for post creation")
+
 
 if __name__ == "__main__":
     main()

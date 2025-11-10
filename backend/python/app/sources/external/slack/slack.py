@@ -1,10 +1,11 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.sources.client.slack.slack import SlackClient, SlackResponse
 
 # Set up logger
 logger = logging.getLogger(__name__)
+
 
 class SlackDataSource:
     """Auto-generated Slack Web API client wrapper.
@@ -13,6 +14,7 @@ class SlackDataSource:
     - **No fallback** to `api_call`: if SDK alias missing, returns SlackResponse with error
     - All responses wrapped in standardized SlackResponse format
     """
+
     def __init__(self, client: SlackClient) -> None:
         self.client = client.get_web_client()
 
@@ -20,11 +22,13 @@ class SlackDataSource:
         """Handle Slack API response and convert to standardized format"""
         try:
             if not response:
-                return SlackResponse(success=False, error="Empty response from Slack API")
+                return SlackResponse(
+                    success=False, error="Empty response from Slack API"
+                )
             # Extract data from SlackResponse object
-            if hasattr(response, 'data'):
+            if hasattr(response, "data"):
                 data = response.data
-            elif hasattr(response, 'get'):
+            elif hasattr(response, "get"):
                 # Handle dict-like responses
                 data = dict(response)
             else:
@@ -36,17 +40,17 @@ class SlackDataSource:
 
             # Most Slack API responses have an 'ok' field
             if isinstance(data, dict):
-                if 'ok' in data:
-                    success = data.get('ok', False)
+                if "ok" in data:
+                    success = data.get("ok", False)
                     if not success:
-                        error_msg = data.get('error', 'Unknown Slack API error')
-                elif 'error' in data:
+                        error_msg = data.get("error", "Unknown Slack API error")
+                elif "error" in data:
                     success = False
-                    error_msg = data.get('error')
+                    error_msg = data.get("error")
             return SlackResponse(
                 success=success,
                 data=data,
-                error=error_msg
+                error=error_msg,
             )
         except Exception as e:
             logger.error(f"Error handling Slack response: {e}")
@@ -61,37 +65,37 @@ class SlackDataSource:
         if "not_allowed_token_type" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Slack token type not allowed for this operation. Please ensure you're using a bot token (xoxb-) with the required scopes. For search operations, you need the 'search:read' scope."
+                error="Slack token type not allowed for this operation. Please ensure you're using a bot token (xoxb-) with the required scopes. For search operations, you need the 'search:read' scope.",
             )
-        elif "invalid_auth" in error_msg:
+        if "invalid_auth" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Invalid Slack token. Please check your token configuration."
+                error="Invalid Slack token. Please check your token configuration.",
             )
-        elif "missing_scope" in error_msg:
+        if "missing_scope" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Missing required Slack scope. Please add the necessary scopes to your bot token."
+                error="Missing required Slack scope. Please add the necessary scopes to your bot token.",
             )
-        elif "account_inactive" in error_msg:
+        if "account_inactive" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Slack account is inactive. Please check your workspace status."
+                error="Slack account is inactive. Please check your workspace status.",
             )
-        elif "token_revoked" in error_msg:
+        if "token_revoked" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Slack token has been revoked. Please generate a new token."
+                error="Slack token has been revoked. Please generate a new token.",
             )
-        elif "channel_not_found" in error_msg:
+        if "channel_not_found" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Channel not found. The channel may not exist, be private, or the bot may not have access to it."
+                error="Channel not found. The channel may not exist, be private, or the bot may not have access to it.",
             )
-        elif "not_in_channel" in error_msg:
+        if "not_in_channel" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Bot is not a member of this channel. Please invite the bot to the channel first."
+                error="Bot is not a member of this channel. Please invite the bot to the channel first.",
             )
 
         return SlackResponse(success=False, error=error_msg)
@@ -100,18 +104,18 @@ class SlackDataSource:
         """Check what scopes the current token has access to"""
         try:
             # Use auth.test to get token info
-            response = getattr(self.client, 'auth_test')()
+            response = self.client.auth_test()
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-
-    async def admin_apps_approve(self,
+    async def admin_apps_approve(
+        self,
         *,
-        app_id: Optional[str] = None,
-        request_id: Optional[str] = None,
-        team_id: Optional[str] = None,
-        **kwargs
+        app_id: str | None = None,
+        request_id: str | None = None,
+        team_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_apps_approve
 
@@ -122,41 +126,46 @@ class SlackDataSource:
             app_id (optional): The id of the app to approve.
             request_id (optional): The id of the request to approve.
             team_id (optional): The ID of the team.
+
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_apps_approve`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if app_id is not None:
-            kwargs_api['app_id'] = app_id
+            kwargs_api["app_id"] = app_id
         if request_id is not None:
-            kwargs_api['request_id'] = request_id
+            kwargs_api["request_id"] = request_id
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_apps_approve') or not callable(getattr(self.client, 'admin_apps_approve')):
+        if not hasattr(self.client, "admin_apps_approve") or not callable(
+            self.client.admin_apps_approve
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_apps_approve"
+                error="Slack client is missing required method alias: admin_apps_approve",
             )
 
         try:
-            response = getattr(self.client, 'admin_apps_approve')(**kwargs_api)
+            response = self.client.admin_apps_approve(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_apps_approved_list(self,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        team_id: Optional[str] = None,
-        enterprise_id: Optional[str] = None,
-        **kwargs
+    async def admin_apps_approved_list(
+        self,
+        limit: int | None = None,
+        cursor: str | None = None,
+        team_id: str | None = None,
+        enterprise_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_apps_approved_list
 
@@ -167,43 +176,48 @@ class SlackDataSource:
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page
             team_id (optional): The ID of the team.
             enterprise_id (optional): The ID of the enterprise.
+
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_apps_approved_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if enterprise_id is not None:
-            kwargs_api['enterprise_id'] = enterprise_id
+            kwargs_api["enterprise_id"] = enterprise_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_apps_approved_list') or not callable(getattr(self.client, 'admin_apps_approved_list')):
+        if not hasattr(self.client, "admin_apps_approved_list") or not callable(
+            self.client.admin_apps_approved_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_apps_approved_list"
+                error="Slack client is missing required method alias: admin_apps_approved_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_apps_approved_list')(**kwargs_api)
+            response = self.client.admin_apps_approved_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_apps_requests_list(self,
+    async def admin_apps_requests_list(
+        self,
         *,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        team_id: Optional[str] = None,
-        **kwargs
+        limit: int | None = None,
+        cursor: str | None = None,
+        team_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_apps_requests_list
 
@@ -213,41 +227,46 @@ class SlackDataSource:
             limit (optional): The maximum number of items to return. Must be between 1 - 1000 both inclusive.
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page
             team_id (optional): The ID of the team.
+
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_apps_requests_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_apps_requests_list') or not callable(getattr(self.client, 'admin_apps_requests_list')):
+        if not hasattr(self.client, "admin_apps_requests_list") or not callable(
+            self.client.admin_apps_requests_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_apps_requests_list"
+                error="Slack client is missing required method alias: admin_apps_requests_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_apps_requests_list')(**kwargs_api)
+            response = self.client.admin_apps_requests_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_apps_restrict(self,
+    async def admin_apps_restrict(
+        self,
         *,
-        app_id: Optional[str] = None,
-        request_id: Optional[str] = None,
-        team_id: Optional[str] = None,
-        **kwargs
+        app_id: str | None = None,
+        request_id: str | None = None,
+        team_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_apps_restrict
 
@@ -258,42 +277,47 @@ class SlackDataSource:
             app_id (optional): The id of the app to restrict.
             request_id (optional): The id of the request to restrict.
             team_id (optional): The ID of the team.
+
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_apps_restrict`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if app_id is not None:
-            kwargs_api['app_id'] = app_id
+            kwargs_api["app_id"] = app_id
         if request_id is not None:
-            kwargs_api['request_id'] = request_id
+            kwargs_api["request_id"] = request_id
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_apps_restrict') or not callable(getattr(self.client, 'admin_apps_restrict')):
+        if not hasattr(self.client, "admin_apps_restrict") or not callable(
+            self.client.admin_apps_restrict
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_apps_restrict"
+                error="Slack client is missing required method alias: admin_apps_restrict",
             )
 
         try:
-            response = getattr(self.client, 'admin_apps_restrict')(**kwargs_api)
+            response = self.client.admin_apps_restrict(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_apps_restricted_list(self,
+    async def admin_apps_restricted_list(
+        self,
         *,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        team_id: Optional[str] = None,
-        enterprise_id: Optional[str] = None,
-        **kwargs
+        limit: int | None = None,
+        cursor: str | None = None,
+        team_id: str | None = None,
+        enterprise_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_apps_restricted_list
 
@@ -305,41 +329,46 @@ class SlackDataSource:
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page
             team_id (optional): The ID of the team.
             enterprise_id (optional): The ID of the enterprise.
+
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_apps_restricted_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if enterprise_id is not None:
-            kwargs_api['enterprise_id'] = enterprise_id
+            kwargs_api["enterprise_id"] = enterprise_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_apps_restricted_list') or not callable(getattr(self.client, 'admin_apps_restricted_list')):
+        if not hasattr(self.client, "admin_apps_restricted_list") or not callable(
+            self.client.admin_apps_restricted_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_apps_restricted_list"
+                error="Slack client is missing required method alias: admin_apps_restricted_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_apps_restricted_list')(**kwargs_api)
+            response = self.client.admin_apps_restricted_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_archive(self,
+    async def admin_conversations_archive(
+        self,
         *,
         channel_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_archive
 
@@ -354,29 +383,33 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_archive`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_archive') or not callable(getattr(self.client, 'admin_conversations_archive')):
+        if not hasattr(self.client, "admin_conversations_archive") or not callable(
+            self.client.admin_conversations_archive
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_archive"
+                error="Slack client is missing required method alias: admin_conversations_archive",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_archive')(**kwargs_api)
+            response = self.client.admin_conversations_archive(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_convert_to_private(self,
+    async def admin_conversations_convert_to_private(
+        self,
         *,
         channel_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_convertToPrivate
 
@@ -391,33 +424,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_convertToPrivate`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_convertToPrivate') or not callable(getattr(self.client, 'admin_conversations_convertToPrivate')):
+        if not hasattr(
+            self.client, "admin_conversations_convertToPrivate"
+        ) or not callable(self.client.admin_conversations_convertToPrivate):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_convertToPrivate"
+                error="Slack client is missing required method alias: admin_conversations_convertToPrivate",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_convertToPrivate')(**kwargs_api)
+            response = self.client.admin_conversations_convertToPrivate(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_create(self,
+    async def admin_conversations_create(
+        self,
         *,
         name: str,
         is_private: bool,
-        description: Optional[str] = None,
-        org_wide: Optional[bool] = None,
-        team_id: Optional[str] = None,
-        **kwargs
+        description: str | None = None,
+        org_wide: bool | None = None,
+        team_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_create
 
@@ -437,37 +474,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_create`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if description is not None:
-            kwargs_api['description'] = description
+            kwargs_api["description"] = description
         if is_private is not None:
-            kwargs_api['is_private'] = is_private
+            kwargs_api["is_private"] = is_private
         if org_wide is not None:
-            kwargs_api['org_wide'] = org_wide
+            kwargs_api["org_wide"] = org_wide
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_create') or not callable(getattr(self.client, 'admin_conversations_create')):
+        if not hasattr(self.client, "admin_conversations_create") or not callable(
+            self.client.admin_conversations_create
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_create"
+                error="Slack client is missing required method alias: admin_conversations_create",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_create')(**kwargs_api)
+            response = self.client.admin_conversations_create(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_delete(self,
+    async def admin_conversations_delete(
+        self,
         *,
         channel_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_delete
 
@@ -483,30 +524,34 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_delete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_delete') or not callable(getattr(self.client, 'admin_conversations_delete')):
+        if not hasattr(self.client, "admin_conversations_delete") or not callable(
+            self.client.admin_conversations_delete
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_delete"
+                error="Slack client is missing required method alias: admin_conversations_delete",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_delete')(**kwargs_api)
+            response = self.client.admin_conversations_delete(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_disconnect_shared(self,
+    async def admin_conversations_disconnect_shared(
+        self,
         *,
         channel_id: str,
-        leaving_team_ids: Optional[List[str]] = None,
-        **kwargs
+        leaving_team_ids: list[str] | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_disconnectShared
 
@@ -523,34 +568,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_disconnectShared`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if leaving_team_ids is not None:
-            kwargs_api['leaving_team_ids'] = leaving_team_ids
+            kwargs_api["leaving_team_ids"] = leaving_team_ids
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_disconnectShared') or not callable(getattr(self.client, 'admin_conversations_disconnectShared')):
+        if not hasattr(
+            self.client, "admin_conversations_disconnectShared"
+        ) or not callable(self.client.admin_conversations_disconnectShared):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_disconnectShared"
+                error="Slack client is missing required method alias: admin_conversations_disconnectShared",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_disconnectShared')(**kwargs_api)
+            response = self.client.admin_conversations_disconnectShared(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_ekm_list_original_connected_channel_info(self,
+    async def admin_conversations_ekm_list_original_connected_channel_info(
+        self,
         *,
-        channel_ids: Optional[List[str]] = None,
-        team_ids: Optional[List[str]] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        channel_ids: list[str] | None = None,
+        team_ids: list[str] | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_ekm_listOriginalConnectedChannelInfo
 
@@ -568,36 +617,46 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_ekm_listOriginalConnectedChannelInfo`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel_ids is not None:
-            kwargs_api['channel_ids'] = channel_ids
+            kwargs_api["channel_ids"] = channel_ids
         if team_ids is not None:
-            kwargs_api['team_ids'] = team_ids
+            kwargs_api["team_ids"] = team_ids
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_ekm_listOriginalConnectedChannelInfo') or not callable(getattr(self.client, 'admin_conversations_ekm_listOriginalConnectedChannelInfo')):
+        if not hasattr(
+            self.client, "admin_conversations_ekm_listOriginalConnectedChannelInfo"
+        ) or not callable(
+            self.client.admin_conversations_ekm_listOriginalConnectedChannelInfo
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_ekm_listOriginalConnectedChannelInfo"
+                error="Slack client is missing required method alias: admin_conversations_ekm_listOriginalConnectedChannelInfo",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_ekm_listOriginalConnectedChannelInfo')(**kwargs_api)
+            response = (
+                self.client.admin_conversations_ekm_listOriginalConnectedChannelInfo(
+                    **kwargs_api
+                )
+            )
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_get_conversation_prefs(self,
+    async def admin_conversations_get_conversation_prefs(
+        self,
         *,
         channel_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_getConversationPrefs
 
@@ -613,30 +672,36 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_getConversationPrefs`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if kwargs:
             kwargs_api.update(kwargs)
-        if not hasattr(self.client, 'admin_conversations_getConversationPrefs') or not callable(getattr(self.client, 'admin_conversations_getConversationPrefs')):
+        if not hasattr(
+            self.client, "admin_conversations_getConversationPrefs"
+        ) or not callable(self.client.admin_conversations_getConversationPrefs):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_getConversationPrefs"
+                error="Slack client is missing required method alias: admin_conversations_getConversationPrefs",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_getConversationPrefs')(**kwargs_api)
+            response = self.client.admin_conversations_getConversationPrefs(
+                **kwargs_api
+            )
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_get_teams(self,
+    async def admin_conversations_get_teams(
+        self,
         *,
         channel_id: str,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_getTeams
 
@@ -654,34 +719,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_getTeams`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_getTeams') or not callable(getattr(self.client, 'admin_conversations_getTeams')):
+        if not hasattr(self.client, "admin_conversations_getTeams") or not callable(
+            self.client.admin_conversations_getTeams
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_getTeams"
+                error="Slack client is missing required method alias: admin_conversations_getTeams",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_getTeams')(**kwargs_api)
+            response = self.client.admin_conversations_getTeams(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_invite(self,
+    async def admin_conversations_invite(
+        self,
         *,
-        user_ids: List[str],
+        user_ids: list[str],
         channel_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_invite
 
@@ -697,32 +766,36 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_invite`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user_ids is not None:
-            kwargs_api['user_ids'] = user_ids
+            kwargs_api["user_ids"] = user_ids
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_invite') or not callable(getattr(self.client, 'admin_conversations_invite')):
+        if not hasattr(self.client, "admin_conversations_invite") or not callable(
+            self.client.admin_conversations_invite
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_invite"
+                error="Slack client is missing required method alias: admin_conversations_invite",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_invite')(**kwargs_api)
+            response = self.client.admin_conversations_invite(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_rename(self,
+    async def admin_conversations_rename(
+        self,
         *,
         channel_id: str,
         name: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_rename
 
@@ -738,33 +811,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_rename`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_rename') or not callable(getattr(self.client, 'admin_conversations_rename')):
+        if not hasattr(self.client, "admin_conversations_rename") or not callable(
+            self.client.admin_conversations_rename
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_rename"
+                error="Slack client is missing required method alias: admin_conversations_rename",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_rename')(**kwargs_api)
+            response = self.client.admin_conversations_rename(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_restrict_access_add_group(self,
+    async def admin_conversations_restrict_access_add_group(
+        self,
         *,
         group_id: str,
         channel_id: str,
-        team_id: Optional[str] = None,
-        **kwargs
+        team_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_restrictAccess_addGroup
 
@@ -782,34 +859,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_restrictAccess_addGroup`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if group_id is not None:
-            kwargs_api['group_id'] = group_id
+            kwargs_api["group_id"] = group_id
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_restrictAccess_addGroup') or not callable(getattr(self.client, 'admin_conversations_restrictAccess_addGroup')):
+        if not hasattr(
+            self.client, "admin_conversations_restrictAccess_addGroup"
+        ) or not callable(self.client.admin_conversations_restrictAccess_addGroup):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_restrictAccess_addGroup"
+                error="Slack client is missing required method alias: admin_conversations_restrictAccess_addGroup",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_restrictAccess_addGroup')(**kwargs_api)
+            response = self.client.admin_conversations_restrictAccess_addGroup(
+                **kwargs_api
+            )
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_restrict_access_list_groups(self,
+    async def admin_conversations_restrict_access_list_groups(
+        self,
         *,
         channel_id: str,
-        team_id: Optional[str] = None,
-        **kwargs
+        team_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_restrictAccess_listGroups
 
@@ -826,33 +909,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_restrictAccess_listGroups`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_restrictAccess_listGroups') or not callable(getattr(self.client, 'admin_conversations_restrictAccess_listGroups')):
+        if not hasattr(
+            self.client, "admin_conversations_restrictAccess_listGroups"
+        ) or not callable(self.client.admin_conversations_restrictAccess_listGroups):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_restrictAccess_listGroups"
+                error="Slack client is missing required method alias: admin_conversations_restrictAccess_listGroups",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_restrictAccess_listGroups')(**kwargs_api)
+            response = self.client.admin_conversations_restrictAccess_listGroups(
+                **kwargs_api
+            )
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_restrict_access_remove_group(self,
+    async def admin_conversations_restrict_access_remove_group(
+        self,
         *,
         team_id: str,
         group_id: str,
         channel_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_restrictAccess_removeGroup
 
@@ -870,40 +959,46 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_restrictAccess_removeGroup`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if group_id is not None:
-            kwargs_api['group_id'] = group_id
+            kwargs_api["group_id"] = group_id
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_restrictAccess_removeGroup') or not callable(getattr(self.client, 'admin_conversations_restrictAccess_removeGroup')):
+        if not hasattr(
+            self.client, "admin_conversations_restrictAccess_removeGroup"
+        ) or not callable(self.client.admin_conversations_restrictAccess_removeGroup):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_restrictAccess_removeGroup"
+                error="Slack client is missing required method alias: admin_conversations_restrictAccess_removeGroup",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_restrictAccess_removeGroup')(**kwargs_api)
+            response = self.client.admin_conversations_restrictAccess_removeGroup(
+                **kwargs_api
+            )
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_search(self,
+    async def admin_conversations_search(
+        self,
         *,
-        team_ids: Optional[List[str]] = None,
-        query: Optional[str] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        search_channel_types: Optional[str] = None,
-        sort: Optional[str] = None,
-        sort_dir: Optional[str] = None,
-        **kwargs
+        team_ids: list[str] | None = None,
+        query: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        search_channel_types: str | None = None,
+        sort: str | None = None,
+        sort_dir: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_search
 
@@ -925,43 +1020,47 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_search`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_ids is not None:
-            kwargs_api['team_ids'] = team_ids
+            kwargs_api["team_ids"] = team_ids
         if query is not None:
-            kwargs_api['query'] = query
+            kwargs_api["query"] = query
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if search_channel_types is not None:
-            kwargs_api['search_channel_types'] = search_channel_types
+            kwargs_api["search_channel_types"] = search_channel_types
         if sort is not None:
-            kwargs_api['sort'] = sort
+            kwargs_api["sort"] = sort
         if sort_dir is not None:
-            kwargs_api['sort_dir'] = sort_dir
+            kwargs_api["sort_dir"] = sort_dir
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_search') or not callable(getattr(self.client, 'admin_conversations_search')):
+        if not hasattr(self.client, "admin_conversations_search") or not callable(
+            self.client.admin_conversations_search
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_search"
+                error="Slack client is missing required method alias: admin_conversations_search",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_search')(**kwargs_api)
+            response = self.client.admin_conversations_search(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_set_conversation_prefs(self,
+    async def admin_conversations_set_conversation_prefs(
+        self,
         *,
         channel_id: str,
-        prefs: Dict[str, Any],
-        **kwargs
+        prefs: dict[str, Any],
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_setConversationPrefs
 
@@ -978,35 +1077,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_setConversationPrefs`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if prefs is not None:
-            kwargs_api['prefs'] = prefs
+            kwargs_api["prefs"] = prefs
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_setConversationPrefs') or not callable(getattr(self.client, 'admin_conversations_setConversationPrefs')):
+        if not hasattr(
+            self.client, "admin_conversations_setConversationPrefs"
+        ) or not callable(self.client.admin_conversations_setConversationPrefs):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_setConversationPrefs"
+                error="Slack client is missing required method alias: admin_conversations_setConversationPrefs",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_setConversationPrefs')(**kwargs_api)
+            response = self.client.admin_conversations_setConversationPrefs(
+                **kwargs_api
+            )
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_set_teams(self,
+    async def admin_conversations_set_teams(
+        self,
         *,
         channel_id: str,
-        team_id: Optional[str] = None,
-        target_team_ids: Optional[List[str]] = None,
-        org_channel: Optional[str] = None,
-        **kwargs
+        team_id: str | None = None,
+        target_team_ids: list[str] | None = None,
+        org_channel: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_setTeams
 
@@ -1025,36 +1130,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_setTeams`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if target_team_ids is not None:
-            kwargs_api['target_team_ids'] = target_team_ids
+            kwargs_api["target_team_ids"] = target_team_ids
         if org_channel is not None:
-            kwargs_api['org_channel'] = org_channel
+            kwargs_api["org_channel"] = org_channel
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_setTeams') or not callable(getattr(self.client, 'admin_conversations_setTeams')):
+        if not hasattr(self.client, "admin_conversations_setTeams") or not callable(
+            self.client.admin_conversations_setTeams
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_setTeams"
+                error="Slack client is missing required method alias: admin_conversations_setTeams",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_setTeams')(**kwargs_api)
+            response = self.client.admin_conversations_setTeams(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_conversations_unarchive(self,
+    async def admin_conversations_unarchive(
+        self,
         *,
         channel_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_conversations_unarchive
 
@@ -1070,31 +1179,35 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_unarchive`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel_id is not None:
-            kwargs_api['channel_id'] = channel_id
+            kwargs_api["channel_id"] = channel_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_conversations_unarchive') or not callable(getattr(self.client, 'admin_conversations_unarchive')):
+        if not hasattr(self.client, "admin_conversations_unarchive") or not callable(
+            self.client.admin_conversations_unarchive
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_conversations_unarchive"
+                error="Slack client is missing required method alias: admin_conversations_unarchive",
             )
 
         try:
-            response = getattr(self.client, 'admin_conversations_unarchive')(**kwargs_api)
+            response = self.client.admin_conversations_unarchive(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_emoji_add(self,
+    async def admin_emoji_add(
+        self,
         *,
         name: str,
         url: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_emoji_add
 
@@ -1111,33 +1224,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_emoji_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if url is not None:
-            kwargs_api['url'] = url
+            kwargs_api["url"] = url
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_emoji_add') or not callable(getattr(self.client, 'admin_emoji_add')):
+        if not hasattr(self.client, "admin_emoji_add") or not callable(
+            self.client.admin_emoji_add
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_emoji_add"
+                error="Slack client is missing required method alias: admin_emoji_add",
             )
 
         try:
-            response = getattr(self.client, 'admin_emoji_add')(**kwargs_api)
+            response = self.client.admin_emoji_add(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_emoji_add_alias(self,
+    async def admin_emoji_add_alias(
+        self,
         *,
         name: str,
         alias_for: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_emoji_addAlias
 
@@ -1153,33 +1270,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_emoji_addAlias`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if alias_for is not None:
-            kwargs_api['alias_for'] = alias_for
+            kwargs_api["alias_for"] = alias_for
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_emoji_addAlias') or not callable(getattr(self.client, 'admin_emoji_addAlias')):
+        if not hasattr(self.client, "admin_emoji_addAlias") or not callable(
+            self.client.admin_emoji_addAlias
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_emoji_addAlias"
+                error="Slack client is missing required method alias: admin_emoji_addAlias",
             )
 
         try:
-            response = getattr(self.client, 'admin_emoji_addAlias')(**kwargs_api)
+            response = self.client.admin_emoji_addAlias(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_emoji_list(self,
+    async def admin_emoji_list(
+        self,
         *,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_emoji_list
 
@@ -1196,32 +1317,36 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_emoji_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_emoji_list') or not callable(getattr(self.client, 'admin_emoji_list')):
+        if not hasattr(self.client, "admin_emoji_list") or not callable(
+            self.client.admin_emoji_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_emoji_list"
+                error="Slack client is missing required method alias: admin_emoji_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_emoji_list')(**kwargs_api)
+            response = self.client.admin_emoji_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_emoji_remove(self,
+    async def admin_emoji_remove(
+        self,
         *,
         name: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_emoji_remove
 
@@ -1237,31 +1362,35 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_emoji_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_emoji_remove') or not callable(getattr(self.client, 'admin_emoji_remove')):
+        if not hasattr(self.client, "admin_emoji_remove") or not callable(
+            self.client.admin_emoji_remove
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_emoji_remove"
+                error="Slack client is missing required method alias: admin_emoji_remove",
             )
 
         try:
-            response = getattr(self.client, 'admin_emoji_remove')(**kwargs_api)
+            response = self.client.admin_emoji_remove(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_emoji_rename(self,
+    async def admin_emoji_rename(
+        self,
         *,
         name: str,
         new_name: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_emoji_rename
 
@@ -1278,33 +1407,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_emoji_rename`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if new_name is not None:
-            kwargs_api['new_name'] = new_name
+            kwargs_api["new_name"] = new_name
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_emoji_rename') or not callable(getattr(self.client, 'admin_emoji_rename')):
+        if not hasattr(self.client, "admin_emoji_rename") or not callable(
+            self.client.admin_emoji_rename
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_emoji_rename"
+                error="Slack client is missing required method alias: admin_emoji_rename",
             )
 
         try:
-            response = getattr(self.client, 'admin_emoji_rename')(**kwargs_api)
+            response = self.client.admin_emoji_rename(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_invite_requests_approve(self,
+    async def admin_invite_requests_approve(
+        self,
         *,
         invite_request_id: str,
-        team_id: Optional[str] = None,
-        **kwargs
+        team_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_inviteRequests_approve
 
@@ -1320,34 +1453,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_inviteRequests_approve`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if invite_request_id is not None:
-            kwargs_api['invite_request_id'] = invite_request_id
+            kwargs_api["invite_request_id"] = invite_request_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_inviteRequests_approve') or not callable(getattr(self.client, 'admin_inviteRequests_approve')):
+        if not hasattr(self.client, "admin_inviteRequests_approve") or not callable(
+            self.client.admin_inviteRequests_approve
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_inviteRequests_approve"
+                error="Slack client is missing required method alias: admin_inviteRequests_approve",
             )
 
         try:
-            response = getattr(self.client, 'admin_inviteRequests_approve')(**kwargs_api)
+            response = self.client.admin_inviteRequests_approve(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_invite_requests_approved_list(self,
+    async def admin_invite_requests_approved_list(
+        self,
         *,
-        team_id: Optional[str] = None,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        team_id: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_inviteRequests_approved_list
 
@@ -1365,36 +1502,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_inviteRequests_approved_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_inviteRequests_approved_list') or not callable(getattr(self.client, 'admin_inviteRequests_approved_list')):
+        if not hasattr(
+            self.client, "admin_inviteRequests_approved_list"
+        ) or not callable(self.client.admin_inviteRequests_approved_list):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_inviteRequests_approved_list"
+                error="Slack client is missing required method alias: admin_inviteRequests_approved_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_inviteRequests_approved_list')(**kwargs_api)
+            response = self.client.admin_inviteRequests_approved_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_invite_requests_denied_list(self,
+    async def admin_invite_requests_denied_list(
+        self,
         *,
-        team_id: Optional[str] = None,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        team_id: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_inviteRequests_denied_list
 
@@ -1412,35 +1553,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_inviteRequests_denied_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_inviteRequests_denied_list') or not callable(getattr(self.client, 'admin_inviteRequests_denied_list')):
+        if not hasattr(self.client, "admin_inviteRequests_denied_list") or not callable(
+            self.client.admin_inviteRequests_denied_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_inviteRequests_denied_list"
+                error="Slack client is missing required method alias: admin_inviteRequests_denied_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_inviteRequests_denied_list')(**kwargs_api)
+            response = self.client.admin_inviteRequests_denied_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_invite_requests_deny(self,
+    async def admin_invite_requests_deny(
+        self,
         *,
         invite_request_id: str,
-        team_id: Optional[str] = None,
-        **kwargs
+        team_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_inviteRequests_deny
 
@@ -1457,34 +1602,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_inviteRequests_deny`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if invite_request_id is not None:
-            kwargs_api['invite_request_id'] = invite_request_id
+            kwargs_api["invite_request_id"] = invite_request_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_inviteRequests_deny') or not callable(getattr(self.client, 'admin_inviteRequests_deny')):
+        if not hasattr(self.client, "admin_inviteRequests_deny") or not callable(
+            self.client.admin_inviteRequests_deny
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_inviteRequests_deny"
+                error="Slack client is missing required method alias: admin_inviteRequests_deny",
             )
 
         try:
-            response = getattr(self.client, 'admin_inviteRequests_deny')(**kwargs_api)
+            response = self.client.admin_inviteRequests_deny(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_invite_requests_list(self,
+    async def admin_invite_requests_list(
+        self,
         *,
-        team_id: Optional[str] = None,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        team_id: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_inviteRequests_list
 
@@ -1502,36 +1651,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_inviteRequests_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_inviteRequests_list') or not callable(getattr(self.client, 'admin_inviteRequests_list')):
+        if not hasattr(self.client, "admin_inviteRequests_list") or not callable(
+            self.client.admin_inviteRequests_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_inviteRequests_list"
+                error="Slack client is missing required method alias: admin_inviteRequests_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_inviteRequests_list')(**kwargs_api)
+            response = self.client.admin_inviteRequests_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_teams_admins_list(self,
+    async def admin_teams_admins_list(
+        self,
         *,
         team_id: str,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_teams_admins_list
 
@@ -1548,37 +1701,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_admins_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_teams_admins_list') or not callable(getattr(self.client, 'admin_teams_admins_list')):
+        if not hasattr(self.client, "admin_teams_admins_list") or not callable(
+            self.client.admin_teams_admins_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_teams_admins_list"
+                error="Slack client is missing required method alias: admin_teams_admins_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_teams_admins_list')(**kwargs_api)
+            response = self.client.admin_teams_admins_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_teams_create(self,
+    async def admin_teams_create(
+        self,
         *,
         team_domain: str,
         team_name: str,
-        team_description: Optional[str] = None,
-        team_discoverability: Optional[str] = None,
-        **kwargs
+        team_description: str | None = None,
+        team_discoverability: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_teams_create
 
@@ -1597,37 +1754,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_create`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_domain is not None:
-            kwargs_api['team_domain'] = team_domain
+            kwargs_api["team_domain"] = team_domain
         if team_name is not None:
-            kwargs_api['team_name'] = team_name
+            kwargs_api["team_name"] = team_name
         if team_description is not None:
-            kwargs_api['team_description'] = team_description
+            kwargs_api["team_description"] = team_description
         if team_discoverability is not None:
-            kwargs_api['team_discoverability'] = team_discoverability
+            kwargs_api["team_discoverability"] = team_discoverability
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_teams_create') or not callable(getattr(self.client, 'admin_teams_create')):
+        if not hasattr(self.client, "admin_teams_create") or not callable(
+            self.client.admin_teams_create
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_teams_create"
+                error="Slack client is missing required method alias: admin_teams_create",
             )
 
         try:
-            response = getattr(self.client, 'admin_teams_create')(**kwargs_api)
+            response = self.client.admin_teams_create(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_teams_list(self,
+    async def admin_teams_list(
+        self,
         *,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_teams_list
 
@@ -1644,34 +1805,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_teams_list') or not callable(getattr(self.client, 'admin_teams_list')):
+        if not hasattr(self.client, "admin_teams_list") or not callable(
+            self.client.admin_teams_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_teams_list"
+                error="Slack client is missing required method alias: admin_teams_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_teams_list')(**kwargs_api)
+            response = self.client.admin_teams_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_teams_owners_list(self,
+    async def admin_teams_owners_list(
+        self,
         *,
         team_id: str,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_teams_owners_list
 
@@ -1689,34 +1854,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_owners_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_teams_owners_list') or not callable(getattr(self.client, 'admin_teams_owners_list')):
+        if not hasattr(self.client, "admin_teams_owners_list") or not callable(
+            self.client.admin_teams_owners_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_teams_owners_list"
+                error="Slack client is missing required method alias: admin_teams_owners_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_teams_owners_list')(**kwargs_api)
+            response = self.client.admin_teams_owners_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_teams_settings_info(self,
+    async def admin_teams_settings_info(
+        self,
         *,
         team_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_teams_settings_info
 
@@ -1731,31 +1900,35 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_teams_settings_info') or not callable(getattr(self.client, 'admin_teams_settings_info')):
+        if not hasattr(self.client, "admin_teams_settings_info") or not callable(
+            self.client.admin_teams_settings_info
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_teams_settings_info"
+                error="Slack client is missing required method alias: admin_teams_settings_info",
             )
 
         try:
-            response = getattr(self.client, 'admin_teams_settings_info')(**kwargs_api)
+            response = self.client.admin_teams_settings_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_teams_settings_set_default_channels(self,
+    async def admin_teams_settings_set_default_channels(
+        self,
         *,
         team_id: str,
-        channel_ids: List[str],
-        **kwargs
+        channel_ids: list[str],
+        **kwargs,
     ) -> SlackResponse:
         """admin_teams_settings_setDefaultChannels
 
@@ -1772,33 +1945,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_setDefaultChannels`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if channel_ids is not None:
-            kwargs_api['channel_ids'] = channel_ids
+            kwargs_api["channel_ids"] = channel_ids
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_teams_settings_setDefaultChannels') or not callable(getattr(self.client, 'admin_teams_settings_setDefaultChannels')):
+        if not hasattr(
+            self.client, "admin_teams_settings_setDefaultChannels"
+        ) or not callable(self.client.admin_teams_settings_setDefaultChannels):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_teams_settings_setDefaultChannels"
+                error="Slack client is missing required method alias: admin_teams_settings_setDefaultChannels",
             )
 
         try:
-            response = getattr(self.client, 'admin_teams_settings_setDefaultChannels')(**kwargs_api)
+            response = self.client.admin_teams_settings_setDefaultChannels(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_teams_settings_set_description(self,
+    async def admin_teams_settings_set_description(
+        self,
         *,
         team_id: str,
         description: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_teams_settings_setDescription
 
@@ -1815,33 +1992,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_setDescription`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if description is not None:
-            kwargs_api['description'] = description
+            kwargs_api["description"] = description
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_teams_settings_setDescription') or not callable(getattr(self.client, 'admin_teams_settings_setDescription')):
+        if not hasattr(
+            self.client, "admin_teams_settings_setDescription"
+        ) or not callable(self.client.admin_teams_settings_setDescription):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_teams_settings_setDescription"
+                error="Slack client is missing required method alias: admin_teams_settings_setDescription",
             )
 
         try:
-            response = getattr(self.client, 'admin_teams_settings_setDescription')(**kwargs_api)
+            response = self.client.admin_teams_settings_setDescription(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_teams_settings_set_discoverability(self,
+    async def admin_teams_settings_set_discoverability(
+        self,
         *,
         team_id: str,
         discoverability: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_teams_settings_setDiscoverability
 
@@ -1858,33 +2039,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_setDiscoverability`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if discoverability is not None:
-            kwargs_api['discoverability'] = discoverability
+            kwargs_api["discoverability"] = discoverability
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_teams_settings_setDiscoverability') or not callable(getattr(self.client, 'admin_teams_settings_setDiscoverability')):
+        if not hasattr(
+            self.client, "admin_teams_settings_setDiscoverability"
+        ) or not callable(self.client.admin_teams_settings_setDiscoverability):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_teams_settings_setDiscoverability"
+                error="Slack client is missing required method alias: admin_teams_settings_setDiscoverability",
             )
 
         try:
-            response = getattr(self.client, 'admin_teams_settings_setDiscoverability')(**kwargs_api)
+            response = self.client.admin_teams_settings_setDiscoverability(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_teams_settings_set_icon(self,
+    async def admin_teams_settings_set_icon(
+        self,
         *,
         image_url: str,
         team_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_teams_settings_setIcon
 
@@ -1901,33 +2086,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_setIcon`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if image_url is not None:
-            kwargs_api['image_url'] = image_url
+            kwargs_api["image_url"] = image_url
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_teams_settings_setIcon') or not callable(getattr(self.client, 'admin_teams_settings_setIcon')):
+        if not hasattr(self.client, "admin_teams_settings_setIcon") or not callable(
+            self.client.admin_teams_settings_setIcon
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_teams_settings_setIcon"
+                error="Slack client is missing required method alias: admin_teams_settings_setIcon",
             )
 
         try:
-            response = getattr(self.client, 'admin_teams_settings_setIcon')(**kwargs_api)
+            response = self.client.admin_teams_settings_setIcon(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_teams_settings_set_name(self,
+    async def admin_teams_settings_set_name(
+        self,
         *,
         team_id: str,
         name: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_teams_settings_setName
 
@@ -1944,34 +2133,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_setName`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_teams_settings_setName') or not callable(getattr(self.client, 'admin_teams_settings_setName')):
+        if not hasattr(self.client, "admin_teams_settings_setName") or not callable(
+            self.client.admin_teams_settings_setName
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_teams_settings_setName"
+                error="Slack client is missing required method alias: admin_teams_settings_setName",
             )
 
         try:
-            response = getattr(self.client, 'admin_teams_settings_setName')(**kwargs_api)
+            response = self.client.admin_teams_settings_setName(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_usergroups_add_channels(self,
+    async def admin_usergroups_add_channels(
+        self,
         *,
         usergroup_id: str,
-        channel_ids: List[str],
-        team_id: Optional[str] = None,
-        **kwargs
+        channel_ids: list[str],
+        team_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_usergroups_addChannels
 
@@ -1989,36 +2182,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_usergroups_addChannels`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if usergroup_id is not None:
-            kwargs_api['usergroup_id'] = usergroup_id
+            kwargs_api["usergroup_id"] = usergroup_id
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if channel_ids is not None:
-            kwargs_api['channel_ids'] = channel_ids
+            kwargs_api["channel_ids"] = channel_ids
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_usergroups_addChannels') or not callable(getattr(self.client, 'admin_usergroups_addChannels')):
+        if not hasattr(self.client, "admin_usergroups_addChannels") or not callable(
+            self.client.admin_usergroups_addChannels
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_usergroups_addChannels"
+                error="Slack client is missing required method alias: admin_usergroups_addChannels",
             )
 
         try:
-            response = getattr(self.client, 'admin_usergroups_addChannels')(**kwargs_api)
+            response = self.client.admin_usergroups_addChannels(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_usergroups_add_teams(self,
+    async def admin_usergroups_add_teams(
+        self,
         *,
         usergroup_id: str,
-        team_ids: List[str],
-        auto_provision: Optional[bool] = None,
-        **kwargs
+        team_ids: list[str],
+        auto_provision: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_usergroups_addTeams
 
@@ -2036,36 +2233,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_usergroups_addTeams`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if usergroup_id is not None:
-            kwargs_api['usergroup_id'] = usergroup_id
+            kwargs_api["usergroup_id"] = usergroup_id
         if team_ids is not None:
-            kwargs_api['team_ids'] = team_ids
+            kwargs_api["team_ids"] = team_ids
         if auto_provision is not None:
-            kwargs_api['auto_provision'] = auto_provision
+            kwargs_api["auto_provision"] = auto_provision
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_usergroups_addTeams') or not callable(getattr(self.client, 'admin_usergroups_addTeams')):
+        if not hasattr(self.client, "admin_usergroups_addTeams") or not callable(
+            self.client.admin_usergroups_addTeams
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_usergroups_addTeams"
+                error="Slack client is missing required method alias: admin_usergroups_addTeams",
             )
 
         try:
-            response = getattr(self.client, 'admin_usergroups_addTeams')(**kwargs_api)
+            response = self.client.admin_usergroups_addTeams(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_usergroups_list_channels(self,
+    async def admin_usergroups_list_channels(
+        self,
         *,
         usergroup_id: str,
-        team_id: Optional[str] = None,
-        include_num_members: Optional[bool] = None,
-        **kwargs
+        team_id: str | None = None,
+        include_num_members: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_usergroups_listChannels
 
@@ -2083,35 +2284,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_usergroups_listChannels`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if usergroup_id is not None:
-            kwargs_api['usergroup_id'] = usergroup_id
+            kwargs_api["usergroup_id"] = usergroup_id
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if include_num_members is not None:
-            kwargs_api['include_num_members'] = include_num_members
+            kwargs_api["include_num_members"] = include_num_members
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_usergroups_listChannels') or not callable(getattr(self.client, 'admin_usergroups_listChannels')):
+        if not hasattr(self.client, "admin_usergroups_listChannels") or not callable(
+            self.client.admin_usergroups_listChannels
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_usergroups_listChannels"
+                error="Slack client is missing required method alias: admin_usergroups_listChannels",
             )
 
         try:
-            response = getattr(self.client, 'admin_usergroups_listChannels')(**kwargs_api)
+            response = self.client.admin_usergroups_listChannels(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_usergroups_remove_channels(self,
+    async def admin_usergroups_remove_channels(
+        self,
         *,
         usergroup_id: str,
-        channel_ids: List[str],
-        **kwargs
+        channel_ids: list[str],
+        **kwargs,
     ) -> SlackResponse:
         """admin_usergroups_removeChannels
 
@@ -2128,36 +2333,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_usergroups_removeChannels`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if usergroup_id is not None:
-            kwargs_api['usergroup_id'] = usergroup_id
+            kwargs_api["usergroup_id"] = usergroup_id
         if channel_ids is not None:
-            kwargs_api['channel_ids'] = channel_ids
+            kwargs_api["channel_ids"] = channel_ids
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_usergroups_removeChannels') or not callable(getattr(self.client, 'admin_usergroups_removeChannels')):
+        if not hasattr(self.client, "admin_usergroups_removeChannels") or not callable(
+            self.client.admin_usergroups_removeChannels
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_usergroups_removeChannels"
+                error="Slack client is missing required method alias: admin_usergroups_removeChannels",
             )
 
         try:
-            response = getattr(self.client, 'admin_usergroups_removeChannels')(**kwargs_api)
+            response = self.client.admin_usergroups_removeChannels(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_users_assign(self,
+    async def admin_users_assign(
+        self,
         *,
         team_id: str,
         user_id: str,
-        is_restricted: Optional[bool] = None,
-        is_ultra_restricted: Optional[bool] = None,
-        channel_ids: Optional[List[str]] = None,
-        **kwargs
+        is_restricted: bool | None = None,
+        is_ultra_restricted: bool | None = None,
+        channel_ids: list[str] | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_users_assign
 
@@ -2176,46 +2385,50 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_assign`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if user_id is not None:
-            kwargs_api['user_id'] = user_id
+            kwargs_api["user_id"] = user_id
         if is_restricted is not None:
-            kwargs_api['is_restricted'] = is_restricted
+            kwargs_api["is_restricted"] = is_restricted
         if is_ultra_restricted is not None:
-            kwargs_api['is_ultra_restricted'] = is_ultra_restricted
+            kwargs_api["is_ultra_restricted"] = is_ultra_restricted
         if channel_ids is not None:
-            kwargs_api['channel_ids'] = channel_ids
+            kwargs_api["channel_ids"] = channel_ids
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_users_assign') or not callable(getattr(self.client, 'admin_users_assign')):
+        if not hasattr(self.client, "admin_users_assign") or not callable(
+            self.client.admin_users_assign
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_users_assign"
+                error="Slack client is missing required method alias: admin_users_assign",
             )
 
         try:
-            response = getattr(self.client, 'admin_users_assign')(**kwargs_api)
+            response = self.client.admin_users_assign(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_users_invite(self,
+    async def admin_users_invite(
+        self,
         *,
         team_id: str,
         email: str,
-        channel_ids: List[str],
-        custom_message: Optional[str] = None,
-        real_name: Optional[str] = None,
-        resend: Optional[bool] = None,
-        is_restricted: Optional[bool] = None,
-        is_ultra_restricted: Optional[bool] = None,
-        guest_expiration_ts: Optional[str] = None,
-        **kwargs
+        channel_ids: list[str],
+        custom_message: str | None = None,
+        real_name: str | None = None,
+        resend: bool | None = None,
+        is_restricted: bool | None = None,
+        is_ultra_restricted: bool | None = None,
+        guest_expiration_ts: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_users_invite
 
@@ -2239,48 +2452,52 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_invite`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if email is not None:
-            kwargs_api['email'] = email
+            kwargs_api["email"] = email
         if channel_ids is not None:
-            kwargs_api['channel_ids'] = channel_ids
+            kwargs_api["channel_ids"] = channel_ids
         if custom_message is not None:
-            kwargs_api['custom_message'] = custom_message
+            kwargs_api["custom_message"] = custom_message
         if real_name is not None:
-            kwargs_api['real_name'] = real_name
+            kwargs_api["real_name"] = real_name
         if resend is not None:
-            kwargs_api['resend'] = resend
+            kwargs_api["resend"] = resend
         if is_restricted is not None:
-            kwargs_api['is_restricted'] = is_restricted
+            kwargs_api["is_restricted"] = is_restricted
         if is_ultra_restricted is not None:
-            kwargs_api['is_ultra_restricted'] = is_ultra_restricted
+            kwargs_api["is_ultra_restricted"] = is_ultra_restricted
         if guest_expiration_ts is not None:
-            kwargs_api['guest_expiration_ts'] = guest_expiration_ts
+            kwargs_api["guest_expiration_ts"] = guest_expiration_ts
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_users_invite') or not callable(getattr(self.client, 'admin_users_invite')):
+        if not hasattr(self.client, "admin_users_invite") or not callable(
+            self.client.admin_users_invite
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_users_invite"
+                error="Slack client is missing required method alias: admin_users_invite",
             )
 
         try:
-            response = getattr(self.client, 'admin_users_invite')(**kwargs_api)
+            response = self.client.admin_users_invite(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_users_list(self,
+    async def admin_users_list(
+        self,
         *,
         team_id: str,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_users_list
 
@@ -2297,35 +2514,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_users_list') or not callable(getattr(self.client, 'admin_users_list')):
+        if not hasattr(self.client, "admin_users_list") or not callable(
+            self.client.admin_users_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_users_list"
+                error="Slack client is missing required method alias: admin_users_list",
             )
 
         try:
-            response = getattr(self.client, 'admin_users_list')(**kwargs_api)
+            response = self.client.admin_users_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_users_remove(self,
+    async def admin_users_remove(
+        self,
         *,
         team_id: str,
         user_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_users_remove
 
@@ -2341,33 +2562,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if user_id is not None:
-            kwargs_api['user_id'] = user_id
+            kwargs_api["user_id"] = user_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_users_remove') or not callable(getattr(self.client, 'admin_users_remove')):
+        if not hasattr(self.client, "admin_users_remove") or not callable(
+            self.client.admin_users_remove
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_users_remove"
+                error="Slack client is missing required method alias: admin_users_remove",
             )
 
         try:
-            response = getattr(self.client, 'admin_users_remove')(**kwargs_api)
+            response = self.client.admin_users_remove(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_users_session_invalidate(self,
+    async def admin_users_session_invalidate(
+        self,
         *,
         team_id: str,
         session_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_users_session_invalidate
 
@@ -2382,34 +2607,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_session_invalidate`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if session_id is not None:
-            kwargs_api['session_id'] = session_id
+            kwargs_api["session_id"] = session_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_users_session_invalidate') or not callable(getattr(self.client, 'admin_users_session_invalidate')):
+        if not hasattr(self.client, "admin_users_session_invalidate") or not callable(
+            self.client.admin_users_session_invalidate
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_users_session_invalidate"
+                error="Slack client is missing required method alias: admin_users_session_invalidate",
             )
 
         try:
-            response = getattr(self.client, 'admin_users_session_invalidate')(**kwargs_api)
+            response = self.client.admin_users_session_invalidate(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_users_session_reset(self,
+    async def admin_users_session_reset(
+        self,
         *,
         user_id: str,
-        mobile_only: Optional[bool] = None,
-        web_only: Optional[bool] = None,
-        **kwargs
+        mobile_only: bool | None = None,
+        web_only: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """admin_users_session_reset
 
@@ -2427,35 +2656,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_session_reset`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if user_id is not None:
-            kwargs_api['user_id'] = user_id
+            kwargs_api["user_id"] = user_id
         if mobile_only is not None:
-            kwargs_api['mobile_only'] = mobile_only
+            kwargs_api["mobile_only"] = mobile_only
         if web_only is not None:
-            kwargs_api['web_only'] = web_only
+            kwargs_api["web_only"] = web_only
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_users_session_reset') or not callable(getattr(self.client, 'admin_users_session_reset')):
+        if not hasattr(self.client, "admin_users_session_reset") or not callable(
+            self.client.admin_users_session_reset
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_users_session_reset"
+                error="Slack client is missing required method alias: admin_users_session_reset",
             )
 
         try:
-            response = getattr(self.client, 'admin_users_session_reset')(**kwargs_api)
+            response = self.client.admin_users_session_reset(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_users_set_admin(self,
+    async def admin_users_set_admin(
+        self,
         *,
         team_id: str,
         user_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_users_setAdmin
 
@@ -2472,34 +2705,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_setAdmin`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if user_id is not None:
-            kwargs_api['user_id'] = user_id
+            kwargs_api["user_id"] = user_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_users_setAdmin') or not callable(getattr(self.client, 'admin_users_setAdmin')):
+        if not hasattr(self.client, "admin_users_setAdmin") or not callable(
+            self.client.admin_users_setAdmin
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_users_setAdmin"
+                error="Slack client is missing required method alias: admin_users_setAdmin",
             )
 
         try:
-            response = getattr(self.client, 'admin_users_setAdmin')(**kwargs_api)
+            response = self.client.admin_users_setAdmin(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_users_set_expiration(self,
+    async def admin_users_set_expiration(
+        self,
         *,
         team_id: str,
         user_id: str,
         expiration_ts: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_users_setExpiration
 
@@ -2517,35 +2754,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_setExpiration`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if user_id is not None:
-            kwargs_api['user_id'] = user_id
+            kwargs_api["user_id"] = user_id
         if expiration_ts is not None:
-            kwargs_api['expiration_ts'] = expiration_ts
+            kwargs_api["expiration_ts"] = expiration_ts
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_users_setExpiration') or not callable(getattr(self.client, 'admin_users_setExpiration')):
+        if not hasattr(self.client, "admin_users_setExpiration") or not callable(
+            self.client.admin_users_setExpiration
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_users_setExpiration"
+                error="Slack client is missing required method alias: admin_users_setExpiration",
             )
 
         try:
-            response = getattr(self.client, 'admin_users_setExpiration')(**kwargs_api)
+            response = self.client.admin_users_setExpiration(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_users_set_owner(self,
+    async def admin_users_set_owner(
+        self,
         *,
         team_id: str,
         user_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_users_setOwner
 
@@ -2562,33 +2803,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_setOwner`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if user_id is not None:
-            kwargs_api['user_id'] = user_id
+            kwargs_api["user_id"] = user_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_users_setOwner') or not callable(getattr(self.client, 'admin_users_setOwner')):
+        if not hasattr(self.client, "admin_users_setOwner") or not callable(
+            self.client.admin_users_setOwner
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_users_setOwner"
+                error="Slack client is missing required method alias: admin_users_setOwner",
             )
 
         try:
-            response = getattr(self.client, 'admin_users_setOwner')(**kwargs_api)
+            response = self.client.admin_users_setOwner(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def admin_users_set_regular(self,
+    async def admin_users_set_regular(
+        self,
         *,
         team_id: str,
         user_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """admin_users_setRegular
 
@@ -2604,33 +2849,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_setRegular`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if user_id is not None:
-            kwargs_api['user_id'] = user_id
+            kwargs_api["user_id"] = user_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'admin_users_setRegular') or not callable(getattr(self.client, 'admin_users_setRegular')):
+        if not hasattr(self.client, "admin_users_setRegular") or not callable(
+            self.client.admin_users_setRegular
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: admin_users_setRegular"
+                error="Slack client is missing required method alias: admin_users_setRegular",
             )
 
         try:
-            response = getattr(self.client, 'admin_users_setRegular')(**kwargs_api)
+            response = self.client.admin_users_setRegular(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def api_test(self,
+    async def api_test(
+        self,
         *,
-        error: Optional[str] = None,
-        foo: Optional[str] = None,
-        **kwargs
+        error: str | None = None,
+        foo: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """api_test
 
@@ -2646,33 +2895,35 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.api_test`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if error is not None:
-            kwargs_api['error'] = error
+            kwargs_api["error"] = error
         if foo is not None:
-            kwargs_api['foo'] = foo
+            kwargs_api["foo"] = foo
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'api_test') or not callable(getattr(self.client, 'api_test')):
+        if not hasattr(self.client, "api_test") or not callable(self.client.api_test):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: api_test"
+                error="Slack client is missing required method alias: api_test",
             )
 
         try:
-            response = getattr(self.client, 'api_test')(**kwargs_api)
+            response = self.client.api_test(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def apps_event_authorizations_list(self,
+    async def apps_event_authorizations_list(
+        self,
         *,
         event_context: str,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """apps_event_authorizations_list
 
@@ -2689,26 +2940,29 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_event_authorizations_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if event_context is not None:
-            kwargs_api['event_context'] = event_context
+            kwargs_api["event_context"] = event_context
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'apps_event_authorizations_list') or not callable(getattr(self.client, 'apps_event_authorizations_list')):
+        if not hasattr(self.client, "apps_event_authorizations_list") or not callable(
+            self.client.apps_event_authorizations_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: apps_event_authorizations_list"
+                error="Slack client is missing required method alias: apps_event_authorizations_list",
             )
 
         try:
-            response = getattr(self.client, 'apps_event_authorizations_list')(**kwargs_api)
+            response = self.client.apps_event_authorizations_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -2727,29 +2981,33 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'apps_permissions_info') or not callable(getattr(self.client, 'apps_permissions_info')):
+        if not hasattr(self.client, "apps_permissions_info") or not callable(
+            self.client.apps_permissions_info
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: apps_permissions_info"
+                error="Slack client is missing required method alias: apps_permissions_info",
             )
 
         try:
-            response = getattr(self.client, 'apps_permissions_info')(**kwargs_api)
+            response = self.client.apps_permissions_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def apps_permissions_request(self,
+    async def apps_permissions_request(
+        self,
         *,
         scopes: str,
         trigger_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """apps_permissions_request
 
@@ -2766,33 +3024,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_request`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if scopes is not None:
-            kwargs_api['scopes'] = scopes
+            kwargs_api["scopes"] = scopes
         if trigger_id is not None:
-            kwargs_api['trigger_id'] = trigger_id
+            kwargs_api["trigger_id"] = trigger_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'apps_permissions_request') or not callable(getattr(self.client, 'apps_permissions_request')):
+        if not hasattr(self.client, "apps_permissions_request") or not callable(
+            self.client.apps_permissions_request
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: apps_permissions_request"
+                error="Slack client is missing required method alias: apps_permissions_request",
             )
 
         try:
-            response = getattr(self.client, 'apps_permissions_request')(**kwargs_api)
+            response = self.client.apps_permissions_request(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def apps_permissions_resources_list(self,
+    async def apps_permissions_resources_list(
+        self,
         *,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """apps_permissions_resources_list
 
@@ -2809,24 +3071,27 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_resources_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'apps_permissions_resources_list') or not callable(getattr(self.client, 'apps_permissions_resources_list')):
+        if not hasattr(self.client, "apps_permissions_resources_list") or not callable(
+            self.client.apps_permissions_resources_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: apps_permissions_resources_list"
+                error="Slack client is missing required method alias: apps_permissions_resources_list",
             )
 
         try:
-            response = getattr(self.client, 'apps_permissions_resources_list')(**kwargs_api)
+            response = self.client.apps_permissions_resources_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -2845,29 +3110,33 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_scopes_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'apps_permissions_scopes_list') or not callable(getattr(self.client, 'apps_permissions_scopes_list')):
+        if not hasattr(self.client, "apps_permissions_scopes_list") or not callable(
+            self.client.apps_permissions_scopes_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: apps_permissions_scopes_list"
+                error="Slack client is missing required method alias: apps_permissions_scopes_list",
             )
 
         try:
-            response = getattr(self.client, 'apps_permissions_scopes_list')(**kwargs_api)
+            response = self.client.apps_permissions_scopes_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def apps_permissions_users_list(self,
+    async def apps_permissions_users_list(
+        self,
         *,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """apps_permissions_users_list
 
@@ -2884,34 +3153,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_users_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'apps_permissions_users_list') or not callable(getattr(self.client, 'apps_permissions_users_list')):
+        if not hasattr(self.client, "apps_permissions_users_list") or not callable(
+            self.client.apps_permissions_users_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: apps_permissions_users_list"
+                error="Slack client is missing required method alias: apps_permissions_users_list",
             )
 
         try:
-            response = getattr(self.client, 'apps_permissions_users_list')(**kwargs_api)
+            response = self.client.apps_permissions_users_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def apps_permissions_users_request(self,
+    async def apps_permissions_users_request(
+        self,
         *,
         scopes: str,
         trigger_id: str,
         user: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """apps_permissions_users_request
 
@@ -2929,35 +3202,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_users_request`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if scopes is not None:
-            kwargs_api['scopes'] = scopes
+            kwargs_api["scopes"] = scopes
         if trigger_id is not None:
-            kwargs_api['trigger_id'] = trigger_id
+            kwargs_api["trigger_id"] = trigger_id
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'apps_permissions_users_request') or not callable(getattr(self.client, 'apps_permissions_users_request')):
+        if not hasattr(self.client, "apps_permissions_users_request") or not callable(
+            self.client.apps_permissions_users_request
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: apps_permissions_users_request"
+                error="Slack client is missing required method alias: apps_permissions_users_request",
             )
 
         try:
-            response = getattr(self.client, 'apps_permissions_users_request')(**kwargs_api)
+            response = self.client.apps_permissions_users_request(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def apps_uninstall(self,
+    async def apps_uninstall(
+        self,
         *,
-        client_id: Optional[str] = None,
-        client_secret: Optional[str] = None,
-        **kwargs
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """apps_uninstall
 
@@ -2974,32 +3251,36 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_uninstall`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if client_id is not None:
-            kwargs_api['client_id'] = client_id
+            kwargs_api["client_id"] = client_id
         if client_secret is not None:
-            kwargs_api['client_secret'] = client_secret
+            kwargs_api["client_secret"] = client_secret
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'apps_uninstall') or not callable(getattr(self.client, 'apps_uninstall')):
+        if not hasattr(self.client, "apps_uninstall") or not callable(
+            self.client.apps_uninstall
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: apps_uninstall"
+                error="Slack client is missing required method alias: apps_uninstall",
             )
 
         try:
-            response = getattr(self.client, 'apps_uninstall')(**kwargs_api)
+            response = self.client.apps_uninstall(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def auth_revoke(self,
+    async def auth_revoke(
+        self,
         *,
-        test: Optional[str] = None,
-        **kwargs
+        test: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """auth_revoke
 
@@ -3015,22 +3296,25 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.auth_revoke`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if test is not None:
-            kwargs_api['test'] = test
+            kwargs_api["test"] = test
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'auth_revoke') or not callable(getattr(self.client, 'auth_revoke')):
+        if not hasattr(self.client, "auth_revoke") or not callable(
+            self.client.auth_revoke
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: auth_revoke"
+                error="Slack client is missing required method alias: auth_revoke",
             )
 
         try:
-            response = getattr(self.client, 'auth_revoke')(**kwargs_api)
+            response = self.client.auth_revoke(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -3047,28 +3331,30 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.auth_test`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'auth_test') or not callable(getattr(self.client, 'auth_test')):
+        if not hasattr(self.client, "auth_test") or not callable(self.client.auth_test):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: auth_test"
+                error="Slack client is missing required method alias: auth_test",
             )
 
         try:
-            response = getattr(self.client, 'auth_test')(**kwargs_api)
+            response = self.client.auth_test(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def bots_info(self,
+    async def bots_info(
+        self,
         *,
-        bot: Optional[str] = None,
-        **kwargs
+        bot: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """bots_info
 
@@ -3083,37 +3369,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.bots_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if bot is not None:
-            kwargs_api['bot'] = bot
+            kwargs_api["bot"] = bot
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'bots_info') or not callable(getattr(self.client, 'bots_info')):
+        if not hasattr(self.client, "bots_info") or not callable(self.client.bots_info):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: bots_info"
+                error="Slack client is missing required method alias: bots_info",
             )
 
         try:
-            response = getattr(self.client, 'bots_info')(**kwargs_api)
+            response = self.client.bots_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def calls_add(self,
+    async def calls_add(
+        self,
         *,
         external_unique_id: str,
         join_url: str,
-        external_display_id: Optional[str] = None,
-        desktop_app_join_url: Optional[str] = None,
-        date_start: Optional[str] = None,
-        title: Optional[str] = None,
-        created_by: Optional[str] = None,
-        users: Optional[List[str]] = None,
-        **kwargs
+        external_display_id: str | None = None,
+        desktop_app_join_url: str | None = None,
+        date_start: str | None = None,
+        title: str | None = None,
+        created_by: str | None = None,
+        users: list[str] | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """calls_add
 
@@ -3135,45 +3423,47 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if external_unique_id is not None:
-            kwargs_api['external_unique_id'] = external_unique_id
+            kwargs_api["external_unique_id"] = external_unique_id
         if external_display_id is not None:
-            kwargs_api['external_display_id'] = external_display_id
+            kwargs_api["external_display_id"] = external_display_id
         if join_url is not None:
-            kwargs_api['join_url'] = join_url
+            kwargs_api["join_url"] = join_url
         if desktop_app_join_url is not None:
-            kwargs_api['desktop_app_join_url'] = desktop_app_join_url
+            kwargs_api["desktop_app_join_url"] = desktop_app_join_url
         if date_start is not None:
-            kwargs_api['date_start'] = date_start
+            kwargs_api["date_start"] = date_start
         if title is not None:
-            kwargs_api['title'] = title
+            kwargs_api["title"] = title
         if created_by is not None:
-            kwargs_api['created_by'] = created_by
+            kwargs_api["created_by"] = created_by
         if users is not None:
-            kwargs_api['users'] = users
+            kwargs_api["users"] = users
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'calls_add') or not callable(getattr(self.client, 'calls_add')):
+        if not hasattr(self.client, "calls_add") or not callable(self.client.calls_add):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: calls_add"
+                error="Slack client is missing required method alias: calls_add",
             )
 
         try:
-            response = getattr(self.client, 'calls_add')(**kwargs_api)
+            response = self.client.calls_add(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def calls_end(self,
+    async def calls_end(
+        self,
         *,
         id: str,
-        duration: Optional[int] = None,
-        **kwargs
+        duration: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """calls_end
 
@@ -3189,32 +3479,34 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_end`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if id is not None:
-            kwargs_api['id'] = id
+            kwargs_api["id"] = id
         if duration is not None:
-            kwargs_api['duration'] = duration
+            kwargs_api["duration"] = duration
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'calls_end') or not callable(getattr(self.client, 'calls_end')):
+        if not hasattr(self.client, "calls_end") or not callable(self.client.calls_end):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: calls_end"
+                error="Slack client is missing required method alias: calls_end",
             )
 
         try:
-            response = getattr(self.client, 'calls_end')(**kwargs_api)
+            response = self.client.calls_end(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def calls_info(self,
+    async def calls_info(
+        self,
         *,
         id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """calls_info
 
@@ -3229,31 +3521,35 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if id is not None:
-            kwargs_api['id'] = id
+            kwargs_api["id"] = id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'calls_info') or not callable(getattr(self.client, 'calls_info')):
+        if not hasattr(self.client, "calls_info") or not callable(
+            self.client.calls_info
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: calls_info"
+                error="Slack client is missing required method alias: calls_info",
             )
 
         try:
-            response = getattr(self.client, 'calls_info')(**kwargs_api)
+            response = self.client.calls_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def calls_participants_add(self,
+    async def calls_participants_add(
+        self,
         *,
         id: str,
-        users: List[str],
-        **kwargs
+        users: list[str],
+        **kwargs,
     ) -> SlackResponse:
         """calls_participants_add
 
@@ -3269,33 +3565,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_participants_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if id is not None:
-            kwargs_api['id'] = id
+            kwargs_api["id"] = id
         if users is not None:
-            kwargs_api['users'] = users
+            kwargs_api["users"] = users
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'calls_participants_add') or not callable(getattr(self.client, 'calls_participants_add')):
+        if not hasattr(self.client, "calls_participants_add") or not callable(
+            self.client.calls_participants_add
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: calls_participants_add"
+                error="Slack client is missing required method alias: calls_participants_add",
             )
 
         try:
-            response = getattr(self.client, 'calls_participants_add')(**kwargs_api)
+            response = self.client.calls_participants_add(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def calls_participants_remove(self,
+    async def calls_participants_remove(
+        self,
         *,
         id: str,
-        users: List[str],
-        **kwargs
+        users: list[str],
+        **kwargs,
     ) -> SlackResponse:
         """calls_participants_remove
 
@@ -3311,35 +3611,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_participants_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if id is not None:
-            kwargs_api['id'] = id
+            kwargs_api["id"] = id
         if users is not None:
-            kwargs_api['users'] = users
+            kwargs_api["users"] = users
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'calls_participants_remove') or not callable(getattr(self.client, 'calls_participants_remove')):
+        if not hasattr(self.client, "calls_participants_remove") or not callable(
+            self.client.calls_participants_remove
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: calls_participants_remove"
+                error="Slack client is missing required method alias: calls_participants_remove",
             )
 
         try:
-            response = getattr(self.client, 'calls_participants_remove')(**kwargs_api)
+            response = self.client.calls_participants_remove(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def calls_update(self,
+    async def calls_update(
+        self,
         *,
         id: str,
-        title: Optional[str] = None,
-        join_url: Optional[str] = None,
-        desktop_app_join_url: Optional[str] = None,
-        **kwargs
+        title: str | None = None,
+        join_url: str | None = None,
+        desktop_app_join_url: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """calls_update
 
@@ -3357,37 +3661,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if id is not None:
-            kwargs_api['id'] = id
+            kwargs_api["id"] = id
         if title is not None:
-            kwargs_api['title'] = title
+            kwargs_api["title"] = title
         if join_url is not None:
-            kwargs_api['join_url'] = join_url
+            kwargs_api["join_url"] = join_url
         if desktop_app_join_url is not None:
-            kwargs_api['desktop_app_join_url'] = desktop_app_join_url
+            kwargs_api["desktop_app_join_url"] = desktop_app_join_url
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'calls_update') or not callable(getattr(self.client, 'calls_update')):
+        if not hasattr(self.client, "calls_update") or not callable(
+            self.client.calls_update
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: calls_update"
+                error="Slack client is missing required method alias: calls_update",
             )
 
         try:
-            response = getattr(self.client, 'calls_update')(**kwargs_api)
+            response = self.client.calls_update(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def chat_delete(self,
+    async def chat_delete(
+        self,
         *,
-        ts: Optional[str] = None,
-        channel: Optional[str] = None,
-        as_user: Optional[str] = None,
-        **kwargs
+        ts: str | None = None,
+        channel: str | None = None,
+        as_user: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """chat_delete
 
@@ -3404,35 +3712,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_delete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if ts is not None:
-            kwargs_api['ts'] = ts
+            kwargs_api["ts"] = ts
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if as_user is not None:
-            kwargs_api['as_user'] = as_user
+            kwargs_api["as_user"] = as_user
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'chat_delete') or not callable(getattr(self.client, 'chat_delete')):
+        if not hasattr(self.client, "chat_delete") or not callable(
+            self.client.chat_delete
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: chat_delete"
+                error="Slack client is missing required method alias: chat_delete",
             )
 
         try:
-            response = getattr(self.client, 'chat_delete')(**kwargs_api)
+            response = self.client.chat_delete(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def chat_delete_scheduled_message(self,
+    async def chat_delete_scheduled_message(
+        self,
         *,
         channel: str,
         scheduled_message_id: str,
-        as_user: Optional[str] = None,
-        **kwargs
+        as_user: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """chat_deleteScheduledMessage
 
@@ -3449,35 +3761,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_deleteScheduledMessage`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if as_user is not None:
-            kwargs_api['as_user'] = as_user
+            kwargs_api["as_user"] = as_user
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if scheduled_message_id is not None:
-            kwargs_api['scheduled_message_id'] = scheduled_message_id
+            kwargs_api["scheduled_message_id"] = scheduled_message_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'chat_deleteScheduledMessage') or not callable(getattr(self.client, 'chat_deleteScheduledMessage')):
+        if not hasattr(self.client, "chat_deleteScheduledMessage") or not callable(
+            self.client.chat_deleteScheduledMessage
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: chat_deleteScheduledMessage"
+                error="Slack client is missing required method alias: chat_deleteScheduledMessage",
             )
 
         try:
-            response = getattr(self.client, 'chat_deleteScheduledMessage')(**kwargs_api)
+            response = self.client.chat_deleteScheduledMessage(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def chat_get_permalink(self,
+    async def chat_get_permalink(
+        self,
         *,
         channel: str,
         message_ts: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """chat_getPermalink
 
@@ -3494,33 +3810,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_getPermalink`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if message_ts is not None:
-            kwargs_api['message_ts'] = message_ts
+            kwargs_api["message_ts"] = message_ts
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'chat_getPermalink') or not callable(getattr(self.client, 'chat_getPermalink')):
+        if not hasattr(self.client, "chat_getPermalink") or not callable(
+            self.client.chat_getPermalink
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: chat_getPermalink"
+                error="Slack client is missing required method alias: chat_getPermalink",
             )
 
         try:
-            response = getattr(self.client, 'chat_getPermalink')(**kwargs_api)
+            response = self.client.chat_getPermalink(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def chat_me_message(self,
+    async def chat_me_message(
+        self,
         *,
-        channel: Optional[str] = None,
-        text: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        text: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """chat_meMessage
 
@@ -3536,43 +3856,47 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_meMessage`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if text is not None:
-            kwargs_api['text'] = text
+            kwargs_api["text"] = text
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'chat_meMessage') or not callable(getattr(self.client, 'chat_meMessage')):
+        if not hasattr(self.client, "chat_meMessage") or not callable(
+            self.client.chat_meMessage
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: chat_meMessage"
+                error="Slack client is missing required method alias: chat_meMessage",
             )
 
         try:
-            response = getattr(self.client, 'chat_meMessage')(**kwargs_api)
+            response = self.client.chat_meMessage(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def chat_post_ephemeral(self,
+    async def chat_post_ephemeral(
+        self,
         *,
         channel: str,
         user: str,
-        as_user: Optional[str] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None,
-        blocks: Optional[List[Dict[str, Any]]] = None,
-        icon_emoji: Optional[str] = None,
-        icon_url: Optional[str] = None,
-        link_names: Optional[bool] = None,
-        parse: Optional[str] = None,
-        text: Optional[str] = None,
-        thread_ts: Optional[str] = None,
-        username: Optional[str] = None,
-        **kwargs
+        as_user: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        blocks: list[dict[str, Any]] | None = None,
+        icon_emoji: str | None = None,
+        icon_url: str | None = None,
+        link_names: bool | None = None,
+        parse: str | None = None,
+        text: str | None = None,
+        thread_ts: str | None = None,
+        username: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """chat_postEphemeral
 
@@ -3598,66 +3922,70 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_postEphemeral`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if as_user is not None:
-            kwargs_api['as_user'] = as_user
+            kwargs_api["as_user"] = as_user
         if attachments is not None:
-            kwargs_api['attachments'] = attachments
+            kwargs_api["attachments"] = attachments
         if blocks is not None:
-            kwargs_api['blocks'] = blocks
+            kwargs_api["blocks"] = blocks
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if icon_emoji is not None:
-            kwargs_api['icon_emoji'] = icon_emoji
+            kwargs_api["icon_emoji"] = icon_emoji
         if icon_url is not None:
-            kwargs_api['icon_url'] = icon_url
+            kwargs_api["icon_url"] = icon_url
         if link_names is not None:
-            kwargs_api['link_names'] = link_names
+            kwargs_api["link_names"] = link_names
         if parse is not None:
-            kwargs_api['parse'] = parse
+            kwargs_api["parse"] = parse
         if text is not None:
-            kwargs_api['text'] = text
+            kwargs_api["text"] = text
         if thread_ts is not None:
-            kwargs_api['thread_ts'] = thread_ts
+            kwargs_api["thread_ts"] = thread_ts
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if username is not None:
-            kwargs_api['username'] = username
+            kwargs_api["username"] = username
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'chat_postEphemeral') or not callable(getattr(self.client, 'chat_postEphemeral')):
+        if not hasattr(self.client, "chat_postEphemeral") or not callable(
+            self.client.chat_postEphemeral
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: chat_postEphemeral"
+                error="Slack client is missing required method alias: chat_postEphemeral",
             )
 
         try:
-            response = getattr(self.client, 'chat_postEphemeral')(**kwargs_api)
+            response = self.client.chat_postEphemeral(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def chat_post_message(self,
+    async def chat_post_message(
+        self,
         *,
         channel: str,
-        as_user: Optional[str] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None,
-        blocks: Optional[List[Dict[str, Any]]] = None,
-        icon_emoji: Optional[str] = None,
-        icon_url: Optional[str] = None,
-        link_names: Optional[bool] = None,
-        mrkdwn: Optional[bool] = None,
-        parse: Optional[str] = None,
-        reply_broadcast: Optional[bool] = None,
-        text: Optional[str] = None,
-        thread_ts: Optional[str] = None,
-        unfurl_links: Optional[bool] = None,
-        unfurl_media: Optional[bool] = None,
-        username: Optional[str] = None,
-        **kwargs
+        as_user: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        blocks: list[dict[str, Any]] | None = None,
+        icon_emoji: str | None = None,
+        icon_url: str | None = None,
+        link_names: bool | None = None,
+        mrkdwn: bool | None = None,
+        parse: str | None = None,
+        reply_broadcast: bool | None = None,
+        text: str | None = None,
+        thread_ts: str | None = None,
+        unfurl_links: bool | None = None,
+        unfurl_media: bool | None = None,
+        username: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """chat_postMessage
 
@@ -3686,69 +4014,73 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_postMessage`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if as_user is not None:
-            kwargs_api['as_user'] = as_user
+            kwargs_api["as_user"] = as_user
         if attachments is not None:
-            kwargs_api['attachments'] = attachments
+            kwargs_api["attachments"] = attachments
         if blocks is not None:
-            kwargs_api['blocks'] = blocks
+            kwargs_api["blocks"] = blocks
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if icon_emoji is not None:
-            kwargs_api['icon_emoji'] = icon_emoji
+            kwargs_api["icon_emoji"] = icon_emoji
         if icon_url is not None:
-            kwargs_api['icon_url'] = icon_url
+            kwargs_api["icon_url"] = icon_url
         if link_names is not None:
-            kwargs_api['link_names'] = link_names
+            kwargs_api["link_names"] = link_names
         if mrkdwn is not None:
-            kwargs_api['mrkdwn'] = mrkdwn
+            kwargs_api["mrkdwn"] = mrkdwn
         if parse is not None:
-            kwargs_api['parse'] = parse
+            kwargs_api["parse"] = parse
         if reply_broadcast is not None:
-            kwargs_api['reply_broadcast'] = reply_broadcast
+            kwargs_api["reply_broadcast"] = reply_broadcast
         if text is not None:
-            kwargs_api['text'] = text
+            kwargs_api["text"] = text
         if thread_ts is not None:
-            kwargs_api['thread_ts'] = thread_ts
+            kwargs_api["thread_ts"] = thread_ts
         if unfurl_links is not None:
-            kwargs_api['unfurl_links'] = unfurl_links
+            kwargs_api["unfurl_links"] = unfurl_links
         if unfurl_media is not None:
-            kwargs_api['unfurl_media'] = unfurl_media
+            kwargs_api["unfurl_media"] = unfurl_media
         if username is not None:
-            kwargs_api['username'] = username
+            kwargs_api["username"] = username
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'chat_postMessage') or not callable(getattr(self.client, 'chat_postMessage')):
+        if not hasattr(self.client, "chat_postMessage") or not callable(
+            self.client.chat_postMessage
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: chat_postMessage"
+                error="Slack client is missing required method alias: chat_postMessage",
             )
 
         try:
-            response = getattr(self.client, 'chat_postMessage')(**kwargs_api)
+            response = self.client.chat_postMessage(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def chat_schedule_message(self,
+    async def chat_schedule_message(
+        self,
         *,
-        channel: Optional[str] = None,
-        text: Optional[str] = None,
-        post_at: Optional[str] = None,
-        parse: Optional[str] = None,
-        as_user: Optional[str] = None,
-        link_names: Optional[bool] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None,
-        blocks: Optional[List[Dict[str, Any]]] = None,
-        unfurl_links: Optional[bool] = None,
-        unfurl_media: Optional[bool] = None,
-        thread_ts: Optional[str] = None,
-        reply_broadcast: Optional[bool] = None,
-        **kwargs
+        channel: str | None = None,
+        text: str | None = None,
+        post_at: str | None = None,
+        parse: str | None = None,
+        as_user: str | None = None,
+        link_names: bool | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        blocks: list[dict[str, Any]] | None = None,
+        unfurl_links: bool | None = None,
+        unfurl_media: bool | None = None,
+        thread_ts: str | None = None,
+        reply_broadcast: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """chat_scheduleMessage
 
@@ -3774,56 +4106,60 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_scheduleMessage`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if text is not None:
-            kwargs_api['text'] = text
+            kwargs_api["text"] = text
         if post_at is not None:
-            kwargs_api['post_at'] = post_at
+            kwargs_api["post_at"] = post_at
         if parse is not None:
-            kwargs_api['parse'] = parse
+            kwargs_api["parse"] = parse
         if as_user is not None:
-            kwargs_api['as_user'] = as_user
+            kwargs_api["as_user"] = as_user
         if link_names is not None:
-            kwargs_api['link_names'] = link_names
+            kwargs_api["link_names"] = link_names
         if attachments is not None:
-            kwargs_api['attachments'] = attachments
+            kwargs_api["attachments"] = attachments
         if blocks is not None:
-            kwargs_api['blocks'] = blocks
+            kwargs_api["blocks"] = blocks
         if unfurl_links is not None:
-            kwargs_api['unfurl_links'] = unfurl_links
+            kwargs_api["unfurl_links"] = unfurl_links
         if unfurl_media is not None:
-            kwargs_api['unfurl_media'] = unfurl_media
+            kwargs_api["unfurl_media"] = unfurl_media
         if thread_ts is not None:
-            kwargs_api['thread_ts'] = thread_ts
+            kwargs_api["thread_ts"] = thread_ts
         if reply_broadcast is not None:
-            kwargs_api['reply_broadcast'] = reply_broadcast
+            kwargs_api["reply_broadcast"] = reply_broadcast
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'chat_scheduleMessage') or not callable(getattr(self.client, 'chat_scheduleMessage')):
+        if not hasattr(self.client, "chat_scheduleMessage") or not callable(
+            self.client.chat_scheduleMessage
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: chat_scheduleMessage"
+                error="Slack client is missing required method alias: chat_scheduleMessage",
             )
 
         try:
-            response = getattr(self.client, 'chat_scheduleMessage')(**kwargs_api)
+            response = self.client.chat_scheduleMessage(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def chat_scheduled_messages_list(self,
+    async def chat_scheduled_messages_list(
+        self,
         *,
-        channel: Optional[str] = None,
-        latest: Optional[str] = None,
-        oldest: Optional[str] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        latest: str | None = None,
+        oldest: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """chat_scheduledMessages_list
 
@@ -3842,43 +4178,47 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_scheduledMessages_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if latest is not None:
-            kwargs_api['latest'] = latest
+            kwargs_api["latest"] = latest
         if oldest is not None:
-            kwargs_api['oldest'] = oldest
+            kwargs_api["oldest"] = oldest
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'chat_scheduledMessages_list') or not callable(getattr(self.client, 'chat_scheduledMessages_list')):
+        if not hasattr(self.client, "chat_scheduledMessages_list") or not callable(
+            self.client.chat_scheduledMessages_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: chat_scheduledMessages_list"
+                error="Slack client is missing required method alias: chat_scheduledMessages_list",
             )
 
         try:
-            response = getattr(self.client, 'chat_scheduledMessages_list')(**kwargs_api)
+            response = self.client.chat_scheduledMessages_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def chat_unfurl(self,
+    async def chat_unfurl(
+        self,
         *,
         channel: str,
         ts: str,
-        unfurls: Optional[Dict[str, Any]] = None,
-        user_auth_message: Optional[str] = None,
-        user_auth_required: Optional[bool] = None,
-        user_auth_url: Optional[str] = None,
-        **kwargs
+        unfurls: dict[str, Any] | None = None,
+        user_auth_message: str | None = None,
+        user_auth_required: bool | None = None,
+        user_auth_url: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """chat_unfurl
 
@@ -3898,47 +4238,51 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_unfurl`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if ts is not None:
-            kwargs_api['ts'] = ts
+            kwargs_api["ts"] = ts
         if unfurls is not None:
-            kwargs_api['unfurls'] = unfurls
+            kwargs_api["unfurls"] = unfurls
         if user_auth_message is not None:
-            kwargs_api['user_auth_message'] = user_auth_message
+            kwargs_api["user_auth_message"] = user_auth_message
         if user_auth_required is not None:
-            kwargs_api['user_auth_required'] = user_auth_required
+            kwargs_api["user_auth_required"] = user_auth_required
         if user_auth_url is not None:
-            kwargs_api['user_auth_url'] = user_auth_url
+            kwargs_api["user_auth_url"] = user_auth_url
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'chat_unfurl') or not callable(getattr(self.client, 'chat_unfurl')):
+        if not hasattr(self.client, "chat_unfurl") or not callable(
+            self.client.chat_unfurl
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: chat_unfurl"
+                error="Slack client is missing required method alias: chat_unfurl",
             )
 
         try:
-            response = getattr(self.client, 'chat_unfurl')(**kwargs_api)
+            response = self.client.chat_unfurl(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def chat_update(self,
+    async def chat_update(
+        self,
         *,
         channel: str,
         ts: str,
-        as_user: Optional[str] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None,
-        blocks: Optional[List[Dict[str, Any]]] = None,
-        link_names: Optional[bool] = None,
-        parse: Optional[str] = None,
-        text: Optional[str] = None,
-        **kwargs
+        as_user: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        blocks: list[dict[str, Any]] | None = None,
+        link_names: bool | None = None,
+        parse: str | None = None,
+        text: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """chat_update
 
@@ -3960,44 +4304,48 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if as_user is not None:
-            kwargs_api['as_user'] = as_user
+            kwargs_api["as_user"] = as_user
         if attachments is not None:
-            kwargs_api['attachments'] = attachments
+            kwargs_api["attachments"] = attachments
         if blocks is not None:
-            kwargs_api['blocks'] = blocks
+            kwargs_api["blocks"] = blocks
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if link_names is not None:
-            kwargs_api['link_names'] = link_names
+            kwargs_api["link_names"] = link_names
         if parse is not None:
-            kwargs_api['parse'] = parse
+            kwargs_api["parse"] = parse
         if text is not None:
-            kwargs_api['text'] = text
+            kwargs_api["text"] = text
         if ts is not None:
-            kwargs_api['ts'] = ts
+            kwargs_api["ts"] = ts
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'chat_update') or not callable(getattr(self.client, 'chat_update')):
+        if not hasattr(self.client, "chat_update") or not callable(
+            self.client.chat_update
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: chat_update"
+                error="Slack client is missing required method alias: chat_update",
             )
 
         try:
-            response = getattr(self.client, 'chat_update')(**kwargs_api)
+            response = self.client.chat_update(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_archive(self,
+    async def conversations_archive(
+        self,
         *,
-        channel: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_archive
 
@@ -4012,30 +4360,34 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_archive`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_archive') or not callable(getattr(self.client, 'conversations_archive')):
+        if not hasattr(self.client, "conversations_archive") or not callable(
+            self.client.conversations_archive
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_archive"
+                error="Slack client is missing required method alias: conversations_archive",
             )
 
         try:
-            response = getattr(self.client, 'conversations_archive')(**kwargs_api)
+            response = self.client.conversations_archive(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_close(self,
+    async def conversations_close(
+        self,
         *,
-        channel: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_close
 
@@ -4050,32 +4402,35 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_close`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_close') or not callable(getattr(self.client, 'conversations_close')):
+        if not hasattr(self.client, "conversations_close") or not callable(
+            self.client.conversations_close
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_close"
+                error="Slack client is missing required method alias: conversations_close",
             )
 
         try:
-            response = getattr(self.client, 'conversations_close')(**kwargs_api)
+            response = self.client.conversations_close(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_create(self,
+    async def conversations_create(
+        self,
         *,
-
-        name: Optional[str] = None,
-        is_private: Optional[bool] = None,
-        **kwargs
+        name: str | None = None,
+        is_private: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_create
 
@@ -4091,37 +4446,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_create`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if is_private is not None:
-            kwargs_api['is_private'] = is_private
+            kwargs_api["is_private"] = is_private
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_create') or not callable(getattr(self.client, 'conversations_create')):
+        if not hasattr(self.client, "conversations_create") or not callable(
+            self.client.conversations_create
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_create"
+                error="Slack client is missing required method alias: conversations_create",
             )
 
         try:
-            response = getattr(self.client, 'conversations_create')(**kwargs_api)
+            response = self.client.conversations_create(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_history(self,
+    async def conversations_history(
+        self,
         *,
         channel: str,
-        latest: Optional[str] = None,
-        oldest: Optional[str] = None,
-        inclusive: Optional[bool] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        latest: str | None = None,
+        oldest: str | None = None,
+        inclusive: bool | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_history
 
@@ -4141,42 +4500,46 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_history`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if latest is not None:
-            kwargs_api['latest'] = latest
+            kwargs_api["latest"] = latest
         if oldest is not None:
-            kwargs_api['oldest'] = oldest
+            kwargs_api["oldest"] = oldest
         if inclusive is not None:
-            kwargs_api['inclusive'] = inclusive
+            kwargs_api["inclusive"] = inclusive
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_history') or not callable(getattr(self.client, 'conversations_history')):
+        if not hasattr(self.client, "conversations_history") or not callable(
+            self.client.conversations_history
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_history"
+                error="Slack client is missing required method alias: conversations_history",
             )
 
         try:
-            response = getattr(self.client, 'conversations_history')(**kwargs_api)
+            response = self.client.conversations_history(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_info(self,
+    async def conversations_info(
+        self,
         *,
-        channel: Optional[str] = None,
-        include_locale: Optional[bool] = None,
-        include_num_members: Optional[bool] = None,
-        **kwargs
+        channel: str | None = None,
+        include_locale: bool | None = None,
+        include_num_members: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_info
 
@@ -4193,35 +4556,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if include_locale is not None:
-            kwargs_api['include_locale'] = include_locale
+            kwargs_api["include_locale"] = include_locale
         if include_num_members is not None:
-            kwargs_api['include_num_members'] = include_num_members
+            kwargs_api["include_num_members"] = include_num_members
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_info') or not callable(getattr(self.client, 'conversations_info')):
+        if not hasattr(self.client, "conversations_info") or not callable(
+            self.client.conversations_info
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_info"
+                error="Slack client is missing required method alias: conversations_info",
             )
 
         try:
-            response = getattr(self.client, 'conversations_info')(**kwargs_api)
+            response = self.client.conversations_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_invite(self,
+    async def conversations_invite(
+        self,
         *,
-        channel: Optional[str] = None,
-        users: Optional[List[str]] = None,
-        **kwargs
+        channel: str | None = None,
+        users: list[str] | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_invite
 
@@ -4237,32 +4604,36 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_invite`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if users is not None:
-            kwargs_api['users'] = users
+            kwargs_api["users"] = users
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_invite') or not callable(getattr(self.client, 'conversations_invite')):
+        if not hasattr(self.client, "conversations_invite") or not callable(
+            self.client.conversations_invite
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_invite"
+                error="Slack client is missing required method alias: conversations_invite",
             )
 
         try:
-            response = getattr(self.client, 'conversations_invite')(**kwargs_api)
+            response = self.client.conversations_invite(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_join(self,
+    async def conversations_join(
+        self,
         *,
-        channel: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_join
 
@@ -4277,31 +4648,35 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_join`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_join') or not callable(getattr(self.client, 'conversations_join')):
+        if not hasattr(self.client, "conversations_join") or not callable(
+            self.client.conversations_join
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_join"
+                error="Slack client is missing required method alias: conversations_join",
             )
 
         try:
-            response = getattr(self.client, 'conversations_join')(**kwargs_api)
+            response = self.client.conversations_join(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_kick(self,
+    async def conversations_kick(
+        self,
         *,
-        channel: Optional[str] = None,
-        user: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        user: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_kick
 
@@ -4317,31 +4692,35 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_kick`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_kick') or not callable(getattr(self.client, 'conversations_kick')):
+        if not hasattr(self.client, "conversations_kick") or not callable(
+            self.client.conversations_kick
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_kick"
+                error="Slack client is missing required method alias: conversations_kick",
             )
 
         try:
-            response = getattr(self.client, 'conversations_kick')(**kwargs_api)
+            response = self.client.conversations_kick(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_leave(self,
+    async def conversations_leave(
+        self,
         *,
-        channel: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_leave
 
@@ -4356,33 +4735,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_leave`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_leave') or not callable(getattr(self.client, 'conversations_leave')):
+        if not hasattr(self.client, "conversations_leave") or not callable(
+            self.client.conversations_leave
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_leave"
+                error="Slack client is missing required method alias: conversations_leave",
             )
 
         try:
-            response = getattr(self.client, 'conversations_leave')(**kwargs_api)
+            response = self.client.conversations_leave(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_list(self,
+    async def conversations_list(
+        self,
         *,
-        exclude_archived: Optional[bool] = None,
-        types: Optional[str] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        exclude_archived: bool | None = None,
+        types: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_list
 
@@ -4400,37 +4783,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if exclude_archived is not None:
-            kwargs_api['exclude_archived'] = exclude_archived
+            kwargs_api["exclude_archived"] = exclude_archived
         if types is not None:
-            kwargs_api['types'] = types
+            kwargs_api["types"] = types
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_list') or not callable(getattr(self.client, 'conversations_list')):
+        if not hasattr(self.client, "conversations_list") or not callable(
+            self.client.conversations_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_list"
+                error="Slack client is missing required method alias: conversations_list",
             )
 
         try:
-            response = getattr(self.client, 'conversations_list')(**kwargs_api)
+            response = self.client.conversations_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_mark(self,
+    async def conversations_mark(
+        self,
         *,
-        channel: Optional[str] = None,
-        ts: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        ts: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_mark
 
@@ -4446,34 +4833,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_mark`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if ts is not None:
-            kwargs_api['ts'] = ts
+            kwargs_api["ts"] = ts
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_mark') or not callable(getattr(self.client, 'conversations_mark')):
+        if not hasattr(self.client, "conversations_mark") or not callable(
+            self.client.conversations_mark
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_mark"
+                error="Slack client is missing required method alias: conversations_mark",
             )
 
         try:
-            response = getattr(self.client, 'conversations_mark')(**kwargs_api)
+            response = self.client.conversations_mark(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_members(self,
+    async def conversations_members(
+        self,
         *,
-
-        channel: Optional[str] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_members
 
@@ -4490,36 +4880,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_members`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_members') or not callable(getattr(self.client, 'conversations_members')):
+        if not hasattr(self.client, "conversations_members") or not callable(
+            self.client.conversations_members
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_members"
+                error="Slack client is missing required method alias: conversations_members",
             )
 
         try:
-            response = getattr(self.client, 'conversations_members')(**kwargs_api)
+            response = self.client.conversations_members(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_open(self,
+    async def conversations_open(
+        self,
         *,
-        channel: Optional[str] = None,
-        users: Optional[List[str]] = None,
-        return_im: Optional[bool] = None,
-        **kwargs
+        channel: str | None = None,
+        users: list[str] | None = None,
+        return_im: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_open
 
@@ -4536,36 +4930,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_open`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if users is not None:
-            kwargs_api['users'] = users
+            kwargs_api["users"] = users
         if return_im is not None:
-            kwargs_api['return_im'] = return_im
+            kwargs_api["return_im"] = return_im
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_open') or not callable(getattr(self.client, 'conversations_open')):
+        if not hasattr(self.client, "conversations_open") or not callable(
+            self.client.conversations_open
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_open"
+                error="Slack client is missing required method alias: conversations_open",
             )
 
         try:
-            response = getattr(self.client, 'conversations_open')(**kwargs_api)
+            response = self.client.conversations_open(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_rename(self,
+    async def conversations_rename(
+        self,
         *,
-
-        channel: Optional[str] = None,
-        name: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        name: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_rename
 
@@ -4581,38 +4978,42 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_rename`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_rename') or not callable(getattr(self.client, 'conversations_rename')):
+        if not hasattr(self.client, "conversations_rename") or not callable(
+            self.client.conversations_rename
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_rename"
+                error="Slack client is missing required method alias: conversations_rename",
             )
 
         try:
-            response = getattr(self.client, 'conversations_rename')(**kwargs_api)
+            response = self.client.conversations_rename(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_replies(self,
+    async def conversations_replies(
+        self,
         *,
-        channel: Optional[str] = None,
-        ts: Optional[str] = None,
-        latest: Optional[str] = None,
-        oldest: Optional[str] = None,
-        inclusive: Optional[bool] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        ts: str | None = None,
+        latest: str | None = None,
+        oldest: str | None = None,
+        inclusive: bool | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_replies
 
@@ -4633,43 +5034,47 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_replies`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if ts is not None:
-            kwargs_api['ts'] = ts
+            kwargs_api["ts"] = ts
         if latest is not None:
-            kwargs_api['latest'] = latest
+            kwargs_api["latest"] = latest
         if oldest is not None:
-            kwargs_api['oldest'] = oldest
+            kwargs_api["oldest"] = oldest
         if inclusive is not None:
-            kwargs_api['inclusive'] = inclusive
+            kwargs_api["inclusive"] = inclusive
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_replies') or not callable(getattr(self.client, 'conversations_replies')):
+        if not hasattr(self.client, "conversations_replies") or not callable(
+            self.client.conversations_replies
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_replies"
+                error="Slack client is missing required method alias: conversations_replies",
             )
 
         try:
-            response = getattr(self.client, 'conversations_replies')(**kwargs_api)
+            response = self.client.conversations_replies(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_set_purpose(self,
+    async def conversations_set_purpose(
+        self,
         *,
-        channel: Optional[str] = None,
-        purpose: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        purpose: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_setPurpose
 
@@ -4685,34 +5090,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_setPurpose`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if purpose is not None:
-            kwargs_api['purpose'] = purpose
+            kwargs_api["purpose"] = purpose
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_setPurpose') or not callable(getattr(self.client, 'conversations_setPurpose')):
+        if not hasattr(self.client, "conversations_setPurpose") or not callable(
+            self.client.conversations_setPurpose
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_setPurpose"
+                error="Slack client is missing required method alias: conversations_setPurpose",
             )
 
         try:
-            response = getattr(self.client, 'conversations_setPurpose')(**kwargs_api)
+            response = self.client.conversations_setPurpose(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_set_topic(self,
+    async def conversations_set_topic(
+        self,
         *,
-
-        channel: Optional[str] = None,
-        topic: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        topic: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_setTopic
 
@@ -4728,33 +5136,36 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_setTopic`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if topic is not None:
-            kwargs_api['topic'] = topic
+            kwargs_api["topic"] = topic
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_setTopic') or not callable(getattr(self.client, 'conversations_setTopic')):
+        if not hasattr(self.client, "conversations_setTopic") or not callable(
+            self.client.conversations_setTopic
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_setTopic"
+                error="Slack client is missing required method alias: conversations_setTopic",
             )
 
         try:
-            response = getattr(self.client, 'conversations_setTopic')(**kwargs_api)
+            response = self.client.conversations_setTopic(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def conversations_unarchive(self,
+    async def conversations_unarchive(
+        self,
         *,
-
-        channel: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """conversations_unarchive
 
@@ -4769,32 +5180,35 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_unarchive`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'conversations_unarchive') or not callable(getattr(self.client, 'conversations_unarchive')):
+        if not hasattr(self.client, "conversations_unarchive") or not callable(
+            self.client.conversations_unarchive
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: conversations_unarchive"
+                error="Slack client is missing required method alias: conversations_unarchive",
             )
 
         try:
-            response = getattr(self.client, 'conversations_unarchive')(**kwargs_api)
+            response = self.client.conversations_unarchive(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def dialog_open(self,
+    async def dialog_open(
+        self,
         *,
-
-        dialog: Dict[str, Any],
+        dialog: dict[str, Any],
         trigger_id: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """dialog_open
 
@@ -4810,24 +5224,27 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dialog_open`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if dialog is not None:
-            kwargs_api['dialog'] = dialog
+            kwargs_api["dialog"] = dialog
         if trigger_id is not None:
-            kwargs_api['trigger_id'] = trigger_id
+            kwargs_api["trigger_id"] = trigger_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'dialog_open') or not callable(getattr(self.client, 'dialog_open')):
+        if not hasattr(self.client, "dialog_open") or not callable(
+            self.client.dialog_open
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: dialog_open"
+                error="Slack client is missing required method alias: dialog_open",
             )
 
         try:
-            response = getattr(self.client, 'dialog_open')(**kwargs_api)
+            response = self.client.dialog_open(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -4844,19 +5261,22 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dnd_endDnd`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'dnd_endDnd') or not callable(getattr(self.client, 'dnd_endDnd')):
+        if not hasattr(self.client, "dnd_endDnd") or not callable(
+            self.client.dnd_endDnd
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: dnd_endDnd"
+                error="Slack client is missing required method alias: dnd_endDnd",
             )
 
         try:
-            response = getattr(self.client, 'dnd_endDnd')(**kwargs_api)
+            response = self.client.dnd_endDnd(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -4873,27 +5293,31 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dnd_endSnooze`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'dnd_endSnooze') or not callable(getattr(self.client, 'dnd_endSnooze')):
+        if not hasattr(self.client, "dnd_endSnooze") or not callable(
+            self.client.dnd_endSnooze
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: dnd_endSnooze"
+                error="Slack client is missing required method alias: dnd_endSnooze",
             )
 
         try:
-            response = getattr(self.client, 'dnd_endSnooze')(**kwargs_api)
+            response = self.client.dnd_endSnooze(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def dnd_info(self,
+    async def dnd_info(
+        self,
         *,
-        user: Optional[str] = None,
-        **kwargs
+        user: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """dnd_info
 
@@ -4908,29 +5332,31 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dnd_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'dnd_info') or not callable(getattr(self.client, 'dnd_info')):
+        if not hasattr(self.client, "dnd_info") or not callable(self.client.dnd_info):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: dnd_info"
+                error="Slack client is missing required method alias: dnd_info",
             )
 
         try:
-            response = getattr(self.client, 'dnd_info')(**kwargs_api)
+            response = self.client.dnd_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def dnd_set_snooze(self,
+    async def dnd_set_snooze(
+        self,
         *,
         num_minutes: int,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """dnd_setSnooze
 
@@ -4945,29 +5371,33 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dnd_setSnooze`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if num_minutes is not None:
-            kwargs_api['num_minutes'] = num_minutes
+            kwargs_api["num_minutes"] = num_minutes
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'dnd_setSnooze') or not callable(getattr(self.client, 'dnd_setSnooze')):
+        if not hasattr(self.client, "dnd_setSnooze") or not callable(
+            self.client.dnd_setSnooze
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: dnd_setSnooze"
+                error="Slack client is missing required method alias: dnd_setSnooze",
             )
 
         try:
-            response = getattr(self.client, 'dnd_setSnooze')(**kwargs_api)
+            response = self.client.dnd_setSnooze(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def dnd_team_info(self,
+    async def dnd_team_info(
+        self,
         *,
-        users: Optional[List[str]] = None,
-        **kwargs
+        users: list[str] | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """dnd_teamInfo
 
@@ -4982,21 +5412,24 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dnd_teamInfo`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if users is not None:
-            kwargs_api['users'] = users
+            kwargs_api["users"] = users
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'dnd_teamInfo') or not callable(getattr(self.client, 'dnd_teamInfo')):
+        if not hasattr(self.client, "dnd_teamInfo") or not callable(
+            self.client.dnd_teamInfo
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: dnd_teamInfo"
+                error="Slack client is missing required method alias: dnd_teamInfo",
             )
 
         try:
-            response = getattr(self.client, 'dnd_teamInfo')(**kwargs_api)
+            response = self.client.dnd_teamInfo(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -5013,28 +5446,32 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.emoji_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'emoji_list') or not callable(getattr(self.client, 'emoji_list')):
+        if not hasattr(self.client, "emoji_list") or not callable(
+            self.client.emoji_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: emoji_list"
+                error="Slack client is missing required method alias: emoji_list",
             )
 
         try:
-            response = getattr(self.client, 'emoji_list')(**kwargs_api)
+            response = self.client.emoji_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_comments_delete(self,
+    async def files_comments_delete(
+        self,
         *,
-        file: Optional[str] = None,
-        id: Optional[str] = None,
-        **kwargs
+        file: str | None = None,
+        id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_comments_delete
 
@@ -5050,31 +5487,35 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_comments_delete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if id is not None:
-            kwargs_api['id'] = id
+            kwargs_api["id"] = id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_comments_delete') or not callable(getattr(self.client, 'files_comments_delete')):
+        if not hasattr(self.client, "files_comments_delete") or not callable(
+            self.client.files_comments_delete
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_comments_delete"
+                error="Slack client is missing required method alias: files_comments_delete",
             )
 
         try:
-            response = getattr(self.client, 'files_comments_delete')(**kwargs_api)
+            response = self.client.files_comments_delete(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_delete(self,
+    async def files_delete(
+        self,
         *,
-        file: Optional[str] = None,
-        **kwargs
+        file: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_delete
 
@@ -5089,33 +5530,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_delete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_delete') or not callable(getattr(self.client, 'files_delete')):
+        if not hasattr(self.client, "files_delete") or not callable(
+            self.client.files_delete
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_delete"
+                error="Slack client is missing required method alias: files_delete",
             )
 
         try:
-            response = getattr(self.client, 'files_delete')(**kwargs_api)
+            response = self.client.files_delete(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_info(self,
+    async def files_info(
+        self,
         *,
-        file: Optional[str] = None,
-        count: Optional[int] = None,
-        page: Optional[int] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        file: str | None = None,
+        count: int | None = None,
+        page: int | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_info
 
@@ -5134,44 +5579,48 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if count is not None:
-            kwargs_api['count'] = count
+            kwargs_api["count"] = count
         if page is not None:
-            kwargs_api['page'] = page
+            kwargs_api["page"] = page
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_info') or not callable(getattr(self.client, 'files_info')):
+        if not hasattr(self.client, "files_info") or not callable(
+            self.client.files_info
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_info"
+                error="Slack client is missing required method alias: files_info",
             )
 
         try:
-            response = getattr(self.client, 'files_info')(**kwargs_api)
+            response = self.client.files_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_list(self,
+    async def files_list(
+        self,
         *,
-        user: Optional[str] = None,
-        channel: Optional[str] = None,
-        ts_from: Optional[str] = None,
-        ts_to: Optional[str] = None,
-        types: Optional[str] = None,
-        count: Optional[int] = None,
-        page: Optional[int] = None,
-        show_files_hidden_by_limit: Optional[int] = None,
-        **kwargs
+        user: str | None = None,
+        channel: str | None = None,
+        ts_from: str | None = None,
+        ts_to: str | None = None,
+        types: str | None = None,
+        count: int | None = None,
+        page: int | None = None,
+        show_files_hidden_by_limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_list
 
@@ -5193,48 +5642,52 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if ts_from is not None:
-            kwargs_api['ts_from'] = ts_from
+            kwargs_api["ts_from"] = ts_from
         if ts_to is not None:
-            kwargs_api['ts_to'] = ts_to
+            kwargs_api["ts_to"] = ts_to
         if types is not None:
-            kwargs_api['types'] = types
+            kwargs_api["types"] = types
         if count is not None:
-            kwargs_api['count'] = count
+            kwargs_api["count"] = count
         if page is not None:
-            kwargs_api['page'] = page
+            kwargs_api["page"] = page
         if show_files_hidden_by_limit is not None:
-            kwargs_api['show_files_hidden_by_limit'] = show_files_hidden_by_limit
+            kwargs_api["show_files_hidden_by_limit"] = show_files_hidden_by_limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_list') or not callable(getattr(self.client, 'files_list')):
+        if not hasattr(self.client, "files_list") or not callable(
+            self.client.files_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_list"
+                error="Slack client is missing required method alias: files_list",
             )
 
         try:
-            response = getattr(self.client, 'files_list')(**kwargs_api)
+            response = self.client.files_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_remote_add(self,
+    async def files_remote_add(
+        self,
         *,
-        external_id: Optional[str] = None,
-        title: Optional[str] = None,
-        filetype: Optional[str] = None,
-        external_url: Optional[str] = None,
-        preview_image: Optional[str] = None,
-        indexable_file_contents: Optional[str] = None,
-        **kwargs
+        external_id: str | None = None,
+        title: str | None = None,
+        filetype: str | None = None,
+        external_url: str | None = None,
+        preview_image: str | None = None,
+        indexable_file_contents: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_remote_add
 
@@ -5254,40 +5707,44 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if external_id is not None:
-            kwargs_api['external_id'] = external_id
+            kwargs_api["external_id"] = external_id
         if title is not None:
-            kwargs_api['title'] = title
+            kwargs_api["title"] = title
         if filetype is not None:
-            kwargs_api['filetype'] = filetype
+            kwargs_api["filetype"] = filetype
         if external_url is not None:
-            kwargs_api['external_url'] = external_url
+            kwargs_api["external_url"] = external_url
         if preview_image is not None:
-            kwargs_api['preview_image'] = preview_image
+            kwargs_api["preview_image"] = preview_image
         if indexable_file_contents is not None:
-            kwargs_api['indexable_file_contents'] = indexable_file_contents
+            kwargs_api["indexable_file_contents"] = indexable_file_contents
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_remote_add') or not callable(getattr(self.client, 'files_remote_add')):
+        if not hasattr(self.client, "files_remote_add") or not callable(
+            self.client.files_remote_add
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_remote_add"
+                error="Slack client is missing required method alias: files_remote_add",
             )
 
         try:
-            response = getattr(self.client, 'files_remote_add')(**kwargs_api)
+            response = self.client.files_remote_add(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_remote_info(self,
+    async def files_remote_info(
+        self,
         *,
-        file: Optional[str] = None,
-        external_id: Optional[str] = None,
-        **kwargs
+        file: str | None = None,
+        external_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_remote_info
 
@@ -5303,35 +5760,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if external_id is not None:
-            kwargs_api['external_id'] = external_id
+            kwargs_api["external_id"] = external_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_remote_info') or not callable(getattr(self.client, 'files_remote_info')):
+        if not hasattr(self.client, "files_remote_info") or not callable(
+            self.client.files_remote_info
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_remote_info"
+                error="Slack client is missing required method alias: files_remote_info",
             )
 
         try:
-            response = getattr(self.client, 'files_remote_info')(**kwargs_api)
+            response = self.client.files_remote_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_remote_list(self,
+    async def files_remote_list(
+        self,
         *,
-        channel: Optional[str] = None,
-        ts_from: Optional[str] = None,
-        ts_to: Optional[str] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        ts_from: str | None = None,
+        ts_to: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_remote_list
 
@@ -5350,38 +5811,42 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if ts_from is not None:
-            kwargs_api['ts_from'] = ts_from
+            kwargs_api["ts_from"] = ts_from
         if ts_to is not None:
-            kwargs_api['ts_to'] = ts_to
+            kwargs_api["ts_to"] = ts_to
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_remote_list') or not callable(getattr(self.client, 'files_remote_list')):
+        if not hasattr(self.client, "files_remote_list") or not callable(
+            self.client.files_remote_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_remote_list"
+                error="Slack client is missing required method alias: files_remote_list",
             )
 
         try:
-            response = getattr(self.client, 'files_remote_list')(**kwargs_api)
+            response = self.client.files_remote_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_remote_remove(self,
+    async def files_remote_remove(
+        self,
         *,
-        file: Optional[str] = None,
-        external_id: Optional[str] = None,
-        **kwargs
+        file: str | None = None,
+        external_id: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_remote_remove
 
@@ -5397,33 +5862,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if external_id is not None:
-            kwargs_api['external_id'] = external_id
+            kwargs_api["external_id"] = external_id
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_remote_remove') or not callable(getattr(self.client, 'files_remote_remove')):
+        if not hasattr(self.client, "files_remote_remove") or not callable(
+            self.client.files_remote_remove
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_remote_remove"
+                error="Slack client is missing required method alias: files_remote_remove",
             )
 
         try:
-            response = getattr(self.client, 'files_remote_remove')(**kwargs_api)
+            response = self.client.files_remote_remove(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_remote_share(self,
+    async def files_remote_share(
+        self,
         *,
-        file: Optional[str] = None,
-        external_id: Optional[str] = None,
-        channels: Optional[List[str]] = None,
-        **kwargs
+        file: str | None = None,
+        external_id: str | None = None,
+        channels: list[str] | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_remote_share
 
@@ -5440,39 +5909,43 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_share`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if external_id is not None:
-            kwargs_api['external_id'] = external_id
+            kwargs_api["external_id"] = external_id
         if channels is not None:
-            kwargs_api['channels'] = channels
+            kwargs_api["channels"] = channels
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_remote_share') or not callable(getattr(self.client, 'files_remote_share')):
+        if not hasattr(self.client, "files_remote_share") or not callable(
+            self.client.files_remote_share
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_remote_share"
+                error="Slack client is missing required method alias: files_remote_share",
             )
 
         try:
-            response = getattr(self.client, 'files_remote_share')(**kwargs_api)
+            response = self.client.files_remote_share(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_remote_update(self,
+    async def files_remote_update(
+        self,
         *,
-        file: Optional[str] = None,
-        external_id: Optional[str] = None,
-        title: Optional[str] = None,
-        filetype: Optional[str] = None,
-        external_url: Optional[str] = None,
-        preview_image: Optional[str] = None,
-        indexable_file_contents: Optional[str] = None,
-        **kwargs
+        file: str | None = None,
+        external_id: str | None = None,
+        title: str | None = None,
+        filetype: str | None = None,
+        external_url: str | None = None,
+        preview_image: str | None = None,
+        indexable_file_contents: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_remote_update
 
@@ -5493,41 +5966,45 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if external_id is not None:
-            kwargs_api['external_id'] = external_id
+            kwargs_api["external_id"] = external_id
         if title is not None:
-            kwargs_api['title'] = title
+            kwargs_api["title"] = title
         if filetype is not None:
-            kwargs_api['filetype'] = filetype
+            kwargs_api["filetype"] = filetype
         if external_url is not None:
-            kwargs_api['external_url'] = external_url
+            kwargs_api["external_url"] = external_url
         if preview_image is not None:
-            kwargs_api['preview_image'] = preview_image
+            kwargs_api["preview_image"] = preview_image
         if indexable_file_contents is not None:
-            kwargs_api['indexable_file_contents'] = indexable_file_contents
+            kwargs_api["indexable_file_contents"] = indexable_file_contents
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_remote_update') or not callable(getattr(self.client, 'files_remote_update')):
+        if not hasattr(self.client, "files_remote_update") or not callable(
+            self.client.files_remote_update
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_remote_update"
+                error="Slack client is missing required method alias: files_remote_update",
             )
 
         try:
-            response = getattr(self.client, 'files_remote_update')(**kwargs_api)
+            response = self.client.files_remote_update(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_revoke_public_url(self,
+    async def files_revoke_public_url(
+        self,
         *,
-        file: Optional[str] = None,
-        **kwargs
+        file: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_revokePublicURL
 
@@ -5542,29 +6019,33 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_revokePublicURL`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_revokePublicURL') or not callable(getattr(self.client, 'files_revokePublicURL')):
+        if not hasattr(self.client, "files_revokePublicURL") or not callable(
+            self.client.files_revokePublicURL
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_revokePublicURL"
+                error="Slack client is missing required method alias: files_revokePublicURL",
             )
 
         try:
-            response = getattr(self.client, 'files_revokePublicURL')(**kwargs_api)
+            response = self.client.files_revokePublicURL(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_shared_public_url(self,
+    async def files_shared_public_url(
+        self,
         *,
-        file: Optional[str] = None,
-        **kwargs
+        file: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_sharedPublicURL
 
@@ -5579,36 +6060,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_sharedPublicURL`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_sharedPublicURL') or not callable(getattr(self.client, 'files_sharedPublicURL')):
+        if not hasattr(self.client, "files_sharedPublicURL") or not callable(
+            self.client.files_sharedPublicURL
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_sharedPublicURL"
+                error="Slack client is missing required method alias: files_sharedPublicURL",
             )
 
         try:
-            response = getattr(self.client, 'files_sharedPublicURL')(**kwargs_api)
+            response = self.client.files_sharedPublicURL(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def files_upload(self,
+    async def files_upload(
+        self,
         *,
-        file: Optional[str] = None,
-        content: Optional[str] = None,
-        filetype: Optional[str] = None,
-        filename: Optional[str] = None,
-        title: Optional[str] = None,
-        initial_comment: Optional[str] = None,
-        channels: Optional[List[str]] = None,
-        thread_ts: Optional[str] = None,
-        **kwargs
+        file: str | None = None,
+        content: str | None = None,
+        filetype: str | None = None,
+        filename: str | None = None,
+        title: str | None = None,
+        initial_comment: str | None = None,
+        channels: list[str] | None = None,
+        thread_ts: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """files_upload
 
@@ -5630,45 +6115,49 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_upload`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if content is not None:
-            kwargs_api['content'] = content
+            kwargs_api["content"] = content
         if filetype is not None:
-            kwargs_api['filetype'] = filetype
+            kwargs_api["filetype"] = filetype
         if filename is not None:
-            kwargs_api['filename'] = filename
+            kwargs_api["filename"] = filename
         if title is not None:
-            kwargs_api['title'] = title
+            kwargs_api["title"] = title
         if initial_comment is not None:
-            kwargs_api['initial_comment'] = initial_comment
+            kwargs_api["initial_comment"] = initial_comment
         if channels is not None:
-            kwargs_api['channels'] = channels
+            kwargs_api["channels"] = channels
         if thread_ts is not None:
-            kwargs_api['thread_ts'] = thread_ts
+            kwargs_api["thread_ts"] = thread_ts
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'files_upload') or not callable(getattr(self.client, 'files_upload')):
+        if not hasattr(self.client, "files_upload") or not callable(
+            self.client.files_upload
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: files_upload"
+                error="Slack client is missing required method alias: files_upload",
             )
 
         try:
-            response = getattr(self.client, 'files_upload')(**kwargs_api)
+            response = self.client.files_upload(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def migration_exchange(self,
+    async def migration_exchange(
+        self,
         *,
-        users: List[str],
-        team_id: Optional[str] = None,
-        to_old: Optional[bool] = None,
-        **kwargs
+        users: list[str],
+        team_id: str | None = None,
+        to_old: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """migration_exchange
 
@@ -5685,37 +6174,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.migration_exchange`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if users is not None:
-            kwargs_api['users'] = users
+            kwargs_api["users"] = users
         if team_id is not None:
-            kwargs_api['team_id'] = team_id
+            kwargs_api["team_id"] = team_id
         if to_old is not None:
-            kwargs_api['to_old'] = to_old
+            kwargs_api["to_old"] = to_old
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'migration_exchange') or not callable(getattr(self.client, 'migration_exchange')):
+        if not hasattr(self.client, "migration_exchange") or not callable(
+            self.client.migration_exchange
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: migration_exchange"
+                error="Slack client is missing required method alias: migration_exchange",
             )
 
         try:
-            response = getattr(self.client, 'migration_exchange')(**kwargs_api)
+            response = self.client.migration_exchange(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def oauth_access(self,
+    async def oauth_access(
+        self,
         *,
-        client_id: Optional[str] = None,
-        client_secret: Optional[str] = None,
-        code: Optional[str] = None,
-        redirect_uri: Optional[str] = None,
-        single_channel: Optional[str] = None,
-        **kwargs
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        code: str | None = None,
+        redirect_uri: str | None = None,
+        single_channel: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """oauth_access
 
@@ -5734,41 +6227,45 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.oauth_access`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if client_id is not None:
-            kwargs_api['client_id'] = client_id
+            kwargs_api["client_id"] = client_id
         if client_secret is not None:
-            kwargs_api['client_secret'] = client_secret
+            kwargs_api["client_secret"] = client_secret
         if code is not None:
-            kwargs_api['code'] = code
+            kwargs_api["code"] = code
         if redirect_uri is not None:
-            kwargs_api['redirect_uri'] = redirect_uri
+            kwargs_api["redirect_uri"] = redirect_uri
         if single_channel is not None:
-            kwargs_api['single_channel'] = single_channel
+            kwargs_api["single_channel"] = single_channel
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'oauth_access') or not callable(getattr(self.client, 'oauth_access')):
+        if not hasattr(self.client, "oauth_access") or not callable(
+            self.client.oauth_access
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: oauth_access"
+                error="Slack client is missing required method alias: oauth_access",
             )
 
         try:
-            response = getattr(self.client, 'oauth_access')(**kwargs_api)
+            response = self.client.oauth_access(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def oauth_token(self,
+    async def oauth_token(
+        self,
         *,
-        client_id: Optional[str] = None,
-        client_secret: Optional[str] = None,
-        code: Optional[str] = None,
-        redirect_uri: Optional[str] = None,
-        single_channel: Optional[str] = None,
-        **kwargs
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        code: str | None = None,
+        redirect_uri: str | None = None,
+        single_channel: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """oauth_token
 
@@ -5787,40 +6284,44 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.oauth_token`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if client_id is not None:
-            kwargs_api['client_id'] = client_id
+            kwargs_api["client_id"] = client_id
         if client_secret is not None:
-            kwargs_api['client_secret'] = client_secret
+            kwargs_api["client_secret"] = client_secret
         if code is not None:
-            kwargs_api['code'] = code
+            kwargs_api["code"] = code
         if redirect_uri is not None:
-            kwargs_api['redirect_uri'] = redirect_uri
+            kwargs_api["redirect_uri"] = redirect_uri
         if single_channel is not None:
-            kwargs_api['single_channel'] = single_channel
+            kwargs_api["single_channel"] = single_channel
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'oauth_token') or not callable(getattr(self.client, 'oauth_token')):
+        if not hasattr(self.client, "oauth_token") or not callable(
+            self.client.oauth_token
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: oauth_token"
+                error="Slack client is missing required method alias: oauth_token",
             )
 
         try:
-            response = getattr(self.client, 'oauth_token')(**kwargs_api)
+            response = self.client.oauth_token(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def oauth_v2_access(self,
+    async def oauth_v2_access(
+        self,
         *,
         code: str,
-        client_id: Optional[str] = None,
-        client_secret: Optional[str] = None,
-        redirect_uri: Optional[str] = None,
-        **kwargs
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        redirect_uri: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """oauth_v2_access
 
@@ -5838,36 +6339,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.oauth_v2_access`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if client_id is not None:
-            kwargs_api['client_id'] = client_id
+            kwargs_api["client_id"] = client_id
         if client_secret is not None:
-            kwargs_api['client_secret'] = client_secret
+            kwargs_api["client_secret"] = client_secret
         if code is not None:
-            kwargs_api['code'] = code
+            kwargs_api["code"] = code
         if redirect_uri is not None:
-            kwargs_api['redirect_uri'] = redirect_uri
+            kwargs_api["redirect_uri"] = redirect_uri
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'oauth_v2_access') or not callable(getattr(self.client, 'oauth_v2_access')):
+        if not hasattr(self.client, "oauth_v2_access") or not callable(
+            self.client.oauth_v2_access
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: oauth_v2_access"
+                error="Slack client is missing required method alias: oauth_v2_access",
             )
 
         try:
-            response = getattr(self.client, 'oauth_v2_access')(**kwargs_api)
+            response = self.client.oauth_v2_access(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def pins_add(self,
+    async def pins_add(
+        self,
         *,
         channel: str,
-        timestamp: Optional[str] = None,
-        **kwargs
+        timestamp: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """pins_add
 
@@ -5883,31 +6388,33 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.pins_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if timestamp is not None:
-            kwargs_api['timestamp'] = timestamp
+            kwargs_api["timestamp"] = timestamp
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'pins_add') or not callable(getattr(self.client, 'pins_add')):
+        if not hasattr(self.client, "pins_add") or not callable(self.client.pins_add):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: pins_add"
+                error="Slack client is missing required method alias: pins_add",
             )
 
         try:
-            response = getattr(self.client, 'pins_add')(**kwargs_api)
+            response = self.client.pins_add(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def pins_list(self,
+    async def pins_list(
+        self,
         *,
         channel: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """pins_list
 
@@ -5922,30 +6429,32 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.pins_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'pins_list') or not callable(getattr(self.client, 'pins_list')):
+        if not hasattr(self.client, "pins_list") or not callable(self.client.pins_list):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: pins_list"
+                error="Slack client is missing required method alias: pins_list",
             )
 
         try:
-            response = getattr(self.client, 'pins_list')(**kwargs_api)
+            response = self.client.pins_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def pins_remove(self,
+    async def pins_remove(
+        self,
         *,
         channel: str,
-        timestamp: Optional[str] = None,
-        **kwargs
+        timestamp: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """pins_remove
 
@@ -5961,34 +6470,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.pins_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if timestamp is not None:
-            kwargs_api['timestamp'] = timestamp
+            kwargs_api["timestamp"] = timestamp
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'pins_remove') or not callable(getattr(self.client, 'pins_remove')):
+        if not hasattr(self.client, "pins_remove") or not callable(
+            self.client.pins_remove
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: pins_remove"
+                error="Slack client is missing required method alias: pins_remove",
             )
 
         try:
-            response = getattr(self.client, 'pins_remove')(**kwargs_api)
+            response = self.client.pins_remove(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def reactions_add(self,
+    async def reactions_add(
+        self,
         *,
         channel: str,
         name: str,
         timestamp: str,
-
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """reactions_add
 
@@ -6005,38 +6517,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reactions_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if timestamp is not None:
-            kwargs_api['timestamp'] = timestamp
+            kwargs_api["timestamp"] = timestamp
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'reactions_add') or not callable(getattr(self.client, 'reactions_add')):
+        if not hasattr(self.client, "reactions_add") or not callable(
+            self.client.reactions_add
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: reactions_add"
+                error="Slack client is missing required method alias: reactions_add",
             )
 
         try:
-            response = getattr(self.client, 'reactions_add')(**kwargs_api)
+            response = self.client.reactions_add(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def reactions_get(self,
+    async def reactions_get(
+        self,
         *,
-
-        channel: Optional[str] = None,
-        file: Optional[str] = None,
-        file_comment: Optional[str] = None,
-        full: Optional[bool] = None,
-        timestamp: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        file: str | None = None,
+        file_comment: str | None = None,
+        full: bool | None = None,
+        timestamp: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """reactions_get
 
@@ -6055,42 +6570,46 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reactions_get`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if file_comment is not None:
-            kwargs_api['file_comment'] = file_comment
+            kwargs_api["file_comment"] = file_comment
         if full is not None:
-            kwargs_api['full'] = full
+            kwargs_api["full"] = full
         if timestamp is not None:
-            kwargs_api['timestamp'] = timestamp
+            kwargs_api["timestamp"] = timestamp
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'reactions_get') or not callable(getattr(self.client, 'reactions_get')):
+        if not hasattr(self.client, "reactions_get") or not callable(
+            self.client.reactions_get
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: reactions_get"
+                error="Slack client is missing required method alias: reactions_get",
             )
 
         try:
-            response = getattr(self.client, 'reactions_get')(**kwargs_api)
+            response = self.client.reactions_get(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def reactions_list(self,
+    async def reactions_list(
+        self,
         *,
-        user: Optional[str] = None,
-        full: Optional[bool] = None,
-        count: Optional[int] = None,
-        page: Optional[int] = None,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        user: str | None = None,
+        full: bool | None = None,
+        count: int | None = None,
+        page: int | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """reactions_list
 
@@ -6110,43 +6629,47 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reactions_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if full is not None:
-            kwargs_api['full'] = full
+            kwargs_api["full"] = full
         if count is not None:
-            kwargs_api['count'] = count
+            kwargs_api["count"] = count
         if page is not None:
-            kwargs_api['page'] = page
+            kwargs_api["page"] = page
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'reactions_list') or not callable(getattr(self.client, 'reactions_list')):
+        if not hasattr(self.client, "reactions_list") or not callable(
+            self.client.reactions_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: reactions_list"
+                error="Slack client is missing required method alias: reactions_list",
             )
 
         try:
-            response = getattr(self.client, 'reactions_list')(**kwargs_api)
+            response = self.client.reactions_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def reactions_remove(self,
+    async def reactions_remove(
+        self,
         *,
         name: str,
-        file: Optional[str] = None,
-        file_comment: Optional[str] = None,
-        channel: Optional[str] = None,
-        timestamp: Optional[str] = None,
-        **kwargs
+        file: str | None = None,
+        file_comment: str | None = None,
+        channel: str | None = None,
+        timestamp: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """reactions_remove
 
@@ -6165,39 +6688,43 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reactions_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if file_comment is not None:
-            kwargs_api['file_comment'] = file_comment
+            kwargs_api["file_comment"] = file_comment
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if timestamp is not None:
-            kwargs_api['timestamp'] = timestamp
+            kwargs_api["timestamp"] = timestamp
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'reactions_remove') or not callable(getattr(self.client, 'reactions_remove')):
+        if not hasattr(self.client, "reactions_remove") or not callable(
+            self.client.reactions_remove
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: reactions_remove"
+                error="Slack client is missing required method alias: reactions_remove",
             )
 
         try:
-            response = getattr(self.client, 'reactions_remove')(**kwargs_api)
+            response = self.client.reactions_remove(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def reminders_add(self,
+    async def reminders_add(
+        self,
         *,
         text: str,
         time: str,
-        user: Optional[str] = None,
-        **kwargs
+        user: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """reminders_add
 
@@ -6214,33 +6741,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reminders_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if text is not None:
-            kwargs_api['text'] = text
+            kwargs_api["text"] = text
         if time is not None:
-            kwargs_api['time'] = time
+            kwargs_api["time"] = time
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'reminders_add') or not callable(getattr(self.client, 'reminders_add')):
+        if not hasattr(self.client, "reminders_add") or not callable(
+            self.client.reminders_add
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: reminders_add"
+                error="Slack client is missing required method alias: reminders_add",
             )
 
         try:
-            response = getattr(self.client, 'reminders_add')(**kwargs_api)
+            response = self.client.reminders_add(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def reminders_complete(self,
+    async def reminders_complete(
+        self,
         *,
-        reminder: Optional[str] = None,
-        **kwargs
+        reminder: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """reminders_complete
 
@@ -6255,29 +6786,33 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reminders_complete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if reminder is not None:
-            kwargs_api['reminder'] = reminder
+            kwargs_api["reminder"] = reminder
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'reminders_complete') or not callable(getattr(self.client, 'reminders_complete')):
+        if not hasattr(self.client, "reminders_complete") or not callable(
+            self.client.reminders_complete
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: reminders_complete"
+                error="Slack client is missing required method alias: reminders_complete",
             )
 
         try:
-            response = getattr(self.client, 'reminders_complete')(**kwargs_api)
+            response = self.client.reminders_complete(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def reminders_delete(self,
+    async def reminders_delete(
+        self,
         *,
-        reminder: Optional[str] = None,
-        **kwargs
+        reminder: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """reminders_delete
 
@@ -6292,29 +6827,33 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reminders_delete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if reminder is not None:
-            kwargs_api['reminder'] = reminder
+            kwargs_api["reminder"] = reminder
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'reminders_delete') or not callable(getattr(self.client, 'reminders_delete')):
+        if not hasattr(self.client, "reminders_delete") or not callable(
+            self.client.reminders_delete
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: reminders_delete"
+                error="Slack client is missing required method alias: reminders_delete",
             )
 
         try:
-            response = getattr(self.client, 'reminders_delete')(**kwargs_api)
+            response = self.client.reminders_delete(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def reminders_info(self,
+    async def reminders_info(
+        self,
         *,
-        reminder: Optional[str] = None,
-        **kwargs
+        reminder: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """reminders_info
 
@@ -6329,21 +6868,24 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reminders_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if reminder is not None:
-            kwargs_api['reminder'] = reminder
+            kwargs_api["reminder"] = reminder
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'reminders_info') or not callable(getattr(self.client, 'reminders_info')):
+        if not hasattr(self.client, "reminders_info") or not callable(
+            self.client.reminders_info
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: reminders_info"
+                error="Slack client is missing required method alias: reminders_info",
             )
 
         try:
-            response = getattr(self.client, 'reminders_info')(**kwargs_api)
+            response = self.client.reminders_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -6361,28 +6903,32 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reminders_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'reminders_list') or not callable(getattr(self.client, 'reminders_list')):
+        if not hasattr(self.client, "reminders_list") or not callable(
+            self.client.reminders_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: reminders_list"
+                error="Slack client is missing required method alias: reminders_list",
             )
 
         try:
-            response = getattr(self.client, 'reminders_list')(**kwargs_api)
+            response = self.client.reminders_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def rtm_connect(self,
+    async def rtm_connect(
+        self,
         *,
-        batch_presence_aware: Optional[bool] = None,
-        presence_sub: Optional[bool] = None,
-        **kwargs
+        batch_presence_aware: bool | None = None,
+        presence_sub: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """rtm_connect
 
@@ -6398,36 +6944,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.rtm_connect`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if batch_presence_aware is not None:
-            kwargs_api['batch_presence_aware'] = batch_presence_aware
+            kwargs_api["batch_presence_aware"] = batch_presence_aware
         if presence_sub is not None:
-            kwargs_api['presence_sub'] = presence_sub
+            kwargs_api["presence_sub"] = presence_sub
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'rtm_connect') or not callable(getattr(self.client, 'rtm_connect')):
+        if not hasattr(self.client, "rtm_connect") or not callable(
+            self.client.rtm_connect
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: rtm_connect"
+                error="Slack client is missing required method alias: rtm_connect",
             )
 
         try:
-            response = getattr(self.client, 'rtm_connect')(**kwargs_api)
+            response = self.client.rtm_connect(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def search_messages(self,
+    async def search_messages(
+        self,
         *,
         query: str,
-        count: Optional[int] = None,
-        highlight: Optional[str] = None,
-        page: Optional[int] = None,
-        sort: Optional[str] = None,
-        sort_dir: Optional[str] = None,
-        **kwargs
+        count: int | None = None,
+        highlight: str | None = None,
+        page: int | None = None,
+        sort: str | None = None,
+        sort_dir: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """search_messages
         Slack method: `search_messages`  (HTTP GET /search.messages)
@@ -6446,43 +6996,46 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.search_messages`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if count is not None:
-            kwargs_api['count'] = count
+            kwargs_api["count"] = count
         if highlight is not None:
-            kwargs_api['highlight'] = highlight
+            kwargs_api["highlight"] = highlight
         if page is not None:
-            kwargs_api['page'] = page
+            kwargs_api["page"] = page
         if query is not None:
-            kwargs_api['query'] = query
+            kwargs_api["query"] = query
         if sort is not None:
-            kwargs_api['sort'] = sort
+            kwargs_api["sort"] = sort
         if sort_dir is not None:
-            kwargs_api['sort_dir'] = sort_dir
+            kwargs_api["sort_dir"] = sort_dir
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'search_messages') or not callable(getattr(self.client, 'search_messages')):
+        if not hasattr(self.client, "search_messages") or not callable(
+            self.client.search_messages
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: search_messages"
+                error="Slack client is missing required method alias: search_messages",
             )
 
         try:
-            response = getattr(self.client, 'search_messages')(**kwargs_api)
+            response = self.client.search_messages(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def stars_add(self,
+    async def stars_add(
+        self,
         *,
-
-        channel: Optional[str] = None,
-        file: Optional[str] = None,
-        file_comment: Optional[str] = None,
-        timestamp: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        file: str | None = None,
+        file_comment: str | None = None,
+        timestamp: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """stars_add
 
@@ -6500,38 +7053,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.stars_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if file_comment is not None:
-            kwargs_api['file_comment'] = file_comment
+            kwargs_api["file_comment"] = file_comment
         if timestamp is not None:
-            kwargs_api['timestamp'] = timestamp
+            kwargs_api["timestamp"] = timestamp
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'stars_add') or not callable(getattr(self.client, 'stars_add')):
+        if not hasattr(self.client, "stars_add") or not callable(self.client.stars_add):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: stars_add"
+                error="Slack client is missing required method alias: stars_add",
             )
 
         try:
-            response = getattr(self.client, 'stars_add')(**kwargs_api)
+            response = self.client.stars_add(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def stars_list(self,
+    async def stars_list(
+        self,
         *,
-        count: Optional[int] = None,
-        page: Optional[int] = None,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        **kwargs
+        count: int | None = None,
+        page: int | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """stars_list
 
@@ -6549,38 +7104,42 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.stars_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if count is not None:
-            kwargs_api['count'] = count
+            kwargs_api["count"] = count
         if page is not None:
-            kwargs_api['page'] = page
+            kwargs_api["page"] = page
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'stars_list') or not callable(getattr(self.client, 'stars_list')):
+        if not hasattr(self.client, "stars_list") or not callable(
+            self.client.stars_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: stars_list"
+                error="Slack client is missing required method alias: stars_list",
             )
 
         try:
-            response = getattr(self.client, 'stars_list')(**kwargs_api)
+            response = self.client.stars_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def stars_remove(self,
+    async def stars_remove(
+        self,
         *,
-        channel: Optional[str] = None,
-        file: Optional[str] = None,
-        file_comment: Optional[str] = None,
-        timestamp: Optional[str] = None,
-        **kwargs
+        channel: str | None = None,
+        file: str | None = None,
+        file_comment: str | None = None,
+        timestamp: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """stars_remove
 
@@ -6598,38 +7157,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.stars_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
-            kwargs_api['channel'] = channel
+            kwargs_api["channel"] = channel
         if file is not None:
-            kwargs_api['file'] = file
+            kwargs_api["file"] = file
         if file_comment is not None:
-            kwargs_api['file_comment'] = file_comment
+            kwargs_api["file_comment"] = file_comment
         if timestamp is not None:
-            kwargs_api['timestamp'] = timestamp
+            kwargs_api["timestamp"] = timestamp
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'stars_remove') or not callable(getattr(self.client, 'stars_remove')):
+        if not hasattr(self.client, "stars_remove") or not callable(
+            self.client.stars_remove
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: stars_remove"
+                error="Slack client is missing required method alias: stars_remove",
             )
 
         try:
-            response = getattr(self.client, 'stars_remove')(**kwargs_api)
+            response = self.client.stars_remove(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def team_access_logs(self,
+    async def team_access_logs(
+        self,
         *,
-
-        before: Optional[str] = None,
-        count: Optional[int] = None,
-        page: Optional[int] = None,
-        **kwargs
+        before: str | None = None,
+        count: int | None = None,
+        page: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """team_accessLogs
 
@@ -6645,34 +7207,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.team_accessLogs`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if before is not None:
-            kwargs_api['before'] = before
+            kwargs_api["before"] = before
         if count is not None:
-            kwargs_api['count'] = count
+            kwargs_api["count"] = count
         if page is not None:
-            kwargs_api['page'] = page
+            kwargs_api["page"] = page
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'team_accessLogs') or not callable(getattr(self.client, 'team_accessLogs')):
+        if not hasattr(self.client, "team_accessLogs") or not callable(
+            self.client.team_accessLogs
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: team_accessLogs"
+                error="Slack client is missing required method alias: team_accessLogs",
             )
 
         try:
-            response = getattr(self.client, 'team_accessLogs')(**kwargs_api)
+            response = self.client.team_accessLogs(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def team_billable_info(self,
+    async def team_billable_info(
+        self,
         *,
-
-        user: Optional[str] = None,
-        **kwargs
+        user: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """team_billableInfo
 
@@ -6687,30 +7252,33 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.team_billableInfo`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'team_billableInfo') or not callable(getattr(self.client, 'team_billableInfo')):
+        if not hasattr(self.client, "team_billableInfo") or not callable(
+            self.client.team_billableInfo
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: team_billableInfo"
+                error="Slack client is missing required method alias: team_billableInfo",
             )
 
         try:
-            response = getattr(self.client, 'team_billableInfo')(**kwargs_api)
+            response = self.client.team_billableInfo(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def team_info(self,
+    async def team_info(
+        self,
         *,
-
-        team: Optional[str] = None,
-        **kwargs
+        team: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """team_info
 
@@ -6725,35 +7293,36 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.team_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if team is not None:
-            kwargs_api['team'] = team
+            kwargs_api["team"] = team
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'team_info') or not callable(getattr(self.client, 'team_info')):
+        if not hasattr(self.client, "team_info") or not callable(self.client.team_info):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: team_info"
+                error="Slack client is missing required method alias: team_info",
             )
 
         try:
-            response = getattr(self.client, 'team_info')(**kwargs_api)
+            response = self.client.team_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def team_integration_logs(self,
+    async def team_integration_logs(
+        self,
         *,
-
-        app_id: Optional[str] = None,
-        change_type: Optional[str] = None,
-        count: Optional[int] = None,
-        page: Optional[int] = None,
-        service_id: Optional[str] = None,
-        user: Optional[str] = None,
-        **kwargs
+        app_id: str | None = None,
+        change_type: str | None = None,
+        count: int | None = None,
+        page: int | None = None,
+        service_id: str | None = None,
+        user: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """team_integrationLogs
 
@@ -6773,40 +7342,43 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.team_integrationLogs`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if app_id is not None:
-            kwargs_api['app_id'] = app_id
+            kwargs_api["app_id"] = app_id
         if change_type is not None:
-            kwargs_api['change_type'] = change_type
+            kwargs_api["change_type"] = change_type
         if count is not None:
-            kwargs_api['count'] = count
+            kwargs_api["count"] = count
         if page is not None:
-            kwargs_api['page'] = page
+            kwargs_api["page"] = page
         if service_id is not None:
-            kwargs_api['service_id'] = service_id
+            kwargs_api["service_id"] = service_id
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'team_integrationLogs') or not callable(getattr(self.client, 'team_integrationLogs')):
+        if not hasattr(self.client, "team_integrationLogs") or not callable(
+            self.client.team_integrationLogs
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: team_integrationLogs"
+                error="Slack client is missing required method alias: team_integrationLogs",
             )
 
         try:
-            response = getattr(self.client, 'team_integrationLogs')(**kwargs_api)
+            response = self.client.team_integrationLogs(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def team_profile_get(self,
+    async def team_profile_get(
+        self,
         *,
-
-        visibility: Optional[str] = None,
-        **kwargs
+        visibility: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """team_profile_get
 
@@ -6821,34 +7393,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.team_profile_get`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if visibility is not None:
-            kwargs_api['visibility'] = visibility
+            kwargs_api["visibility"] = visibility
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'team_profile_get') or not callable(getattr(self.client, 'team_profile_get')):
+        if not hasattr(self.client, "team_profile_get") or not callable(
+            self.client.team_profile_get
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: team_profile_get"
+                error="Slack client is missing required method alias: team_profile_get",
             )
 
         try:
-            response = getattr(self.client, 'team_profile_get')(**kwargs_api)
+            response = self.client.team_profile_get(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def usergroups_create(self,
+    async def usergroups_create(
+        self,
         *,
-
         name: str,
-        channels: Optional[List[str]] = None,
-        description: Optional[str] = None,
-        handle: Optional[str] = None,
-        include_count: Optional[int] = None,
-        **kwargs
+        channels: list[str] | None = None,
+        description: str | None = None,
+        handle: str | None = None,
+        include_count: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """usergroups_create
 
@@ -6867,38 +7442,42 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_create`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channels is not None:
-            kwargs_api['channels'] = channels
+            kwargs_api["channels"] = channels
         if description is not None:
-            kwargs_api['description'] = description
+            kwargs_api["description"] = description
         if handle is not None:
-            kwargs_api['handle'] = handle
+            kwargs_api["handle"] = handle
         if include_count is not None:
-            kwargs_api['include_count'] = include_count
+            kwargs_api["include_count"] = include_count
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'usergroups_create') or not callable(getattr(self.client, 'usergroups_create')):
+        if not hasattr(self.client, "usergroups_create") or not callable(
+            self.client.usergroups_create
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: usergroups_create"
+                error="Slack client is missing required method alias: usergroups_create",
             )
 
         try:
-            response = getattr(self.client, 'usergroups_create')(**kwargs_api)
+            response = self.client.usergroups_create(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def usergroups_disable(self,
+    async def usergroups_disable(
+        self,
         *,
         usergroup: str,
-        include_count: Optional[int] = None,
-        **kwargs
+        include_count: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """usergroups_disable
 
@@ -6914,33 +7493,36 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_disable`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_count is not None:
-            kwargs_api['include_count'] = include_count
+            kwargs_api["include_count"] = include_count
         if usergroup is not None:
-            kwargs_api['usergroup'] = usergroup
+            kwargs_api["usergroup"] = usergroup
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'usergroups_disable') or not callable(getattr(self.client, 'usergroups_disable')):
+        if not hasattr(self.client, "usergroups_disable") or not callable(
+            self.client.usergroups_disable
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: usergroups_disable"
+                error="Slack client is missing required method alias: usergroups_disable",
             )
 
         try:
-            response = getattr(self.client, 'usergroups_disable')(**kwargs_api)
+            response = self.client.usergroups_disable(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def usergroups_enable(self,
+    async def usergroups_enable(
+        self,
         *,
-
         usergroup: str,
-        include_count: Optional[int] = None,
-        **kwargs
+        include_count: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """usergroups_enable
 
@@ -6956,34 +7538,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_enable`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_count is not None:
-            kwargs_api['include_count'] = include_count
+            kwargs_api["include_count"] = include_count
         if usergroup is not None:
-            kwargs_api['usergroup'] = usergroup
+            kwargs_api["usergroup"] = usergroup
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'usergroups_enable') or not callable(getattr(self.client, 'usergroups_enable')):
+        if not hasattr(self.client, "usergroups_enable") or not callable(
+            self.client.usergroups_enable
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: usergroups_enable"
+                error="Slack client is missing required method alias: usergroups_enable",
             )
 
         try:
-            response = getattr(self.client, 'usergroups_enable')(**kwargs_api)
+            response = self.client.usergroups_enable(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def usergroups_list(self,
+    async def usergroups_list(
+        self,
         *,
-
-        include_users: Optional[bool] = None,
-        include_count: Optional[int] = None,
-        include_disabled: Optional[bool] = None,
-        **kwargs
+        include_users: bool | None = None,
+        include_count: int | None = None,
+        include_disabled: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """usergroups_list
 
@@ -7000,39 +7585,42 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_users is not None:
-            kwargs_api['include_users'] = include_users
+            kwargs_api["include_users"] = include_users
         if include_count is not None:
-            kwargs_api['include_count'] = include_count
+            kwargs_api["include_count"] = include_count
         if include_disabled is not None:
-            kwargs_api['include_disabled'] = include_disabled
+            kwargs_api["include_disabled"] = include_disabled
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'usergroups_list') or not callable(getattr(self.client, 'usergroups_list')):
+        if not hasattr(self.client, "usergroups_list") or not callable(
+            self.client.usergroups_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: usergroups_list"
+                error="Slack client is missing required method alias: usergroups_list",
             )
 
         try:
-            response = getattr(self.client, 'usergroups_list')(**kwargs_api)
+            response = self.client.usergroups_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def usergroups_update(self,
+    async def usergroups_update(
+        self,
         *,
-
         usergroup: str,
-        handle: Optional[str] = None,
-        description: Optional[str] = None,
-        channels: Optional[List[str]] = None,
-        include_count: Optional[int] = None,
-        name: Optional[str] = None,
-        **kwargs
+        handle: str | None = None,
+        description: str | None = None,
+        channels: list[str] | None = None,
+        include_count: int | None = None,
+        name: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """usergroups_update
 
@@ -7052,41 +7640,44 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if handle is not None:
-            kwargs_api['handle'] = handle
+            kwargs_api["handle"] = handle
         if description is not None:
-            kwargs_api['description'] = description
+            kwargs_api["description"] = description
         if channels is not None:
-            kwargs_api['channels'] = channels
+            kwargs_api["channels"] = channels
         if include_count is not None:
-            kwargs_api['include_count'] = include_count
+            kwargs_api["include_count"] = include_count
         if usergroup is not None:
-            kwargs_api['usergroup'] = usergroup
+            kwargs_api["usergroup"] = usergroup
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'usergroups_update') or not callable(getattr(self.client, 'usergroups_update')):
+        if not hasattr(self.client, "usergroups_update") or not callable(
+            self.client.usergroups_update
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: usergroups_update"
+                error="Slack client is missing required method alias: usergroups_update",
             )
 
         try:
-            response = getattr(self.client, 'usergroups_update')(**kwargs_api)
+            response = self.client.usergroups_update(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def usergroups_users_list(self,
+    async def usergroups_users_list(
+        self,
         *,
-
         usergroup: str,
-        include_disabled: Optional[bool] = None,
-        **kwargs
+        include_disabled: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """usergroups_users_list
 
@@ -7102,34 +7693,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_users_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_disabled is not None:
-            kwargs_api['include_disabled'] = include_disabled
+            kwargs_api["include_disabled"] = include_disabled
         if usergroup is not None:
-            kwargs_api['usergroup'] = usergroup
+            kwargs_api["usergroup"] = usergroup
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'usergroups_users_list') or not callable(getattr(self.client, 'usergroups_users_list')):
+        if not hasattr(self.client, "usergroups_users_list") or not callable(
+            self.client.usergroups_users_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: usergroups_users_list"
+                error="Slack client is missing required method alias: usergroups_users_list",
             )
 
         try:
-            response = getattr(self.client, 'usergroups_users_list')(**kwargs_api)
+            response = self.client.usergroups_users_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def usergroups_users_update(self,
+    async def usergroups_users_update(
+        self,
         *,
-
         usergroup: str,
-        users: List[str],
-        include_count: Optional[int] = None,
-        **kwargs
+        users: list[str],
+        include_count: int | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """usergroups_users_update
 
@@ -7146,37 +7740,41 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_users_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_count is not None:
-            kwargs_api['include_count'] = include_count
+            kwargs_api["include_count"] = include_count
         if usergroup is not None:
-            kwargs_api['usergroup'] = usergroup
+            kwargs_api["usergroup"] = usergroup
         if users is not None:
-            kwargs_api['users'] = users
+            kwargs_api["users"] = users
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'usergroups_users_update') or not callable(getattr(self.client, 'usergroups_users_update')):
+        if not hasattr(self.client, "usergroups_users_update") or not callable(
+            self.client.usergroups_users_update
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: usergroups_users_update"
+                error="Slack client is missing required method alias: usergroups_users_update",
             )
 
         try:
-            response = getattr(self.client, 'usergroups_users_update')(**kwargs_api)
+            response = self.client.usergroups_users_update(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def users_conversations(self,
+    async def users_conversations(
+        self,
         *,
-        user: Optional[str] = None,
-        types: Optional[str] = None,
-        exclude_archived: Optional[bool] = None,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        **kwargs
+        user: str | None = None,
+        types: str | None = None,
+        exclude_archived: bool | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """users_conversations
 
@@ -7195,29 +7793,32 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_conversations`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if types is not None:
-            kwargs_api['types'] = types
+            kwargs_api["types"] = types
         if exclude_archived is not None:
-            kwargs_api['exclude_archived'] = exclude_archived
+            kwargs_api["exclude_archived"] = exclude_archived
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_conversations') or not callable(getattr(self.client, 'users_conversations')):
+        if not hasattr(self.client, "users_conversations") or not callable(
+            self.client.users_conversations
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_conversations"
+                error="Slack client is missing required method alias: users_conversations",
             )
 
         try:
-            response = getattr(self.client, 'users_conversations')(**kwargs_api)
+            response = self.client.users_conversations(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -7234,28 +7835,31 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_deletePhoto`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_deletePhoto') or not callable(getattr(self.client, 'users_deletePhoto')):
+        if not hasattr(self.client, "users_deletePhoto") or not callable(
+            self.client.users_deletePhoto
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_deletePhoto"
+                error="Slack client is missing required method alias: users_deletePhoto",
             )
 
         try:
-            response = getattr(self.client, 'users_deletePhoto')(**kwargs_api)
+            response = self.client.users_deletePhoto(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def users_get_presence(self,
+    async def users_get_presence(
+        self,
         *,
-
-        user: Optional[str] = None,
-        **kwargs
+        user: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """users_getPresence
 
@@ -7270,21 +7874,24 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_getPresence`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_getPresence') or not callable(getattr(self.client, 'users_getPresence')):
+        if not hasattr(self.client, "users_getPresence") or not callable(
+            self.client.users_getPresence
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_getPresence"
+                error="Slack client is missing required method alias: users_getPresence",
             )
 
         try:
-            response = getattr(self.client, 'users_getPresence')(**kwargs_api)
+            response = self.client.users_getPresence(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -7302,28 +7909,32 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_identity`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_identity') or not callable(getattr(self.client, 'users_identity')):
+        if not hasattr(self.client, "users_identity") or not callable(
+            self.client.users_identity
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_identity"
+                error="Slack client is missing required method alias: users_identity",
             )
 
         try:
-            response = getattr(self.client, 'users_identity')(**kwargs_api)
+            response = self.client.users_identity(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def users_info(self,
+    async def users_info(
+        self,
         *,
-        include_locale: Optional[bool] = None,
-        user: Optional[str] = None,
-        **kwargs
+        include_locale: bool | None = None,
+        user: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """users_info
 
@@ -7339,33 +7950,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_locale is not None:
-            kwargs_api['include_locale'] = include_locale
+            kwargs_api["include_locale"] = include_locale
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_info') or not callable(getattr(self.client, 'users_info')):
+        if not hasattr(self.client, "users_info") or not callable(
+            self.client.users_info
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_info"
+                error="Slack client is missing required method alias: users_info",
             )
 
         try:
-            response = getattr(self.client, 'users_info')(**kwargs_api)
+            response = self.client.users_info(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def users_list(self,
+    async def users_list(
+        self,
         *,
-        limit: Optional[int] = None,
-        cursor: Optional[str] = None,
-        include_locale: Optional[bool] = None,
-        **kwargs
+        limit: int | None = None,
+        cursor: str | None = None,
+        include_locale: bool | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """users_list
 
@@ -7382,33 +7997,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if limit is not None:
-            kwargs_api['limit'] = limit
+            kwargs_api["limit"] = limit
         if cursor is not None:
-            kwargs_api['cursor'] = cursor
+            kwargs_api["cursor"] = cursor
         if include_locale is not None:
-            kwargs_api['include_locale'] = include_locale
+            kwargs_api["include_locale"] = include_locale
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_list') or not callable(getattr(self.client, 'users_list')):
+        if not hasattr(self.client, "users_list") or not callable(
+            self.client.users_list
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_list"
+                error="Slack client is missing required method alias: users_list",
             )
 
         try:
-            response = getattr(self.client, 'users_list')(**kwargs_api)
+            response = self.client.users_list(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def users_lookup_by_email(self,
+    async def users_lookup_by_email(
+        self,
         *,
         email: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """users_lookupByEmail
 
@@ -7423,30 +8042,34 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_lookupByEmail`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if email is not None:
-            kwargs_api['email'] = email
+            kwargs_api["email"] = email
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_lookupByEmail') or not callable(getattr(self.client, 'users_lookupByEmail')):
+        if not hasattr(self.client, "users_lookupByEmail") or not callable(
+            self.client.users_lookupByEmail
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_lookupByEmail"
+                error="Slack client is missing required method alias: users_lookupByEmail",
             )
 
         try:
-            response = getattr(self.client, 'users_lookupByEmail')(**kwargs_api)
+            response = self.client.users_lookupByEmail(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def users_profile_get(self,
+    async def users_profile_get(
+        self,
         *,
-        include_labels: Optional[bool] = None,
-        user: Optional[str] = None,
-        **kwargs
+        include_labels: bool | None = None,
+        user: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """users_profile_get
 
@@ -7462,34 +8085,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_profile_get`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_labels is not None:
-            kwargs_api['include_labels'] = include_labels
+            kwargs_api["include_labels"] = include_labels
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_profile_get') or not callable(getattr(self.client, 'users_profile_get')):
+        if not hasattr(self.client, "users_profile_get") or not callable(
+            self.client.users_profile_get
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_profile_get"
+                error="Slack client is missing required method alias: users_profile_get",
             )
 
         try:
-            response = getattr(self.client, 'users_profile_get')(**kwargs_api)
+            response = self.client.users_profile_get(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def users_profile_set(self,
+    async def users_profile_set(
+        self,
         *,
-        name: Optional[str] = None,
-        profile: Optional[str] = None,
-        user: Optional[str] = None,
-        value: Optional[str] = None,
-        **kwargs
+        name: str | None = None,
+        profile: str | None = None,
+        user: str | None = None,
+        value: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """users_profile_set
 
@@ -7507,27 +8134,30 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_profile_set`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if name is not None:
-            kwargs_api['name'] = name
+            kwargs_api["name"] = name
         if profile is not None:
-            kwargs_api['profile'] = profile
+            kwargs_api["profile"] = profile
         if user is not None:
-            kwargs_api['user'] = user
+            kwargs_api["user"] = user
         if value is not None:
-            kwargs_api['value'] = value
+            kwargs_api["value"] = value
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_profile_set') or not callable(getattr(self.client, 'users_profile_set')):
+        if not hasattr(self.client, "users_profile_set") or not callable(
+            self.client.users_profile_set
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_profile_set"
+                error="Slack client is missing required method alias: users_profile_set",
             )
 
         try:
-            response = getattr(self.client, 'users_profile_set')(**kwargs_api)
+            response = self.client.users_profile_set(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -7543,30 +8173,34 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_setActive`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_setActive') or not callable(getattr(self.client, 'users_setActive')):
+        if not hasattr(self.client, "users_setActive") or not callable(
+            self.client.users_setActive
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_setActive"
+                error="Slack client is missing required method alias: users_setActive",
             )
 
         try:
-            response = getattr(self.client, 'users_setActive')(**kwargs_api)
+            response = self.client.users_setActive(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def users_set_photo(self,
+    async def users_set_photo(
+        self,
         *,
-        crop_w: Optional[int] = None,
-        crop_x: Optional[int] = None,
-        crop_y: Optional[int] = None,
-        image: Optional[str] = None,
-        **kwargs
+        crop_w: int | None = None,
+        crop_x: int | None = None,
+        crop_y: int | None = None,
+        image: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """users_setPhoto
 
@@ -7584,35 +8218,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_setPhoto`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if crop_w is not None:
-            kwargs_api['crop_w'] = crop_w
+            kwargs_api["crop_w"] = crop_w
         if crop_x is not None:
-            kwargs_api['crop_x'] = crop_x
+            kwargs_api["crop_x"] = crop_x
         if crop_y is not None:
-            kwargs_api['crop_y'] = crop_y
+            kwargs_api["crop_y"] = crop_y
         if image is not None:
-            kwargs_api['image'] = image
+            kwargs_api["image"] = image
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_setPhoto') or not callable(getattr(self.client, 'users_setPhoto')):
+        if not hasattr(self.client, "users_setPhoto") or not callable(
+            self.client.users_setPhoto
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_setPhoto"
+                error="Slack client is missing required method alias: users_setPhoto",
             )
 
         try:
-            response = getattr(self.client, 'users_setPhoto')(**kwargs_api)
+            response = self.client.users_setPhoto(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def users_set_presence(self,
+    async def users_set_presence(
+        self,
         *,
         presence: str,
-        **kwargs
+        **kwargs,
     ) -> SlackResponse:
         """users_setPresence
 
@@ -7627,30 +8265,34 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_setPresence`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if presence is not None:
-            kwargs_api['presence'] = presence
+            kwargs_api["presence"] = presence
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'users_setPresence') or not callable(getattr(self.client, 'users_setPresence')):
+        if not hasattr(self.client, "users_setPresence") or not callable(
+            self.client.users_setPresence
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: users_setPresence"
+                error="Slack client is missing required method alias: users_setPresence",
             )
 
         try:
-            response = getattr(self.client, 'users_setPresence')(**kwargs_api)
+            response = self.client.users_setPresence(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def views_open(self,
+    async def views_open(
+        self,
         *,
         trigger_id: str,
-        view: Dict[str, Any],
-        **kwargs
+        view: dict[str, Any],
+        **kwargs,
     ) -> SlackResponse:
         """views_open
 
@@ -7666,33 +8308,37 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.views_open`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if trigger_id is not None:
-            kwargs_api['trigger_id'] = trigger_id
+            kwargs_api["trigger_id"] = trigger_id
         if view is not None:
-            kwargs_api['view'] = view
+            kwargs_api["view"] = view
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'views_open') or not callable(getattr(self.client, 'views_open')):
+        if not hasattr(self.client, "views_open") or not callable(
+            self.client.views_open
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: views_open"
+                error="Slack client is missing required method alias: views_open",
             )
 
         try:
-            response = getattr(self.client, 'views_open')(**kwargs_api)
+            response = self.client.views_open(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def views_publish(self,
+    async def views_publish(
+        self,
         *,
         user_id: str,
-        view: Dict[str, Any],
-        hash: Optional[str] = None,
-        **kwargs
+        view: dict[str, Any],
+        hash: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """views_publish
 
@@ -7709,34 +8355,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.views_publish`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user_id is not None:
-            kwargs_api['user_id'] = user_id
+            kwargs_api["user_id"] = user_id
         if view is not None:
-            kwargs_api['view'] = view
+            kwargs_api["view"] = view
         if hash is not None:
-            kwargs_api['hash'] = hash
+            kwargs_api["hash"] = hash
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'views_publish') or not callable(getattr(self.client, 'views_publish')):
+        if not hasattr(self.client, "views_publish") or not callable(
+            self.client.views_publish
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: views_publish"
+                error="Slack client is missing required method alias: views_publish",
             )
 
         try:
-            response = getattr(self.client, 'views_publish')(**kwargs_api)
+            response = self.client.views_publish(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def views_push(self,
+    async def views_push(
+        self,
         *,
         trigger_id: str,
-        view: Dict[str, Any],
-        **kwargs
+        view: dict[str, Any],
+        **kwargs,
     ) -> SlackResponse:
         """views_push
 
@@ -7752,34 +8402,38 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.views_push`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if trigger_id is not None:
-            kwargs_api['trigger_id'] = trigger_id
+            kwargs_api["trigger_id"] = trigger_id
         if view is not None:
-            kwargs_api['view'] = view
+            kwargs_api["view"] = view
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'views_push') or not callable(getattr(self.client, 'views_push')):
+        if not hasattr(self.client, "views_push") or not callable(
+            self.client.views_push
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: views_push"
+                error="Slack client is missing required method alias: views_push",
             )
 
         try:
-            response = getattr(self.client, 'views_push')(**kwargs_api)
+            response = self.client.views_push(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def views_update(self,
+    async def views_update(
+        self,
         *,
-        view_id: Optional[str] = None,
-        external_id: Optional[str] = None,
-        view: Optional[Dict[str, Any]] = None,
-        hash: Optional[str] = None,
-        **kwargs
+        view_id: str | None = None,
+        external_id: str | None = None,
+        view: dict[str, Any] | None = None,
+        hash: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """views_update
 
@@ -7797,36 +8451,40 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.views_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if view_id is not None:
-            kwargs_api['view_id'] = view_id
+            kwargs_api["view_id"] = view_id
         if external_id is not None:
-            kwargs_api['external_id'] = external_id
+            kwargs_api["external_id"] = external_id
         if view is not None:
-            kwargs_api['view'] = view
+            kwargs_api["view"] = view
         if hash is not None:
-            kwargs_api['hash'] = hash
+            kwargs_api["hash"] = hash
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'views_update') or not callable(getattr(self.client, 'views_update')):
+        if not hasattr(self.client, "views_update") or not callable(
+            self.client.views_update
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: views_update"
+                error="Slack client is missing required method alias: views_update",
             )
 
         try:
-            response = getattr(self.client, 'views_update')(**kwargs_api)
+            response = self.client.views_update(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def workflows_step_completed(self,
+    async def workflows_step_completed(
+        self,
         *,
         workflow_step_execute_id: str,
-        outputs: Optional[Dict[str, Any]] = None,
-        **kwargs
+        outputs: dict[str, Any] | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """workflows_stepCompleted
 
@@ -7842,32 +8500,36 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.workflows_stepCompleted`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if workflow_step_execute_id is not None:
-            kwargs_api['workflow_step_execute_id'] = workflow_step_execute_id
+            kwargs_api["workflow_step_execute_id"] = workflow_step_execute_id
         if outputs is not None:
-            kwargs_api['outputs'] = outputs
+            kwargs_api["outputs"] = outputs
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'workflows_stepCompleted') or not callable(getattr(self.client, 'workflows_stepCompleted')):
+        if not hasattr(self.client, "workflows_stepCompleted") or not callable(
+            self.client.workflows_stepCompleted
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: workflows_stepCompleted"
+                error="Slack client is missing required method alias: workflows_stepCompleted",
             )
 
         try:
-            response = getattr(self.client, 'workflows_stepCompleted')(**kwargs_api)
+            response = self.client.workflows_stepCompleted(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def workflows_step_failed(self,
+    async def workflows_step_failed(
+        self,
         *,
         workflow_step_execute_id: str,
-        error: Dict[str, Any],
-        **kwargs
+        error: dict[str, Any],
+        **kwargs,
     ) -> SlackResponse:
         """workflows_stepFailed
 
@@ -7883,35 +8545,39 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.workflows_stepFailed`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if workflow_step_execute_id is not None:
-            kwargs_api['workflow_step_execute_id'] = workflow_step_execute_id
+            kwargs_api["workflow_step_execute_id"] = workflow_step_execute_id
         if error is not None:
-            kwargs_api['error'] = error
+            kwargs_api["error"] = error
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'workflows_stepFailed') or not callable(getattr(self.client, 'workflows_stepFailed')):
+        if not hasattr(self.client, "workflows_stepFailed") or not callable(
+            self.client.workflows_stepFailed
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: workflows_stepFailed"
+                error="Slack client is missing required method alias: workflows_stepFailed",
             )
 
         try:
-            response = getattr(self.client, 'workflows_stepFailed')(**kwargs_api)
+            response = self.client.workflows_stepFailed(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
 
-    async def workflows_update_step(self,
+    async def workflows_update_step(
+        self,
         *,
         workflow_step_edit_id: str,
-        inputs: Optional[Dict[str, Any]] = None,
-        outputs: Optional[List[Dict[str, Any]]] = None,
-        step_name: Optional[str] = None,
-        step_image_url: Optional[str] = None,
-        **kwargs
+        inputs: dict[str, Any] | None = None,
+        outputs: list[dict[str, Any]] | None = None,
+        step_name: str | None = None,
+        step_image_url: str | None = None,
+        **kwargs,
     ) -> SlackResponse:
         """workflows_updateStep
 
@@ -7930,29 +8596,32 @@ class SlackDataSource:
         Notes:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.workflows_updateStep`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
+
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if workflow_step_edit_id is not None:
-            kwargs_api['workflow_step_edit_id'] = workflow_step_edit_id
+            kwargs_api["workflow_step_edit_id"] = workflow_step_edit_id
         if inputs is not None:
-            kwargs_api['inputs'] = inputs
+            kwargs_api["inputs"] = inputs
         if outputs is not None:
-            kwargs_api['outputs'] = outputs
+            kwargs_api["outputs"] = outputs
         if step_name is not None:
-            kwargs_api['step_name'] = step_name
+            kwargs_api["step_name"] = step_name
         if step_image_url is not None:
-            kwargs_api['step_image_url'] = step_image_url
+            kwargs_api["step_image_url"] = step_image_url
         if kwargs:
             kwargs_api.update(kwargs)
 
-        if not hasattr(self.client, 'workflows_updateStep') or not callable(getattr(self.client, 'workflows_updateStep')):
+        if not hasattr(self.client, "workflows_updateStep") or not callable(
+            self.client.workflows_updateStep
+        ):
             return SlackResponse(
                 success=False,
-                error="Slack client is missing required method alias: workflows_updateStep"
+                error="Slack client is missing required method alias: workflows_updateStep",
             )
 
         try:
-            response = getattr(self.client, 'workflows_updateStep')(**kwargs_api)
+            response = self.client.workflows_updateStep(**kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)

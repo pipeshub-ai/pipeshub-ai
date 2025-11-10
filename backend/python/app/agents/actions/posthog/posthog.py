@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Optional, Tuple
+from collections.abc import Coroutine
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -25,13 +25,14 @@ class PostHog:
 
         Args:
             client: An initialized `PostHogClient` instance
+
         """
         self.client = PostHogDataSource(client)
         # Dedicated background event loop for running coroutines from sync context
         self._bg_loop = asyncio.new_event_loop()
         self._bg_loop_thread = threading.Thread(
             target=self._start_background_loop,
-            daemon=True
+            daemon=True,
         )
         self._bg_loop_thread.start()
 
@@ -48,7 +49,10 @@ class PostHog:
     def shutdown(self) -> None:
         """Gracefully stop the background event loop and thread."""
         try:
-            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+            if (
+                getattr(self, "_bg_loop", None) is not None
+                and self._bg_loop.is_running()
+            ):
                 self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
             if getattr(self, "_bg_loop_thread", None) is not None:
                 self._bg_loop_thread.join()
@@ -60,18 +64,19 @@ class PostHog:
     def _handle_response(
         self,
         response,
-        success_message: str
-    ) -> Tuple[bool, str]:
+        success_message: str,
+    ) -> tuple[bool, str]:
         """Handle PostHog response and return standardized format."""
         try:
-            if hasattr(response, 'success') and response.success:
-                return True, json.dumps({
-                    "message": success_message,
-                    "data": response.data or {}
-                })
-            else:
-                error_msg = getattr(response, 'error', 'Unknown error')
-                return False, json.dumps({"error": error_msg})
+            if hasattr(response, "success") and response.success:
+                return True, json.dumps(
+                    {
+                        "message": success_message,
+                        "data": response.data or {},
+                    }
+                )
+            error_msg = getattr(response, "error", "Unknown error")
+            return False, json.dumps({"error": error_msg})
         except Exception as e:
             logger.error(f"Error handling response: {e}")
             return False, json.dumps({"error": str(e)})
@@ -84,35 +89,35 @@ class PostHog:
             ToolParameter(
                 name="event",
                 type=ParameterType.STRING,
-                description="Event name"
+                description="Event name",
             ),
             ToolParameter(
                 name="distinct_id",
                 type=ParameterType.STRING,
-                description="Distinct ID of the user"
+                description="Distinct ID of the user",
             ),
             ToolParameter(
                 name="properties",
                 type=ParameterType.STRING,
                 description="JSON object with event properties",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Event timestamp (ISO format)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with event capture result"
+        returns="JSON with event capture result",
     )
     def capture_event(
         self,
         event: str,
         distinct_id: str,
-        properties: Optional[str] = None,
-        timestamp: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        properties: str | None = None,
+        timestamp: str | None = None,
+    ) -> tuple[bool, str]:
         """Capture a new event in PostHog."""
         try:
             # Parse properties if provided
@@ -123,15 +128,17 @@ class PostHog:
                     if not isinstance(properties_dict, dict):
                         raise ValueError("properties must be a JSON object")
                 except json.JSONDecodeError as exc:
-                    return False, json.dumps({"error": f"Invalid JSON for properties: {exc}"})
+                    return False, json.dumps(
+                        {"error": f"Invalid JSON for properties: {exc}"}
+                    )
 
             response = self._run_async(
                 self.client.capture_event(
                     event=event,
                     distinct_id=distinct_id,
                     properties=properties_dict,
-                    timestamp=timestamp
-                )
+                    timestamp=timestamp,
+                ),
             )
             return self._handle_response(response, "Event captured successfully")
         except Exception as e:
@@ -146,16 +153,16 @@ class PostHog:
             ToolParameter(
                 name="event_id",
                 type=ParameterType.STRING,
-                description="Event ID"
-            )
+                description="Event ID",
+            ),
         ],
-        returns="JSON with event data"
+        returns="JSON with event data",
     )
-    def get_event(self, event_id: str) -> Tuple[bool, str]:
+    def get_event(self, event_id: str) -> tuple[bool, str]:
         """Get a single event by ID from PostHog."""
         try:
             response = self._run_async(
-                self.client.event(id=event_id)
+                self.client.event(id=event_id),
             )
             return self._handle_response(response, "Event retrieved successfully")
         except Exception as e:
@@ -170,16 +177,16 @@ class PostHog:
             ToolParameter(
                 name="person_id",
                 type=ParameterType.STRING,
-                description="Person ID"
-            )
+                description="Person ID",
+            ),
         ],
-        returns="JSON with person data"
+        returns="JSON with person data",
     )
-    def get_person(self, person_id: str) -> Tuple[bool, str]:
+    def get_person(self, person_id: str) -> tuple[bool, str]:
         """Get a person by ID from PostHog."""
         try:
             response = self._run_async(
-                self.client.person(id=person_id)
+                self.client.person(id=person_id),
             )
             return self._handle_response(response, "Person retrieved successfully")
         except Exception as e:
@@ -194,21 +201,21 @@ class PostHog:
             ToolParameter(
                 name="person_id",
                 type=ParameterType.STRING,
-                description="Person ID"
+                description="Person ID",
             ),
             ToolParameter(
                 name="properties",
                 type=ParameterType.STRING,
-                description="JSON object with person properties to update"
-            )
+                description="JSON object with person properties to update",
+            ),
         ],
-        returns="JSON with person update result"
+        returns="JSON with person update result",
     )
     def update_person(
         self,
         person_id: str,
-        properties: str
-    ) -> Tuple[bool, str]:
+        properties: str,
+    ) -> tuple[bool, str]:
         """Update person properties in PostHog."""
         try:
             # Parse properties
@@ -217,13 +224,15 @@ class PostHog:
                 if not isinstance(properties_dict, dict):
                     raise ValueError("properties must be a JSON object")
             except json.JSONDecodeError as exc:
-                return False, json.dumps({"error": f"Invalid JSON for properties: {exc}"})
+                return False, json.dumps(
+                    {"error": f"Invalid JSON for properties: {exc}"}
+                )
 
             response = self._run_async(
                 self.client.person_update(
                     id=person_id,
-                    properties=properties_dict
-                )
+                    properties=properties_dict,
+                ),
             )
             return self._handle_response(response, "Person updated successfully")
         except Exception as e:
@@ -238,16 +247,16 @@ class PostHog:
             ToolParameter(
                 name="person_id",
                 type=ParameterType.STRING,
-                description="Person ID to delete"
-            )
+                description="Person ID to delete",
+            ),
         ],
-        returns="JSON with deletion result"
+        returns="JSON with deletion result",
     )
-    def delete_person(self, person_id: str) -> Tuple[bool, str]:
+    def delete_person(self, person_id: str) -> tuple[bool, str]:
         """Delete a person from PostHog."""
         try:
             response = self._run_async(
-                self.client.person_delete(id=person_id)
+                self.client.person_delete(id=person_id),
             )
             return self._handle_response(response, "Person deleted successfully")
         except Exception as e:
@@ -263,50 +272,50 @@ class PostHog:
                 name="after",
                 type=ParameterType.STRING,
                 description="Cursor for pagination (after)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="before",
                 type=ParameterType.STRING,
                 description="Cursor for pagination (before)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="distinct_id",
                 type=ParameterType.STRING,
                 description="Filter by distinct ID",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event",
                 type=ParameterType.STRING,
                 description="Filter by event name",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="properties",
                 type=ParameterType.STRING,
                 description="JSON object with properties to filter by",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="limit",
                 type=ParameterType.INTEGER,
                 description="Maximum number of events to return",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with search results"
+        returns="JSON with search results",
     )
     def search_events(
         self,
-        after: Optional[str] = None,
-        before: Optional[str] = None,
-        distinct_id: Optional[str] = None,
-        event: Optional[str] = None,
-        properties: Optional[str] = None,
-        limit: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        after: str | None = None,
+        before: str | None = None,
+        distinct_id: str | None = None,
+        event: str | None = None,
+        properties: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[bool, str]:
         """Search for events in PostHog with filtering."""
         try:
             # Parse properties if provided
@@ -317,7 +326,9 @@ class PostHog:
                     if not isinstance(properties_dict, dict):
                         raise ValueError("properties must be a JSON object")
                 except json.JSONDecodeError as exc:
-                    return False, json.dumps({"error": f"Invalid JSON for properties: {exc}"})
+                    return False, json.dumps(
+                        {"error": f"Invalid JSON for properties: {exc}"}
+                    )
 
             response = self._run_async(
                 self.client.events(
@@ -326,10 +337,12 @@ class PostHog:
                     distinct_id=distinct_id,
                     event=event,
                     properties=properties_dict,
-                    limit=limit
-                )
+                    limit=limit,
+                ),
             )
-            return self._handle_response(response, "Events search completed successfully")
+            return self._handle_response(
+                response, "Events search completed successfully"
+            )
         except Exception as e:
             logger.error(f"Error searching events: {e}")
             return False, json.dumps({"error": str(e)})

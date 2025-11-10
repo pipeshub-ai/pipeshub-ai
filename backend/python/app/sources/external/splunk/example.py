@@ -1,5 +1,4 @@
-"""Example usage of SplunkClient and SplunkDataSource.
-"""
+"""Example usage of SplunkClient and SplunkDataSource."""
 
 from app.sources.client.splunk.splunk import (
     SplunkClient,

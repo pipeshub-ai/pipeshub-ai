@@ -8,9 +8,17 @@ from app.sources.client.microsoft.microsoft import GraphMode, MSGraphClient
 from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSource
 from app.config.configuration_service import ConfigurationService
 import logging
-from app.sources.client.microsoft.microsoft import GraphMode, MSGraphClient, MSGraphClientWithClientIdSecretConfig
-from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSource, OneDriveResponse
+from app.sources.client.microsoft.microsoft import (
+    GraphMode,
+    MSGraphClient,
+    MSGraphClientWithClientIdSecretConfig,
+)
+from app.sources.external.microsoft.one_drive.one_drive import (
+    OneDriveDataSource,
+    OneDriveResponse,
+)
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+
 
 async def main():
     # Set up logging
@@ -21,7 +29,9 @@ async def main():
     etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(logger=logger)
 
     # create configuration service
-    config_service = ConfigurationService(logger=logger, key_value_store=etcd3_encrypted_key_value_store)
+    config_service = ConfigurationService(
+        logger=logger, key_value_store=etcd3_encrypted_key_value_store
+    )
 
     # Build Microsoft Graph client using configuration service (await the async method)
     try:
@@ -36,10 +46,10 @@ async def main():
         logger.error(f"Failed to create Microsoft Graph client: {e}")
         print(f"❌ Error creating Microsoft Graph client: {e}")
         return
-    
+
     # Create data source and use it
     one_drive_data_source = OneDriveDataSource(ms_graph_client)
-    
+
     # Test getting drives
     try:
         response = await one_drive_data_source.drives_drive_list_drive()

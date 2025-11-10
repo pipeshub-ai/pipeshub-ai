@@ -1,8 +1,4 @@
-"""
-Tool loading and filtering logic.
-"""
-
-from typing import List, Optional, Set
+"""Tool loading and filtering logic."""
 
 from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.registry import _global_tools_registry
@@ -11,20 +7,19 @@ from app.modules.agents.qna.chat_state import ChatState
 
 
 class ToolLoader:
-    """
-    Handles loading and filtering of tools based on user configuration.
+    """Handles loading and filtering of tools based on user configuration.
     Features:
     - Flexible filtering (by app, tool name, or full name)
     - Essential tools always included
     - Proper state initialization
     """
 
-    def __init__(self, state: 'ChatState') -> None:
-        """
-        Initialize tool loader.
+    def __init__(self, state: "ChatState") -> None:
+        """Initialize tool loader.
 
         Args:
             state: Chat state containing configuration
+
         """
         self.state = state
         self.logger = state.get("logger")
@@ -32,10 +27,9 @@ class ToolLoader:
 
     def load_tools(
         self,
-        user_filter: Optional[List[str]] = None
-    ) -> List[RegistryToolWrapper]:
-        """
-        Load tools based on user filter.
+        user_filter: list[str] | None = None,
+    ) -> list[RegistryToolWrapper]:
+        """Load tools based on user filter.
 
         Args:
             user_filter: Optional list of tool names/patterns to load.
@@ -43,13 +37,14 @@ class ToolLoader:
 
         Returns:
             List of wrapped tools ready for agent use
+
         """
         # Get all available tools
         all_tools = self.registry.get_all_tools()
 
         if self.logger:
             self.logger.info(
-                f"Loading tools from registry ({len(all_tools)} available)"
+                f"Loading tools from registry ({len(all_tools)} available)",
             )
 
         # Normalize filter
@@ -74,8 +69,8 @@ class ToolLoader:
 
     def _normalize_filter(
         self,
-        user_filter: Optional[List[str]]
-    ) -> Optional[Set[str]]:
+        user_filter: list[str] | None,
+    ) -> set[str] | None:
         """Normalize user filter to a set or None"""
         # None or empty list means load all
         if user_filter is None or len(user_filter) == 0:
@@ -88,10 +83,9 @@ class ToolLoader:
     def _should_load_tool(
         self,
         full_name: str,
-        normalized_filter: Optional[Set[str]]
+        normalized_filter: set[str] | None,
     ) -> bool:
-        """
-        Determine if tool should be loaded based on filter.
+        """Determine if tool should be loaded based on filter.
 
         Args:
             full_name: Full name of tool (app_name.tool_name)
@@ -99,6 +93,7 @@ class ToolLoader:
 
         Returns:
             True if tool should be loaded
+
         """
         # No filter - load all
         if normalized_filter is None:
@@ -116,16 +111,16 @@ class ToolLoader:
 
         # Check against filter
         return (
-            full_name in normalized_filter or      # Exact match: "slack.send_message"
-            tool_name in normalized_filter or      # Tool name match: "send_message"
-            app_name in normalized_filter          # App name match: "slack"
+            full_name in normalized_filter  # Exact match: "slack.send_message"
+            or tool_name in normalized_filter  # Tool name match: "send_message"
+            or app_name in normalized_filter  # App name match: "slack"
         )
 
     def _create_wrapper(
         self,
         full_name: str,
-        registry_tool
-    ) -> Optional[RegistryToolWrapper]:
+        registry_tool,
+    ) -> RegistryToolWrapper | None:
         """Create a wrapper for a registry tool"""
         try:
             if "." in full_name:
@@ -137,7 +132,7 @@ class ToolLoader:
                 app_name,
                 tool_name,
                 registry_tool,
-                self.state
+                self.state,
             )
 
             if self.logger:
@@ -148,11 +143,11 @@ class ToolLoader:
         except Exception as e:
             if self.logger:
                 self.logger.error(
-                    f"❌ Failed to create wrapper for {full_name}: {e}"
+                    f"❌ Failed to create wrapper for {full_name}: {e}",
                 )
             return None
 
-    def _initialize_tool_state(self, tools: List[RegistryToolWrapper]) -> None:
+    def _initialize_tool_state(self, tools: list[RegistryToolWrapper]) -> None:
         """Initialize tool-related state variables"""
         self.state.setdefault("tool_results", [])
         self.state.setdefault("all_tool_results", [])
@@ -160,7 +155,7 @@ class ToolLoader:
         self.state.setdefault("web_search_template_context", {})
         self.state["available_tools"] = [tool.name for tool in tools]
 
-    def _log_tool_breakdown(self, tools: List[RegistryToolWrapper]) -> None:
+    def _log_tool_breakdown(self, tools: list[RegistryToolWrapper]) -> None:
         """Log breakdown of loaded tools by app"""
         breakdown = {}
         for tool in tools:

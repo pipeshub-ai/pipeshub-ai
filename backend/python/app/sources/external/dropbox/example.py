@@ -2,7 +2,11 @@
 import asyncio
 import os
 
-from app.sources.client.dropbox.dropbox_ import DropboxAppKeySecretConfig, DropboxClient, DropboxTokenConfig
+from app.sources.client.dropbox.dropbox_ import (
+    DropboxAppKeySecretConfig,
+    DropboxClient,
+    DropboxTokenConfig,
+)
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 from app.sources.external.dropbox.pretty_print import to_pretty_json
 
@@ -13,6 +17,8 @@ from typing import Any
 
 ACCESS_TOKEN = os.getenv("DROPBOX_TEAM_TOKEN")
 print(ACCESS_TOKEN)
+
+
 async def main() -> None:
     config = DropboxTokenConfig(token=ACCESS_TOKEN)
     client = await DropboxClient.build_with_config(config, is_team=True)
@@ -22,7 +28,7 @@ async def main() -> None:
     # print("\nListing current user:")
     # current_user = await data_source.users_get_current_account()
     # print(current_user.data.name.display_name)
-    
+
     # #List shared folders
     print("\nListing shared folders:")
     shared_folders = await data_source.sharing_list_folders()
@@ -36,7 +42,9 @@ async def main() -> None:
 
     # List files in team folder
     print("\nListing team folder:")
-    team_files = await data_source.files_list_folder(path="", team_folder_id="13131350499", recursive=True)
+    team_files = await data_source.files_list_folder(
+        path="", team_folder_id="13131350499", recursive=True
+    )
     print(to_pretty_json(team_files))
 
     # List groups
@@ -46,7 +54,9 @@ async def main() -> None:
 
     # List group members
     print("\nListing group members:")
-    group_members = await data_source.team_groups_members_list(group="g:a7389e73eef2b44f0000000000000003")
+    group_members = await data_source.team_groups_members_list(
+        group="g:a7389e73eef2b44f0000000000000003"
+    )
     print((group_members))
 
     # Upload a test file
@@ -93,9 +103,6 @@ async def main() -> None:
     # print("\nCreating folder /MyNewFolder3...")
     # folder_resp = await data_source.files_create_folder("/MyNewFolder3")
     # print(folder_resp)
-
-
-
 
 
 if __name__ == "__main__":

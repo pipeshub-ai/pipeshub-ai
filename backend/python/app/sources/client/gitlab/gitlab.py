@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 import gitlab
 from gitlab import Gitlab, GitlabAuthenticationError
@@ -11,9 +11,9 @@ from app.sources.client.iclient import IClient
 
 class GitLabResponse(BaseModel):
     success: bool
-    data: Optional[Any] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
+    data: Any | None = None
+    error: str | None = None
+    message: str | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()
@@ -23,12 +23,12 @@ class GitLabClientViaToken:
     def __init__(
         self,
         token: str,
-        url: Optional[str] = None,
-        timeout: Optional[float] = None,
-        api_version: Optional[str] = "4",
-        retry_transient_errors: Optional[bool] = None,
-        max_retries: Optional[int] = None,
-        obey_rate_limit: Optional[bool] = None,
+        url: str | None = None,
+        timeout: float | None = None,
+        api_version: str | None = "4",
+        retry_transient_errors: bool | None = None,
+        max_retries: int | None = None,
+        obey_rate_limit: bool | None = None,
     ) -> None:
         self.token = token
         self.url = url or "https://gitlab.com"
@@ -38,7 +38,7 @@ class GitLabClientViaToken:
         self.max_retries = max_retries
         self.obey_rate_limit = obey_rate_limit
 
-        self._sdk: Optional[Gitlab] = None
+        self._sdk: Gitlab | None = None
 
     def create_client(self) -> Gitlab:
         kwargs: dict[str, Any] = {
@@ -78,14 +78,15 @@ class GitLabClientViaToken:
 
 class GitLabConfig(BaseModel):
     token: str = Field(..., description="GitLab private token")
-    url: Optional[str] = Field(
-        default="https://gitlab.com", description="GitLab instance URL"
+    url: str | None = Field(
+        default="https://gitlab.com",
+        description="GitLab instance URL",
     )
-    timeout: Optional[float] = None
-    api_version: Optional[str] = Field(default="4", description="GitLab API version")
-    retry_transient_errors: Optional[bool] = None
-    max_retries: Optional[int] = None
-    obey_rate_limit: Optional[bool] = None
+    timeout: float | None = None
+    api_version: str | None = Field(default="4", description="GitLab API version")
+    retry_transient_errors: bool | None = None
+    max_retries: int | None = None
+    obey_rate_limit: bool | None = None
 
     def create_client(self) -> GitLabClientViaToken:
         return GitLabClientViaToken(
@@ -148,10 +149,14 @@ class GitLabClient(IClient):
         return cls(client)
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(
+        logger: logging.Logger, config_service: ConfigurationService
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for GitLab."""
         try:
-            config = await config_service.get_config("/services/connectors/gitlab/config")
+            config = await config_service.get_config(
+                "/services/connectors/gitlab/config"
+            )
             return config or {}
         except Exception as e:
             logger.error(f"Failed to get GitLab connector config: {e}")

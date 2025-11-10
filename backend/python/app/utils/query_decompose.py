@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List
+from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
@@ -8,23 +8,26 @@ from pydantic import BaseModel, Field
 MIN_DECOMPOSE_AND_EXPAND_QUERIES = 1
 MAX_DECOMPOSE_AND_EXPAND_QUERIES = 5
 
+
 class DecomposedQuery(BaseModel):
     """Schema for a single decomposed query with confidence"""
 
     query: str = Field(description="The decomposed sub-query")
     confidence: str = Field(
-        description="Confidence level: Very High, High, Medium, or Low"
+        description="Confidence level: Very High, High, Medium, or Low",
     )
 
 
 class DecomposedQueries(BaseModel):
     """Schema for decomposed queries"""
 
-    queries: List[DecomposedQuery] = Field(
-        description="List of decomposed sub-queries with confidence scores"
+    queries: list[DecomposedQuery] = Field(
+        description="List of decomposed sub-queries with confidence scores",
     )
     reason: str = Field(description="Reasoning for how the query was processed")
-    operation: str = Field(description="The operation performed: decompose_and_expand, expansion, or none")
+    operation: str = Field(
+        description="The operation performed: decompose_and_expand, expansion, or none"
+    )
 
 
 class QueryDecompositionExpansionService:
@@ -144,26 +147,26 @@ class QueryDecompositionExpansionService:
             }}
 
             **IMPORTANT:** Your entire response must be a single valid JSON object. Do not wrap it in markdown code blocks or add any other text.
-            """
+            """,
         )
 
-    def _parse_decomposition_response(self, response: str) -> Dict[str, Any]:
+    def _parse_decomposition_response(self, response: str) -> dict[str, Any]:
         """Parse the LLM response to extract the JSON structure with confidence scores"""
         try:
             # Handle different response formats
             if hasattr(response, "content"):
-                if '</think>' in response.content:
-                    response.content = response.content.split('</think>')[-1]
+                if "</think>" in response.content:
+                    response.content = response.content.split("</think>")[-1]
                     response.content = response.content.strip()
                 json_str = response.content
             elif isinstance(response, dict):
-                if '</think>' in response.get("content", str(response)):
-                    response.content = response.content.split('</think>')[-1]
+                if "</think>" in response.get("content", str(response)):
+                    response.content = response.content.split("</think>")[-1]
                     response.content = response.content.strip()
                 json_str = response.get("content", str(response))
             else:
-                if '</think>' in str(response):
-                    response = str(response).split('</think>')[-1]
+                if "</think>" in str(response):
+                    response = str(response).split("</think>")[-1]
                     response = response.strip()
                 json_str = str(response)
 
@@ -171,12 +174,9 @@ class QueryDecompositionExpansionService:
             json_str = json_str.strip()
 
             # Remove markdown code blocks if present
-            if json_str.startswith('```json'):
-                json_str = json_str[7:]
-            if json_str.startswith('```'):
-                json_str = json_str[3:]
-            if json_str.endswith('```'):
-                json_str = json_str[:-3]
+            json_str = json_str.removeprefix("```json")
+            json_str = json_str.removeprefix("```")
+            json_str = json_str.removesuffix("```")
 
             json_str = json_str.strip()
 
@@ -191,13 +191,19 @@ class QueryDecompositionExpansionService:
                 for i, query in enumerate(parsed_json["queries"]):
                     if isinstance(query, str):
                         # Convert old format string to new format dict
-                        parsed_json["queries"][i] = {"query": query, "confidence": "High"}
+                        parsed_json["queries"][i] = {
+                            "query": query,
+                            "confidence": "High",
+                        }
                     elif not isinstance(query, dict) or "confidence" not in query:
                         # Ensure confidence field exists
                         if isinstance(query, dict) and "query" in query:
                             query["confidence"] = "High"
                         else:
-                            parsed_json["queries"][i] = {"query": str(query), "confidence": "High"}
+                            parsed_json["queries"][i] = {
+                                "query": str(query),
+                                "confidence": "High",
+                            }
 
             # Ensure required fields exist
             if "queries" not in parsed_json:
@@ -217,27 +223,31 @@ class QueryDecompositionExpansionService:
             return parsed_json
 
         except json.JSONDecodeError as e:
-            self.logger.error(f"JSON parsing error: {str(e)}, Response: {json_str[:200]}...")
-            return {"error": f"JSON parsing failed: {str(e)}"}
+            self.logger.error(
+                f"JSON parsing error: {e!s}, Response: {json_str[:200]}..."
+            )
+            return {"error": f"JSON parsing failed: {e!s}"}
         except Exception as e:
-            self.logger.error(f"Response parsing error: {str(e)}")
-            return {"error": f"Response parsing failed: {str(e)}"}
+            self.logger.error(f"Response parsing error: {e!s}")
+            return {"error": f"Response parsing failed: {e!s}"}
 
-    async def transform_query(self, query: str) -> Dict[str, Any]:
-        """
-        Use LLM to intelligently analyze and process queries with decomposition/expansion
+    async def transform_query(self, query: str) -> dict[str, Any]:
+        """Use LLM to intelligently analyze and process queries with decomposition/expansion
 
         Args:
             query: The query to analyze and process
 
         Returns:
             Dictionary with queries list (with confidence), reason, and operation type
+
         """
         try:
             try:
                 self.llm.with_structured_output(DecomposedQueries)
             except NotImplementedError as e:
-                self.logger.warning(f"LLM provider or api does not support structured output: {e}")
+                self.logger.warning(
+                    f"LLM provider or api does not support structured output: {e}"
+                )
 
             # Create the processing chain
             decomposition_chain = (
@@ -255,7 +265,7 @@ class QueryDecompositionExpansionService:
                 return {
                     "queries": [{"query": query, "confidence": "Very High"}],
                     "reason": f"LLM processing failed: {result['error']}. Using original query.",
-                    "operation": "none"
+                    "operation": "none",
                 }
 
             # Validate and clean the result
@@ -264,20 +274,23 @@ class QueryDecompositionExpansionService:
             return result
 
         except Exception as e:
-            self.logger.error(f"Query processing exception: {str(e)}")
+            self.logger.error(f"Query processing exception: {e!s}")
             return {
                 "queries": [{"query": query, "confidence": "Very High"}],
-                "reason": f"Error during LLM processing: {str(e)}. Using original query.",
-                "operation": "none"
+                "reason": f"Error during LLM processing: {e!s}. Using original query.",
+                "operation": "none",
             }
 
-    def _validate_and_clean_result(self, result: Dict[str, Any], original_query: str) -> Dict[str, Any]:
+    def _validate_and_clean_result(
+        self, result: dict[str, Any], original_query: str
+    ) -> dict[str, Any]:
         """Validate and clean the LLM result"""
-
         # Ensure queries exist
         if not result.get("queries"):
             result["queries"] = [{"query": original_query, "confidence": "Very High"}]
-            result["reason"] = result.get("reason", "No queries generated by LLM. Using original query.")
+            result["reason"] = result.get(
+                "reason", "No queries generated by LLM. Using original query."
+            )
             result["operation"] = "none"
 
         # Validate confidence scores
@@ -286,9 +299,12 @@ class QueryDecompositionExpansionService:
             if not isinstance(query_obj, dict):
                 continue
 
-            if "confidence" not in query_obj or query_obj["confidence"] not in valid_confidence_levels:
+            if (
+                "confidence" not in query_obj
+                or query_obj["confidence"] not in valid_confidence_levels
+            ):
                 query_obj["confidence"] = self._map_to_valid_confidence(
-                    query_obj.get("confidence", "High")
+                    query_obj.get("confidence", "High"),
                 )
 
         # Validate operation field
@@ -307,7 +323,9 @@ class QueryDecompositionExpansionService:
 
         # Ensure reason exists
         if not result.get("reason"):
-            result["reason"] = f"LLM performed {result['operation']} operation on the query."
+            result["reason"] = (
+                f"LLM performed {result['operation']} operation on the query."
+            )
 
         return result
 
@@ -319,32 +337,40 @@ class QueryDecompositionExpansionService:
         confidence_lower = confidence.lower().strip()
 
         # Direct mappings for common variations
-        if any(phrase in confidence_lower for phrase in ["very high", "highest", "maximum", "critical"]):
+        if any(
+            phrase in confidence_lower
+            for phrase in ["very high", "highest", "maximum", "critical"]
+        ):
             return "Very High"
-        elif any(phrase in confidence_lower for phrase in ["high", "important", "strong"]):
+        if any(
+            phrase in confidence_lower for phrase in ["high", "important", "strong"]
+        ):
             return "High"
-        elif any(phrase in confidence_lower for phrase in ["medium", "moderate", "mid", "average"]):
+        if any(
+            phrase in confidence_lower
+            for phrase in ["medium", "moderate", "mid", "average"]
+        ):
             return "Medium"
-        elif any(phrase in confidence_lower for phrase in ["low", "weak", "uncertain"]):
+        if any(phrase in confidence_lower for phrase in ["low", "weak", "uncertain"]):
             return "Low"
 
         # Default to Medium if no match
         return "Medium"
 
-    async def expand_query(self, query: str) -> Dict[str, Any]:
-        """
-        Specifically request expansion of a query (LLM will still make the final decision)
+    async def expand_query(self, query: str) -> dict[str, Any]:
+        """Specifically request expansion of a query (LLM will still make the final decision)
+
         Args:
             query: The query to expand
         Returns:
             Dictionary with processed queries list (with confidence), reason, and operation type
+
         """
         # The LLM will make the intelligent decision about whether expansion is appropriate
         return await self.transform_query(query)
 
-    async def get_query_analysis(self, query: str) -> Dict[str, Any]:
-        """
-        Get LLM's analysis of a query without processing it
+    async def get_query_analysis(self, query: str) -> dict[str, Any]:
+        """Get LLM's analysis of a query without processing it
         Args:
             query: The query to analyze
         Returns:
@@ -365,7 +391,7 @@ class QueryDecompositionExpansionService:
                 "key_concepts": ["concept1", "concept2", "..."],
                 "potential_ambiguities": ["ambiguity1", "ambiguity2", "..."]
             }}
-            """
+            """,
         )
 
         try:
@@ -378,10 +404,10 @@ class QueryDecompositionExpansionService:
 
             return await analysis_chain.ainvoke(query)
         except Exception as e:
-            self.logger.error(f"Query analysis failed: {str(e)}")
+            self.logger.error(f"Query analysis failed: {e!s}")
             return {
                 "error": str(e),
                 "complexity": "unknown",
                 "scope": "unknown",
-                "recommended_strategy": "none"
+                "recommended_strategy": "none",
             }

@@ -33,4 +33,3 @@ class SplunkDataSource:
         except Exception as e:
             self.logger.error(f"Failed to execute Splunk search query: {e!s}")
             raise
-

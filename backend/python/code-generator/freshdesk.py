@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Freshservice Product FreshDesk API Code Generator
+"""Freshservice Product FreshDesk API Code Generator
 
 Generates a `FreshdeskDataSource` class from FreshDesk API documentation.
 Since FreshDesk doesn't provide OpenAPI/Swagger specs, we manually define
@@ -14,9 +13,10 @@ import keyword
 import logging
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -28,31 +28,33 @@ DEFAULT_CLASS = "FreshdeskDataSource"
 @dataclass
 class Parameter:
     """Represents an API parameter"""
+
     name: str
     type: str
     required: bool
     description: str
-    default: Optional[Any] = None
+    default: Any | None = None
 
 
 @dataclass
 class Endpoint:
     """Represents a FreshDesk API endpoint"""
+
     name: str
     method: str
     path: str
     description: str
-    parameters: List[Parameter]
+    parameters: list[Parameter]
     returns: str
     namespace: str
-    example: Optional[str] = None
+    example: str | None = None
 
 
 class FreshdeskAPIDefinition:
     """Define FreshDesk API endpoints based on official documentation"""
 
     @staticmethod
-    def get_ticket_endpoints() -> List[Endpoint]:
+    def get_ticket_endpoints() -> list[Endpoint]:
         """Define all ticket-related endpoints"""
         return [
             # Create a Ticket
@@ -64,22 +66,31 @@ class FreshdeskAPIDefinition:
                 namespace="tickets",
                 parameters=[
                     Parameter("subject", "str", True, "Subject of the ticket"),
-                    Parameter("description", "str", False, "HTML content of the ticket"),
+                    Parameter(
+                        "description", "str", False, "HTML content of the ticket"
+                    ),
                     Parameter("email", "str", False, "Email address of the requester"),
                     Parameter("requester_id", "int", False, "User ID of the requester"),
                     Parameter("phone", "str", False, "Phone number of the requester"),
-                    Parameter("priority", "int", False, "Priority of the ticket (1-4)", 1),
+                    Parameter(
+                        "priority", "int", False, "Priority of the ticket (1-4)", 1
+                    ),
                     Parameter("status", "int", False, "Status of the ticket (2-5)", 2),
                     Parameter("source", "int", False, "Source of the ticket", 2),
-                    Parameter("tags", "List[str]", False, "Tags associated with the ticket"),
+                    Parameter(
+                        "tags", "List[str]", False, "Tags associated with the ticket"
+                    ),
                     Parameter("cc_emails", "List[str]", False, "CC email addresses"),
-                    Parameter("custom_fields", "Dict[str, Any]", False, "Custom field values"),
-                    Parameter("attachments", "List[str]", False, "File paths for attachments"),
+                    Parameter(
+                        "custom_fields", "Dict[str, Any]", False, "Custom field values"
+                    ),
+                    Parameter(
+                        "attachments", "List[str]", False, "File paths for attachments"
+                    ),
                 ],
                 returns="Ticket",
-                example='ticket = await ds.create_ticket(subject="Issue", email="user@example.com")'
+                example='ticket = await ds.create_ticket(subject="Issue", email="user@example.com")',
             ),
-
             # Create an Outbound Email
             Endpoint(
                 name="create_outbound_email",
@@ -90,15 +101,20 @@ class FreshdeskAPIDefinition:
                 parameters=[
                     Parameter("subject", "str", True, "Subject of the ticket"),
                     Parameter("email", "str", True, "Email address of the recipient"),
-                    Parameter("description", "str", False, "HTML content of the ticket"),
-                    Parameter("priority", "int", False, "Priority of the ticket (1-4)", 1),
+                    Parameter(
+                        "description", "str", False, "HTML content of the ticket"
+                    ),
+                    Parameter(
+                        "priority", "int", False, "Priority of the ticket (1-4)", 1
+                    ),
                     Parameter("status", "int", False, "Status of the ticket (2-5)", 5),
-                    Parameter("custom_fields", "Dict[str, Any]", False, "Custom field values"),
+                    Parameter(
+                        "custom_fields", "Dict[str, Any]", False, "Custom field values"
+                    ),
                 ],
                 returns="Ticket",
-                example='ticket = await ds.create_outbound_email(subject="Info", email="user@example.com")'
+                example='ticket = await ds.create_outbound_email(subject="Info", email="user@example.com")',
             ),
-
             # View a Ticket
             Endpoint(
                 name="get_ticket",
@@ -108,12 +124,16 @@ class FreshdeskAPIDefinition:
                 namespace="tickets",
                 parameters=[
                     Parameter("id", "int", True, "ID of the ticket to retrieve"),
-                    Parameter("include", "str", False, "Embed additional details (conversations, requester, company, stats)"),
+                    Parameter(
+                        "include",
+                        "str",
+                        False,
+                        "Embed additional details (conversations, requester, company, stats)",
+                    ),
                 ],
                 returns="Ticket",
-                example='ticket = await ds.get_ticket(id=123)'
+                example="ticket = await ds.get_ticket(id=123)",
             ),
-
             # List All Tickets
             Endpoint(
                 name="list_tickets",
@@ -122,16 +142,31 @@ class FreshdeskAPIDefinition:
                 description="List all tickets with optional filters",
                 namespace="tickets",
                 parameters=[
-                    Parameter("filter_name", "str", False, "Predefined filter (new_and_my_open, watching, spam, deleted)"),
-                    Parameter("updated_since", "str", False, "Filter tickets updated after this timestamp (ISO format)"),
+                    Parameter(
+                        "filter_name",
+                        "str",
+                        False,
+                        "Predefined filter (new_and_my_open, watching, spam, deleted)",
+                    ),
+                    Parameter(
+                        "updated_since",
+                        "str",
+                        False,
+                        "Filter tickets updated after this timestamp (ISO format)",
+                    ),
                     Parameter("page", "int", False, "Page number for pagination", 1),
-                    Parameter("per_page", "int", False, "Number of tickets per page (max 100)", 30),
+                    Parameter(
+                        "per_page",
+                        "int",
+                        False,
+                        "Number of tickets per page (max 100)",
+                        30,
+                    ),
                     Parameter("include", "str", False, "Embed additional details"),
                 ],
                 returns="List[Ticket]",
-                example='tickets = await ds.list_tickets(filter_name="new_and_my_open", per_page=10)'
+                example='tickets = await ds.list_tickets(filter_name="new_and_my_open", per_page=10)',
             ),
-
             # Filter Tickets
             Endpoint(
                 name="filter_tickets",
@@ -140,13 +175,14 @@ class FreshdeskAPIDefinition:
                 description="Filter tickets using custom query",
                 namespace="tickets",
                 parameters=[
-                    Parameter("query", "str", True, "Filter query string (e.g., 'priority:3')"),
+                    Parameter(
+                        "query", "str", True, "Filter query string (e.g., 'priority:3')"
+                    ),
                     Parameter("page", "int", False, "Page number for pagination", 1),
                 ],
                 returns="Dict[str, Any]",
-                example='result = await ds.filter_tickets(query="priority:3 AND status:2")'
+                example='result = await ds.filter_tickets(query="priority:3 AND status:2")',
             ),
-
             # Update a Ticket
             Endpoint(
                 name="update_ticket",
@@ -161,12 +197,13 @@ class FreshdeskAPIDefinition:
                     Parameter("priority", "int", False, "New priority (1-4)"),
                     Parameter("status", "int", False, "New status (2-5)"),
                     Parameter("tags", "List[str]", False, "Tags to associate"),
-                    Parameter("custom_fields", "Dict[str, Any]", False, "Custom field values"),
+                    Parameter(
+                        "custom_fields", "Dict[str, Any]", False, "Custom field values"
+                    ),
                 ],
                 returns="Ticket",
-                example='ticket = await ds.update_ticket(ticket_id=123, priority=4, status=3)'
+                example="ticket = await ds.update_ticket(ticket_id=123, priority=4, status=3)",
             ),
-
             # Delete a Ticket
             Endpoint(
                 name="delete_ticket",
@@ -178,9 +215,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the ticket to delete"),
                 ],
                 returns="None",
-                example='await ds.delete_ticket(ticket_id=123)'
+                example="await ds.delete_ticket(ticket_id=123)",
             ),
-
             # List All Ticket Fields
             Endpoint(
                 name="list_ticket_fields",
@@ -192,9 +228,8 @@ class FreshdeskAPIDefinition:
                     Parameter("type", "str", False, "Filter by field type"),
                 ],
                 returns="List[TicketField]",
-                example='fields = await ds.list_ticket_fields()'
+                example="fields = await ds.list_ticket_fields()",
             ),
-
             # List All Conversations
             Endpoint(
                 name="list_ticket_conversations",
@@ -205,12 +240,13 @@ class FreshdeskAPIDefinition:
                 parameters=[
                     Parameter("id", "int", True, "ID of the ticket"),
                     Parameter("page", "int", False, "Page number for pagination", 1),
-                    Parameter("per_page", "int", False, "Number of conversations per page", 30),
+                    Parameter(
+                        "per_page", "int", False, "Number of conversations per page", 30
+                    ),
                 ],
                 returns="List[Comment]",
-                example='conversations = await ds.list_ticket_conversations(ticket_id=123)'
+                example="conversations = await ds.list_ticket_conversations(ticket_id=123)",
             ),
-
             # Create a Note
             Endpoint(
                 name="create_note",
@@ -221,13 +257,16 @@ class FreshdeskAPIDefinition:
                 parameters=[
                     Parameter("id", "int", True, "ID of the ticket"),
                     Parameter("body", "str", True, "Content of the note"),
-                    Parameter("private", "bool", False, "Whether the note is private", True),
-                    Parameter("notify_emails", "List[str]", False, "Email addresses to notify"),
+                    Parameter(
+                        "private", "bool", False, "Whether the note is private", True
+                    ),
+                    Parameter(
+                        "notify_emails", "List[str]", False, "Email addresses to notify"
+                    ),
                 ],
                 returns="Comment",
-                example='note = await ds.create_note(ticket_id=123, body="Internal note", private=True)'
+                example='note = await ds.create_note(ticket_id=123, body="Internal note", private=True)',
             ),
-
             # Create a Reply
             Endpoint(
                 name="create_reply",
@@ -242,9 +281,8 @@ class FreshdeskAPIDefinition:
                     Parameter("bcc_emails", "List[str]", False, "BCC email addresses"),
                 ],
                 returns="Comment",
-                example='reply = await ds.create_reply(ticket_id=123, body="Thank you for reporting")'
+                example='reply = await ds.create_reply(ticket_id=123, body="Thank you for reporting")',
             ),
-
             # List Deleted Tickets
             Endpoint(
                 name="list_deleted_tickets",
@@ -254,12 +292,13 @@ class FreshdeskAPIDefinition:
                 namespace="tickets",
                 parameters=[
                     Parameter("page", "int", False, "Page number for pagination", 1),
-                    Parameter("per_page", "int", False, "Number of tickets per page", 30),
+                    Parameter(
+                        "per_page", "int", False, "Number of tickets per page", 30
+                    ),
                 ],
                 returns="List[Ticket]",
-                example='deleted = await ds.list_deleted_tickets()'
+                example="deleted = await ds.list_deleted_tickets()",
             ),
-
             # Restore a Ticket
             Endpoint(
                 name="restore_ticket",
@@ -271,12 +310,12 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the ticket to restore"),
                 ],
                 returns="None",
-                example='await ds.restore_ticket(ticket_id=123)'
+                example="await ds.restore_ticket(ticket_id=123)",
             ),
         ]
 
     @staticmethod
-    def get_problem_endpoints() -> List[Endpoint]:
+    def get_problem_endpoints() -> list[Endpoint]:
         """Define all problem-related endpoints"""
         return [
             # Create a Problem
@@ -288,26 +327,41 @@ class FreshdeskAPIDefinition:
                 namespace="problems",
                 parameters=[
                     Parameter("subject", "str", True, "Subject of the problem"),
-                    Parameter("description", "str", False, "HTML content of the problem"),
+                    Parameter(
+                        "description", "str", False, "HTML content of the problem"
+                    ),
                     Parameter("requester_id", "int", False, "User ID of the requester"),
-                    Parameter("priority", "int", False, "Priority of the problem (1-4)", 1),
+                    Parameter(
+                        "priority", "int", False, "Priority of the problem (1-4)", 1
+                    ),
                     Parameter("status", "int", False, "Status of the problem (1-3)", 1),
                     Parameter("impact", "int", False, "Impact of the problem (1-3)", 1),
                     Parameter("group_id", "int", False, "ID of the group to assign"),
                     Parameter("agent_id", "int", False, "ID of the agent to assign"),
                     Parameter("department_id", "int", False, "ID of the department"),
                     Parameter("category", "str", False, "Category of the problem"),
-                    Parameter("sub_category", "str", False, "Sub-category of the problem"),
+                    Parameter(
+                        "sub_category", "str", False, "Sub-category of the problem"
+                    ),
                     Parameter("item_category", "str", False, "Item category"),
                     Parameter("due_by", "str", False, "Due date (ISO format)"),
-                    Parameter("known_error", "bool", False, "Whether this is a known error", False),
-                    Parameter("custom_fields", "Dict[str, Any]", False, "Custom field values"),
-                    Parameter("assets", "List[Dict[str, int]]", False, "Associated assets"),
+                    Parameter(
+                        "known_error",
+                        "bool",
+                        False,
+                        "Whether this is a known error",
+                        False,
+                    ),
+                    Parameter(
+                        "custom_fields", "Dict[str, Any]", False, "Custom field values"
+                    ),
+                    Parameter(
+                        "assets", "List[Dict[str, int]]", False, "Associated assets"
+                    ),
                 ],
                 returns="Problem",
-                example='problem = await ds.create_problem(subject="Root cause", requester_id=123)'
+                example='problem = await ds.create_problem(subject="Root cause", requester_id=123)',
             ),
-
             # View a Problem
             Endpoint(
                 name="get_problem",
@@ -319,9 +373,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the problem to retrieve"),
                 ],
                 returns="Problem",
-                example='problem = await ds.get_problem(id=456)'
+                example="problem = await ds.get_problem(id=456)",
             ),
-
             # List All Problems
             Endpoint(
                 name="list_problems",
@@ -330,15 +383,22 @@ class FreshdeskAPIDefinition:
                 description="List all problems with optional filters",
                 namespace="problems",
                 parameters=[
-                    Parameter("predefined_filter", "str", False, "Predefined filter name"),
+                    Parameter(
+                        "predefined_filter", "str", False, "Predefined filter name"
+                    ),
                     Parameter("requester_id", "int", False, "Filter by requester ID"),
                     Parameter("page", "int", False, "Page number for pagination", 1),
-                    Parameter("per_page", "int", False, "Number of problems per page (max 100)", 30),
+                    Parameter(
+                        "per_page",
+                        "int",
+                        False,
+                        "Number of problems per page (max 100)",
+                        30,
+                    ),
                 ],
                 returns="List[Problem]",
-                example='problems = await ds.list_problems(per_page=10)'
+                example="problems = await ds.list_problems(per_page=10)",
             ),
-
             # Update a Problem
             Endpoint(
                 name="update_problem",
@@ -356,12 +416,13 @@ class FreshdeskAPIDefinition:
                     Parameter("known_error", "bool", False, "Mark as known error"),
                     Parameter("group_id", "int", False, "Reassign to group"),
                     Parameter("agent_id", "int", False, "Reassign to agent"),
-                    Parameter("custom_fields", "Dict[str, Any]", False, "Custom field values"),
+                    Parameter(
+                        "custom_fields", "Dict[str, Any]", False, "Custom field values"
+                    ),
                 ],
                 returns="Problem",
-                example='problem = await ds.update_problem(id=456, status=2, priority=3)'
+                example="problem = await ds.update_problem(id=456, status=2, priority=3)",
             ),
-
             # Delete a Problem
             Endpoint(
                 name="delete_problem",
@@ -373,9 +434,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the problem to delete"),
                 ],
                 returns="None",
-                example='await ds.delete_problem(id=456)'
+                example="await ds.delete_problem(id=456)",
             ),
-
             # Restore a Problem
             Endpoint(
                 name="restore_problem",
@@ -387,9 +447,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the problem to restore"),
                 ],
                 returns="None",
-                example='await ds.restore_problem(id=456)'
+                example="await ds.restore_problem(id=456)",
             ),
-
             # List Deleted Problems
             Endpoint(
                 name="list_deleted_problems",
@@ -402,9 +461,8 @@ class FreshdeskAPIDefinition:
                     Parameter("per_page", "int", False, "Number per page", 30),
                 ],
                 returns="List[Problem]",
-                example='deleted = await ds.list_deleted_problems()'
+                example="deleted = await ds.list_deleted_problems()",
             ),
-
             # Create Problem Note
             Endpoint(
                 name="create_problem_note",
@@ -418,9 +476,8 @@ class FreshdeskAPIDefinition:
                     Parameter("notify_emails", "List[str]", False, "Emails to notify"),
                 ],
                 returns="Note",
-                example='note = await ds.create_problem_note(id=456, body="Root cause identified")'
+                example='note = await ds.create_problem_note(id=456, body="Root cause identified")',
             ),
-
             # List Problem Tasks
             Endpoint(
                 name="list_problem_tasks",
@@ -434,9 +491,8 @@ class FreshdeskAPIDefinition:
                     Parameter("per_page", "int", False, "Number per page", 30),
                 ],
                 returns="List[Task]",
-                example='tasks = await ds.list_problem_tasks(id=456)'
+                example="tasks = await ds.list_problem_tasks(id=456)",
             ),
-
             # Create Problem Task
             Endpoint(
                 name="create_problem_task",
@@ -450,14 +506,15 @@ class FreshdeskAPIDefinition:
                     Parameter("description", "str", False, "Description of the task"),
                     Parameter("status", "int", False, "Status of the task (1-3)", 1),
                     Parameter("due_date", "str", False, "Due date (ISO format)"),
-                    Parameter("notify_before", "int", False, "Notify before due (in hours)"),
+                    Parameter(
+                        "notify_before", "int", False, "Notify before due (in hours)"
+                    ),
                     Parameter("agent_id", "int", False, "Agent assigned to task"),
                     Parameter("group_id", "int", False, "Group assigned to task"),
                 ],
                 returns="Task",
-                example='task = await ds.create_problem_task(id=456, title="Investigate logs")'
+                example='task = await ds.create_problem_task(id=456, title="Investigate logs")',
             ),
-
             # Update Problem Task
             Endpoint(
                 name="update_problem_task",
@@ -474,9 +531,8 @@ class FreshdeskAPIDefinition:
                     Parameter("agent_id", "int", False, "Reassign to agent"),
                 ],
                 returns="Task",
-                example='task = await ds.update_problem_task(problem_id=456, task_id=1, status=2)'
+                example="task = await ds.update_problem_task(problem_id=456, task_id=1, status=2)",
             ),
-
             # Delete Problem Task
             Endpoint(
                 name="delete_problem_task",
@@ -489,9 +545,8 @@ class FreshdeskAPIDefinition:
                     Parameter("task_id", "int", True, "ID of the task"),
                 ],
                 returns="None",
-                example='await ds.delete_problem_task(problem_id=456, task_id=1)'
+                example="await ds.delete_problem_task(problem_id=456, task_id=1)",
             ),
-
             # List Problem Time Entries
             Endpoint(
                 name="list_problem_time_entries",
@@ -503,12 +558,12 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the problem"),
                 ],
                 returns="List[TimeEntry]",
-                example='entries = await ds.list_problem_time_entries(id=456)'
+                example="entries = await ds.list_problem_time_entries(id=456)",
             ),
         ]
 
     @staticmethod
-    def get_agent_endpoints() -> List[Endpoint]:
+    def get_agent_endpoints() -> list[Endpoint]:
         """Define all agent-related endpoints"""
         return [
             # Create Agent
@@ -522,29 +577,57 @@ class FreshdeskAPIDefinition:
                     Parameter("first_name", "str", True, "First name of the agent"),
                     Parameter("email", "str", True, "Email address of the agent"),
                     Parameter("last_name", "str", False, "Last name of the agent"),
-                    Parameter("occasional", "bool", False, "True if occasional agent, false if full-time", False),
+                    Parameter(
+                        "occasional",
+                        "bool",
+                        False,
+                        "True if occasional agent, false if full-time",
+                        False,
+                    ),
                     Parameter("job_title", "str", False, "Job title of the agent"),
                     Parameter("work_phone_number", "str", False, "Work phone number"),
-                    Parameter("mobile_phone_number", "str", False, "Mobile phone number"),
-                    Parameter("department_ids", "List[int]", False, "IDs of departments"),
-                    Parameter("can_see_all_tickets_from_associated_departments", "bool", False, "Can view all department tickets", False),
-                    Parameter("reporting_manager_id", "int", False, "User ID of reporting manager"),
+                    Parameter(
+                        "mobile_phone_number", "str", False, "Mobile phone number"
+                    ),
+                    Parameter(
+                        "department_ids", "List[int]", False, "IDs of departments"
+                    ),
+                    Parameter(
+                        "can_see_all_tickets_from_associated_departments",
+                        "bool",
+                        False,
+                        "Can view all department tickets",
+                        False,
+                    ),
+                    Parameter(
+                        "reporting_manager_id",
+                        "int",
+                        False,
+                        "User ID of reporting manager",
+                    ),
                     Parameter("address", "str", False, "Address of the agent"),
                     Parameter("time_zone", "str", False, "Time zone"),
                     Parameter("time_format", "str", False, "Time format (12h or 24h)"),
                     Parameter("language", "str", False, "Language code"),
                     Parameter("location_id", "int", False, "Location ID"),
-                    Parameter("background_information", "str", False, "Background information"),
-                    Parameter("scoreboard_level_id", "int", False, "Scoreboard level ID"),
-                    Parameter("roles", "List[Dict[str, Any]]", False, "Array of role objects"),
+                    Parameter(
+                        "background_information", "str", False, "Background information"
+                    ),
+                    Parameter(
+                        "scoreboard_level_id", "int", False, "Scoreboard level ID"
+                    ),
+                    Parameter(
+                        "roles", "List[Dict[str, Any]]", False, "Array of role objects"
+                    ),
                     Parameter("signature", "str", False, "Signature in HTML format"),
-                    Parameter("custom_fields", "Dict[str, Any]", False, "Custom field values"),
+                    Parameter(
+                        "custom_fields", "Dict[str, Any]", False, "Custom field values"
+                    ),
                     Parameter("workspace_ids", "List[int]", False, "Workspace IDs"),
                 ],
                 returns="Agent",
-                example='agent = await ds.create_agent(first_name="John", email="john@example.com")'
+                example='agent = await ds.create_agent(first_name="John", email="john@example.com")',
             ),
-
             # View Agent
             Endpoint(
                 name="view_agent",
@@ -556,9 +639,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the agent"),
                 ],
                 returns="Agent",
-                example='agent = await ds.view_agent(id=123)'
+                example="agent = await ds.view_agent(id=123)",
             ),
-
             # List All Agents
             Endpoint(
                 name="list_agents",
@@ -568,17 +650,24 @@ class FreshdeskAPIDefinition:
                 namespace="agents",
                 parameters=[
                     Parameter("email", "str", False, "Filter by email"),
-                    Parameter("mobile_phone_number", "str", False, "Filter by mobile phone"),
-                    Parameter("work_phone_number", "str", False, "Filter by work phone"),
+                    Parameter(
+                        "mobile_phone_number", "str", False, "Filter by mobile phone"
+                    ),
+                    Parameter(
+                        "work_phone_number", "str", False, "Filter by work phone"
+                    ),
                     Parameter("active", "bool", False, "Filter by active status"),
-                    Parameter("state", "str", False, "Filter by state (fulltime/occasional)"),
+                    Parameter(
+                        "state", "str", False, "Filter by state (fulltime/occasional)"
+                    ),
                     Parameter("page", "int", False, "Page number", 1),
-                    Parameter("per_page", "int", False, "Number of entries per page", 30),
+                    Parameter(
+                        "per_page", "int", False, "Number of entries per page", 30
+                    ),
                 ],
                 returns="List[Agent]",
-                example='agents = await ds.list_agents(active=True)'
+                example="agents = await ds.list_agents(active=True)",
             ),
-
             # Filter Agents
             Endpoint(
                 name="filter_agents",
@@ -587,14 +676,17 @@ class FreshdeskAPIDefinition:
                 description="Filter agents using query string",
                 namespace="agents",
                 parameters=[
-                    Parameter("query", "str", True, "Query string for filtering agents"),
+                    Parameter(
+                        "query", "str", True, "Query string for filtering agents"
+                    ),
                     Parameter("page", "int", False, "Page number", 1),
-                    Parameter("per_page", "int", False, "Number of entries per page", 30),
+                    Parameter(
+                        "per_page", "int", False, "Number of entries per page", 30
+                    ),
                 ],
                 returns="List[Agent]",
-                example='agents = await ds.filter_agents(query="email:\'john@example.com\'")'
+                example="agents = await ds.filter_agents(query=\"email:'john@example.com'\")",
             ),
-
             # Update Agent
             Endpoint(
                 name="update_agent",
@@ -610,25 +702,41 @@ class FreshdeskAPIDefinition:
                     Parameter("job_title", "str", False, "Job title"),
                     Parameter("email", "str", False, "Email address"),
                     Parameter("work_phone_number", "str", False, "Work phone number"),
-                    Parameter("mobile_phone_number", "str", False, "Mobile phone number"),
+                    Parameter(
+                        "mobile_phone_number", "str", False, "Mobile phone number"
+                    ),
                     Parameter("department_ids", "List[int]", False, "Department IDs"),
-                    Parameter("can_see_all_tickets_from_associated_departments", "bool", False, "Can view all department tickets"),
-                    Parameter("reporting_manager_id", "int", False, "Reporting manager ID"),
+                    Parameter(
+                        "can_see_all_tickets_from_associated_departments",
+                        "bool",
+                        False,
+                        "Can view all department tickets",
+                    ),
+                    Parameter(
+                        "reporting_manager_id", "int", False, "Reporting manager ID"
+                    ),
                     Parameter("address", "str", False, "Address"),
                     Parameter("time_zone", "str", False, "Time zone"),
                     Parameter("time_format", "str", False, "Time format"),
                     Parameter("language", "str", False, "Language code"),
                     Parameter("location_id", "int", False, "Location ID"),
-                    Parameter("background_information", "str", False, "Background information"),
-                    Parameter("scoreboard_level_id", "int", False, "Scoreboard level ID"),
-                    Parameter("roles", "List[Dict[str, Any]]", False, "Array of role objects"),
+                    Parameter(
+                        "background_information", "str", False, "Background information"
+                    ),
+                    Parameter(
+                        "scoreboard_level_id", "int", False, "Scoreboard level ID"
+                    ),
+                    Parameter(
+                        "roles", "List[Dict[str, Any]]", False, "Array of role objects"
+                    ),
                     Parameter("signature", "str", False, "Signature"),
-                    Parameter("custom_fields", "Dict[str, Any]", False, "Custom fields"),
+                    Parameter(
+                        "custom_fields", "Dict[str, Any]", False, "Custom fields"
+                    ),
                 ],
                 returns="Agent",
-                example='agent = await ds.update_agent(id=123, job_title="Senior Engineer")'
+                example='agent = await ds.update_agent(id=123, job_title="Senior Engineer")',
             ),
-
             # Deactivate Agent
             Endpoint(
                 name="deactivate_agent",
@@ -640,9 +748,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the agent"),
                 ],
                 returns="None",
-                example='await ds.deactivate_agent(id=123)'
+                example="await ds.deactivate_agent(id=123)",
             ),
-
             # Forget Agent
             Endpoint(
                 name="forget_agent",
@@ -654,9 +761,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the agent"),
                 ],
                 returns="None",
-                example='await ds.forget_agent(id=123)'
+                example="await ds.forget_agent(id=123)",
             ),
-
             # Reactivate Agent
             Endpoint(
                 name="reactivate_agent",
@@ -668,9 +774,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the agent"),
                 ],
                 returns="Agent",
-                example='agent = await ds.reactivate_agent(id=123)'
+                example="agent = await ds.reactivate_agent(id=123)",
             ),
-
             # List Agent Fields
             Endpoint(
                 name="list_agent_fields",
@@ -679,15 +784,20 @@ class FreshdeskAPIDefinition:
                 description="List all built-in and custom fields for agents",
                 namespace="agents",
                 parameters=[
-                    Parameter("include", "str", False, "Include additional details (e.g., 'user_field_groups')"),
+                    Parameter(
+                        "include",
+                        "str",
+                        False,
+                        "Include additional details (e.g., 'user_field_groups')",
+                    ),
                 ],
                 returns="List[AgentField]",
-                example='fields = await ds.list_agent_fields()'
+                example="fields = await ds.list_agent_fields()",
             ),
         ]
 
     @staticmethod
-    def get_software_endpoints() -> List[Endpoint]:
+    def get_software_endpoints() -> list[Endpoint]:
         """Define all software/application-related endpoints"""
         return [
             # Create Software
@@ -699,20 +809,41 @@ class FreshdeskAPIDefinition:
                 namespace="software",
                 parameters=[
                     Parameter("name", "str", True, "Name of the software"),
-                    Parameter("description", "str", False, "Description of the software"),
-                    Parameter("application_type", "str", False, "Type of application (desktop/saas/mobile)", "desktop"),
-                    Parameter("status", "str", False, "Status (blacklisted/ignored/managed)"),
-                    Parameter("publisher_id", "int", False, "ID of the Vendor/Publisher"),
-                    Parameter("managed_by_id", "int", False, "ID of the user managing the software"),
+                    Parameter(
+                        "description", "str", False, "Description of the software"
+                    ),
+                    Parameter(
+                        "application_type",
+                        "str",
+                        False,
+                        "Type of application (desktop/saas/mobile)",
+                        "desktop",
+                    ),
+                    Parameter(
+                        "status", "str", False, "Status (blacklisted/ignored/managed)"
+                    ),
+                    Parameter(
+                        "publisher_id", "int", False, "ID of the Vendor/Publisher"
+                    ),
+                    Parameter(
+                        "managed_by_id",
+                        "int",
+                        False,
+                        "ID of the user managing the software",
+                    ),
                     Parameter("notes", "str", False, "Notes about the software"),
                     Parameter("category", "str", False, "Category of the software"),
-                    Parameter("source", "str", False, "Source of software details (API, Okta, Google, etc.)"),
+                    Parameter(
+                        "source",
+                        "str",
+                        False,
+                        "Source of software details (API, Okta, Google, etc.)",
+                    ),
                     Parameter("workspace_id", "int", False, "Workspace ID"),
                 ],
                 returns="Software",
-                example='software = await ds.create_software(name="FreshDesk", application_type="saas")'
+                example='software = await ds.create_software(name="FreshDesk", application_type="saas")',
             ),
-
             # View Software
             Endpoint(
                 name="view_software",
@@ -724,9 +855,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the software"),
                 ],
                 returns="Software",
-                example='software = await ds.view_software(id=123)'
+                example="software = await ds.view_software(id=123)",
             ),
-
             # List All Software
             Endpoint(
                 name="list_software",
@@ -735,14 +865,20 @@ class FreshdeskAPIDefinition:
                 description="List all software/applications",
                 namespace="software",
                 parameters=[
-                    Parameter("workspace_id", "int", False, "Workspace ID (0 for all workspaces)"),
+                    Parameter(
+                        "workspace_id",
+                        "int",
+                        False,
+                        "Workspace ID (0 for all workspaces)",
+                    ),
                     Parameter("page", "int", False, "Page number", 1),
-                    Parameter("per_page", "int", False, "Number of entries per page", 30),
+                    Parameter(
+                        "per_page", "int", False, "Number of entries per page", 30
+                    ),
                 ],
                 returns="List[Software]",
-                example='software_list = await ds.list_software()'
+                example="software_list = await ds.list_software()",
             ),
-
             # Update Software
             Endpoint(
                 name="update_software",
@@ -753,19 +889,34 @@ class FreshdeskAPIDefinition:
                 parameters=[
                     Parameter("id", "int", True, "ID of the software"),
                     Parameter("name", "str", False, "Name of the software"),
-                    Parameter("description", "str", False, "Description of the software"),
-                    Parameter("application_type", "str", False, "Type of application (desktop/saas/mobile)"),
-                    Parameter("status", "str", False, "Status (blacklisted/ignored/managed)"),
-                    Parameter("publisher_id", "int", False, "ID of the Vendor/Publisher"),
-                    Parameter("managed_by_id", "int", False, "ID of the user managing the software"),
+                    Parameter(
+                        "description", "str", False, "Description of the software"
+                    ),
+                    Parameter(
+                        "application_type",
+                        "str",
+                        False,
+                        "Type of application (desktop/saas/mobile)",
+                    ),
+                    Parameter(
+                        "status", "str", False, "Status (blacklisted/ignored/managed)"
+                    ),
+                    Parameter(
+                        "publisher_id", "int", False, "ID of the Vendor/Publisher"
+                    ),
+                    Parameter(
+                        "managed_by_id",
+                        "int",
+                        False,
+                        "ID of the user managing the software",
+                    ),
                     Parameter("notes", "str", False, "Notes about the software"),
                     Parameter("category", "str", False, "Category of the software"),
                     Parameter("source", "str", False, "Source of software details"),
                 ],
                 returns="Software",
-                example='software = await ds.update_software(id=123, status="managed")'
+                example='software = await ds.update_software(id=123, status="managed")',
             ),
-
             # Delete Software
             Endpoint(
                 name="delete_software",
@@ -777,9 +928,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the software to delete"),
                 ],
                 returns="None",
-                example='await ds.delete_software(id=123)'
+                example="await ds.delete_software(id=123)",
             ),
-
             # List Software Licenses
             Endpoint(
                 name="list_software_licenses",
@@ -791,9 +941,8 @@ class FreshdeskAPIDefinition:
                     Parameter("id", "int", True, "ID of the software"),
                 ],
                 returns="List[SoftwareLicense]",
-                example='licenses = await ds.list_software_licenses(id=123)'
+                example="licenses = await ds.list_software_licenses(id=123)",
             ),
-
             # Add Users to Software (Bulk)
             Endpoint(
                 name="add_software_users",
@@ -803,12 +952,16 @@ class FreshdeskAPIDefinition:
                 namespace="software",
                 parameters=[
                     Parameter("id", "int", True, "ID of the software"),
-                    Parameter("application_users", "List[Dict[str, Any]]", True, "List of application user objects"),
+                    Parameter(
+                        "application_users",
+                        "List[Dict[str, Any]]",
+                        True,
+                        "List of application user objects",
+                    ),
                 ],
                 returns="List[SoftwareUser]",
-                example='users = await ds.add_software_users(id=123, application_users=[{"user_id": 456}])'
+                example='users = await ds.add_software_users(id=123, application_users=[{"user_id": 456}])',
             ),
-
             # View Software User
             Endpoint(
                 name="view_software_user",
@@ -821,9 +974,8 @@ class FreshdeskAPIDefinition:
                     Parameter("user_id", "int", True, "ID of the application user"),
                 ],
                 returns="SoftwareUser",
-                example='user = await ds.view_software_user(id=123, user_id=456)'
+                example="user = await ds.view_software_user(id=123, user_id=456)",
             ),
-
             # List Software Users
             Endpoint(
                 name="list_software_users",
@@ -834,12 +986,13 @@ class FreshdeskAPIDefinition:
                 parameters=[
                     Parameter("id", "int", True, "ID of the software"),
                     Parameter("page", "int", False, "Page number", 1),
-                    Parameter("per_page", "int", False, "Number of entries per page", 30),
+                    Parameter(
+                        "per_page", "int", False, "Number of entries per page", 30
+                    ),
                 ],
                 returns="List[SoftwareUser]",
-                example='users = await ds.list_software_users(id=123)'
+                example="users = await ds.list_software_users(id=123)",
             ),
-
             # Update Software Users (Bulk)
             Endpoint(
                 name="update_software_users",
@@ -849,12 +1002,16 @@ class FreshdeskAPIDefinition:
                 namespace="software",
                 parameters=[
                     Parameter("id", "int", True, "ID of the software"),
-                    Parameter("application_users", "List[Dict[str, Any]]", True, "List of application user objects to update"),
+                    Parameter(
+                        "application_users",
+                        "List[Dict[str, Any]]",
+                        True,
+                        "List of application user objects to update",
+                    ),
                 ],
                 returns="List[SoftwareUser]",
-                example='users = await ds.update_software_users(id=123, application_users=[{"user_id": 456, "license_id": 10}])'
+                example='users = await ds.update_software_users(id=123, application_users=[{"user_id": 456, "license_id": 10}])',
             ),
-
             # Remove Software Users (Bulk)
             Endpoint(
                 name="remove_software_users",
@@ -864,12 +1021,13 @@ class FreshdeskAPIDefinition:
                 namespace="software",
                 parameters=[
                     Parameter("id", "int", True, "ID of the software"),
-                    Parameter("user_ids", "List[int]", True, "List of user IDs to remove"),
+                    Parameter(
+                        "user_ids", "List[int]", True, "List of user IDs to remove"
+                    ),
                 ],
                 returns="None",
-                example='await ds.remove_software_users(id=123, user_ids=[456, 789])'
+                example="await ds.remove_software_users(id=123, user_ids=[456, 789])",
             ),
-
             # Add Installation to Software
             Endpoint(
                 name="add_software_installation",
@@ -879,15 +1037,26 @@ class FreshdeskAPIDefinition:
                 namespace="software",
                 parameters=[
                     Parameter("id", "int", True, "ID of the software"),
-                    Parameter("installation_machine_id", "int", True, "Display ID of device"),
-                    Parameter("installation_path", "str", False, "Path where software is installed"),
+                    Parameter(
+                        "installation_machine_id", "int", True, "Display ID of device"
+                    ),
+                    Parameter(
+                        "installation_path",
+                        "str",
+                        False,
+                        "Path where software is installed",
+                    ),
                     Parameter("version", "str", False, "Version of installed software"),
-                    Parameter("installation_date", "str", False, "Installation date (ISO format)"),
+                    Parameter(
+                        "installation_date",
+                        "str",
+                        False,
+                        "Installation date (ISO format)",
+                    ),
                 ],
                 returns="SoftwareInstallation",
-                example='installation = await ds.add_software_installation(id=123, installation_machine_id=456)'
+                example="installation = await ds.add_software_installation(id=123, installation_machine_id=456)",
             ),
-
             # List Software Installations
             Endpoint(
                 name="list_software_installations",
@@ -898,12 +1067,13 @@ class FreshdeskAPIDefinition:
                 parameters=[
                     Parameter("id", "int", True, "ID of the software"),
                     Parameter("page", "int", False, "Page number", 1),
-                    Parameter("per_page", "int", False, "Number of entries per page", 30),
+                    Parameter(
+                        "per_page", "int", False, "Number of entries per page", 30
+                    ),
                 ],
                 returns="List[SoftwareInstallation]",
-                example='installations = await ds.list_software_installations(id=123)'
+                example="installations = await ds.list_software_installations(id=123)",
             ),
-
             # Remove Software Installations (Bulk)
             Endpoint(
                 name="remove_software_installations",
@@ -913,12 +1083,16 @@ class FreshdeskAPIDefinition:
                 namespace="software",
                 parameters=[
                     Parameter("id", "int", True, "ID of the software"),
-                    Parameter("device_ids", "List[int]", True, "List of device display IDs to remove"),
+                    Parameter(
+                        "device_ids",
+                        "List[int]",
+                        True,
+                        "List of device display IDs to remove",
+                    ),
                 ],
                 returns="None",
-                example='await ds.remove_software_installations(id=123, device_ids=[456, 789])'
+                example="await ds.remove_software_installations(id=123, device_ids=[456, 789])",
             ),
-
             # Move Software to Workspace
             Endpoint(
                 name="move_software",
@@ -928,10 +1102,12 @@ class FreshdeskAPIDefinition:
                 namespace="software",
                 parameters=[
                     Parameter("id", "int", True, "ID of the software"),
-                    Parameter("workspace_id", "int", True, "ID of the target workspace"),
+                    Parameter(
+                        "workspace_id", "int", True, "ID of the target workspace"
+                    ),
                 ],
                 returns="Software",
-                example='software = await ds.move_software(id=123, workspace_id=2)'
+                example="software = await ds.move_software(id=123, workspace_id=2)",
             ),
         ]
 
@@ -940,19 +1116,19 @@ class FreshdeskCodeGenerator:
     """Generate FreshDesk DataSource class"""
 
     def __init__(self) -> None:
-        self.generated_methods: List[Dict[str, Any]] = []
+        self.generated_methods: list[dict[str, Any]] = []
 
     @staticmethod
     def sanitize_py_name(name: str) -> str:
         """Sanitize parameter names to be valid Python identifiers"""
-        n = re.sub(r'[^0-9a-zA-Z_]', '_', name)
+        n = re.sub(r"[^0-9a-zA-Z_]", "_", name)
         if n and n[0].isdigit():
             n = f"_{n}"
         if keyword.iskeyword(n):
             n += "_"
         return n
 
-    def build_method_signature(self, endpoint: Endpoint) -> Tuple[str, List[str]]:
+    def build_method_signature(self, endpoint: Endpoint) -> tuple[str, list[str]]:
         """Build method signature from endpoint definition"""
         required_params = []
         optional_params = []
@@ -970,14 +1146,16 @@ class FreshdeskCodeGenerator:
                         default_val = str(param.default)
                 else:
                     default_val = "None"
-                optional_params.append(f"{py_name}: Optional[{param.type}] = {default_val}")
+                optional_params.append(
+                    f"{py_name}: Optional[{param.type}] = {default_val}"
+                )
 
-        all_params = ['self'] + required_params + optional_params
+        all_params = ["self"] + required_params + optional_params
 
         if len(all_params) == 1:
             signature = f"async def {endpoint.name}(self) -> FreshDeskResponse:"
         else:
-            params_formatted = ',\n        '.join(all_params)
+            params_formatted = ",\n        ".join(all_params)
             signature = f"async def {endpoint.name}(\n        {params_formatted}\n    ) -> FreshDeskResponse:"
 
         return signature, all_params[1:]  # Return params without 'self'
@@ -985,26 +1163,25 @@ class FreshdeskCodeGenerator:
     def build_docstring(self, endpoint: Endpoint) -> str:
         """Build method docstring"""
         docstring = f'        """{endpoint.description}\n\n'
-        docstring += f'        API Endpoint: {endpoint.method} {endpoint.path}\n'
+        docstring += f"        API Endpoint: {endpoint.method} {endpoint.path}\n"
 
         if endpoint.parameters:
-            docstring += '\n        Args:\n'
+            docstring += "\n        Args:\n"
             for param in endpoint.parameters:
                 py_name = self.sanitize_py_name(param.name)
-                required_text = 'required' if param.required else 'optional'
-                docstring += f'            {py_name} ({param.type}, {required_text}): {param.description}\n'
+                required_text = "required" if param.required else "optional"
+                docstring += f"            {py_name} ({param.type}, {required_text}): {param.description}\n"
 
-        docstring += '\n        Returns:\n            FreshDeskResponse: Standardized response wrapper\n'
+        docstring += "\n        Returns:\n            FreshDeskResponse: Standardized response wrapper\n"
 
         if endpoint.example:
-            docstring += f'\n        Example:\n            {endpoint.example}\n'
+            docstring += f"\n        Example:\n            {endpoint.example}\n"
 
         docstring += '        """'
         return docstring
 
-    def build_method_body(self, endpoint: Endpoint, params: List[str]) -> str:
+    def build_method_body(self, endpoint: Endpoint, params: list[str]) -> str:
         """Build method implementation using HTTP requests"""
-
         # Determine HTTP method and build URL
         http_method = endpoint.method.upper()
 
@@ -1016,7 +1193,10 @@ class FreshdeskCodeGenerator:
         for param in endpoint.parameters:
             py_name = self.sanitize_py_name(param.name)
             # Check if parameter is in path
-            if f"[{param.name}]" in endpoint.path or f"{{{param.name}}}" in endpoint.path:
+            if (
+                f"[{param.name}]" in endpoint.path
+                or f"{{{param.name}}}" in endpoint.path
+            ):
                 path_params.append((param.name, py_name))
             elif http_method in ["GET", "DELETE"]:
                 url_params.append((param.name, py_name))
@@ -1029,14 +1209,13 @@ class FreshdeskCodeGenerator:
 
         # Replace path parameters and strip /api/v2 since it's already in base_url
         path = endpoint.path
-        if path.startswith("/api/v2"):
-            path = path[7:]  # Remove "/api/v2" prefix
+        path = path.removeprefix("/api/v2")  # Remove "/api/v2" prefix
 
         for param_name, py_name in path_params:
             path = path.replace(f"[{param_name}]", f"{{{py_name}}}")
             path = path.replace(f"{{{param_name}}}", f"{{{py_name}}}")
 
-        url_parts.append(f"        url += f\"{path}\"")
+        url_parts.append(f'        url += f"{path}"')
 
         # Build query parameters for GET requests
         if url_params and http_method == "GET":
@@ -1048,7 +1227,7 @@ class FreshdeskCodeGenerator:
             url_parts.append("            from urllib.parse import urlencode")
             url_parts.append("            url += '?' + urlencode(params)")
 
-        url_code = '\n'.join(url_parts)
+        url_code = "\n".join(url_parts)
 
         # Build request body for POST/PUT
         body_code = ""
@@ -1100,19 +1279,20 @@ class FreshdeskCodeGenerator:
         docstring = self.build_docstring(endpoint)
         body = self.build_method_body(endpoint, params)
 
-        self.generated_methods.append({
-            'name': endpoint.name,
-            'namespace': endpoint.namespace,
-            'method': endpoint.method,
-            'params': len(endpoint.parameters),
-            'path': endpoint.path
-        })
+        self.generated_methods.append(
+            {
+                "name": endpoint.name,
+                "namespace": endpoint.namespace,
+                "method": endpoint.method,
+                "params": len(endpoint.parameters),
+                "path": endpoint.path,
+            }
+        )
 
         return f"    {signature}\n{docstring}\n{body}\n\n"
 
-    def generate_class(self, class_name: str, endpoints: List[Endpoint]) -> str:
+    def generate_class(self, class_name: str, endpoints: list[Endpoint]) -> str:
         """Generate complete DataSource class"""
-
         header = f'''"""
 FreshDesk DataSource - Auto-generated API wrapper
 
@@ -1167,15 +1347,14 @@ class {class_name}:
 
         return header + methods_code
 
+
 def generate_freshdesk_client(
     *,
     out_path: str = DEFAULT_OUT,
     class_name: str = DEFAULT_CLASS,
 ) -> str:
     """Generate the FreshDesk DataSource Python file"""
-
     print("Generating FreshDesk DataSource...")
-
 
     # Get all endpoints
     endpoints = FreshdeskAPIDefinition.get_ticket_endpoints()
@@ -1188,30 +1367,30 @@ def generate_freshdesk_client(
     code = generator.generate_class(class_name, endpoints)
 
     # Write file in freshdesk subdirectory of the generator script directory
-    script_dir = Path(__file__).parent if __file__ else Path('.')
-    freshdesk_dir = script_dir / 'freshdesk'
+    script_dir = Path(__file__).parent if __file__ else Path()
+    freshdesk_dir = script_dir / "freshdesk"
     freshdesk_dir.mkdir(parents=True, exist_ok=True)
 
     full_path = freshdesk_dir / out_path
-    full_path.write_text(code, encoding='utf-8')
+    full_path.write_text(code, encoding="utf-8")
 
     return str(full_path)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description="Generate FreshDesk DataSource class"
+        description="Generate FreshDesk DataSource class",
     )
     parser.add_argument(
         "--out",
         default=DEFAULT_OUT,
-        help="Output .py file path (default: freshdesk.py)"
+        help="Output .py file path (default: freshdesk.py)",
     )
     parser.add_argument(
         "--class-name",
         default=DEFAULT_CLASS,
-        help="Generated class name (default: FreshDeskDataSource)"
+        help="Generated class name (default: FreshDeskDataSource)",
     )
 
     args = parser.parse_args(argv)
@@ -1219,7 +1398,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     try:
         out_path = generate_freshdesk_client(
             out_path=args.out,
-            class_name=args.class_name
+            class_name=args.class_name,
         )
 
         print(f"Generated {args.class_name} -> {out_path}")
@@ -1230,7 +1409,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         problem_endpoints = FreshdeskAPIDefinition.get_problem_endpoints()
         agent_endpoints = FreshdeskAPIDefinition.get_agent_endpoints()
         software_endpoints = FreshdeskAPIDefinition.get_software_endpoints()
-        all_endpoints = ticket_endpoints + problem_endpoints + agent_endpoints + software_endpoints
+        all_endpoints = (
+            ticket_endpoints + problem_endpoints + agent_endpoints + software_endpoints
+        )
 
         print(f"\nGenerated {len(all_endpoints)} total endpoint methods:")
         print(f"  - {len(ticket_endpoints)} ticket endpoints")
@@ -1238,7 +1419,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print(f"  - {len(agent_endpoints)} agent endpoints")
         print(f"  - {len(software_endpoints)} software endpoints")
 
-        namespaces: Dict[str, int] = {}
+        namespaces: dict[str, int] = {}
         for endpoint in all_endpoints:
             ns = endpoint.namespace
             namespaces[ns] = namespaces.get(ns, 0) + 1

@@ -2,7 +2,6 @@ import asyncio
 import concurrent.futures
 import json
 import logging
-from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -16,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 class Zendesk:
     """Zendesk tool exposed to the agents"""
+
     def __init__(self, client: ZendeskClient) -> None:
         """Initialize the Zendesk tool"""
         """
@@ -26,7 +26,7 @@ class Zendesk:
         """
         self.client = ZendeskDataSource(client)
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
+    def _run_async(self, coro) -> HTTPResponse:  # type: ignore [valid method]
         """Helper method to run async operations in sync context"""
         try:
             loop = asyncio.get_event_loop()
@@ -45,9 +45,9 @@ class Zendesk:
         app_name="zendesk",
         tool_name="get_current_user",
         description="Get current user information",
-        parameters=[]
+        parameters=[],
     )
-    def get_current_user(self) -> Tuple[bool, str]:
+    def get_current_user(self) -> tuple[bool, str]:
         """Get current user information"""
         """
         Returns:
@@ -59,8 +59,7 @@ class Zendesk:
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error getting current user: {e}")
             return False, json.dumps({"error": str(e)})
@@ -74,35 +73,35 @@ class Zendesk:
                 name="sort_by",
                 type=ParameterType.STRING,
                 description="Field to sort by",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="sort_order",
                 type=ParameterType.STRING,
                 description="Sort order (asc or desc)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="per_page",
                 type=ParameterType.INTEGER,
                 description="Number of tickets per page",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page",
                 type=ParameterType.INTEGER,
                 description="Page number",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def list_tickets(
         self,
-        sort_by: Optional[str] = None,
-        sort_order: Optional[str] = None,
-        per_page: Optional[int] = None,
-        page: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        per_page: int | None = None,
+        page: int | None = None,
+    ) -> tuple[bool, str]:
         """List tickets"""
         """
         Args:
@@ -115,17 +114,18 @@ class Zendesk:
         """
         try:
             # Use ZendeskDataSource method
-            response = self._run_async(self.client.list_tickets(
-                sort_by=sort_by,
-                sort_order=sort_order,
-                per_page=per_page,
-                page=page
-            ))
+            response = self._run_async(
+                self.client.list_tickets(
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    per_page=per_page,
+                    page=page,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error listing tickets: {e}")
             return False, json.dumps({"error": str(e)})
@@ -139,11 +139,11 @@ class Zendesk:
                 name="ticket_id",
                 type=ParameterType.STRING,
                 description="ID of the ticket to get",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_ticket(self, ticket_id: str) -> Tuple[bool, str]:
+    def get_ticket(self, ticket_id: str) -> tuple[bool, str]:
         """Get a specific ticket"""
         """
         Args:
@@ -158,8 +158,7 @@ class Zendesk:
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error getting ticket: {e}")
             return False, json.dumps({"error": str(e)})
@@ -173,49 +172,49 @@ class Zendesk:
                 name="subject",
                 type=ParameterType.STRING,
                 description="Subject of the ticket",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="Description of the ticket",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="requester_id",
                 type=ParameterType.STRING,
                 description="ID of the requester",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="assignee_id",
                 type=ParameterType.STRING,
                 description="ID of the assignee",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="priority",
                 type=ParameterType.STRING,
                 description="Priority of the ticket",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="status",
                 type=ParameterType.STRING,
                 description="Status of the ticket",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def create_ticket(
         self,
         subject: str,
         description: str,
-        requester_id: Optional[str] = None,
-        assignee_id: Optional[str] = None,
-        priority: Optional[str] = None,
-        status: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        requester_id: str | None = None,
+        assignee_id: str | None = None,
+        priority: str | None = None,
+        status: str | None = None,
+    ) -> tuple[bool, str]:
         """Create a new ticket"""
         """
         Args:
@@ -230,19 +229,22 @@ class Zendesk:
         """
         try:
             # Map to data source flat params; description -> comment body
-            response = self._run_async(self.client.create_ticket(
-                subject=subject,
-                comment={"body": description},
-                requester_id=int(requester_id) if requester_id is not None else None,
-                assignee_id=int(assignee_id) if assignee_id is not None else None,
-                priority=priority,
-                status=status
-            ))
+            response = self._run_async(
+                self.client.create_ticket(
+                    subject=subject,
+                    comment={"body": description},
+                    requester_id=int(requester_id)
+                    if requester_id is not None
+                    else None,
+                    assignee_id=int(assignee_id) if assignee_id is not None else None,
+                    priority=priority,
+                    status=status,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error creating ticket: {e}")
             return False, json.dumps({"error": str(e)})
@@ -256,49 +258,49 @@ class Zendesk:
                 name="ticket_id",
                 type=ParameterType.STRING,
                 description="ID of the ticket to update",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="subject",
                 type=ParameterType.STRING,
                 description="New subject of the ticket",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="New description of the ticket",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="assignee_id",
                 type=ParameterType.STRING,
                 description="New assignee ID",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="priority",
                 type=ParameterType.STRING,
                 description="New priority of the ticket",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="status",
                 type=ParameterType.STRING,
                 description="New status of the ticket",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def update_ticket(
         self,
         ticket_id: str,
-        subject: Optional[str] = None,
-        description: Optional[str] = None,
-        assignee_id: Optional[str] = None,
-        priority: Optional[str] = None,
-        status: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        subject: str | None = None,
+        description: str | None = None,
+        assignee_id: str | None = None,
+        priority: str | None = None,
+        status: str | None = None,
+    ) -> tuple[bool, str]:
         """Update a ticket"""
         """
         Args:
@@ -314,19 +316,20 @@ class Zendesk:
         try:
             # Use ZendeskDataSource method with flat params; description -> comment body
             tid = int(ticket_id)
-            response = self._run_async(self.client.update_ticket(
-                ticket_id=tid,
-                subject=subject,
-                comment={"body": description} if description is not None else None,
-                assignee_id=int(assignee_id) if assignee_id is not None else None,
-                priority=priority,
-                status=status
-            ))
+            response = self._run_async(
+                self.client.update_ticket(
+                    ticket_id=tid,
+                    subject=subject,
+                    comment={"body": description} if description is not None else None,
+                    assignee_id=int(assignee_id) if assignee_id is not None else None,
+                    priority=priority,
+                    status=status,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error updating ticket: {e}")
             return False, json.dumps({"error": str(e)})
@@ -340,11 +343,11 @@ class Zendesk:
                 name="ticket_id",
                 type=ParameterType.STRING,
                 description="ID of the ticket to delete",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def delete_ticket(self, ticket_id: str) -> Tuple[bool, str]:
+    def delete_ticket(self, ticket_id: str) -> tuple[bool, str]:
         """Delete a ticket"""
         """
         Args:
@@ -359,8 +362,7 @@ class Zendesk:
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error deleting ticket: {e}")
             return False, json.dumps({"error": str(e)})
@@ -374,21 +376,21 @@ class Zendesk:
                 name="per_page",
                 type=ParameterType.INTEGER,
                 description="Number of users per page",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page",
                 type=ParameterType.INTEGER,
                 description="Page number",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def list_users(
         self,
-        role: Optional[str] = None,
-        include: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        role: str | None = None,
+        include: str | None = None,
+    ) -> tuple[bool, str]:
         """List users"""
         """
         Args:
@@ -399,15 +401,16 @@ class Zendesk:
         """
         try:
             # Use ZendeskDataSource method (supports role/include among others)
-            response = self._run_async(self.client.list_users(
-                role=role,
-                include=include
-            ))
+            response = self._run_async(
+                self.client.list_users(
+                    role=role,
+                    include=include,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error listing users: {e}")
             return False, json.dumps({"error": str(e)})
@@ -421,11 +424,11 @@ class Zendesk:
                 name="user_id",
                 type=ParameterType.STRING,
                 description="ID of the user to get",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_user(self, user_id: str) -> Tuple[bool, str]:
+    def get_user(self, user_id: str) -> tuple[bool, str]:
         """Get a specific user"""
         """
         Args:
@@ -440,8 +443,7 @@ class Zendesk:
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error getting user: {e}")
             return False, json.dumps({"error": str(e)})
@@ -455,40 +457,40 @@ class Zendesk:
                 name="query",
                 type=ParameterType.STRING,
                 description="Search query",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="sort_by",
                 type=ParameterType.STRING,
                 description="Field to sort by",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="sort_order",
                 type=ParameterType.STRING,
                 description="Sort order (asc or desc)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="per_page",
                 type=ParameterType.INTEGER,
                 description="Number of results per page",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page",
                 type=ParameterType.INTEGER,
                 description="Page number",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def search_tickets(
         self,
         query: str,
-        sort_by: Optional[str] = None,
-        sort_order: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+    ) -> tuple[bool, str]:
         """Search tickets"""
         """
         Args:
@@ -502,16 +504,17 @@ class Zendesk:
         """
         try:
             # Use ZendeskDataSource method (generic search)
-            response = self._run_async(self.client.search(
-                query=query,
-                sort_by=sort_by,
-                sort_order=sort_order
-            ))
+            response = self._run_async(
+                self.client.search(
+                    query=query,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error searching tickets: {e}")
             return False, json.dumps({"error": str(e)})

@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
 
@@ -9,7 +9,7 @@ class AdminWebhookHandler:
         self.arango_service = admin_service.arango_service
         self.logger = logger
 
-    async def process_notification(self, event_type: str, body: Dict[str, Any]) -> None:
+    async def process_notification(self, event_type: str, body: dict[str, Any]) -> None:
         """Process incoming admin webhook notifications"""
         try:
             events = body.get("events", [])
@@ -35,10 +35,10 @@ class AdminWebhookHandler:
                     self.logger.info(f"Unhandled admin event type: {event_name}")
 
         except Exception as e:
-            self.logger.error(f"Error processing admin webhook notification: {str(e)}")
+            self.logger.error(f"Error processing admin webhook notification: {e!s}")
             raise
 
-    async def _handle_user_creation(self, event: Dict[str, Any]) -> None:
+    async def _handle_user_creation(self, event: dict[str, Any]) -> None:
         """Handle user creation event"""
         try:
             # Extract user email from the parameters array
@@ -62,10 +62,10 @@ class AdminWebhookHandler:
             await self.admin_service.handle_new_user(org_id, user_email)
 
         except Exception as e:
-            self.logger.error(f"Error handling user creation: {str(e)}")
+            self.logger.error(f"Error handling user creation: {e!s}")
             raise
 
-    async def _handle_user_deletion(self, event: Dict[str, Any]) -> None:
+    async def _handle_user_deletion(self, event: dict[str, Any]) -> None:
         """Handle user deletion event"""
         try:
             # Extract user email from the parameters array
@@ -85,7 +85,8 @@ class AdminWebhookHandler:
                 return
 
             user = await self.arango_service.get_document(
-                user_key, CollectionNames.USERS.value
+                user_key,
+                CollectionNames.USERS.value,
             )
             org_id = user.get("orgId")
 
@@ -94,10 +95,10 @@ class AdminWebhookHandler:
             await self.admin_service.handle_deleted_user(org_id, user_email)
 
         except Exception as e:
-            self.logger.error(f"Error handling user deletion: {str(e)}")
+            self.logger.error(f"Error handling user deletion: {e!s}")
             raise
 
-    async def _handle_group_creation(self, event: Dict[str, Any]) -> None:
+    async def _handle_group_creation(self, event: dict[str, Any]) -> None:
         """Handle group creation event"""
         try:
             group_email = None
@@ -118,10 +119,10 @@ class AdminWebhookHandler:
             await self.admin_service.handle_new_group(org_id, group_email)
 
         except Exception as e:
-            self.logger.error(f"Error handling group creation: {str(e)}")
+            self.logger.error(f"Error handling group creation: {e!s}")
             raise
 
-    async def _handle_group_deletion(self, event: Dict[str, Any]) -> None:
+    async def _handle_group_deletion(self, event: dict[str, Any]) -> None:
         """Handle group deletion event"""
         try:
             group_email = None
@@ -140,7 +141,8 @@ class AdminWebhookHandler:
                 return
 
             group = await self.arango_service.get_document(
-                group_key, CollectionNames.GROUPS.value
+                group_key,
+                CollectionNames.GROUPS.value,
             )
             org_id = group.get("orgId")
 
@@ -148,10 +150,10 @@ class AdminWebhookHandler:
             await self.admin_service.handle_deleted_group(org_id, group_email)
 
         except Exception as e:
-            self.logger.error(f"Error handling group deletion: {str(e)}")
+            self.logger.error(f"Error handling group deletion: {e!s}")
             raise
 
-    async def _handle_group_member_addition(self, event: Dict[str, Any]) -> None:
+    async def _handle_group_member_addition(self, event: dict[str, Any]) -> None:
         """Handle group member addition event"""
         try:
             group_email = user_email = None
@@ -171,20 +173,23 @@ class AdminWebhookHandler:
                 return
 
             group = await self.arango_service.get_document(
-                group_key, CollectionNames.GROUPS.value
+                group_key,
+                CollectionNames.GROUPS.value,
             )
 
             org_id = group.get("orgId")
             self.logger.info(f"Processing member addition to group: {group_email}")
             await self.admin_service.handle_group_member_added(
-                org_id, group_email, user_email
+                org_id,
+                group_email,
+                user_email,
             )
 
         except Exception as e:
-            self.logger.error(f"Error handling group member addition: {str(e)}")
+            self.logger.error(f"Error handling group member addition: {e!s}")
             raise
 
-    async def _handle_group_member_removal(self, event: Dict[str, Any]) -> None:
+    async def _handle_group_member_removal(self, event: dict[str, Any]) -> None:
         """Handle group member removal event"""
         try:
             group_email = user_email = None
@@ -204,14 +209,17 @@ class AdminWebhookHandler:
                 return
 
             group = await self.arango_service.get_document(
-                group_key, CollectionNames.GROUPS.value
+                group_key,
+                CollectionNames.GROUPS.value,
             )
             org_id = group.get("orgId")
             self.logger.info(f"Processing member removal from group: {group_email}")
             await self.admin_service.handle_group_member_removed(
-                org_id, group_email, user_email
+                org_id,
+                group_email,
+                user_email,
             )
 
         except Exception as e:
-            self.logger.error(f"Error handling group member removal: {str(e)}")
+            self.logger.error(f"Error handling group member removal: {e!s}")
             raise

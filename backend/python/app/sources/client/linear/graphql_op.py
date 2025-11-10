@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any
 
 
 class LinearGraphQLOperations:
@@ -18,7 +18,6 @@ class LinearGraphQLOperations:
                 updatedAt
             }
         """,
-
         "TeamFields": """
             fragment TeamFields on Team {
                 id
@@ -30,7 +29,6 @@ class LinearGraphQLOperations:
                 updatedAt
             }
         """,
-
         "IssueFields": """
             fragment IssueFields on Issue {
                 id
@@ -67,7 +65,6 @@ class LinearGraphQLOperations:
                 }
             }
         """,
-
         "ProjectFields": """
             fragment ProjectFields on Project {
                 id
@@ -90,7 +87,6 @@ class LinearGraphQLOperations:
                 }
             }
         """,
-
         "CommentFields": """
             fragment CommentFields on Comment {
                 id
@@ -101,7 +97,7 @@ class LinearGraphQLOperations:
                     ...UserFields
                 }
             }
-        """
+        """,
     }
 
     # Query operations
@@ -117,9 +113,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": [],
-            "description": "Get organization information"
+            "description": "Get organization information",
         },
-
         "teams": {
             "query": """
                 query teams($first: Int, $filter: TeamFilter) {
@@ -142,9 +137,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["TeamFields", "UserFields"],
-            "description": "Get teams with optional filtering"
+            "description": "Get teams with optional filtering",
         },
-
         "issues": {
             "query": """
                 query issues($first: Int, $filter: IssueFilter, $orderBy: PaginationOrderBy) {
@@ -162,9 +156,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["IssueFields", "UserFields", "TeamFields"],
-            "description": "Get issues with filtering and pagination"
+            "description": "Get issues with filtering and pagination",
         },
-
         "issue": {
             "query": """
                 query Issue($id: String!) {
@@ -187,9 +180,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["IssueFields", "CommentFields", "UserFields", "TeamFields"],
-            "description": "Get single issue with comments and attachments"
+            "description": "Get single issue with comments and attachments",
         },
-
         "projects": {
             "query": """
                 query Projects($first: Int, $filter: ProjectFilter) {
@@ -212,9 +204,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["ProjectFields", "IssueFields", "UserFields", "TeamFields"],
-            "description": "Get projects with issues"
+            "description": "Get projects with issues",
         },
-
         "issueSearch": {
             "query": """
                 query issueSearch($query: String!, $first: Int, $after: String, $filter: IssueFilter) {
@@ -232,9 +223,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["IssueFields", "UserFields", "TeamFields"],
-            "description": "Search issues by query string"
+            "description": "Search issues by query string",
         },
-
         "organization": {
             "query": """
                 query Organization {
@@ -248,8 +238,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": [],
-            "description": "Get organization information"
-        }
+            "description": "Get organization information",
+        },
     }
 
     # Mutation operations
@@ -267,9 +257,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["IssueFields", "UserFields", "TeamFields"],
-            "description": "Create a new issue"
+            "description": "Create a new issue",
         },
-
         "issueUpdate": {
             "query": """
                 mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
@@ -283,9 +272,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["IssueFields", "UserFields", "TeamFields"],
-            "description": "Update an existing issue"
+            "description": "Update an existing issue",
         },
-
         "issueDelete": {
             "query": """
                 mutation IssueDelete($id: String!) {
@@ -296,9 +284,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": [],
-            "description": "Delete an issue"
+            "description": "Delete an issue",
         },
-
         "commentCreate": {
             "query": """
                 mutation CommentCreate($input: CommentCreateInput!) {
@@ -312,9 +299,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["CommentFields", "UserFields"],
-            "description": "Create a comment on an issue"
+            "description": "Create a comment on an issue",
         },
-
         "projectCreate": {
             "query": """
                 mutation ProjectCreate($input: ProjectCreateInput!) {
@@ -328,9 +314,8 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["ProjectFields", "UserFields", "TeamFields"],
-            "description": "Create a new project"
+            "description": "Create a new project",
         },
-
         "projectUpdate": {
             "query": """
                 mutation ProjectUpdate($id: String!, $input: ProjectUpdateInput!) {
@@ -344,17 +329,21 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["ProjectFields", "UserFields", "TeamFields"],
-            "description": "Update a project"
-        }
+            "description": "Update a project",
+        },
     }
 
     @classmethod
-    def get_operation_with_fragments(cls, operation_type: str, operation_name: str) -> str:
+    def get_operation_with_fragments(
+        cls, operation_type: str, operation_name: str
+    ) -> str:
         """Get a complete GraphQL operation with all required fragments."""
         operations = cls.QUERIES if operation_type == "query" else cls.MUTATIONS
 
         if operation_name not in operations:
-            raise ValueError(f"Operation {operation_name} not found in {operation_type}s")
+            raise ValueError(
+                f"Operation {operation_name} not found in {operation_type}s"
+            )
         operation = operations[operation_name]
         fragments_needed = operation.get("fragments", [])
 
@@ -367,14 +356,13 @@ class LinearGraphQLOperations:
         # Combine fragments and operation
         if fragment_definitions:
             return "\n\n".join(fragment_definitions) + "\n\n" + operation["query"]
-        else:
-            return operation["query"]
+        return operation["query"]
 
     @classmethod
-    def get_all_operations(cls) -> Dict[str, Dict[str, Any]]:
+    def get_all_operations(cls) -> dict[str, dict[str, Any]]:
         """Get all available operations."""
         return {
             "queries": cls.QUERIES,
             "mutations": cls.MUTATIONS,
-            "fragments": cls.FRAGMENTS
+            "fragments": cls.FRAGMENTS,
         }

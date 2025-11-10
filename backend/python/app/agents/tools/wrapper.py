@@ -1,9 +1,8 @@
-"""
-Enhanced wrapper to adapt registry tools to LangChain format with proper client initialization.
-"""
+"""Enhanced wrapper to adapt registry tools to LangChain format with proper client initialization."""
 
 import json
-from typing import Callable, Dict, List, Union
+from collections.abc import Callable
+from typing import Union
 
 from langchain.tools import BaseTool
 from pydantic import ConfigDict, Field
@@ -23,11 +22,13 @@ class ToolInstanceCreator:
 
     def __init__(self, state: ChatState) -> None:
         """Initialize tool instance creator.
+
         Args:
             state: Chat state containing configuration
 
         Raises:
             RuntimeError: If configuration service is not available
+
         """
         self.state = state
         self.logger = state.get("logger")
@@ -41,32 +42,34 @@ class ToolInstanceCreator:
 
         Raises:
             RuntimeError: If configuration service is not available
+
         """
         retrieval_service = self.state.get("retrieval_service")
-        if not retrieval_service or not hasattr(retrieval_service, 'config_service'):
+        if not retrieval_service or not hasattr(retrieval_service, "config_service"):
             raise RuntimeError("ConfigurationService not available")
         return retrieval_service.config_service
 
     def create_instance(self, action_class: type, app_name: str) -> object:
         """Create an instance of an action class with proper client.
+
         Args:
             action_class: Class to instantiate
             app_name: Name of the application
         Returns:
             Instance of action_class
+
         """
         factory = ClientFactoryRegistry.get_factory(app_name)
 
         if factory:
             return self._create_with_factory(factory, action_class, app_name)
-        else:
-            return self._fallback_creation(action_class)
+        return self._fallback_creation(action_class)
 
     def _create_with_factory(
         self,
         factory: object,
         action_class: type,
-        app_name: str
+        app_name: str,
     ) -> object:
         """Create instance using factory.
 
@@ -77,6 +80,7 @@ class ToolInstanceCreator:
 
         Returns:
             Instance of action_class
+
         """
         try:
             client = factory.create_client_sync(
@@ -88,7 +92,7 @@ class ToolInstanceCreator:
         except Exception as e:
             if self.logger:
                 self.logger.error(
-                    f"Failed to create client for {app_name}: {e}"
+                    f"Failed to create client for {app_name}: {e}",
                 )
             return self._fallback_creation(action_class)
 
@@ -100,6 +104,7 @@ class ToolInstanceCreator:
 
         Returns:
             Instance of action_class
+
         """
         try:
             return action_class()
@@ -121,8 +126,8 @@ class RegistryToolWrapper(BaseTool):
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
-        extra='allow',
-        validate_assignment=True
+        extra="allow",
+        validate_assignment=True,
     )
 
     app_name: str = Field(default="", description="Application name")
@@ -137,34 +142,36 @@ class RegistryToolWrapper(BaseTool):
         tool_name: str,
         registry_tool: object,
         state: ChatState,
-        **kwargs: Union[str, int, bool, dict, list, None]
+        **kwargs: str | int | bool | dict | list | None,
     ) -> None:
         """Initialize registry tool wrapper.
+
         Args:
             app_name: Application name
             tool_name: Tool name
             registry_tool: Registry tool instance
             state: Chat state
             **kwargs: Additional arguments
+
         """
         base_description = getattr(
             registry_tool,
-            'description',
-            f"Tool: {app_name}.{tool_name}"
+            "description",
+            f"Tool: {app_name}.{tool_name}",
         )
         full_description = self._build_description(base_description, registry_tool)
 
         instance_creator = ToolInstanceCreator(state)
 
-        init_data: Dict[str, Union[str, object]] = {
-            'name': f"{app_name}.{tool_name}",
-            'description': full_description,
-            'app_name': app_name,
-            'tool_name': tool_name,
-            'registry_tool': registry_tool,
-            'chat_state': state,
-            'instance_creator': instance_creator,
-            **kwargs
+        init_data: dict[str, str | object] = {
+            "name": f"{app_name}.{tool_name}",
+            "description": full_description,
+            "app_name": app_name,
+            "tool_name": tool_name,
+            "registry_tool": registry_tool,
+            "chat_state": state,
+            "instance_creator": instance_creator,
+            **kwargs,
         }
 
         super().__init__(**init_data)
@@ -178,9 +185,10 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Complete description with parameters
+
         """
         try:
-            params = getattr(registry_tool, 'parameters', []) or []
+            params = getattr(registry_tool, "parameters", []) or []
             if not params:
                 return base_description
 
@@ -191,7 +199,7 @@ class RegistryToolWrapper(BaseTool):
             return base_description
 
     @staticmethod
-    def _format_parameters(params: List[object]) -> List[str]:
+    def _format_parameters(params: list[object]) -> list[str]:
         """Format parameters for description.
 
         Args:
@@ -199,24 +207,23 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             List of formatted parameter strings
+
         """
         formatted_params = []
         for param in params:
             try:
                 type_name = getattr(
                     param.type,
-                    'name',
-                    str(getattr(param, 'type', 'string'))
+                    "name",
+                    str(getattr(param, "type", "string")),
                 )
             except Exception:
-                type_name = 'string'
+                type_name = "string"
 
-            required_marker = (
-                ' (required)' if getattr(param, 'required', False) else ''
-            )
+            required_marker = " (required)" if getattr(param, "required", False) else ""
             formatted_params.append(
                 f"{param.name}{required_marker}: "
-                f"{getattr(param, 'description', '')} [{type_name}]"
+                f"{getattr(param, 'description', '')} [{type_name}]",
             )
         return formatted_params
 
@@ -226,10 +233,11 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Chat state object
+
         """
         return self.chat_state
 
-    def _run(self, **kwargs: Union[str, int, bool, dict, list, None]) -> str:
+    def _run(self, **kwargs: str | int | bool | dict | list | None) -> str:
         """Execute the registry tool.
 
         Args:
@@ -237,6 +245,7 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Formatted result string
+
         """
         try:
             result = self._execute_tool(kwargs)
@@ -246,7 +255,7 @@ class RegistryToolWrapper(BaseTool):
 
     def _execute_tool(
         self,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None],
     ) -> ToolResult:
         """Execute the registry tool function.
 
@@ -255,13 +264,13 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Tool execution result
+
         """
         tool_function = self.registry_tool.function
 
         if self._is_class_method(tool_function):
             return self._execute_class_method(tool_function, arguments)
-        else:
-            return tool_function(**arguments)
+        return tool_function(**arguments)
 
     @staticmethod
     def _is_class_method(func: Callable) -> bool:
@@ -272,13 +281,14 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             True if function is a class method
+
         """
-        return hasattr(func, '__qualname__') and '.' in func.__qualname__
+        return hasattr(func, "__qualname__") and "." in func.__qualname__
 
     def _execute_class_method(
         self,
         tool_function: Callable,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None],
     ) -> ToolResult:
         """Execute a class method by creating an instance.
 
@@ -290,9 +300,10 @@ class RegistryToolWrapper(BaseTool):
 
         Raises:
             RuntimeError: If method execution fails
+
         """
         try:
-            class_name = tool_function.__qualname__.split('.')[0]
+            class_name = tool_function.__qualname__.split(".")[0]
             module_name = tool_function.__module__
 
             action_module = __import__(module_name, fromlist=[class_name])
@@ -300,7 +311,7 @@ class RegistryToolWrapper(BaseTool):
 
             instance = self.instance_creator.create_instance(
                 action_class,
-                self.app_name
+                self.app_name,
             )
 
             bound_method = getattr(instance, self.tool_name)
@@ -308,7 +319,7 @@ class RegistryToolWrapper(BaseTool):
                 return bound_method(**arguments)
             finally:
                 # Teardown background resources if the action provides shutdown()
-                shutdown = getattr(instance, 'shutdown', None)
+                shutdown = getattr(instance, "shutdown", None)
                 if callable(shutdown):
                     try:
                         shutdown()
@@ -318,7 +329,7 @@ class RegistryToolWrapper(BaseTool):
         except Exception as e:
             raise RuntimeError(
                 f"Failed to execute class method "
-                f"'{self.app_name}.{self.tool_name}': {str(e)}"
+                f"'{self.app_name}.{self.tool_name}': {e!s}",
             ) from e
 
     def _format_result(self, result: ToolResult) -> str:
@@ -329,8 +340,12 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Formatted result string
+
         """
-        if isinstance(result, (tuple, list)) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
+        if (
+            isinstance(result, (tuple, list))
+            and len(result) == TOOL_RESULT_TUPLE_LENGTH
+        ):
             success, result_data = result
             return str(result_data)
 
@@ -339,7 +354,7 @@ class RegistryToolWrapper(BaseTool):
     def _format_error(
         self,
         error: Exception,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None],
     ) -> str:
         """Format error message.
 
@@ -349,19 +364,20 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Formatted error message as JSON string
-        """
-        error_msg = (
-            f"Error executing tool {self.app_name}.{self.tool_name}: "
-            f"{str(error)}"
-        )
 
-        logger = self.state.get("logger") if hasattr(self.state, 'get') else None
+        """
+        error_msg = f"Error executing tool {self.app_name}.{self.tool_name}: {error!s}"
+
+        logger = self.state.get("logger") if hasattr(self.state, "get") else None
         if logger:
             logger.error(error_msg)
 
-        return json.dumps({
-            "status": "error",
-            "message": error_msg,
-            "tool": f"{self.app_name}.{self.tool_name}",
-            "args": arguments
-        }, indent=2)
+        return json.dumps(
+            {
+                "status": "error",
+                "message": error_msg,
+                "tool": f"{self.app_name}.{self.tool_name}",
+                "args": arguments,
+            },
+            indent=2,
+        )

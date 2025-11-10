@@ -18,7 +18,7 @@ async def main() -> None:
     print("Initializing Linear client...")
     client = LinearClient.build_with_config(LinearTokenConfig(token=LINEAR_API_TOKEN))
     data_source = LinearDataSource(client)
-    
+
     try:
         # Validate connection
         print("Validating connection...")
@@ -37,7 +37,9 @@ async def main() -> None:
             print(f"Organization URL Key: {user_data.get('urlKey')}")
         else:
             print(f"Failed to get user info: {user_response.message}")
-            print("Note: Linear API may not support the viewer query in the current schema")
+            print(
+                "Note: Linear API may not support the viewer query in the current schema"
+            )
 
         # Get all teams
         print("\n=== Getting teams ===")
@@ -47,7 +49,9 @@ async def main() -> None:
             teams = teams_data.get("nodes", [])
             print(f"Found {len(teams)} teams:")
             for team in teams[:3]:  # Show first 3 teams
-                print(f"  - {team.get('name')} (ID: {team.get('id')}, Key: {team.get('key')})")
+                print(
+                    f"  - {team.get('name')} (ID: {team.get('id')}, Key: {team.get('key')})"
+                )
         else:
             print(f"Failed to get teams: {teams_response.message}")
             return
@@ -55,13 +59,12 @@ async def main() -> None:
         # Get issues from the first team instead of searching (since search API is deprecated)
         print("\n=== Getting issues from first team ===")
         if teams and len(teams) > 0:
-            first_team_id = teams[0].get('id')
-            first_team_key = teams[0].get('key')
+            first_team_id = teams[0].get("id")
+            first_team_key = teams[0].get("key")
             print(f"Getting issues for team: {first_team_key}")
-            
+
             issues_response = await data_source.issues(
-                first=5,
-                filter={"team": {"id": {"eq": first_team_id}}}
+                first=5, filter={"team": {"id": {"eq": first_team_id}}}
             )
             if issues_response.success:
                 issues_data = issues_response.data.get("issues", {})
@@ -70,7 +73,9 @@ async def main() -> None:
                 for issue in found_issues:
                     print(f"  - {issue.get('identifier')}: {issue.get('title')}")
                     print(f"    Status: {issue.get('state', {}).get('name')}")
-                    print(f"    Assignee: {issue.get('assignee', {}).get('name', 'Unassigned')}")
+                    print(
+                        f"    Assignee: {issue.get('assignee', {}).get('name', 'Unassigned')}"
+                    )
             else:
                 print(f"Failed to get issues: {issues_response.message}")
         else:
@@ -81,20 +86,19 @@ async def main() -> None:
         print("Issue creation is currently disabled due to API limitations")
         new_issue_id = None
         new_issue_identifier = None
-        
+
         # Get recent issues across all teams
         print("\n=== Getting recent issues (last 10) ===")
-        recent_issues_response = await data_source.issues(
-            first=10,
-            orderBy="createdAt"
-        )
+        recent_issues_response = await data_source.issues(first=10, orderBy="createdAt")
         if recent_issues_response.success:
             recent_data = recent_issues_response.data.get("issues", {})
             recent_issues = recent_data.get("nodes", [])
             print(f"Recent issues:")
             for issue in recent_issues:
-                created_at = issue.get('createdAt', '')[:10]  # Just the date part
-                print(f"  - {issue.get('identifier')}: {issue.get('title')} ({created_at})")
+                created_at = issue.get("createdAt", "")[:10]  # Just the date part
+                print(
+                    f"  - {issue.get('identifier')}: {issue.get('title')} ({created_at})"
+                )
         else:
             print(f"Failed to get recent issues: {recent_issues_response.message}")
 
@@ -107,7 +111,7 @@ async def main() -> None:
             else:
                 print(f"Failed to archive issue: {archive_response.message}")
 
-        #Delete the test issue (uncomment to test - be careful!)
+        # Delete the test issue (uncomment to test - be careful!)
         if new_issue_id:
             print(f"\n=== Deleting test issue {new_issue_identifier} ===")
             delete_response = await data_source.issueDelete(id=new_issue_id)

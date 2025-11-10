@@ -1,6 +1,6 @@
 import logging
 from abc import ABC
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.connectors.core.interfaces.data_service.idata_service import IDataService
 from app.connectors.core.interfaces.token_service.itoken_service import ITokenService
@@ -13,52 +13,56 @@ class BaseDataService(IDataService, ABC):
         self.logger = logger
         self.token_service = token_service
 
-    async def list_items(self, path: str = "/", recursive: bool = True) -> List[Dict[str, Any]]:
+    async def list_items(
+        self, path: str = "/", recursive: bool = True
+    ) -> list[dict[str, Any]]:
         """List items from the service"""
         try:
             # This should be implemented by specific data services
             self.logger.info(f"Listing items from path: {path}")
             return []
         except Exception as e:
-            self.logger.error(f"Failed to list items: {str(e)}")
+            self.logger.error(f"Failed to list items: {e!s}")
             return []
 
-    async def get_item_metadata(self, item_id: str) -> Optional[Dict[str, Any]]:
+    async def get_item_metadata(self, item_id: str) -> dict[str, Any] | None:
         """Get metadata for a specific item"""
         try:
             # This should be implemented by specific data services
             self.logger.info(f"Getting metadata for item: {item_id}")
             return None
         except Exception as e:
-            self.logger.error(f"Failed to get item metadata: {str(e)}")
+            self.logger.error(f"Failed to get item metadata: {e!s}")
             return None
 
-    async def get_item_content(self, item_id: str) -> Optional[bytes]:
+    async def get_item_content(self, item_id: str) -> bytes | None:
         """Get content for a specific item"""
         try:
             # This should be implemented by specific data services
             self.logger.info(f"Getting content for item: {item_id}")
             return None
         except Exception as e:
-            self.logger.error(f"Failed to get item content: {str(e)}")
+            self.logger.error(f"Failed to get item content: {e!s}")
             return None
 
-    async def search_items(self, query: str, filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    async def search_items(
+        self, query: str, filters: dict[str, Any] = None
+    ) -> list[dict[str, Any]]:
         """Search for items"""
         try:
             # This should be implemented by specific data services
             self.logger.info(f"Searching items with query: {query}")
             return []
         except Exception as e:
-            self.logger.error(f"Failed to search items: {str(e)}")
+            self.logger.error(f"Failed to search items: {e!s}")
             return []
 
-    async def get_item_permissions(self, item_id: str) -> List[Dict[str, Any]]:
+    async def get_item_permissions(self, item_id: str) -> list[dict[str, Any]]:
         """Get permissions for a specific item"""
         try:
             # This should be implemented by specific data services
             self.logger.info(f"Getting permissions for item: {item_id}")
             return []
         except Exception as e:
-            self.logger.error(f"Failed to get item permissions: {str(e)}")
+            self.logger.error(f"Failed to get item permissions: {e!s}")
             return []

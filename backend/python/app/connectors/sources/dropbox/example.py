@@ -29,7 +29,7 @@ async def test_run() -> None:
         }
         await arango_service.batch_upsert_nodes([org], CollectionNames.ORGS.value)
 
-        user_email = "test_user@example.com" # Dummy user for DB record
+        user_email = "test_user@example.com"  # Dummy user for DB record
         user = {
             "_key": user_email,
             "email": user_email,
@@ -41,10 +41,15 @@ async def test_run() -> None:
         }
         await arango_service.batch_upsert_nodes([user], CollectionNames.USERS.value)
 
-        await arango_service.batch_create_edges([{
-            "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "_to": f"{CollectionNames.ORGS.value}/{org_id}",
-        }], CollectionNames.BELONGS_TO.value)
+        await arango_service.batch_create_edges(
+            [
+                {
+                    "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
+                    "_to": f"{CollectionNames.ORGS.value}/{org_id}",
+                }
+            ],
+            CollectionNames.BELONGS_TO.value,
+        )
 
     # 1. Initialize services
     logger = create_logger("dropbox_connector")
@@ -55,10 +60,11 @@ async def test_run() -> None:
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
     arango_client = ArangoClient()
-    arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
+    arango_service = BaseArangoService(
+        logger, arango_client, config_service, kafka_service
+    )
     await arango_service.connect()
     data_store_provider = ArangoDataStore(logger, arango_service)
-
 
     # 2. Create test data in the database
     await create_test_users(arango_service)
@@ -74,10 +80,9 @@ async def test_run() -> None:
     config = {
         "credentials": {
             "access_token": dropbox_team_token,
-            "isTeam": True  # Set to True if using a team token
-        }
+            "isTeam": True,  # Set to True if using a team token
+        },
     }
-
 
     await key_value_store.create_key("/services/connectors/dropbox/config", config)
 
@@ -94,7 +99,9 @@ async def test_run() -> None:
 
     # 4. Create and run the Dropbox connector
     try:
-        dropbox_connector = await DropboxConnector.create_connector(logger, data_store_provider, config_service)
+        dropbox_connector = await DropboxConnector.create_connector(
+            logger, data_store_provider, config_service
+        )
         if await dropbox_connector.init():
             logger.info("Dropbox connector initialized successfully.")
             await dropbox_connector.run_sync()

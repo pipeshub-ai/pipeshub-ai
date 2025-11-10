@@ -2,9 +2,11 @@ from datetime import datetime, timezone
 
 MAX_TIMESTAMP_LENGTH = 13
 
+
 def get_epoch_timestamp_in_ms() -> int:
     now = datetime.now(timezone.utc).timestamp()
     return int(now * 1000)
+
 
 def parse_timestamp(timestamp_str: str) -> int:
     # Remove the 'Z' and add '+00:00' for UTC
@@ -20,6 +22,7 @@ def parse_timestamp(timestamp_str: str) -> int:
 
     # Convert seconds to milliseconds
     return timestamp * 1000
+
 
 def prepare_iso_timestamps(start_time: str, end_time: str) -> tuple[str, str]:
     """Converts start and end time strings to ISO 8601 formatted strings."""

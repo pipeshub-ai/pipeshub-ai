@@ -1,7 +1,7 @@
 import asyncio
 import random
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable
 
 from app.connectors.sources.google.common.connector_google_exceptions import (
     GoogleAuthError,
@@ -22,10 +22,11 @@ def token_refresh(func: Callable) -> Callable:
                 if not is_delegated_true:
                     # Check if the method signature requires app_name parameter
                     import inspect
+
                     sig = inspect.signature(self._check_and_refresh_token)
-                    if 'app_name' in sig.parameters:
+                    if "app_name" in sig.parameters:
                         # Try to get app_name from kwargs or use default
-                        app_name = kwargs.get('app_name', 'drive')
+                        app_name = kwargs.get("app_name", "drive")
                         await self._check_and_refresh_token(app_name)
                     else:
                         await self._check_and_refresh_token()
@@ -40,10 +41,11 @@ def token_refresh(func: Callable) -> Callable:
 
 
 def exponential_backoff(
-    max_retries: int = 5, initial_delay: float = 1.0, max_delay: float = 32.0
+    max_retries: int = 5,
+    initial_delay: float = 1.0,
+    max_delay: float = 32.0,
 ) -> Callable:
-    """
-    Decorator implementing exponential backoff for rate limiting and server errors.
+    """Decorator implementing exponential backoff for rate limiting and server errors.
     Works with existing error conversion in methods.
     """
 
@@ -81,4 +83,5 @@ def exponential_backoff(
             )
 
         return wrapper
+
     return decorator

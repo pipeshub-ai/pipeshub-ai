@@ -1,12 +1,11 @@
-"""
-FreshDesk DataSource - Auto-generated API wrapper
+"""FreshDesk DataSource - Auto-generated API wrapper
 
 Generated from FreshDesk API documentation.
 Uses HTTP client for direct REST API interactions.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.sources.client.freshdesk.freshdesk import (
     FreshDeskClient,
@@ -35,6 +34,7 @@ class FreshdeskDataSource:
 
         Args:
             freshdeskClient: FreshDeskClient instance
+
         """
         self.http_client = freshdeskClient.get_client()
         self._freshdesk_client = freshdeskClient
@@ -46,17 +46,17 @@ class FreshdeskDataSource:
     async def create_ticket(
         self,
         subject: str,
-        description: Optional[str] = None,
-        email: Optional[str] = None,
-        requester_id: Optional[int] = None,
-        phone: Optional[str] = None,
-        priority: Optional[int] = 1,
-        status: Optional[int] = 2,
-        source: Optional[int] = 2,
-        tags: Optional[List[str]] = None,
-        cc_emails: Optional[List[str]] = None,
-        custom_fields: Optional[Dict[str, Any]] = None,
-        attachments: Optional[List[str]] = None
+        description: str | None = None,
+        email: str | None = None,
+        requester_id: int | None = None,
+        phone: str | None = None,
+        priority: int | None = 1,
+        status: int | None = 2,
+        source: int | None = 2,
+        tags: list[str] | None = None,
+        cc_emails: list[str] | None = None,
+        custom_fields: dict[str, Any] | None = None,
+        attachments: list[str] | None = None,
     ) -> FreshDeskResponse:
         """Create a new ticket in FreshDesk
 
@@ -81,70 +81,75 @@ class FreshdeskDataSource:
 
         Example:
             ticket = await ds.create_ticket(subject="Issue", email="user@example.com")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/tickets"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if subject is not None:
-            request_body['subject'] = subject
+            request_body["subject"] = subject
         if description is not None:
-            request_body['description'] = description
+            request_body["description"] = description
         if email is not None:
-            request_body['email'] = email
+            request_body["email"] = email
         if requester_id is not None:
-            request_body['requester_id'] = requester_id
+            request_body["requester_id"] = requester_id
         if phone is not None:
-            request_body['phone'] = phone
+            request_body["phone"] = phone
         if priority is not None:
-            request_body['priority'] = priority
+            request_body["priority"] = priority
         if status is not None:
-            request_body['status'] = status
+            request_body["status"] = status
         if source is not None:
-            request_body['source'] = source
+            request_body["source"] = source
         if tags is not None:
-            request_body['tags'] = tags
+            request_body["tags"] = tags
         if cc_emails is not None:
-            request_body['cc_emails'] = cc_emails
+            request_body["cc_emails"] = cc_emails
         if custom_fields is not None:
-            request_body['custom_fields'] = custom_fields
+            request_body["custom_fields"] = custom_fields
         if attachments is not None:
-            request_body['attachments'] = attachments
+            request_body["attachments"] = attachments
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"create_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"create_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed create_ticket" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed create_ticket"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in create_ticket: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute create_ticket"
+                message="Failed to execute create_ticket",
             )
 
     async def create_outbound_email(
         self,
         subject: str,
         email: str,
-        description: Optional[str] = None,
-        priority: Optional[int] = 1,
-        status: Optional[int] = 5,
-        custom_fields: Optional[Dict[str, Any]] = None
+        description: str | None = None,
+        priority: int | None = 1,
+        status: int | None = 5,
+        custom_fields: dict[str, Any] | None = None,
     ) -> FreshDeskResponse:
         """Create an outbound email ticket
 
@@ -163,54 +168,59 @@ class FreshdeskDataSource:
 
         Example:
             ticket = await ds.create_outbound_email(subject="Info", email="user@example.com")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/tickets/outbound_email"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if subject is not None:
-            request_body['subject'] = subject
+            request_body["subject"] = subject
         if email is not None:
-            request_body['email'] = email
+            request_body["email"] = email
         if description is not None:
-            request_body['description'] = description
+            request_body["description"] = description
         if priority is not None:
-            request_body['priority'] = priority
+            request_body["priority"] = priority
         if status is not None:
-            request_body['status'] = status
+            request_body["status"] = status
         if custom_fields is not None:
-            request_body['custom_fields'] = custom_fields
+            request_body["custom_fields"] = custom_fields
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"create_outbound_email: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"create_outbound_email: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed create_outbound_email" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed create_outbound_email"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in create_outbound_email: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute create_outbound_email"
+                message="Failed to execute create_outbound_email",
             )
 
     async def get_ticket(
         self,
         id: int,
-        include: Optional[str] = None
+        include: str | None = None,
     ) -> FreshDeskResponse:
         """Retrieve a specific ticket by ID
 
@@ -225,15 +235,17 @@ class FreshdeskDataSource:
 
         Example:
             ticket = await ds.get_ticket(id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}"
         params = {}
         if include is not None:
-            params['include'] = include
+            params["include"] = include
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -241,35 +253,39 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"get_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"get_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed get_ticket" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed get_ticket"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in get_ticket: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute get_ticket"
+                message="Failed to execute get_ticket",
             )
 
     async def list_tickets(
         self,
-        filter_name: Optional[str] = None,
-        updated_since: Optional[str] = None,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30,
-        include: Optional[str] = None
+        filter_name: str | None = None,
+        updated_since: str | None = None,
+        page: int | None = 1,
+        per_page: int | None = 30,
+        include: str | None = None,
     ) -> FreshDeskResponse:
         """List all tickets with optional filters
 
@@ -287,23 +303,25 @@ class FreshdeskDataSource:
 
         Example:
             tickets = await ds.list_tickets(filter_name="new_and_my_open", per_page=10)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/tickets"
         params = {}
         if filter_name is not None:
-            params['filter_name'] = filter_name
+            params["filter_name"] = filter_name
         if updated_since is not None:
-            params['updated_since'] = updated_since
+            params["updated_since"] = updated_since
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if include is not None:
-            params['include'] = include
+            params["include"] = include
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -311,32 +329,36 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_tickets: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_tickets: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_tickets" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_tickets"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_tickets: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_tickets"
+                message="Failed to execute list_tickets",
             )
 
     async def filter_tickets(
         self,
         query: str,
-        page: Optional[int] = 1
+        page: int | None = 1,
     ) -> FreshDeskResponse:
         """Filter tickets using custom query
 
@@ -351,17 +373,19 @@ class FreshdeskDataSource:
 
         Example:
             result = await ds.filter_tickets(query="priority:3 AND status:2")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/search/tickets"
         params = {}
         if query is not None:
-            params['query'] = query
+            params["query"] = query
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -369,37 +393,41 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"filter_tickets: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"filter_tickets: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed filter_tickets" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed filter_tickets"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in filter_tickets: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute filter_tickets"
+                message="Failed to execute filter_tickets",
             )
 
     async def update_ticket(
         self,
         id: int,
-        subject: Optional[str] = None,
-        description: Optional[str] = None,
-        priority: Optional[int] = None,
-        status: Optional[int] = None,
-        tags: Optional[List[str]] = None,
-        custom_fields: Optional[Dict[str, Any]] = None
+        subject: str | None = None,
+        description: str | None = None,
+        priority: int | None = None,
+        status: int | None = None,
+        tags: list[str] | None = None,
+        custom_fields: dict[str, Any] | None = None,
     ) -> FreshDeskResponse:
         """Update an existing ticket
 
@@ -419,53 +447,58 @@ class FreshdeskDataSource:
 
         Example:
             ticket = await ds.update_ticket(ticket_id=123, priority=4, status=3)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if subject is not None:
-            request_body['subject'] = subject
+            request_body["subject"] = subject
         if description is not None:
-            request_body['description'] = description
+            request_body["description"] = description
         if priority is not None:
-            request_body['priority'] = priority
+            request_body["priority"] = priority
         if status is not None:
-            request_body['status'] = status
+            request_body["status"] = status
         if tags is not None:
-            request_body['tags'] = tags
+            request_body["tags"] = tags
         if custom_fields is not None:
-            request_body['custom_fields'] = custom_fields
+            request_body["custom_fields"] = custom_fields
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="PUT",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"update_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"update_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed update_ticket" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed update_ticket"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in update_ticket: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute update_ticket"
+                message="Failed to execute update_ticket",
             )
 
     async def delete_ticket(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """Delete a ticket (moves to trash)
 
@@ -479,6 +512,7 @@ class FreshdeskDataSource:
 
         Example:
             await ds.delete_ticket(ticket_id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}"
@@ -489,31 +523,35 @@ class FreshdeskDataSource:
                 url=url,
                 method="DELETE",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"delete_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"delete_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed delete_ticket" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed delete_ticket"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in delete_ticket: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute delete_ticket"
+                message="Failed to execute delete_ticket",
             )
 
     async def list_ticket_fields(
         self,
-        type: Optional[str] = None
+        type: str | None = None,
     ) -> FreshDeskResponse:
         """List all ticket fields including custom fields
 
@@ -527,15 +565,17 @@ class FreshdeskDataSource:
 
         Example:
             fields = await ds.list_ticket_fields()
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/ticket_fields"
         params = {}
         if type is not None:
-            params['type'] = type
+            params["type"] = type
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -543,33 +583,37 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_ticket_fields: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_ticket_fields: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_ticket_fields" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_ticket_fields"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_ticket_fields: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_ticket_fields"
+                message="Failed to execute list_ticket_fields",
             )
 
     async def list_ticket_conversations(
         self,
         id: int,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30
+        page: int | None = 1,
+        per_page: int | None = 30,
     ) -> FreshDeskResponse:
         """List all conversations (notes/replies) for a ticket
 
@@ -585,17 +629,19 @@ class FreshdeskDataSource:
 
         Example:
             conversations = await ds.list_ticket_conversations(ticket_id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}/conversations"
         params = {}
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -603,34 +649,38 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_ticket_conversations: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_ticket_conversations: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_ticket_conversations" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_ticket_conversations"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_ticket_conversations: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_ticket_conversations"
+                message="Failed to execute list_ticket_conversations",
             )
 
     async def create_note(
         self,
         id: int,
         body: str,
-        private: Optional[bool] = True,
-        notify_emails: Optional[List[str]] = None
+        private: bool | None = True,
+        notify_emails: list[str] | None = None,
     ) -> FreshDeskResponse:
         """Add a note to a ticket
 
@@ -647,50 +697,55 @@ class FreshdeskDataSource:
 
         Example:
             note = await ds.create_note(ticket_id=123, body="Internal note", private=True)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}/notes"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if body is not None:
-            request_body['body'] = body
+            request_body["body"] = body
         if private is not None:
-            request_body['private'] = private
+            request_body["private"] = private
         if notify_emails is not None:
-            request_body['notify_emails'] = notify_emails
+            request_body["notify_emails"] = notify_emails
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"create_note: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"create_note: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed create_note" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed create_note"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in create_note: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute create_note"
+                message="Failed to execute create_note",
             )
 
     async def create_reply(
         self,
         id: int,
         body: str,
-        cc_emails: Optional[List[str]] = None,
-        bcc_emails: Optional[List[str]] = None
+        cc_emails: list[str] | None = None,
+        bcc_emails: list[str] | None = None,
     ) -> FreshDeskResponse:
         """Reply to a ticket
 
@@ -707,48 +762,53 @@ class FreshdeskDataSource:
 
         Example:
             reply = await ds.create_reply(ticket_id=123, body="Thank you for reporting")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}/reply"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if body is not None:
-            request_body['body'] = body
+            request_body["body"] = body
         if cc_emails is not None:
-            request_body['cc_emails'] = cc_emails
+            request_body["cc_emails"] = cc_emails
         if bcc_emails is not None:
-            request_body['bcc_emails'] = bcc_emails
+            request_body["bcc_emails"] = bcc_emails
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"create_reply: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"create_reply: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed create_reply" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed create_reply"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in create_reply: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute create_reply"
+                message="Failed to execute create_reply",
             )
 
     async def list_deleted_tickets(
         self,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30
+        page: int | None = 1,
+        per_page: int | None = 30,
     ) -> FreshDeskResponse:
         """List all deleted tickets
 
@@ -763,17 +823,19 @@ class FreshdeskDataSource:
 
         Example:
             deleted = await ds.list_deleted_tickets()
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/tickets"
         params = {}
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -781,31 +843,35 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_deleted_tickets: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_deleted_tickets: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_deleted_tickets" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_deleted_tickets"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_deleted_tickets: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_deleted_tickets"
+                message="Failed to execute list_deleted_tickets",
             )
 
     async def restore_ticket(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """Restore a deleted ticket
 
@@ -819,6 +885,7 @@ class FreshdeskDataSource:
 
         Example:
             await ds.restore_ticket(ticket_id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/tickets/{id}/restore"
@@ -829,46 +896,50 @@ class FreshdeskDataSource:
                 url=url,
                 method="PUT",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"restore_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"restore_ticket: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed restore_ticket" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed restore_ticket"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in restore_ticket: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute restore_ticket"
+                message="Failed to execute restore_ticket",
             )
 
     async def create_problem(
         self,
         subject: str,
-        description: Optional[str] = None,
-        requester_id: Optional[int] = None,
-        priority: Optional[int] = 1,
-        status: Optional[int] = 1,
-        impact: Optional[int] = 1,
-        group_id: Optional[int] = None,
-        agent_id: Optional[int] = None,
-        department_id: Optional[int] = None,
-        category: Optional[str] = None,
-        sub_category: Optional[str] = None,
-        item_category: Optional[str] = None,
-        due_by: Optional[str] = None,
-        known_error: Optional[bool] = False,
-        custom_fields: Optional[Dict[str, Any]] = None,
-        assets: Optional[List[Dict[str, int]]] = None
+        description: str | None = None,
+        requester_id: int | None = None,
+        priority: int | None = 1,
+        status: int | None = 1,
+        impact: int | None = 1,
+        group_id: int | None = None,
+        agent_id: int | None = None,
+        department_id: int | None = None,
+        category: str | None = None,
+        sub_category: str | None = None,
+        item_category: str | None = None,
+        due_by: str | None = None,
+        known_error: bool | None = False,
+        custom_fields: dict[str, Any] | None = None,
+        assets: list[dict[str, int]] | None = None,
     ) -> FreshDeskResponse:
         """Create a new problem in FreshDesk
 
@@ -897,73 +968,78 @@ class FreshdeskDataSource:
 
         Example:
             problem = await ds.create_problem(subject="Root cause", requester_id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/problems"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if subject is not None:
-            request_body['subject'] = subject
+            request_body["subject"] = subject
         if description is not None:
-            request_body['description'] = description
+            request_body["description"] = description
         if requester_id is not None:
-            request_body['requester_id'] = requester_id
+            request_body["requester_id"] = requester_id
         if priority is not None:
-            request_body['priority'] = priority
+            request_body["priority"] = priority
         if status is not None:
-            request_body['status'] = status
+            request_body["status"] = status
         if impact is not None:
-            request_body['impact'] = impact
+            request_body["impact"] = impact
         if group_id is not None:
-            request_body['group_id'] = group_id
+            request_body["group_id"] = group_id
         if agent_id is not None:
-            request_body['agent_id'] = agent_id
+            request_body["agent_id"] = agent_id
         if department_id is not None:
-            request_body['department_id'] = department_id
+            request_body["department_id"] = department_id
         if category is not None:
-            request_body['category'] = category
+            request_body["category"] = category
         if sub_category is not None:
-            request_body['sub_category'] = sub_category
+            request_body["sub_category"] = sub_category
         if item_category is not None:
-            request_body['item_category'] = item_category
+            request_body["item_category"] = item_category
         if due_by is not None:
-            request_body['due_by'] = due_by
+            request_body["due_by"] = due_by
         if known_error is not None:
-            request_body['known_error'] = known_error
+            request_body["known_error"] = known_error
         if custom_fields is not None:
-            request_body['custom_fields'] = custom_fields
+            request_body["custom_fields"] = custom_fields
         if assets is not None:
-            request_body['assets'] = assets
+            request_body["assets"] = assets
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"create_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"create_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed create_problem" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed create_problem"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in create_problem: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute create_problem"
+                message="Failed to execute create_problem",
             )
 
     async def get_problem(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """Retrieve a specific problem by ID
 
@@ -977,6 +1053,7 @@ class FreshdeskDataSource:
 
         Example:
             problem = await ds.get_problem(id=456)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}"
@@ -987,34 +1064,38 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"get_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"get_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed get_problem" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed get_problem"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in get_problem: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute get_problem"
+                message="Failed to execute get_problem",
             )
 
     async def list_problems(
         self,
-        predefined_filter: Optional[str] = None,
-        requester_id: Optional[int] = None,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30
+        predefined_filter: str | None = None,
+        requester_id: int | None = None,
+        page: int | None = 1,
+        per_page: int | None = 30,
     ) -> FreshDeskResponse:
         """List all problems with optional filters
 
@@ -1031,21 +1112,23 @@ class FreshdeskDataSource:
 
         Example:
             problems = await ds.list_problems(per_page=10)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/problems"
         params = {}
         if predefined_filter is not None:
-            params['predefined_filter'] = predefined_filter
+            params["predefined_filter"] = predefined_filter
         if requester_id is not None:
-            params['requester_id'] = requester_id
+            params["requester_id"] = requester_id
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -1053,40 +1136,44 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_problems: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_problems: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_problems" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_problems"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_problems: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_problems"
+                message="Failed to execute list_problems",
             )
 
     async def update_problem(
         self,
         id: int,
-        subject: Optional[str] = None,
-        description: Optional[str] = None,
-        priority: Optional[int] = None,
-        status: Optional[int] = None,
-        impact: Optional[int] = None,
-        known_error: Optional[bool] = None,
-        group_id: Optional[int] = None,
-        agent_id: Optional[int] = None,
-        custom_fields: Optional[Dict[str, Any]] = None
+        subject: str | None = None,
+        description: str | None = None,
+        priority: int | None = None,
+        status: int | None = None,
+        impact: int | None = None,
+        known_error: bool | None = None,
+        group_id: int | None = None,
+        agent_id: int | None = None,
+        custom_fields: dict[str, Any] | None = None,
     ) -> FreshDeskResponse:
         """Update an existing problem
 
@@ -1109,59 +1196,64 @@ class FreshdeskDataSource:
 
         Example:
             problem = await ds.update_problem(id=456, status=2, priority=3)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if subject is not None:
-            request_body['subject'] = subject
+            request_body["subject"] = subject
         if description is not None:
-            request_body['description'] = description
+            request_body["description"] = description
         if priority is not None:
-            request_body['priority'] = priority
+            request_body["priority"] = priority
         if status is not None:
-            request_body['status'] = status
+            request_body["status"] = status
         if impact is not None:
-            request_body['impact'] = impact
+            request_body["impact"] = impact
         if known_error is not None:
-            request_body['known_error'] = known_error
+            request_body["known_error"] = known_error
         if group_id is not None:
-            request_body['group_id'] = group_id
+            request_body["group_id"] = group_id
         if agent_id is not None:
-            request_body['agent_id'] = agent_id
+            request_body["agent_id"] = agent_id
         if custom_fields is not None:
-            request_body['custom_fields'] = custom_fields
+            request_body["custom_fields"] = custom_fields
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="PUT",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"update_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"update_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed update_problem" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed update_problem"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in update_problem: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute update_problem"
+                message="Failed to execute update_problem",
             )
 
     async def delete_problem(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """Delete a problem (moves to trash)
 
@@ -1175,6 +1267,7 @@ class FreshdeskDataSource:
 
         Example:
             await ds.delete_problem(id=456)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}"
@@ -1185,31 +1278,35 @@ class FreshdeskDataSource:
                 url=url,
                 method="DELETE",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"delete_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"delete_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed delete_problem" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed delete_problem"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in delete_problem: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute delete_problem"
+                message="Failed to execute delete_problem",
             )
 
     async def restore_problem(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """Restore a deleted problem
 
@@ -1223,6 +1320,7 @@ class FreshdeskDataSource:
 
         Example:
             await ds.restore_problem(id=456)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}/restore"
@@ -1233,32 +1331,36 @@ class FreshdeskDataSource:
                 url=url,
                 method="PUT",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"restore_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"restore_problem: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed restore_problem" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed restore_problem"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in restore_problem: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute restore_problem"
+                message="Failed to execute restore_problem",
             )
 
     async def list_deleted_problems(
         self,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30
+        page: int | None = 1,
+        per_page: int | None = 30,
     ) -> FreshDeskResponse:
         """List all deleted problems
 
@@ -1273,17 +1375,19 @@ class FreshdeskDataSource:
 
         Example:
             deleted = await ds.list_deleted_problems()
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/problems/deleted"
         params = {}
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -1291,33 +1395,37 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_deleted_problems: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_deleted_problems: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_deleted_problems" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_deleted_problems"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_deleted_problems: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_deleted_problems"
+                message="Failed to execute list_deleted_problems",
             )
 
     async def create_problem_note(
         self,
         id: int,
         body: str,
-        notify_emails: Optional[List[str]] = None
+        notify_emails: list[str] | None = None,
     ) -> FreshDeskResponse:
         """Add a note to a problem
 
@@ -1333,47 +1441,52 @@ class FreshdeskDataSource:
 
         Example:
             note = await ds.create_problem_note(id=456, body="Root cause identified")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}/notes"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if body is not None:
-            request_body['body'] = body
+            request_body["body"] = body
         if notify_emails is not None:
-            request_body['notify_emails'] = notify_emails
+            request_body["notify_emails"] = notify_emails
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"create_problem_note: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"create_problem_note: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed create_problem_note" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed create_problem_note"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in create_problem_note: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute create_problem_note"
+                message="Failed to execute create_problem_note",
             )
 
     async def list_problem_tasks(
         self,
         id: int,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30
+        page: int | None = 1,
+        per_page: int | None = 30,
     ) -> FreshDeskResponse:
         """List all tasks associated with a problem
 
@@ -1389,17 +1502,19 @@ class FreshdeskDataSource:
 
         Example:
             tasks = await ds.list_problem_tasks(id=456)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}/tasks"
         params = {}
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -1407,38 +1522,42 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_problem_tasks: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_problem_tasks: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_problem_tasks" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_problem_tasks"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_problem_tasks: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_problem_tasks"
+                message="Failed to execute list_problem_tasks",
             )
 
     async def create_problem_task(
         self,
         id: int,
         title: str,
-        description: Optional[str] = None,
-        status: Optional[int] = 1,
-        due_date: Optional[str] = None,
-        notify_before: Optional[int] = None,
-        agent_id: Optional[int] = None,
-        group_id: Optional[int] = None
+        description: str | None = None,
+        status: int | None = 1,
+        due_date: str | None = None,
+        notify_before: int | None = None,
+        agent_id: int | None = None,
+        group_id: int | None = None,
     ) -> FreshDeskResponse:
         """Create a task for a problem
 
@@ -1459,60 +1578,65 @@ class FreshdeskDataSource:
 
         Example:
             task = await ds.create_problem_task(id=456, title="Investigate logs")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}/tasks"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if title is not None:
-            request_body['title'] = title
+            request_body["title"] = title
         if description is not None:
-            request_body['description'] = description
+            request_body["description"] = description
         if status is not None:
-            request_body['status'] = status
+            request_body["status"] = status
         if due_date is not None:
-            request_body['due_date'] = due_date
+            request_body["due_date"] = due_date
         if notify_before is not None:
-            request_body['notify_before'] = notify_before
+            request_body["notify_before"] = notify_before
         if agent_id is not None:
-            request_body['agent_id'] = agent_id
+            request_body["agent_id"] = agent_id
         if group_id is not None:
-            request_body['group_id'] = group_id
+            request_body["group_id"] = group_id
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"create_problem_task: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"create_problem_task: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed create_problem_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed create_problem_task"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in create_problem_task: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute create_problem_task"
+                message="Failed to execute create_problem_task",
             )
 
     async def update_problem_task(
         self,
         problem_id: int,
         task_id: int,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        status: Optional[int] = None,
-        agent_id: Optional[int] = None
+        title: str | None = None,
+        description: str | None = None,
+        status: int | None = None,
+        agent_id: int | None = None,
     ) -> FreshDeskResponse:
         """Update a problem task
 
@@ -1531,50 +1655,55 @@ class FreshdeskDataSource:
 
         Example:
             task = await ds.update_problem_task(problem_id=456, task_id=1, status=2)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/problems/{problem_id}/tasks/{task_id}"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if title is not None:
-            request_body['title'] = title
+            request_body["title"] = title
         if description is not None:
-            request_body['description'] = description
+            request_body["description"] = description
         if status is not None:
-            request_body['status'] = status
+            request_body["status"] = status
         if agent_id is not None:
-            request_body['agent_id'] = agent_id
+            request_body["agent_id"] = agent_id
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="PUT",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"update_problem_task: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"update_problem_task: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed update_problem_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed update_problem_task"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in update_problem_task: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute update_problem_task"
+                message="Failed to execute update_problem_task",
             )
 
     async def delete_problem_task(
         self,
         problem_id: int,
-        task_id: int
+        task_id: int,
     ) -> FreshDeskResponse:
         """Delete a problem task
 
@@ -1589,6 +1718,7 @@ class FreshdeskDataSource:
 
         Example:
             await ds.delete_problem_task(problem_id=456, task_id=1)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/problems/{problem_id}/tasks/{task_id}"
@@ -1599,31 +1729,35 @@ class FreshdeskDataSource:
                 url=url,
                 method="DELETE",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"delete_problem_task: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"delete_problem_task: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed delete_problem_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed delete_problem_task"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in delete_problem_task: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute delete_problem_task"
+                message="Failed to execute delete_problem_task",
             )
 
     async def list_problem_time_entries(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """List all time entries for a problem
 
@@ -1637,6 +1771,7 @@ class FreshdeskDataSource:
 
         Example:
             entries = await ds.list_problem_time_entries(id=456)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/problems/{id}/time_entries"
@@ -1647,51 +1782,55 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_problem_time_entries: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_problem_time_entries: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_problem_time_entries" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_problem_time_entries"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_problem_time_entries: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_problem_time_entries"
+                message="Failed to execute list_problem_time_entries",
             )
 
     async def create_agent(
         self,
         first_name: str,
         email: str,
-        last_name: Optional[str] = None,
-        occasional: Optional[bool] = False,
-        job_title: Optional[str] = None,
-        work_phone_number: Optional[str] = None,
-        mobile_phone_number: Optional[str] = None,
-        department_ids: Optional[List[int]] = None,
-        can_see_all_tickets_from_associated_departments: Optional[bool] = False,
-        reporting_manager_id: Optional[int] = None,
-        address: Optional[str] = None,
-        time_zone: Optional[str] = None,
-        time_format: Optional[str] = None,
-        language: Optional[str] = None,
-        location_id: Optional[int] = None,
-        background_information: Optional[str] = None,
-        scoreboard_level_id: Optional[int] = None,
-        roles: Optional[List[Dict[str, Any]]] = None,
-        signature: Optional[str] = None,
-        custom_fields: Optional[Dict[str, Any]] = None,
-        workspace_ids: Optional[List[int]] = None
+        last_name: str | None = None,
+        occasional: bool | None = False,
+        job_title: str | None = None,
+        work_phone_number: str | None = None,
+        mobile_phone_number: str | None = None,
+        department_ids: list[int] | None = None,
+        can_see_all_tickets_from_associated_departments: bool | None = False,
+        reporting_manager_id: int | None = None,
+        address: str | None = None,
+        time_zone: str | None = None,
+        time_format: str | None = None,
+        language: str | None = None,
+        location_id: int | None = None,
+        background_information: str | None = None,
+        scoreboard_level_id: int | None = None,
+        roles: list[dict[str, Any]] | None = None,
+        signature: str | None = None,
+        custom_fields: dict[str, Any] | None = None,
+        workspace_ids: list[int] | None = None,
     ) -> FreshDeskResponse:
         """Create a new agent in FreshDesk
 
@@ -1725,83 +1864,90 @@ class FreshdeskDataSource:
 
         Example:
             agent = await ds.create_agent(first_name="John", email="john@example.com")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/agents"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if first_name is not None:
-            request_body['first_name'] = first_name
+            request_body["first_name"] = first_name
         if email is not None:
-            request_body['email'] = email
+            request_body["email"] = email
         if last_name is not None:
-            request_body['last_name'] = last_name
+            request_body["last_name"] = last_name
         if occasional is not None:
-            request_body['occasional'] = occasional
+            request_body["occasional"] = occasional
         if job_title is not None:
-            request_body['job_title'] = job_title
+            request_body["job_title"] = job_title
         if work_phone_number is not None:
-            request_body['work_phone_number'] = work_phone_number
+            request_body["work_phone_number"] = work_phone_number
         if mobile_phone_number is not None:
-            request_body['mobile_phone_number'] = mobile_phone_number
+            request_body["mobile_phone_number"] = mobile_phone_number
         if department_ids is not None:
-            request_body['department_ids'] = department_ids
+            request_body["department_ids"] = department_ids
         if can_see_all_tickets_from_associated_departments is not None:
-            request_body['can_see_all_tickets_from_associated_departments'] = can_see_all_tickets_from_associated_departments
+            request_body["can_see_all_tickets_from_associated_departments"] = (
+                can_see_all_tickets_from_associated_departments
+            )
         if reporting_manager_id is not None:
-            request_body['reporting_manager_id'] = reporting_manager_id
+            request_body["reporting_manager_id"] = reporting_manager_id
         if address is not None:
-            request_body['address'] = address
+            request_body["address"] = address
         if time_zone is not None:
-            request_body['time_zone'] = time_zone
+            request_body["time_zone"] = time_zone
         if time_format is not None:
-            request_body['time_format'] = time_format
+            request_body["time_format"] = time_format
         if language is not None:
-            request_body['language'] = language
+            request_body["language"] = language
         if location_id is not None:
-            request_body['location_id'] = location_id
+            request_body["location_id"] = location_id
         if background_information is not None:
-            request_body['background_information'] = background_information
+            request_body["background_information"] = background_information
         if scoreboard_level_id is not None:
-            request_body['scoreboard_level_id'] = scoreboard_level_id
+            request_body["scoreboard_level_id"] = scoreboard_level_id
         if roles is not None:
-            request_body['roles'] = roles
+            request_body["roles"] = roles
         if signature is not None:
-            request_body['signature'] = signature
+            request_body["signature"] = signature
         if custom_fields is not None:
-            request_body['custom_fields'] = custom_fields
+            request_body["custom_fields"] = custom_fields
         if workspace_ids is not None:
-            request_body['workspace_ids'] = workspace_ids
+            request_body["workspace_ids"] = workspace_ids
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"create_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"create_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed create_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed create_agent"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in create_agent: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute create_agent"
+                message="Failed to execute create_agent",
             )
 
     async def view_agent(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """View information about a specific agent
 
@@ -1815,6 +1961,7 @@ class FreshdeskDataSource:
 
         Example:
             agent = await ds.view_agent(id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/agents/{id}"
@@ -1825,37 +1972,41 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"view_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"view_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed view_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed view_agent"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in view_agent: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute view_agent"
+                message="Failed to execute view_agent",
             )
 
     async def list_agents(
         self,
-        email: Optional[str] = None,
-        mobile_phone_number: Optional[str] = None,
-        work_phone_number: Optional[str] = None,
-        active: Optional[bool] = None,
-        state: Optional[str] = None,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30
+        email: str | None = None,
+        mobile_phone_number: str | None = None,
+        work_phone_number: str | None = None,
+        active: bool | None = None,
+        state: str | None = None,
+        page: int | None = 1,
+        per_page: int | None = 30,
     ) -> FreshDeskResponse:
         """List all agents in the account
 
@@ -1875,27 +2026,29 @@ class FreshdeskDataSource:
 
         Example:
             agents = await ds.list_agents(active=True)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/agents"
         params = {}
         if email is not None:
-            params['email'] = email
+            params["email"] = email
         if mobile_phone_number is not None:
-            params['mobile_phone_number'] = mobile_phone_number
+            params["mobile_phone_number"] = mobile_phone_number
         if work_phone_number is not None:
-            params['work_phone_number'] = work_phone_number
+            params["work_phone_number"] = work_phone_number
         if active is not None:
-            params['active'] = active
+            params["active"] = active
         if state is not None:
-            params['state'] = state
+            params["state"] = state
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -1903,33 +2056,37 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_agents: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_agents: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_agents" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_agents"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_agents: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_agents"
+                message="Failed to execute list_agents",
             )
 
     async def filter_agents(
         self,
         query: str,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30
+        page: int | None = 1,
+        per_page: int | None = 30,
     ) -> FreshDeskResponse:
         """Filter agents using query string
 
@@ -1945,17 +2102,19 @@ class FreshdeskDataSource:
 
         Example:
             agents = await ds.filter_agents(query="email:'john@example.com'")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/agents?query={query}"
         params = {}
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -1963,51 +2122,55 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"filter_agents: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"filter_agents: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed filter_agents" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed filter_agents"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in filter_agents: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute filter_agents"
+                message="Failed to execute filter_agents",
             )
 
     async def update_agent(
         self,
         id: int,
-        first_name: Optional[str] = None,
-        last_name: Optional[str] = None,
-        occasional: Optional[bool] = None,
-        job_title: Optional[str] = None,
-        email: Optional[str] = None,
-        work_phone_number: Optional[str] = None,
-        mobile_phone_number: Optional[str] = None,
-        department_ids: Optional[List[int]] = None,
-        can_see_all_tickets_from_associated_departments: Optional[bool] = None,
-        reporting_manager_id: Optional[int] = None,
-        address: Optional[str] = None,
-        time_zone: Optional[str] = None,
-        time_format: Optional[str] = None,
-        language: Optional[str] = None,
-        location_id: Optional[int] = None,
-        background_information: Optional[str] = None,
-        scoreboard_level_id: Optional[int] = None,
-        roles: Optional[List[Dict[str, Any]]] = None,
-        signature: Optional[str] = None,
-        custom_fields: Optional[Dict[str, Any]] = None
+        first_name: str | None = None,
+        last_name: str | None = None,
+        occasional: bool | None = None,
+        job_title: str | None = None,
+        email: str | None = None,
+        work_phone_number: str | None = None,
+        mobile_phone_number: str | None = None,
+        department_ids: list[int] | None = None,
+        can_see_all_tickets_from_associated_departments: bool | None = None,
+        reporting_manager_id: int | None = None,
+        address: str | None = None,
+        time_zone: str | None = None,
+        time_format: str | None = None,
+        language: str | None = None,
+        location_id: int | None = None,
+        background_information: str | None = None,
+        scoreboard_level_id: int | None = None,
+        roles: list[dict[str, Any]] | None = None,
+        signature: str | None = None,
+        custom_fields: dict[str, Any] | None = None,
     ) -> FreshDeskResponse:
         """Update an existing agent
 
@@ -2041,81 +2204,88 @@ class FreshdeskDataSource:
 
         Example:
             agent = await ds.update_agent(id=123, job_title="Senior Engineer")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/agents/{id}"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if first_name is not None:
-            request_body['first_name'] = first_name
+            request_body["first_name"] = first_name
         if last_name is not None:
-            request_body['last_name'] = last_name
+            request_body["last_name"] = last_name
         if occasional is not None:
-            request_body['occasional'] = occasional
+            request_body["occasional"] = occasional
         if job_title is not None:
-            request_body['job_title'] = job_title
+            request_body["job_title"] = job_title
         if email is not None:
-            request_body['email'] = email
+            request_body["email"] = email
         if work_phone_number is not None:
-            request_body['work_phone_number'] = work_phone_number
+            request_body["work_phone_number"] = work_phone_number
         if mobile_phone_number is not None:
-            request_body['mobile_phone_number'] = mobile_phone_number
+            request_body["mobile_phone_number"] = mobile_phone_number
         if department_ids is not None:
-            request_body['department_ids'] = department_ids
+            request_body["department_ids"] = department_ids
         if can_see_all_tickets_from_associated_departments is not None:
-            request_body['can_see_all_tickets_from_associated_departments'] = can_see_all_tickets_from_associated_departments
+            request_body["can_see_all_tickets_from_associated_departments"] = (
+                can_see_all_tickets_from_associated_departments
+            )
         if reporting_manager_id is not None:
-            request_body['reporting_manager_id'] = reporting_manager_id
+            request_body["reporting_manager_id"] = reporting_manager_id
         if address is not None:
-            request_body['address'] = address
+            request_body["address"] = address
         if time_zone is not None:
-            request_body['time_zone'] = time_zone
+            request_body["time_zone"] = time_zone
         if time_format is not None:
-            request_body['time_format'] = time_format
+            request_body["time_format"] = time_format
         if language is not None:
-            request_body['language'] = language
+            request_body["language"] = language
         if location_id is not None:
-            request_body['location_id'] = location_id
+            request_body["location_id"] = location_id
         if background_information is not None:
-            request_body['background_information'] = background_information
+            request_body["background_information"] = background_information
         if scoreboard_level_id is not None:
-            request_body['scoreboard_level_id'] = scoreboard_level_id
+            request_body["scoreboard_level_id"] = scoreboard_level_id
         if roles is not None:
-            request_body['roles'] = roles
+            request_body["roles"] = roles
         if signature is not None:
-            request_body['signature'] = signature
+            request_body["signature"] = signature
         if custom_fields is not None:
-            request_body['custom_fields'] = custom_fields
+            request_body["custom_fields"] = custom_fields
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="PUT",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"update_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"update_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed update_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed update_agent"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in update_agent: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute update_agent"
+                message="Failed to execute update_agent",
             )
 
     async def deactivate_agent(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """Deactivate an agent
 
@@ -2129,6 +2299,7 @@ class FreshdeskDataSource:
 
         Example:
             await ds.deactivate_agent(id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/agents/{id}"
@@ -2139,31 +2310,35 @@ class FreshdeskDataSource:
                 url=url,
                 method="DELETE",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"deactivate_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"deactivate_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed deactivate_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed deactivate_agent"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in deactivate_agent: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute deactivate_agent"
+                message="Failed to execute deactivate_agent",
             )
 
     async def forget_agent(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """Permanently delete an agent and their tickets
 
@@ -2177,6 +2352,7 @@ class FreshdeskDataSource:
 
         Example:
             await ds.forget_agent(id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/agents/{id}/forget"
@@ -2187,31 +2363,35 @@ class FreshdeskDataSource:
                 url=url,
                 method="DELETE",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"forget_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"forget_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed forget_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed forget_agent"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in forget_agent: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute forget_agent"
+                message="Failed to execute forget_agent",
             )
 
     async def reactivate_agent(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """Reactivate a deactivated agent
 
@@ -2225,6 +2405,7 @@ class FreshdeskDataSource:
 
         Example:
             agent = await ds.reactivate_agent(id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/agents/{id}/reactivate"
@@ -2235,31 +2416,35 @@ class FreshdeskDataSource:
                 url=url,
                 method="PUT",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"reactivate_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"reactivate_agent: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed reactivate_agent" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed reactivate_agent"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in reactivate_agent: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute reactivate_agent"
+                message="Failed to execute reactivate_agent",
             )
 
     async def list_agent_fields(
         self,
-        include: Optional[str] = None
+        include: str | None = None,
     ) -> FreshDeskResponse:
         """List all built-in and custom fields for agents
 
@@ -2273,15 +2458,17 @@ class FreshdeskDataSource:
 
         Example:
             fields = await ds.list_agent_fields()
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/agent_fields"
         params = {}
         if include is not None:
-            params['include'] = include
+            params["include"] = include
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -2289,40 +2476,44 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_agent_fields: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_agent_fields: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_agent_fields" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_agent_fields"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_agent_fields: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_agent_fields"
+                message="Failed to execute list_agent_fields",
             )
 
     async def create_software(
         self,
         name: str,
-        description: Optional[str] = None,
-        application_type: Optional[str] = "desktop",
-        status: Optional[str] = None,
-        publisher_id: Optional[int] = None,
-        managed_by_id: Optional[int] = None,
-        notes: Optional[str] = None,
-        category: Optional[str] = None,
-        source: Optional[str] = None,
-        workspace_id: Optional[int] = None
+        description: str | None = None,
+        application_type: str | None = "desktop",
+        status: str | None = None,
+        publisher_id: int | None = None,
+        managed_by_id: int | None = None,
+        notes: str | None = None,
+        category: str | None = None,
+        source: str | None = None,
+        workspace_id: int | None = None,
     ) -> FreshDeskResponse:
         """Create a new software/application in FreshDesk
 
@@ -2345,61 +2536,66 @@ class FreshdeskDataSource:
 
         Example:
             software = await ds.create_software(name="FreshDesk", application_type="saas")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/applications"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if name is not None:
-            request_body['name'] = name
+            request_body["name"] = name
         if description is not None:
-            request_body['description'] = description
+            request_body["description"] = description
         if application_type is not None:
-            request_body['application_type'] = application_type
+            request_body["application_type"] = application_type
         if status is not None:
-            request_body['status'] = status
+            request_body["status"] = status
         if publisher_id is not None:
-            request_body['publisher_id'] = publisher_id
+            request_body["publisher_id"] = publisher_id
         if managed_by_id is not None:
-            request_body['managed_by_id'] = managed_by_id
+            request_body["managed_by_id"] = managed_by_id
         if notes is not None:
-            request_body['notes'] = notes
+            request_body["notes"] = notes
         if category is not None:
-            request_body['category'] = category
+            request_body["category"] = category
         if source is not None:
-            request_body['source'] = source
+            request_body["source"] = source
         if workspace_id is not None:
-            request_body['workspace_id'] = workspace_id
+            request_body["workspace_id"] = workspace_id
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"create_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"create_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed create_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed create_software"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in create_software: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute create_software"
+                message="Failed to execute create_software",
             )
 
     async def view_software(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """View a specific software/application by ID
 
@@ -2413,6 +2609,7 @@ class FreshdeskDataSource:
 
         Example:
             software = await ds.view_software(id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}"
@@ -2423,33 +2620,37 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"view_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"view_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed view_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed view_software"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in view_software: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute view_software"
+                message="Failed to execute view_software",
             )
 
     async def list_software(
         self,
-        workspace_id: Optional[int] = None,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30
+        workspace_id: int | None = None,
+        page: int | None = 1,
+        per_page: int | None = 30,
     ) -> FreshDeskResponse:
         """List all software/applications
 
@@ -2465,19 +2666,21 @@ class FreshdeskDataSource:
 
         Example:
             software_list = await ds.list_software()
+
         """
         url = self._freshdesk_client.get_base_url()
         url += "/applications"
         params = {}
         if workspace_id is not None:
-            params['workspace_id'] = workspace_id
+            params["workspace_id"] = workspace_id
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -2485,40 +2688,44 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_software"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_software: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_software"
+                message="Failed to execute list_software",
             )
 
     async def update_software(
         self,
         id: int,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        application_type: Optional[str] = None,
-        status: Optional[str] = None,
-        publisher_id: Optional[int] = None,
-        managed_by_id: Optional[int] = None,
-        notes: Optional[str] = None,
-        category: Optional[str] = None,
-        source: Optional[str] = None
+        name: str | None = None,
+        description: str | None = None,
+        application_type: str | None = None,
+        status: str | None = None,
+        publisher_id: int | None = None,
+        managed_by_id: int | None = None,
+        notes: str | None = None,
+        category: str | None = None,
+        source: str | None = None,
     ) -> FreshDeskResponse:
         """Update an existing software/application
 
@@ -2541,59 +2748,64 @@ class FreshdeskDataSource:
 
         Example:
             software = await ds.update_software(id=123, status="managed")
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if name is not None:
-            request_body['name'] = name
+            request_body["name"] = name
         if description is not None:
-            request_body['description'] = description
+            request_body["description"] = description
         if application_type is not None:
-            request_body['application_type'] = application_type
+            request_body["application_type"] = application_type
         if status is not None:
-            request_body['status'] = status
+            request_body["status"] = status
         if publisher_id is not None:
-            request_body['publisher_id'] = publisher_id
+            request_body["publisher_id"] = publisher_id
         if managed_by_id is not None:
-            request_body['managed_by_id'] = managed_by_id
+            request_body["managed_by_id"] = managed_by_id
         if notes is not None:
-            request_body['notes'] = notes
+            request_body["notes"] = notes
         if category is not None:
-            request_body['category'] = category
+            request_body["category"] = category
         if source is not None:
-            request_body['source'] = source
+            request_body["source"] = source
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="PUT",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"update_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"update_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed update_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed update_software"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in update_software: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute update_software"
+                message="Failed to execute update_software",
             )
 
     async def delete_software(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """Delete a specific software/application
 
@@ -2607,6 +2819,7 @@ class FreshdeskDataSource:
 
         Example:
             await ds.delete_software(id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}"
@@ -2617,31 +2830,35 @@ class FreshdeskDataSource:
                 url=url,
                 method="DELETE",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"delete_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"delete_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed delete_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed delete_software"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in delete_software: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute delete_software"
+                message="Failed to execute delete_software",
             )
 
     async def list_software_licenses(
         self,
-        id: int
+        id: int,
     ) -> FreshDeskResponse:
         """List all licenses of a software
 
@@ -2655,6 +2872,7 @@ class FreshdeskDataSource:
 
         Example:
             licenses = await ds.list_software_licenses(id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/licenses"
@@ -2665,32 +2883,36 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_software_licenses: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_software_licenses: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_software_licenses" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_software_licenses"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_software_licenses: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_software_licenses"
+                message="Failed to execute list_software_licenses",
             )
 
     async def add_software_users(
         self,
         id: int,
-        application_users: List[Dict[str, Any]]
+        application_users: list[dict[str, Any]],
     ) -> FreshDeskResponse:
         """Add users to a software in bulk
 
@@ -2705,44 +2927,49 @@ class FreshdeskDataSource:
 
         Example:
             users = await ds.add_software_users(id=123, application_users=[{"user_id": 456}])
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/users"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if application_users is not None:
-            request_body['application_users'] = application_users
+            request_body["application_users"] = application_users
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"add_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"add_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed add_software_users" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed add_software_users"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in add_software_users: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute add_software_users"
+                message="Failed to execute add_software_users",
             )
 
     async def view_software_user(
         self,
         id: int,
-        user_id: int
+        user_id: int,
     ) -> FreshDeskResponse:
         """View a specific user of a software
 
@@ -2757,6 +2984,7 @@ class FreshdeskDataSource:
 
         Example:
             user = await ds.view_software_user(id=123, user_id=456)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/users/{user_id}"
@@ -2767,33 +2995,37 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"view_software_user: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"view_software_user: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed view_software_user" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed view_software_user"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in view_software_user: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute view_software_user"
+                message="Failed to execute view_software_user",
             )
 
     async def list_software_users(
         self,
         id: int,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30
+        page: int | None = 1,
+        per_page: int | None = 30,
     ) -> FreshDeskResponse:
         """List all users of a software
 
@@ -2809,17 +3041,19 @@ class FreshdeskDataSource:
 
         Example:
             users = await ds.list_software_users(id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/users"
         params = {}
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -2827,32 +3061,36 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_software_users" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_software_users"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_software_users: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_software_users"
+                message="Failed to execute list_software_users",
             )
 
     async def update_software_users(
         self,
         id: int,
-        application_users: List[Dict[str, Any]]
+        application_users: list[dict[str, Any]],
     ) -> FreshDeskResponse:
         """Update users of a software in bulk
 
@@ -2867,44 +3105,49 @@ class FreshdeskDataSource:
 
         Example:
             users = await ds.update_software_users(id=123, application_users=[{"user_id": 456, "license_id": 10}])
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/users"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if application_users is not None:
-            request_body['application_users'] = application_users
+            request_body["application_users"] = application_users
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="PUT",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"update_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"update_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed update_software_users" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed update_software_users"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in update_software_users: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute update_software_users"
+                message="Failed to execute update_software_users",
             )
 
     async def remove_software_users(
         self,
         id: int,
-        user_ids: List[int]
+        user_ids: list[int],
     ) -> FreshDeskResponse:
         """Remove users from a software in bulk
 
@@ -2919,6 +3162,7 @@ class FreshdeskDataSource:
 
         Example:
             await ds.remove_software_users(id=123, user_ids=[456, 789])
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/users"
@@ -2929,35 +3173,39 @@ class FreshdeskDataSource:
                 url=url,
                 method="DELETE",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"remove_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"remove_software_users: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed remove_software_users" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed remove_software_users"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in remove_software_users: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute remove_software_users"
+                message="Failed to execute remove_software_users",
             )
 
     async def add_software_installation(
         self,
         id: int,
         installation_machine_id: int,
-        installation_path: Optional[str] = None,
-        version: Optional[str] = None,
-        installation_date: Optional[str] = None
+        installation_path: str | None = None,
+        version: str | None = None,
+        installation_date: str | None = None,
     ) -> FreshDeskResponse:
         """Add a device installation to a software
 
@@ -2975,51 +3223,56 @@ class FreshdeskDataSource:
 
         Example:
             installation = await ds.add_software_installation(id=123, installation_machine_id=456)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/installations"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if installation_machine_id is not None:
-            request_body['installation_machine_id'] = installation_machine_id
+            request_body["installation_machine_id"] = installation_machine_id
         if installation_path is not None:
-            request_body['installation_path'] = installation_path
+            request_body["installation_path"] = installation_path
         if version is not None:
-            request_body['version'] = version
+            request_body["version"] = version
         if installation_date is not None:
-            request_body['installation_date'] = installation_date
+            request_body["installation_date"] = installation_date
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="POST",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"add_software_installation: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"add_software_installation: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed add_software_installation" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed add_software_installation"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in add_software_installation: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute add_software_installation"
+                message="Failed to execute add_software_installation",
             )
 
     async def list_software_installations(
         self,
         id: int,
-        page: Optional[int] = 1,
-        per_page: Optional[int] = 30
+        page: int | None = 1,
+        per_page: int | None = 30,
     ) -> FreshDeskResponse:
         """List all installations of a software
 
@@ -3035,17 +3288,19 @@ class FreshdeskDataSource:
 
         Example:
             installations = await ds.list_software_installations(id=123)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/installations"
         params = {}
         if page is not None:
-            params['page'] = page
+            params["page"] = page
         if per_page is not None:
-            params['per_page'] = per_page
+            params["per_page"] = per_page
         if params:
             from urllib.parse import urlencode
-            url += '?' + urlencode(params)
+
+            url += "?" + urlencode(params)
         request_body = None
 
         try:
@@ -3053,32 +3308,36 @@ class FreshdeskDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"list_software_installations: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"list_software_installations: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed list_software_installations" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed list_software_installations"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in list_software_installations: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute list_software_installations"
+                message="Failed to execute list_software_installations",
             )
 
     async def remove_software_installations(
         self,
         id: int,
-        device_ids: List[int]
+        device_ids: list[int],
     ) -> FreshDeskResponse:
         """Remove device installations from a software in bulk
 
@@ -3093,6 +3352,7 @@ class FreshdeskDataSource:
 
         Example:
             await ds.remove_software_installations(id=123, device_ids=[456, 789])
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/installations"
@@ -3103,32 +3363,36 @@ class FreshdeskDataSource:
                 url=url,
                 method="DELETE",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"remove_software_installations: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"remove_software_installations: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed remove_software_installations" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed remove_software_installations"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in remove_software_installations: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute remove_software_installations"
+                message="Failed to execute remove_software_installations",
             )
 
     async def move_software(
         self,
         id: int,
-        workspace_id: int
+        workspace_id: int,
     ) -> FreshDeskResponse:
         """Move software to a different workspace
 
@@ -3143,37 +3407,41 @@ class FreshdeskDataSource:
 
         Example:
             software = await ds.move_software(id=123, workspace_id=2)
+
         """
         url = self._freshdesk_client.get_base_url()
         url += f"/applications/{id}/move_workspace"
-        request_body: Dict[str, Any] = {}
+        request_body: dict[str, Any] = {}
         if workspace_id is not None:
-            request_body['workspace_id'] = workspace_id
+            request_body["workspace_id"] = workspace_id
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="PUT",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
             )
             response: HTTPResponse = await self.http_client.execute(request)
 
             # Debug logging
             response_text = response.text()
             if response.status >= HTTP_ERROR_THRESHOLD:
-                logger.debug(f"move_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}")
+                logger.debug(
+                    f"move_software: Status={response.status}, Response={response_text[:200] if response_text else 'Empty'}"
+                )
 
             return FreshDeskResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response.json() if response_text else None,
-                message="Successfully executed move_software" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed move_software"
+                if response.status < HTTP_ERROR_THRESHOLD
+                else f"Failed with status {response.status}",
             )
         except Exception as e:
             logger.debug(f"Error in move_software: {e}")
             return FreshDeskResponse(
                 success=False,
                 error=str(e),
-                message="Failed to execute move_software"
+                message="Failed to execute move_software",
             )
-

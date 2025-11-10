@@ -14,7 +14,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class GmailChangeHandler:
-    def __init__(self, config_service: ConfigurationService, arango_service, logger) -> None:
+    def __init__(
+        self, config_service: ConfigurationService, arango_service, logger
+    ) -> None:
         self.config_service = config_service
         self.arango_service = arango_service
         self.logger = logger
@@ -25,9 +27,11 @@ class GmailChangeHandler:
         self.logger.info(f"changes: {changes}")
         try:
             endpoints = await self.config_service.get_config(
-                config_node_constants.ENDPOINTS.value
+                config_node_constants.ENDPOINTS.value,
             )
-            connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+            connector_endpoint = endpoints.get("connectors").get(
+                "endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value
+            )
 
             user_id = user.get("userId")
             for change in changes.get("history", []):
@@ -51,7 +55,10 @@ class GmailChangeHandler:
                         message = label_added.get("message", {})
                         message_id = message.get("id")
                         label_ids = label_added.get("labelIds", [])
-                        if any(label in ["INBOX", "SENT"] for label in label_ids) and message_id not in seen_message_ids:
+                        if (
+                            any(label in ["INBOX", "SENT"] for label in label_ids)
+                            and message_id not in seen_message_ids
+                        ):
                             seen_message_ids.add(message_id)
                             messages_to_add.append(message)
 
@@ -62,7 +69,8 @@ class GmailChangeHandler:
 
                     # Check if message already exists
                     self.logger.debug(
-                        "🔍 Checking if message %s exists in ArangoDB", message_id
+                        "🔍 Checking if message %s exists in ArangoDB",
+                        message_id,
                     )
                     existing_message = self.arango_service.db.aql.execute(
                         f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @message_id RETURN doc",
@@ -84,7 +92,10 @@ class GmailChangeHandler:
 
                     # Get attachments for this message
                     attachments = await user_service.list_attachments(
-                        message_data, org_id, user, account_type
+                        message_data,
+                        org_id,
+                        user,
+                        account_type,
                     )
 
                     # Extract headers
@@ -137,11 +148,13 @@ class GmailChangeHandler:
                     }
 
                     # Convert record to dictionary if it's a Record object
-                    record_dict = record.to_dict() if hasattr(record, 'to_dict') else record
+                    record_dict = (
+                        record.to_dict() if hasattr(record, "to_dict") else record
+                    )
 
                     is_of_type_record = {
-                        "_from": f'{CollectionNames.RECORDS.value}/{record_dict["_key"]}',
-                        "_to": f'{CollectionNames.MAILS.value}/{message_record["_key"]}',
+                        "_from": f"{CollectionNames.RECORDS.value}/{record_dict['_key']}",
+                        "_to": f"{CollectionNames.MAILS.value}/{message_record['_key']}",
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
@@ -213,13 +226,13 @@ class GmailChangeHandler:
                                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                                     "sourceCreatedAtTimestamp": message.get(
-                                        "internalDate"
+                                        "internalDate",
                                     ),
                                     "sourceLastModifiedTimestamp": message.get(
-                                        "internalDate"
+                                        "internalDate",
                                     ),
                                     "externalRecordId": attachment.get(
-                                        "attachment_id"
+                                        "attachment_id",
                                     ),
                                     "externalRevisionId": None,
                                     "origin": OriginTypes.CONNECTOR.value,
@@ -288,8 +301,10 @@ class GmailChangeHandler:
                                 if not email:
                                     continue
 
-                                entity_id = await self.arango_service.get_entity_id_by_email(
-                                    email
+                                entity_id = (
+                                    await self.arango_service.get_entity_id_by_email(
+                                        email,
+                                    )
                                 )
                                 # Default to PEOPLE/USER; override if found in USERS or GROUPS
                                 entityType = CollectionNames.PEOPLE.value
@@ -297,12 +312,12 @@ class GmailChangeHandler:
                                 if entity_id:
                                     # Check if entity exists in users or groups
                                     if self.arango_service.db.collection(
-                                        CollectionNames.USERS.value
+                                        CollectionNames.USERS.value,
                                     ).has(entity_id):
                                         entityType = CollectionNames.USERS.value
                                         permType = "USER"
                                     elif self.arango_service.db.collection(
-                                        CollectionNames.GROUPS.value
+                                        CollectionNames.GROUPS.value,
                                     ).has(entity_id):
                                         entityType = CollectionNames.GROUPS.value
                                         permType = "GROUP"
@@ -310,7 +325,8 @@ class GmailChangeHandler:
                                     # Save entity in people collection
                                     entity_id = str(uuid.uuid4())
                                     people_record = await self.arango_service.save_to_people_collection(
-                                        entity_id, email
+                                        entity_id,
+                                        email,
                                     )
                                     if people_record:
                                         entity_id = people_record["_key"]
@@ -331,7 +347,7 @@ class GmailChangeHandler:
                                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                                         "lastUpdatedTimestampAtSource": get_epoch_timestamp_in_ms(),
-                                    }
+                                    },
                                 )
                                 if attachments:
                                     for attachment_record in attachment_records:
@@ -345,7 +361,7 @@ class GmailChangeHandler:
                                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                                                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                                                 "lastUpdatedTimestampAtSource": get_epoch_timestamp_in_ms(),
-                                            }
+                                            },
                                         )
 
                         if permission_records:
@@ -364,14 +380,14 @@ class GmailChangeHandler:
                             f"org_id={org_id}, user_id={user_id}, "
                             f"message_id={message_id}, thread_id={message.get('threadId', 'N/A')}, "
                             f"history_id={change.get('id', 'N/A')}\n"
-                            f"Error details: {str(e)}\n"
-                            f"Message data: {message_data}"
+                            f"Error details: {e!s}\n"
+                            f"Message data: {message_data}",
                         )
                         # Increment error metric if you have metrics service
-                        if hasattr(self, 'metrics_service'):
+                        if hasattr(self, "metrics_service"):
                             await self.metrics_service.increment_counter(
-                                'gmail_change_processing_errors',
-                                {'org_id': org_id, 'error_type': type(e).__name__}
+                                "gmail_change_processing_errors",
+                                {"org_id": org_id, "error_type": type(e).__name__},
                             )
                         continue
 
@@ -391,19 +407,19 @@ class GmailChangeHandler:
                             message.get(
                                 "internalDate",
                                 get_epoch_timestamp_in_ms(),
-                            )
+                            ),
                         ),
                         "modifiedAtSourceTimestamp": int(
                             message.get(
                                 "internalDate",
                                 get_epoch_timestamp_in_ms(),
-                            )
+                            ),
                         ),
                     }
 
                     # SEND KAFKA EVENT FOR INDEXING
                     await self.arango_service.kafka_service.send_event_to_kafka(
-                        message_event
+                        message_event,
                     )
                     self.logger.info(
                         "📨 Sent Kafka reindexing event for record %s",
@@ -422,7 +438,8 @@ class GmailChangeHandler:
                                 "orgId": org_id,
                                 "recordId": attachment_key,
                                 "recordName": attachment.get(
-                                    "recordName", "Unnamed Attachment"
+                                    "recordName",
+                                    "Unnamed Attachment",
                                 ),
                                 "recordType": RecordTypes.ATTACHMENT.value,
                                 "recordVersion": 0,
@@ -432,13 +449,14 @@ class GmailChangeHandler:
                                 "extension": extension,
                                 "origin": OriginTypes.CONNECTOR.value,
                                 "mimeType": attachment.get(
-                                    "mimeType", "application/octet-stream"
+                                    "mimeType",
+                                    "application/octet-stream",
                                 ),
                                 "createdAtSourceTimestamp": get_epoch_timestamp_in_ms(),
                                 "modifiedAtSourceTimestamp": get_epoch_timestamp_in_ms(),
                             }
                             await self.arango_service.kafka_service.send_event_to_kafka(
-                                attachment_event
+                                attachment_event,
                             )
                             self.logger.info(
                                 "📨 Sent Kafka Indexing event for attachment %s",
@@ -487,18 +505,20 @@ class GmailChangeHandler:
                             continue
 
                         # Get associated attachment records
-                        attachment_records = list(self.arango_service.db.aql.execute(
-                            """
+                        attachment_records = list(
+                            self.arango_service.db.aql.execute(
+                                """
                             FOR r IN recordRelations
                                 FILTER r._from == @message_id
                                 AND r.relationType == @relation_type
                                 RETURN DOCUMENT(r._to)
                             """,
-                            bind_vars={
-                                "message_id": f'records/{existing_message["_key"]}',
-                                "relation_type": RecordRelations.ATTACHMENT.value
-                            }
-                        ))
+                                bind_vars={
+                                    "message_id": f"records/{existing_message['_key']}",
+                                    "relation_type": RecordRelations.ATTACHMENT.value,
+                                },
+                            )
+                        )
 
                         txn = self.arango_service.db.begin_transaction(
                             read=[
@@ -546,7 +566,7 @@ class GmailChangeHandler:
                                 REMOVE p IN permissions
                                 """,
                                 bind_vars={
-                                    "message_id": f'{CollectionNames.RECORDS.value}/{existing_message["_key"]}'
+                                    "message_id": f"{CollectionNames.RECORDS.value}/{existing_message['_key']}",
                                 },
                             )
 
@@ -560,15 +580,19 @@ class GmailChangeHandler:
                                     REMOVE p IN permissions
                                     """,
                                     bind_vars={
-                                        "attachment_id": f'{CollectionNames.RECORDS.value}/{attachment["_key"]}'
+                                        "attachment_id": f"{CollectionNames.RECORDS.value}/{attachment['_key']}",
                                     },
                                 )
 
                                 attachment_event = {
                                     "orgId": org_id,
                                     "recordId": attachment["_key"],
-                                    "virtualRecordId":attachment.get("virtualRecordId", None),
-                                    "recordName": attachment.get("recordName", "Unnamed Attachment"),
+                                    "virtualRecordId": attachment.get(
+                                        "virtualRecordId", None
+                                    ),
+                                    "recordName": attachment.get(
+                                        "recordName", "Unnamed Attachment"
+                                    ),
                                     "recordType": RecordTypes.ATTACHMENT.value,
                                     "recordVersion": 0,
                                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{attachment['_key']}/signedUrl",
@@ -578,7 +602,7 @@ class GmailChangeHandler:
                                     "mimeType": attachment.get("mimeType"),
                                 }
                                 await self.arango_service.kafka_service.send_event_to_kafka(
-                                    attachment_event
+                                    attachment_event,
                                 )
                                 self.logger.info(
                                     "📨 Sent Kafka Delete event for attachment %s",
@@ -587,15 +611,19 @@ class GmailChangeHandler:
                                 await self.arango_service.delete_records_and_relations(
                                     attachment["_key"],
                                     hard_delete=True,
-                                    transaction=txn
+                                    transaction=txn,
                                 )
 
                             # Send delete event for message
                             message_event = {
                                 "orgId": org_id,
                                 "recordId": existing_message["_key"],
-                                "virtualRecordId": existing_message.get("virtualRecordId", None),
-                                "recordName": existing_message.get("recordName", "No Subject"),
+                                "virtualRecordId": existing_message.get(
+                                    "virtualRecordId", None
+                                ),
+                                "recordName": existing_message.get(
+                                    "recordName", "No Subject"
+                                ),
                                 "recordType": RecordTypes.MAIL.value,
                                 "recordVersion": 0,
                                 "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{existing_message['_key']}/signedUrl",
@@ -604,7 +632,7 @@ class GmailChangeHandler:
                                 "origin": OriginTypes.CONNECTOR.value,
                             }
                             await self.arango_service.kafka_service.send_event_to_kafka(
-                                message_event
+                                message_event,
                             )
                             self.logger.info(
                                 "📨 Sent Kafka Delete event for message %s",
@@ -627,14 +655,14 @@ class GmailChangeHandler:
                                 f"org_id={org_id}, user_id={user_id}, "
                                 f"message_id={message_id}, thread_id={message.get('threadId', 'N/A')}, "
                                 f"history_id={change.get('id', 'N/A')}\n"
-                                f"Error details: {str(e)}\n"
-                                f"Message data: {message}"
+                                f"Error details: {e!s}\n"
+                                f"Message data: {message}",
                             )
                             # Increment error metric if you have metrics service
-                            if hasattr(self, 'metrics_service'):
+                            if hasattr(self, "metrics_service"):
                                 await self.metrics_service.increment_counter(
-                                    'gmail_deletion_processing_errors',
-                                    {'org_id': org_id, 'error_type': type(e).__name__}
+                                    "gmail_deletion_processing_errors",
+                                    {"org_id": org_id, "error_type": type(e).__name__},
                                 )
                             continue
 
@@ -644,12 +672,12 @@ class GmailChangeHandler:
                             f"org_id={org_id}, user_id={user_id}, "
                             f"message_id={message_id}, thread_id={message.get('threadId', 'N/A')}, "
                             f"history_id={change.get('id', 'N/A')}\n"
-                            f"Error details: {str(e)}"
+                            f"Error details: {e!s}",
                         )
-                        if hasattr(self, 'metrics_service'):
+                        if hasattr(self, "metrics_service"):
                             await self.metrics_service.increment_counter(
-                                'gmail_deletion_check_errors',
-                                {'org_id': org_id, 'error_type': type(e).__name__}
+                                "gmail_deletion_check_errors",
+                                {"org_id": org_id, "error_type": type(e).__name__},
                             )
                         continue
             return True
@@ -657,11 +685,11 @@ class GmailChangeHandler:
             self.logger.error(
                 "❌ Error processing changes batch: "
                 f"org_id={org_id}, user_id={user_id}\n"
-                f"Error details: {str(e)}"
+                f"Error details: {e!s}",
             )
-            if hasattr(self, 'metrics_service'):
+            if hasattr(self, "metrics_service"):
                 await self.metrics_service.increment_counter(
-                    'gmail_changes_batch_errors',
-                    {'org_id': org_id, 'error_type': type(e).__name__}
+                    "gmail_changes_batch_errors",
+                    {"org_id": org_id, "error_type": type(e).__name__},
                 )
             return False

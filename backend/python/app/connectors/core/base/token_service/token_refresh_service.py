@@ -1,12 +1,10 @@
-"""
-Token Refresh Service
+"""Token Refresh Service
 Handles automatic token refresh for OAuth connectors
 """
 
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict
 
 from app.config.key_value_store import KeyValueStore
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
@@ -17,11 +15,13 @@ from app.utils.oauth_config import get_oauth_config
 class TokenRefreshService:
     """Service for managing token refresh across all connectors"""
 
-    def __init__(self, key_value_store: KeyValueStore, arango_service: BaseArangoService) -> None:
+    def __init__(
+        self, key_value_store: KeyValueStore, arango_service: BaseArangoService
+    ) -> None:
         self.key_value_store = key_value_store
         self.arango_service = arango_service
         self.logger = logging.getLogger(__name__)
-        self._refresh_tasks: Dict[str, asyncio.Task] = {}
+        self._refresh_tasks: dict[str, asyncio.Task] = {}
         self._running = False
 
     async def start(self) -> None:
@@ -54,13 +54,15 @@ class TokenRefreshService:
         try:
             # Get all active connectors from database
             connectors = await self.arango_service.get_all_documents("apps")
-            active_connectors = [conn for conn in connectors if conn.get('isActive', False)]
+            active_connectors = [
+                conn for conn in connectors if conn.get("isActive", False)
+            ]
 
             for connector in active_connectors:
-                connector_name = connector['name']
-                auth_type = connector.get('authType', '')
+                connector_name = connector["name"]
+                auth_type = connector.get("authType", "")
                 # Only refresh OAuth tokens
-                if auth_type in ['OAUTH', 'OAUTH_ADMIN_CONSENT']:
+                if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
                     await self._refresh_connector_token(connector_name)
 
         except Exception as e:
@@ -68,21 +70,19 @@ class TokenRefreshService:
 
     async def _refresh_connector_token(self, connector_name: str) -> None:
         """Refresh token for a specific connector"""
-
         try:
             filtered_app_name = connector_name.replace(" ", "").lower()
             config_key = f"/services/connectors/{filtered_app_name}/config"
             config = await self.key_value_store.get_key(config_key)
 
-            if not config or not config.get('credentials'):
+            if not config or not config.get("credentials"):
                 return
 
-            credentials = config['credentials']
-            if not credentials.get('refresh_token'):
+            credentials = config["credentials"]
+            if not credentials.get("refresh_token"):
                 return
 
-            auth_config = config.get('auth', {})
-
+            auth_config = config.get("auth", {})
 
             # Create OAuth config
             oauth_config = get_oauth_config(connector_name, auth_config)
@@ -91,10 +91,11 @@ class TokenRefreshService:
             from app.connectors.core.base.token_service.oauth_service import (
                 OAuthProvider,
             )
+
             oauth_provider = OAuthProvider(
                 config=oauth_config,
                 key_value_store=self.key_value_store,
-                credentials_path=f"/services/connectors/{filtered_app_name}/config"
+                credentials_path=f"/services/connectors/{filtered_app_name}/config",
             )
 
             # Create token from stored credentials
@@ -115,7 +116,7 @@ class TokenRefreshService:
             await oauth_provider.close()
 
             # Update stored credentials
-            config['credentials'] = new_token.to_dict()
+            config["credentials"] = new_token.to_dict()
             await self.key_value_store.create_key(config_key, config)
 
             self.logger.info(f"Refreshed token for connector {connector_name}")
@@ -141,16 +142,19 @@ class TokenRefreshService:
         """Manually refresh token for a specific connector"""
         await self._refresh_connector_token(connector_name)
 
-    async def schedule_token_refresh(self, connector_name: str, token: OAuthToken) -> None:
+    async def schedule_token_refresh(
+        self, connector_name: str, token: OAuthToken
+    ) -> None:
         """Schedule token refresh for a specific connector"""
-
         self.logger.info("Scheduling token refresh for connector %s", connector_name)
         if not token.expires_in:
             return
 
         # Calculate refresh time (refresh 5 minutes before expiry)
         # Refresh 10 minutes before expiry for safety
-        refresh_time = token.created_at + timedelta(seconds=max(0, token.expires_in - 600))
+        refresh_time = token.created_at + timedelta(
+            seconds=max(0, token.expires_in - 600)
+        )
         delay = (refresh_time - datetime.now()).total_seconds()
 
         if delay > 0:
@@ -160,7 +164,7 @@ class TokenRefreshService:
 
             # Schedule new refresh
             self._refresh_tasks[connector_name] = asyncio.create_task(
-                self._delayed_refresh(connector_name, delay)
+                self._delayed_refresh(connector_name, delay),
             )
 
         self.logger.info("Scheduled token refresh for connector %s", connector_name)

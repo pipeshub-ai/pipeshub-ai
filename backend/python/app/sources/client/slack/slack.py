@@ -1,7 +1,7 @@
 import json
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 from slack_sdk import WebClient  # type: ignore
 
@@ -12,12 +12,13 @@ from app.sources.client.iclient import IClient
 @dataclass
 class SlackResponse:
     """Standardized Slack API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return asdict(self)
 
@@ -33,13 +34,17 @@ class SlackRESTClientViaUsernamePassword:
         password: The password to use for authentication
         token_type: The type of token to use for authentication
     """
+
     def __init__(self, username: str, password: str, token_type: str = "Basic") -> None:
         # TODO: Implement
         self.client = None
         raise NotImplementedError
 
     def get_web_client(self) -> WebClient:
-        raise NotImplementedError("Username/Password authentication is not yet implemented.")
+        raise NotImplementedError(
+            "Username/Password authentication is not yet implemented."
+        )
+
 
 class SlackRESTClientViaApiKey:
     """Slack REST client via API key
@@ -47,32 +52,40 @@ class SlackRESTClientViaApiKey:
         email: The email to use for authentication
         api_key: The API key to use for authentication
     """
+
     def __init__(self, email: str, api_key: str) -> None:
         # TODO: Implement
         self.client = None
         raise NotImplementedError
 
     def get_web_client(self) -> WebClient:
-        raise NotImplementedError("Username/Password authentication is not yet implemented.")
+        raise NotImplementedError(
+            "Username/Password authentication is not yet implemented."
+        )
+
 
 class SlackRESTClientViaToken:
     """Slack REST client via token
     Args:
         token: The token to use for authentication
     """
+
     def __init__(self, token: str) -> None:
         # Validate token format
         if not token:
             raise ValueError("Slack token cannot be empty")
 
         # Check if it's a bot token (starts with xoxb-) or user token (starts with xoxp-)
-        if not (token.startswith('xoxb-') or token.startswith('xoxp-')):
-            raise ValueError(f"Invalid Slack token format. Token should start with 'xoxb-' (bot token) or 'xoxp-' (user token), got: {token[:10]}...")
+        if not (token.startswith("xoxb-") or token.startswith("xoxp-")):
+            raise ValueError(
+                f"Invalid Slack token format. Token should start with 'xoxb-' (bot token) or 'xoxp-' (user token), got: {token[:10]}..."
+            )
 
         self.client = WebClient(token=token)
 
     def get_web_client(self) -> WebClient:
         return self.client
+
 
 @dataclass
 class SlackUsernamePasswordConfig:
@@ -82,6 +95,7 @@ class SlackUsernamePasswordConfig:
         password: The password to use for authentication
         ssl: Whether to use SSL
     """
+
     username: str
     password: str
     ssl: bool = False
@@ -96,6 +110,7 @@ class SlackUsernamePasswordConfig:
     def get_web_client(self) -> WebClient:
         return self.create_client().get_web_client()
 
+
 @dataclass
 class SlackTokenConfig:
     """Configuration for Slack REST client via token
@@ -103,6 +118,7 @@ class SlackTokenConfig:
         token: The token to use for authentication
         ssl: Whether to use SSL
     """
+
     token: str
     ssl: bool = False
 
@@ -113,6 +129,7 @@ class SlackTokenConfig:
         """Convert the configuration to a dictionary"""
         return asdict(self)
 
+
 @dataclass
 class SlackApiKeyConfig:
     """Configuration for Slack REST client via API key
@@ -121,6 +138,7 @@ class SlackApiKeyConfig:
         api_key: The API key to use for authentication
         ssl: Whether to use SSL
     """
+
     email: str
     api_key: str
     ssl: bool = False
@@ -132,14 +150,26 @@ class SlackApiKeyConfig:
         """Convert the configuration to a dictionary"""
         return asdict(self)
 
+
 class SlackClient(IClient):
     """Builder class for Slack clients with different construction methods"""
 
-    def __init__(self, client: SlackRESTClientViaUsernamePassword | SlackRESTClientViaApiKey | SlackRESTClientViaToken) -> None:
+    def __init__(
+        self,
+        client: SlackRESTClientViaUsernamePassword
+        | SlackRESTClientViaApiKey
+        | SlackRESTClientViaToken,
+    ) -> None:
         """Initialize with a Slack client object"""
         self.client = client
 
-    def get_client(self) -> SlackRESTClientViaUsernamePassword | SlackRESTClientViaApiKey | SlackRESTClientViaToken:
+    def get_client(
+        self,
+    ) -> (
+        SlackRESTClientViaUsernamePassword
+        | SlackRESTClientViaApiKey
+        | SlackRESTClientViaToken
+    ):
         """Return the Slack client object"""
         return self.client
 
@@ -148,13 +178,16 @@ class SlackClient(IClient):
         return self.client.get_web_client()
 
     @classmethod
-    def build_with_config(cls, config: SlackUsernamePasswordConfig | SlackTokenConfig | SlackApiKeyConfig) -> 'SlackClient':
-        """
-        Build SlackClient with configuration (placeholder for future OAuth2/enterprise support)
+    def build_with_config(
+        cls, config: SlackUsernamePasswordConfig | SlackTokenConfig | SlackApiKeyConfig
+    ) -> "SlackClient":
+        """Build SlackClient with configuration (placeholder for future OAuth2/enterprise support)
+
         Args:
             config: SlackConfigBase instance
         Returns:
             SlackClient instance with placeholder implementation
+
         """
         return cls(config.create_client())
 
@@ -163,9 +196,8 @@ class SlackClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-    ) -> 'SlackClient':
-        """
-        Build SlackClient using configuration service
+    ) -> "SlackClient":
+        """Build SlackClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
@@ -180,7 +212,9 @@ class SlackClient(IClient):
                 raise ValueError("Failed to get Slack connector configuration")
 
             # Extract configuration values
-            auth_type = config.get("authType", "botToken")  # token, username_password, api_key
+            auth_type = config.get(
+                "authType", "botToken"
+            )  # token, username_password, api_key
 
             # Create appropriate client based on auth type
             # to be implemented
@@ -188,7 +222,9 @@ class SlackClient(IClient):
                 username = config.get("username", "")
                 password = config.get("password", "")
                 if not username or not password:
-                    raise ValueError("Username and password required for username_password auth type")
+                    raise ValueError(
+                        "Username and password required for username_password auth type"
+                    )
                 client = SlackRESTClientViaUsernamePassword(username, password)
 
             # to be implemented
@@ -199,7 +235,9 @@ class SlackClient(IClient):
                     raise ValueError("Email and API key required for api_key auth type")
                 client = SlackRESTClientViaApiKey(email, api_key)
 
-            elif auth_type == "API_TOKEN" or auth_type == "botToken":  # Default to token auth
+            elif (
+                auth_type == "API_TOKEN" or auth_type == "botToken"
+            ):  # Default to token auth
                 token = config.get("botToken", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
@@ -211,15 +249,19 @@ class SlackClient(IClient):
             return cls(client)
 
         except Exception as e:
-            logger.error(f"Failed to build Slack client from services: {str(e)}")
+            logger.error(f"Failed to build Slack client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(
+        logger: logging.Logger, config_service: ConfigurationService
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for Slack."""
         try:
-            config = await config_service.get_config("/services/connectors/slack/config")
-            return config.get("auth",{}) or {}
+            config = await config_service.get_config(
+                "/services/connectors/slack/config"
+            )
+            return config.get("auth", {}) or {}
         except Exception as e:
             logger.error(f"Failed to get Slack connector config: {e}")
             return {}

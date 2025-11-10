@@ -19,7 +19,9 @@ class DoclingAppContainer(BaseAppContainer):
 
     # Override config_service to use the service-specific logger
     key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
-    config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
+    config_service = providers.Singleton(
+        ConfigurationService, logger=logger, key_value_store=key_value_store
+    )
 
     # Docling-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
@@ -28,7 +30,7 @@ class DoclingAppContainer(BaseAppContainer):
             "app.services.docling.docling_service",
             "app.modules.parsers.pdf.docling",
             "app.utils.converters.docling_doc_to_blocks",
-        ]
+        ],
     )
 
 

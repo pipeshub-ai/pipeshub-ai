@@ -1,5 +1,4 @@
 import traceback
-from typing import Dict
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -16,12 +15,14 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
 class DriveChangeHandler:
-    def __init__(self, logger, config_service: ConfigurationService, arango_service) -> None:
+    def __init__(
+        self, logger, config_service: ConfigurationService, arango_service
+    ) -> None:
         self.logger = logger
         self.config_service = config_service
         self.arango_service = arango_service
 
-    async def process_change(self, change: Dict, user_service, org_id, user_id) -> None:
+    async def process_change(self, change: dict, user_service, org_id, user_id) -> None:
         """Process a single change with revision checking"""
         txn = None
         try:
@@ -33,7 +34,7 @@ class DriveChangeHandler:
                 return
 
             new_file = await user_service.batch_fetch_metadata_and_permissions(
-                [file_id]
+                [file_id],
             )
             new_file = new_file[0]
             if not new_file:
@@ -56,12 +57,14 @@ class DriveChangeHandler:
                 """
 
                 file_result = self.arango_service.db.aql.execute(
-                    file_query, bind_vars={"file_key": file_key}
+                    file_query,
+                    bind_vars={"file_key": file_key},
                 )
                 file_result = next(file_result, None)
 
                 record_result = self.arango_service.db.aql.execute(
-                    record_query, bind_vars={"file_key": file_key}
+                    record_query,
+                    bind_vars={"file_key": file_key},
                 )
                 record_result = next(record_result, None)
 
@@ -70,7 +73,7 @@ class DriveChangeHandler:
 
                 if not db_file or not db_record:
                     self.logger.warning(
-                        f"❌ Could not find file or record for key: {file_key}"
+                        f"❌ Could not find file or record for key: {file_key}",
                     )
                     return
 
@@ -84,10 +87,10 @@ class DriveChangeHandler:
             🔄 Processing change:
             - File key: {file_key}
             - File ID: {file_id}
-            - Name: {new_file.get('name', 'Unknown')}
+            - Name: {new_file.get("name", "Unknown")}
             - Removed: {removed}
             - Trashed: {is_trashed}
-            """
+            """,
             )
 
             txn = self.arango_service.db.begin_transaction(
@@ -133,29 +136,35 @@ class DriveChangeHandler:
                 else:
                     await self.handle_insert(new_file, org_id, transaction=txn)
                     change_type = EventTypes.NEW_RECORD.value
+            elif removed or is_trashed:
+                await self.handle_removal(db_file, db_record, transaction=txn)
+                change_type = EventTypes.DELETE_RECORD.value
             else:
-                if removed or is_trashed:
-                    await self.handle_removal(db_file, db_record, transaction=txn)
-                    change_type = EventTypes.DELETE_RECORD.value
-                else:
-                    if not new_file:
-                        return
-                    needs_update_var, reindex_var = await self.needs_update(
-                        new_file, db_file, db_record, transaction=txn
+                if not new_file:
+                    return
+                needs_update_var, reindex_var = await self.needs_update(
+                    new_file,
+                    db_file,
+                    db_record,
+                    transaction=txn,
+                )
+                if needs_update_var:
+                    await self.handle_update(
+                        new_file,
+                        db_file,
+                        db_record,
+                        org_id,
+                        transaction=txn,
                     )
-                    if needs_update_var:
-                        await self.handle_update(
-                            new_file, db_file, db_record, org_id, transaction=txn
-                        )
-                        if reindex_var:
-                            change_type = EventTypes.UPDATE_RECORD.value
-                        else:
-                            change_type = ""
+                    if reindex_var:
+                        change_type = EventTypes.UPDATE_RECORD.value
                     else:
-                        self.logger.info(
-                            f"✅ File {file_id} is up to date, skipping update"
-                        )
                         change_type = ""
+                else:
+                    self.logger.info(
+                        f"✅ File {file_id} is up to date, skipping update",
+                    )
+                    change_type = ""
 
             txn.commit_transaction()
             txn = None
@@ -168,14 +177,16 @@ class DriveChangeHandler:
                 or change_type == EventTypes.UPDATE_RECORD.value
             ):
                 file_key = await self.arango_service.get_key_by_external_file_id(
-                    file_id
+                    file_id,
                 )
                 self.logger.info(f"🚀 File key: {file_key}")
                 record = await self.arango_service.get_document(
-                    file_key, CollectionNames.RECORDS.value
+                    file_key,
+                    CollectionNames.RECORDS.value,
                 )
                 file = await self.arango_service.get_document(
-                    file_key, CollectionNames.FILES.value
+                    file_key,
+                    CollectionNames.FILES.value,
                 )
 
                 if file:
@@ -189,9 +200,11 @@ class DriveChangeHandler:
                 mime_type = None
 
             endpoints = await self.config_service.get_config(
-                config_node_constants.ENDPOINTS.value
+                config_node_constants.ENDPOINTS.value,
             )
-            connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+            connector_endpoint = endpoints.get("connectors").get(
+                "endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value
+            )
 
             reindex_event = None
 
@@ -210,10 +223,10 @@ class DriveChangeHandler:
                     "extension": extension,
                     "mimeType": mime_type,
                     "createdAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("createdTime"))
+                        parse_timestamp(new_file.get("createdTime")),
                     ),
                     "modifiedAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("modifiedTime"))
+                        parse_timestamp(new_file.get("modifiedTime")),
                     ),
                 }
 
@@ -233,10 +246,10 @@ class DriveChangeHandler:
                     "extension": new_file.get("extension"),
                     "mimeType": new_file.get("mimeType"),
                     "createdAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("createdTime"))
+                        parse_timestamp(new_file.get("createdTime")),
                     ),
                     "modifiedAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("modifiedTime"))
+                        parse_timestamp(new_file.get("modifiedTime")),
                     ),
                 }
 
@@ -256,10 +269,10 @@ class DriveChangeHandler:
                     "extension": extension,
                     "mimeType": mime_type,
                     "createdAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("createdTime"))
+                        parse_timestamp(new_file.get("createdTime")),
                     ),
                     "modifiedAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("modifiedTime"))
+                        parse_timestamp(new_file.get("modifiedTime")),
                     ),
                 }
 
@@ -268,7 +281,7 @@ class DriveChangeHandler:
 
             if reindex_event:
                 await self.arango_service.kafka_service.send_event_to_kafka(
-                    reindex_event
+                    reindex_event,
                 )
                 self.logger.info("📨 Sent Kafka reindexing event for file %s", file_id)
 
@@ -276,15 +289,18 @@ class DriveChangeHandler:
             if txn:
                 txn.abort_transaction()
                 txn = None
-            self.logger.error(f"❌ Error processing change: {str(e)}")
+            self.logger.error(f"❌ Error processing change: {e!s}")
             traceback.print_exc()
 
     async def needs_update(
-        self, updated_file, existing_file, existing_record, transaction
+        self,
+        updated_file,
+        existing_file,
+        existing_record,
+        transaction,
     ) -> bool:
         """Check if file needs update based on revision"""
         try:
-
             self.logger.info(
                 "🚀 Checking if file needs update %s, %s",
                 updated_file.get("id"),
@@ -299,7 +315,8 @@ class DriveChangeHandler:
 
             # Get existing permissions from database
             existing_permissions = await self.arango_service.get_file_permissions(
-                existing_file["_key"], transaction
+                existing_file["_key"],
+                transaction,
             )
             existing_permissions = existing_permissions if existing_permissions else []
 
@@ -310,12 +327,13 @@ class DriveChangeHandler:
             latest_file_name = updated_file.get("name")
             latest_parents = updated_file.get("parents", [])
             latest_modified_at = int(
-                parse_timestamp(updated_file.get("modifiedTime"))
+                parse_timestamp(updated_file.get("modifiedTime")),
             )
             db_revision_id = existing_record.get("externalRevisionId")
             db_file_name = existing_file.get("name")
             db_parents = await self.arango_service.get_file_parents(
-                existing_file["_key"], transaction
+                existing_file["_key"],
+                transaction,
             )
             db_modified_at = existing_record.get("sourceLastModifiedTimestamp")
 
@@ -405,11 +423,15 @@ class DriveChangeHandler:
 
         except Exception as e:
             self.logger.error(
-                "❌ Error comparing updates for file %s: %s", db_file_name, str(e)
+                "❌ Error comparing updates for file %s: %s",
+                db_file_name,
+                str(e),
             )
             return False, False
 
-    async def handle_removal(self, existing_file, existing_record, transaction=None) -> None:
+    async def handle_removal(
+        self, existing_file, existing_record, transaction=None
+    ) -> None:
         """Handle file removal or access loss"""
         try:
             self.logger.info(
@@ -432,18 +454,21 @@ class DriveChangeHandler:
                 """
             db.aql.execute(query, bind_vars={"file_key": existing_file["_key"]})
             self.logger.info(
-                "🗑️ Removed 'anyone' permission for file %s", existing_file["_key"]
+                "🗑️ Removed 'anyone' permission for file %s",
+                existing_file["_key"],
             )
 
             existing_permissions = await self.arango_service.get_file_permissions(
-                existing_file["_key"], transaction=transaction
+                existing_file["_key"],
+                transaction=transaction,
             )
             self.logger.info("🚀 Existing permissions: %s", existing_permissions)
 
             # Remove permissions that no longer exist
             if existing_permissions:
                 self.logger.info(
-                    "🗑️ Removing %d obsolete permissions", len(existing_permissions)
+                    "🗑️ Removing %d obsolete permissions",
+                    len(existing_permissions),
                 )
                 for perm in existing_permissions:
                     query_permissions = """
@@ -452,11 +477,14 @@ class DriveChangeHandler:
                         REMOVE p IN permissions
                     """
                     db.aql.execute(
-                        query_permissions, bind_vars={"perm_key": perm["_key"]}
+                        query_permissions,
+                        bind_vars={"perm_key": perm["_key"]},
                     )
 
             await self.arango_service.delete_records_and_relations(
-                existing_record["_key"], hard_delete=True, transaction=transaction
+                existing_record["_key"],
+                hard_delete=True,
+                transaction=transaction,
             )
             self.logger.info("✅ Successfully handled removal of file")
 
@@ -473,7 +501,8 @@ class DriveChangeHandler:
         """Handle file insert"""
         try:
             self.logger.info(
-                "🚀 Handling insert of file: %s", file_metadata.get("name")
+                "🚀 Handling insert of file: %s",
+                file_metadata.get("name"),
             )
             permissions = file_metadata.get("permissions", [])
             file_id = file_metadata.get("id")
@@ -493,7 +522,9 @@ class DriveChangeHandler:
                 existing_files.append(file_id)
 
             else:
-                file_record, record, is_of_type_record = await process_drive_file(file_metadata, org_id)
+                file_record, record, is_of_type_record = await process_drive_file(
+                    file_metadata, org_id
+                )
                 self.logger.info("file_record: %s", file_record.to_dict())
                 self.logger.info("record: %s", record.to_dict())
                 recordRelations = []
@@ -508,7 +539,9 @@ class DriveChangeHandler:
                         parent_key = next(parent_cursor, None)
                         file_key = file_record.key
                         self.logger.info(
-                            "🚀 Parent key: %s, File key: %s", parent_key, file_key
+                            "🚀 Parent key: %s, File key: %s",
+                            parent_key,
+                            file_key,
                         )
 
                         if parent_key and file_key:
@@ -517,16 +550,20 @@ class DriveChangeHandler:
                                     "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
                                     "_to": f"{CollectionNames.RECORDS.value}/{file_key}",
                                     "relationType": RecordRelations.PARENT_CHILD.value,
-                                }
+                                },
                             )
 
                 if file_record:
                     await self.arango_service.batch_upsert_nodes(
-                        [file_record.to_dict()], CollectionNames.FILES.value, transaction=transaction
+                        [file_record.to_dict()],
+                        CollectionNames.FILES.value,
+                        transaction=transaction,
                     )
                 if record:
                     await self.arango_service.batch_upsert_nodes(
-                        [record.to_dict()], CollectionNames.RECORDS.value, transaction=transaction
+                        [record.to_dict()],
+                        CollectionNames.RECORDS.value,
+                        transaction=transaction,
                     )
 
                 if is_of_type_record:
@@ -545,11 +582,15 @@ class DriveChangeHandler:
 
                 if permissions:
                     await self.arango_service.process_file_permissions(
-                        org_id, file_record.key, permissions, transaction=transaction
+                        org_id,
+                        file_record.key,
+                        permissions,
+                        transaction=transaction,
                     )
 
                 self.logger.info(
-                    "✅ Successfully handled insert of file %s", file_record.key
+                    "✅ Successfully handled insert of file %s",
+                    file_record.key,
                 )
 
         except Exception as e:
@@ -557,7 +598,12 @@ class DriveChangeHandler:
             raise
 
     async def handle_update(
-        self, updated_file, existing_file, existing_record, org_id, transaction
+        self,
+        updated_file,
+        existing_file,
+        existing_record,
+        org_id,
+        transaction,
     ) -> None:
         """Handle file update or creation"""
         try:
@@ -586,13 +632,14 @@ class DriveChangeHandler:
             record = {
                 "_key": existing_record["_key"],
                 "orgId": org_id,
-                "recordName": f'{file["name"]}',
+                "recordName": f"{file['name']}",
                 "recordType": RecordTypes.FILE.value,
                 "version": 0,
                 "externalRecordId": str(updated_file.get("id")),
                 "externalRevisionId": updated_file.get("headRevisionId", None),
                 "createdAtTimestamp": existing_record.get(
-                    "createdAtTimestamp", get_epoch_timestamp_in_ms()
+                    "createdAtTimestamp",
+                    get_epoch_timestamp_in_ms(),
                 ),
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 "sourceCreatedAtTimestamp": existing_record.get(
@@ -610,9 +657,13 @@ class DriveChangeHandler:
                 "isDeleted": existing_record.get("isDeleted", False),
                 "virtualRecordId": existing_record.get("virtualRecordId", None),
                 "indexingStatus": existing_record.get("indexingStatus", "NOT_STARTED"),
-                "extractionStatus": existing_record.get("extractionStatus", "NOT_STARTED"),
+                "extractionStatus": existing_record.get(
+                    "extractionStatus", "NOT_STARTED"
+                ),
                 "lastIndexTimestamp": existing_record.get("lastIndexTimestamp", None),
-                "lastExtractionTimestamp": existing_record.get("lastExtractionTimestamp", None),
+                "lastExtractionTimestamp": existing_record.get(
+                    "lastExtractionTimestamp", None
+                ),
                 "isLatestVersion": True,
                 "isDirty": False,
                 "reason": None,
@@ -627,10 +678,14 @@ class DriveChangeHandler:
             }
 
             await self.arango_service.batch_upsert_nodes(
-                [file], CollectionNames.FILES.value, transaction=transaction
+                [file],
+                CollectionNames.FILES.value,
+                transaction=transaction,
             )
             await self.arango_service.batch_upsert_nodes(
-                [record], CollectionNames.RECORDS.value, transaction=transaction
+                [record],
+                CollectionNames.RECORDS.value,
+                transaction=transaction,
             )
             if is_of_type_record:
                 await self.arango_service.batch_create_edges(
@@ -640,12 +695,17 @@ class DriveChangeHandler:
                 )
 
             await self.update_relationships(
-                existing_file["_key"], updated_file, transaction
+                existing_file["_key"],
+                updated_file,
+                transaction,
             )
 
             if permissions:
                 await self.arango_service.process_file_permissions(
-                    org_id, existing_file["_key"], permissions, transaction=transaction
+                    org_id,
+                    existing_file["_key"],
+                    permissions,
+                    transaction=transaction,
                 )
 
             self.logger.info("✅ Successfully updated file %s", existing_file["_key"])
@@ -659,7 +719,10 @@ class DriveChangeHandler:
             raise
 
     async def update_relationships(
-        self, file_key: str, updated_file: Dict, transaction
+        self,
+        file_key: str,
+        updated_file: dict,
+        transaction,
     ) -> bool:
         """Update PARENT_CHILD relationships for a file
 
@@ -670,13 +733,15 @@ class DriveChangeHandler:
 
         Returns:
             bool: True if successful, False otherwise
+
         """
         try:
             self.logger.info("🚀 Updating relationships for file: %s", file_key)
 
             # Get current parents from database
             current_parents = await self.arango_service.get_file_parents(
-                file_key, transaction
+                file_key,
+                transaction,
             )
             # Get new parents from updated file
             new_parents = updated_file.get("parents", [])
@@ -684,7 +749,9 @@ class DriveChangeHandler:
             db = transaction if transaction else self.arango_service.db
 
             self.logger.info(
-                "Current parents: %s, New parents: %s", current_parents, new_parents
+                "Current parents: %s, New parents: %s",
+                current_parents,
+                new_parents,
             )
 
             # Find parents to remove and add
@@ -698,7 +765,8 @@ class DriveChangeHandler:
             # Remove old relationships
             if parents_to_remove:
                 self.logger.info(
-                    "🗑️ Removing old parent relationships: %s", parents_to_remove
+                    "🗑️ Removing old parent relationships: %s",
+                    parents_to_remove,
                 )
                 for parent_id in parents_to_remove:
                     # Get parent key from external ID
@@ -719,7 +787,8 @@ class DriveChangeHandler:
             # Add new relationships
             if parents_to_add:
                 self.logger.info(
-                    "📝 Adding new parent relationships: %s", parents_to_add
+                    "📝 Adding new parent relationships: %s",
+                    parents_to_add,
                 )
                 new_edges = []
 
@@ -737,7 +806,7 @@ class DriveChangeHandler:
                                 "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
                                 "_to": f"{CollectionNames.RECORDS.value}/{file_key}",
                                 "relationType": RecordRelations.PARENT_CHILD.value,
-                            }
+                            },
                         )
 
                 if new_edges:
@@ -748,13 +817,16 @@ class DriveChangeHandler:
                     )
 
             self.logger.info(
-                "✅ Successfully updated relationships for file %s", file_key
+                "✅ Successfully updated relationships for file %s",
+                file_key,
             )
             return True
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to update relationships for file %s: %s", file_key, str(e)
+                "❌ Failed to update relationships for file %s: %s",
+                file_key,
+                str(e),
             )
             if transaction:
                 raise

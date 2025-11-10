@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.notion.notion import NotionClient, NotionResponse
@@ -29,10 +29,10 @@ class NotionDataSource:
         """Initialize with NotionClient."""
         self.http_client = client.get_client().get_client()
         if self.http_client is None:
-            raise ValueError('HTTP client is not initialized')
+            raise ValueError("HTTP client is not initialized")
         self.base_url = self.http_client.get_base_url()
 
-    def get_data_source(self) -> 'NotionDataSource':
+    def get_data_source(self) -> "NotionDataSource":
         return self
 
     # Authentication methods
@@ -44,8 +44,9 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/users/me"
@@ -73,11 +74,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/blocks/{block_id}".format(block_id=block_id)
+        url = self.base_url + f"/blocks/{block_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -90,7 +92,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_block(self, block_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_block(
+        self, block_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update the content for the specified block_id based on the block type
 
         HTTP PATCH /blocks/{block_id}
@@ -101,11 +105,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/blocks/{block_id}".format(block_id=block_id)
+        url = self.base_url + f"/blocks/{block_id}"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -129,11 +134,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/blocks/{block_id}".format(block_id=block_id)
+        url = self.base_url + f"/blocks/{block_id}"
         request = HTTPRequest(
             method="DELETE",
             url=url,
@@ -149,9 +155,9 @@ class NotionDataSource:
     async def retrieve_block_children(
         self,
         block_id: str,
-        start_cursor: Optional[str] = None,
-        page_size: Optional[int] = None,
-        **kwargs
+        start_cursor: str | None = None,
+        page_size: int | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Return a paginated array of child block objects contained in the block
 
@@ -164,15 +170,16 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if start_cursor is not None:
-            params['start_cursor'] = start_cursor
+            params["start_cursor"] = start_cursor
         if page_size is not None:
-            params['page_size'] = page_size
+            params["page_size"] = page_size
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/blocks/{block_id}/children".format(block_id=block_id)
+        url = self.base_url + f"/blocks/{block_id}/children"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -185,7 +192,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def append_block_children(self, block_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def append_block_children(
+        self, block_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Create and append new children blocks to the parent block_id specified
 
         HTTP PATCH /blocks/{block_id}/children
@@ -196,11 +205,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/blocks/{block_id}/children".format(block_id=block_id)
+        url = self.base_url + f"/blocks/{block_id}/children"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -216,7 +226,9 @@ class NotionDataSource:
 
     # Pages methods
 
-    async def create_page(self, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def create_page(
+        self, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Create a new page in the specified database or as a child of an existing page
 
         HTTP POST /pages
@@ -226,8 +238,9 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/pages"
@@ -244,7 +257,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def retrieve_page(self, page_id: str, filter_properties: Optional[List[str]] = None, **kwargs) -> NotionResponse:
+    async def retrieve_page(
+        self, page_id: str, filter_properties: list[str] | None = None, **kwargs
+    ) -> NotionResponse:
         """Retrieve a Page object using the ID specified
 
         HTTP GET /pages/{page_id}
@@ -255,13 +270,14 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if filter_properties is not None:
-            params['filter_properties'] = filter_properties
+            params["filter_properties"] = filter_properties
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/pages/{page_id}".format(page_id=page_id)
+        url = self.base_url + f"/pages/{page_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -274,7 +290,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_page_properties(self, page_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_page_properties(
+        self, page_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update the properties of a page in a database
 
         HTTP PATCH /pages/{page_id}
@@ -285,11 +303,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/pages/{page_id}".format(page_id=page_id)
+        url = self.base_url + f"/pages/{page_id}"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -307,9 +326,9 @@ class NotionDataSource:
         self,
         page_id: str,
         property_id: str,
-        start_cursor: Optional[str] = None,
-        page_size: Optional[int] = None,
-        **kwargs
+        start_cursor: str | None = None,
+        page_size: int | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Retrieve a property_item object for a given page_id and property_id
 
@@ -323,15 +342,16 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if start_cursor is not None:
-            params['start_cursor'] = start_cursor
+            params["start_cursor"] = start_cursor
         if page_size is not None:
-            params['page_size'] = page_size
+            params["page_size"] = page_size
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/pages/{page_id}/properties/{property_id}".format(page_id=page_id, property_id=property_id)
+        url = self.base_url + f"/pages/{page_id}/properties/{property_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -346,7 +366,9 @@ class NotionDataSource:
 
     # Databases methods
 
-    async def create_database(self, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def create_database(
+        self, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Create a database as a subpage in the specified parent page
 
         HTTP POST /databases
@@ -356,8 +378,9 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/databases"
@@ -374,7 +397,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def query_database(self, database_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def query_database(
+        self, database_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Get a list of Pages contained in the database, filtered and ordered according to the filter conditions and sort criteria provided in the request
 
         HTTP POST /databases/{database_id}/query
@@ -385,11 +410,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/databases/{database_id}/query".format(database_id=database_id)
+        url = self.base_url + f"/databases/{database_id}/query"
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -413,11 +439,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/databases/{database_id}".format(database_id=database_id)
+        url = self.base_url + f"/databases/{database_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -430,7 +457,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_database(self, database_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_database(
+        self, database_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update an existing database as specified by the parameters
 
         HTTP PATCH /databases/{database_id}
@@ -441,11 +470,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/databases/{database_id}".format(database_id=database_id)
+        url = self.base_url + f"/databases/{database_id}"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -461,7 +491,9 @@ class NotionDataSource:
 
     # Data Sources methods
 
-    async def create_data_source(self, database_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def create_data_source(
+        self, database_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Create a new data source for a database
 
         HTTP POST /databases/{database_id}/data_sources
@@ -472,11 +504,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/databases/{database_id}/data_sources".format(database_id=database_id)
+        url = self.base_url + f"/databases/{database_id}/data_sources"
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -494,8 +527,8 @@ class NotionDataSource:
         self,
         database_id: str,
         data_source_id: str,
-        request_body: Optional[Dict[str, Any]] = None,
-        **kwargs
+        request_body: dict[str, Any] | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Update an existing data source
 
@@ -508,11 +541,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/databases/{database_id}/data_sources/{data_source_id}".format(database_id=database_id, data_source_id=data_source_id)
+        url = self.base_url + f"/databases/{database_id}/data_sources/{data_source_id}"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -526,7 +560,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def retrieve_data_source(self, database_id: str, data_source_id: str, **kwargs) -> NotionResponse:
+    async def retrieve_data_source(
+        self, database_id: str, data_source_id: str, **kwargs
+    ) -> NotionResponse:
         """Retrieve a specific data source by ID
 
         HTTP GET /databases/{database_id}/data_sources/{data_source_id}
@@ -537,11 +573,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/databases/{database_id}/data_sources/{data_source_id}".format(database_id=database_id, data_source_id=data_source_id)
+        url = self.base_url + f"/databases/{database_id}/data_sources/{data_source_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -558,8 +595,8 @@ class NotionDataSource:
         self,
         database_id: str,
         data_source_id: str,
-        request_body: Optional[Dict[str, Any]] = None,
-        **kwargs
+        request_body: dict[str, Any] | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Query a data source connected to a database
 
@@ -572,11 +609,15 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/databases/{database_id}/data_sources/{data_source_id}/query".format(database_id=database_id, data_source_id=data_source_id)
+        url = (
+            self.base_url
+            + f"/databases/{database_id}/data_sources/{data_source_id}/query"
+        )
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -592,7 +633,9 @@ class NotionDataSource:
 
     # Comments methods
 
-    async def create_comment(self, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def create_comment(
+        self, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Create a comment in a page or existing discussion thread
 
         HTTP POST /comments
@@ -602,8 +645,9 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/comments"
@@ -623,9 +667,9 @@ class NotionDataSource:
     async def retrieve_comments(
         self,
         block_id: str,
-        start_cursor: Optional[str] = None,
-        page_size: Optional[int] = None,
-        **kwargs
+        start_cursor: str | None = None,
+        page_size: int | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Retrieve a list of un-resolved Comment objects from a page or block
 
@@ -638,14 +682,15 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if block_id is not None:
-            params['block_id'] = block_id
+            params["block_id"] = block_id
         if start_cursor is not None:
-            params['start_cursor'] = start_cursor
+            params["start_cursor"] = start_cursor
         if page_size is not None:
-            params['page_size'] = page_size
+            params["page_size"] = page_size
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/comments"
@@ -671,11 +716,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/comments/{comment_id}".format(comment_id=comment_id)
+        url = self.base_url + f"/comments/{comment_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -690,7 +736,9 @@ class NotionDataSource:
 
     # File Uploads methods
 
-    async def create_file_upload(self, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def create_file_upload(
+        self, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Create a new file upload request
 
         HTTP POST /files
@@ -700,8 +748,9 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/files"
@@ -718,7 +767,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def send_file_upload(self, file_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def send_file_upload(
+        self, file_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Send file data to complete the upload
 
         HTTP POST /files/{file_id}/upload
@@ -729,11 +780,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/files/{file_id}/upload".format(file_id=file_id)
+        url = self.base_url + f"/files/{file_id}/upload"
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -747,7 +799,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def complete_file_upload(self, file_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def complete_file_upload(
+        self, file_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Complete a file upload process
 
         HTTP POST /files/{file_id}/complete
@@ -758,11 +812,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/files/{file_id}/complete".format(file_id=file_id)
+        url = self.base_url + f"/files/{file_id}/complete"
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -786,11 +841,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/files/{file_id}".format(file_id=file_id)
+        url = self.base_url + f"/files/{file_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -803,7 +859,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def list_file_uploads(self, start_cursor: Optional[str] = None, page_size: Optional[int] = None, **kwargs) -> NotionResponse:
+    async def list_file_uploads(
+        self, start_cursor: str | None = None, page_size: int | None = None, **kwargs
+    ) -> NotionResponse:
         """List all file uploads for the workspace
 
         HTTP GET /files
@@ -814,12 +872,13 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if start_cursor is not None:
-            params['start_cursor'] = start_cursor
+            params["start_cursor"] = start_cursor
         if page_size is not None:
-            params['page_size'] = page_size
+            params["page_size"] = page_size
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/files"
@@ -837,7 +896,9 @@ class NotionDataSource:
 
     # Search methods
 
-    async def search(self, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def search(
+        self, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Search all original pages, databases, and child pages/databases that are shared with the integration
 
         HTTP POST /search
@@ -847,8 +908,9 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/search"
@@ -867,7 +929,9 @@ class NotionDataSource:
 
     # Users methods
 
-    async def list_users(self, start_cursor: Optional[str] = None, page_size: Optional[int] = None, **kwargs) -> NotionResponse:
+    async def list_users(
+        self, start_cursor: str | None = None, page_size: int | None = None, **kwargs
+    ) -> NotionResponse:
         """Return a paginated list of Users for the workspace
 
         HTTP GET /users
@@ -878,12 +942,13 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if start_cursor is not None:
-            params['start_cursor'] = start_cursor
+            params["start_cursor"] = start_cursor
         if page_size is not None:
-            params['page_size'] = page_size
+            params["page_size"] = page_size
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/users"
@@ -909,11 +974,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/users/{user_id}".format(user_id=user_id)
+        url = self.base_url + f"/users/{user_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -935,8 +1001,9 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/scim/v2/ServiceProviderConfig"
@@ -959,8 +1026,9 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/scim/v2/ResourceTypes"
@@ -978,10 +1046,10 @@ class NotionDataSource:
 
     async def list_scim_users(
         self,
-        start_index: Optional[int] = None,
-        count: Optional[int] = None,
-        filter: Optional[str] = None,
-        **kwargs
+        start_index: int | None = None,
+        count: int | None = None,
+        filter: str | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Retrieve a paginated list of workspace members via SCIM
 
@@ -994,14 +1062,15 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if start_index is not None:
-            params['startIndex'] = start_index
+            params["startIndex"] = start_index
         if count is not None:
-            params['count'] = count
+            params["count"] = count
         if filter is not None:
-            params['filter'] = filter
+            params["filter"] = filter
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/scim/v2/Users"
@@ -1027,11 +1096,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/scim/v2/Users/{user_id}".format(user_id=user_id)
+        url = self.base_url + f"/scim/v2/Users/{user_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1044,7 +1114,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def create_scim_user(self, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def create_scim_user(
+        self, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Create a new user via SCIM provisioning
 
         HTTP POST /scim/v2/Users
@@ -1054,8 +1126,9 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/scim/v2/Users"
@@ -1072,7 +1145,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_scim_user(self, user_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_scim_user(
+        self, user_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update a user via SCIM (full replacement)
 
         HTTP PUT /scim/v2/Users/{user_id}
@@ -1083,11 +1158,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/scim/v2/Users/{user_id}".format(user_id=user_id)
+        url = self.base_url + f"/scim/v2/Users/{user_id}"
         request = HTTPRequest(
             method="PUT",
             url=url,
@@ -1101,7 +1177,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def patch_scim_user(self, user_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def patch_scim_user(
+        self, user_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Partially update a user via SCIM operations
 
         HTTP PATCH /scim/v2/Users/{user_id}
@@ -1112,11 +1190,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/scim/v2/Users/{user_id}".format(user_id=user_id)
+        url = self.base_url + f"/scim/v2/Users/{user_id}"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -1140,11 +1219,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/scim/v2/Users/{user_id}".format(user_id=user_id)
+        url = self.base_url + f"/scim/v2/Users/{user_id}"
         request = HTTPRequest(
             method="DELETE",
             url=url,
@@ -1159,10 +1239,10 @@ class NotionDataSource:
 
     async def list_scim_groups(
         self,
-        start_index: Optional[int] = None,
-        count: Optional[int] = None,
-        filter: Optional[str] = None,
-        **kwargs
+        start_index: int | None = None,
+        count: int | None = None,
+        filter: str | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Retrieve a paginated list of groups via SCIM
 
@@ -1175,14 +1255,15 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if start_index is not None:
-            params['startIndex'] = start_index
+            params["startIndex"] = start_index
         if count is not None:
-            params['count'] = count
+            params["count"] = count
         if filter is not None:
-            params['filter'] = filter
+            params["filter"] = filter
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/scim/v2/Groups"
@@ -1208,11 +1289,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/scim/v2/Groups/{group_id}".format(group_id=group_id)
+        url = self.base_url + f"/scim/v2/Groups/{group_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1225,7 +1307,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def create_scim_group(self, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def create_scim_group(
+        self, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Create a new group via SCIM provisioning
 
         HTTP POST /scim/v2/Groups
@@ -1235,8 +1319,9 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
         url = self.base_url + "/scim/v2/Groups"
@@ -1253,7 +1338,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_scim_group(self, group_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_scim_group(
+        self, group_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update a group via SCIM (full replacement)
 
         HTTP PUT /scim/v2/Groups/{group_id}
@@ -1264,11 +1351,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/scim/v2/Groups/{group_id}".format(group_id=group_id)
+        url = self.base_url + f"/scim/v2/Groups/{group_id}"
         request = HTTPRequest(
             method="PUT",
             url=url,
@@ -1282,7 +1370,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def patch_scim_group(self, group_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def patch_scim_group(
+        self, group_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Partially update a group via SCIM operations
 
         HTTP PATCH /scim/v2/Groups/{group_id}
@@ -1293,11 +1383,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/scim/v2/Groups/{group_id}".format(group_id=group_id)
+        url = self.base_url + f"/scim/v2/Groups/{group_id}"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -1321,11 +1412,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/scim/v2/Groups/{group_id}".format(group_id=group_id)
+        url = self.base_url + f"/scim/v2/Groups/{group_id}"
         request = HTTPRequest(
             method="DELETE",
             url=url,
@@ -1340,7 +1432,9 @@ class NotionDataSource:
 
     # Organization methods
 
-    async def get_organization_settings(self, organization_id: str, **kwargs) -> NotionResponse:
+    async def get_organization_settings(
+        self, organization_id: str, **kwargs
+    ) -> NotionResponse:
         """Get organization-level settings and configuration
 
         HTTP GET /organizations/{organization_id}
@@ -1350,11 +1444,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/organizations/{organization_id}".format(organization_id=organization_id)
+        url = self.base_url + f"/organizations/{organization_id}"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1367,7 +1462,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_organization_settings(self, organization_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_organization_settings(
+        self, organization_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update organization-level settings
 
         HTTP PATCH /organizations/{organization_id}
@@ -1378,11 +1475,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/organizations/{organization_id}".format(organization_id=organization_id)
+        url = self.base_url + f"/organizations/{organization_id}"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -1396,7 +1494,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def list_organization_workspaces(self, organization_id: str, **kwargs) -> NotionResponse:
+    async def list_organization_workspaces(
+        self, organization_id: str, **kwargs
+    ) -> NotionResponse:
         """List all workspaces in the organization
 
         HTTP GET /organizations/{organization_id}/workspaces
@@ -1406,11 +1506,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/organizations/{organization_id}/workspaces".format(organization_id=organization_id)
+        url = self.base_url + f"/organizations/{organization_id}/workspaces"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1423,7 +1524,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def claim_workspace(self, organization_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def claim_workspace(
+        self, organization_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Claim ownership of eligible workspaces
 
         HTTP POST /organizations/{organization_id}/workspaces/claim
@@ -1434,11 +1537,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/organizations/{organization_id}/workspaces/claim".format(organization_id=organization_id)
+        url = self.base_url + f"/organizations/{organization_id}/workspaces/claim"
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -1454,7 +1558,9 @@ class NotionDataSource:
 
     # Workspace Admin methods
 
-    async def get_workspace_settings(self, workspace_id: str, **kwargs) -> NotionResponse:
+    async def get_workspace_settings(
+        self, workspace_id: str, **kwargs
+    ) -> NotionResponse:
         """Get workspace administration settings
 
         HTTP GET /workspaces/{workspace_id}/admin/settings
@@ -1464,11 +1570,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/settings".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/settings"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1481,7 +1588,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_workspace_settings(self, workspace_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_workspace_settings(
+        self, workspace_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update workspace administration settings
 
         HTTP PATCH /workspaces/{workspace_id}/admin/settings
@@ -1492,11 +1601,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/settings".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/settings"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -1513,9 +1623,9 @@ class NotionDataSource:
     async def list_workspace_members_admin(
         self,
         workspace_id: str,
-        start_cursor: Optional[str] = None,
-        page_size: Optional[int] = None,
-        **kwargs
+        start_cursor: str | None = None,
+        page_size: int | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """List all workspace members (admin view)
 
@@ -1528,15 +1638,16 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if start_cursor is not None:
-            params['start_cursor'] = start_cursor
+            params["start_cursor"] = start_cursor
         if page_size is not None:
-            params['page_size'] = page_size
+            params["page_size"] = page_size
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/members".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/members"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1553,8 +1664,8 @@ class NotionDataSource:
         self,
         workspace_id: str,
         user_id: str,
-        request_body: Optional[Dict[str, Any]] = None,
-        **kwargs
+        request_body: dict[str, Any] | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Update member permissions and roles
 
@@ -1567,11 +1678,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/members/{user_id}".format(workspace_id=workspace_id, user_id=user_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/members/{user_id}"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -1585,7 +1697,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def remove_workspace_member(self, workspace_id: str, user_id: str, **kwargs) -> NotionResponse:
+    async def remove_workspace_member(
+        self, workspace_id: str, user_id: str, **kwargs
+    ) -> NotionResponse:
         """Remove member from workspace
 
         HTTP DELETE /workspaces/{workspace_id}/admin/members/{user_id}
@@ -1596,11 +1710,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/members/{user_id}".format(workspace_id=workspace_id, user_id=user_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/members/{user_id}"
         request = HTTPRequest(
             method="DELETE",
             url=url,
@@ -1617,8 +1732,8 @@ class NotionDataSource:
         self,
         workspace_id: str,
         user_id: str,
-        request_body: Optional[Dict[str, Any]] = None,
-        **kwargs
+        request_body: dict[str, Any] | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Transfer member's private pages to another user
 
@@ -1631,11 +1746,15 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/members/{user_id}/transfer".format(workspace_id=workspace_id, user_id=user_id)
+        url = (
+            self.base_url
+            + f"/workspaces/{workspace_id}/admin/members/{user_id}/transfer"
+        )
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -1649,7 +1768,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def get_recently_left_members(self, workspace_id: str, **kwargs) -> NotionResponse:
+    async def get_recently_left_members(
+        self, workspace_id: str, **kwargs
+    ) -> NotionResponse:
         """Get list of recently left members
 
         HTTP GET /workspaces/{workspace_id}/admin/members/recently-left
@@ -1659,11 +1780,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/members/recently-left".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/members/recently-left"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1678,7 +1800,9 @@ class NotionDataSource:
 
     # Integrations methods
 
-    async def list_workspace_integrations(self, workspace_id: str, **kwargs) -> NotionResponse:
+    async def list_workspace_integrations(
+        self, workspace_id: str, **kwargs
+    ) -> NotionResponse:
         """List all integrations in workspace
 
         HTTP GET /workspaces/{workspace_id}/integrations
@@ -1688,11 +1812,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/integrations".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/integrations"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1705,7 +1830,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def get_integration_details(self, workspace_id: str, integration_id: str, **kwargs) -> NotionResponse:
+    async def get_integration_details(
+        self, workspace_id: str, integration_id: str, **kwargs
+    ) -> NotionResponse:
         """Get details of a specific integration
 
         HTTP GET /workspaces/{workspace_id}/integrations/{integration_id}
@@ -1716,11 +1843,14 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/integrations/{integration_id}".format(workspace_id=workspace_id, integration_id=integration_id)
+        url = (
+            self.base_url + f"/workspaces/{workspace_id}/integrations/{integration_id}"
+        )
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1737,8 +1867,8 @@ class NotionDataSource:
         self,
         workspace_id: str,
         integration_id: str,
-        request_body: Optional[Dict[str, Any]] = None,
-        **kwargs
+        request_body: dict[str, Any] | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Update integration settings and permissions
 
@@ -1751,11 +1881,14 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/integrations/{integration_id}".format(workspace_id=workspace_id, integration_id=integration_id)
+        url = (
+            self.base_url + f"/workspaces/{workspace_id}/integrations/{integration_id}"
+        )
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -1769,7 +1902,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def remove_integration(self, workspace_id: str, integration_id: str, **kwargs) -> NotionResponse:
+    async def remove_integration(
+        self, workspace_id: str, integration_id: str, **kwargs
+    ) -> NotionResponse:
         """Remove integration from workspace
 
         HTTP DELETE /workspaces/{workspace_id}/integrations/{integration_id}
@@ -1780,11 +1915,14 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/integrations/{integration_id}".format(workspace_id=workspace_id, integration_id=integration_id)
+        url = (
+            self.base_url + f"/workspaces/{workspace_id}/integrations/{integration_id}"
+        )
         request = HTTPRequest(
             method="DELETE",
             url=url,
@@ -1797,7 +1935,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def get_integration_restrictions(self, workspace_id: str, **kwargs) -> NotionResponse:
+    async def get_integration_restrictions(
+        self, workspace_id: str, **kwargs
+    ) -> NotionResponse:
         """Get workspace integration restrictions
 
         HTTP GET /workspaces/{workspace_id}/integration-restrictions
@@ -1807,11 +1947,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/integration-restrictions".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/integration-restrictions"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1824,7 +1965,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_integration_restrictions(self, workspace_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_integration_restrictions(
+        self, workspace_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update workspace integration restrictions
 
         HTTP PATCH /workspaces/{workspace_id}/integration-restrictions
@@ -1835,11 +1978,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/integration-restrictions".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/integration-restrictions"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -1855,7 +1999,9 @@ class NotionDataSource:
 
     # Security methods
 
-    async def get_security_settings(self, workspace_id: str, **kwargs) -> NotionResponse:
+    async def get_security_settings(
+        self, workspace_id: str, **kwargs
+    ) -> NotionResponse:
         """Get workspace security settings
 
         HTTP GET /workspaces/{workspace_id}/security
@@ -1865,11 +2011,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/security".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/security"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1882,7 +2029,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_security_settings(self, workspace_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_security_settings(
+        self, workspace_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update workspace security settings
 
         HTTP PATCH /workspaces/{workspace_id}/security
@@ -1893,11 +2042,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/security".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/security"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -1921,11 +2071,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/security/saml".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/security/saml"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -1938,7 +2089,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_saml_sso_config(self, workspace_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_saml_sso_config(
+        self, workspace_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update SAML SSO configuration
 
         HTTP PATCH /workspaces/{workspace_id}/security/saml
@@ -1949,11 +2102,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/security/saml".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/security/saml"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -1967,7 +2121,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def verify_domain(self, workspace_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def verify_domain(
+        self, workspace_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Verify domain ownership for enterprise features
 
         HTTP POST /workspaces/{workspace_id}/security/domains/verify
@@ -1978,11 +2134,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/security/domains/verify".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/security/domains/verify"
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -1996,7 +2153,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def list_verified_domains(self, workspace_id: str, **kwargs) -> NotionResponse:
+    async def list_verified_domains(
+        self, workspace_id: str, **kwargs
+    ) -> NotionResponse:
         """List verified domains for workspace
 
         HTTP GET /workspaces/{workspace_id}/security/domains
@@ -2006,11 +2165,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/security/domains".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/security/domains"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -2025,7 +2185,9 @@ class NotionDataSource:
 
     # Content Management methods
 
-    async def search_workspace_content(self, workspace_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def search_workspace_content(
+        self, workspace_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Enterprise content search across workspace
 
         HTTP POST /workspaces/{workspace_id}/admin/content/search
@@ -2036,11 +2198,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/content/search".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/content/search"
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -2054,7 +2217,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def get_content_permissions(self, workspace_id: str, page_id: str, **kwargs) -> NotionResponse:
+    async def get_content_permissions(
+        self, workspace_id: str, page_id: str, **kwargs
+    ) -> NotionResponse:
         """Get detailed permissions for a page or database
 
         HTTP GET /workspaces/{workspace_id}/admin/content/{page_id}/permissions
@@ -2065,11 +2230,15 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/content/{page_id}/permissions".format(workspace_id=workspace_id, page_id=page_id)
+        url = (
+            self.base_url
+            + f"/workspaces/{workspace_id}/admin/content/{page_id}/permissions"
+        )
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -2086,8 +2255,8 @@ class NotionDataSource:
         self,
         workspace_id: str,
         page_id: str,
-        request_body: Optional[Dict[str, Any]] = None,
-        **kwargs
+        request_body: dict[str, Any] | None = None,
+        **kwargs,
     ) -> NotionResponse:
         """Update permissions for a page or database
 
@@ -2100,11 +2269,15 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/content/{page_id}/permissions".format(workspace_id=workspace_id, page_id=page_id)
+        url = (
+            self.base_url
+            + f"/workspaces/{workspace_id}/admin/content/{page_id}/permissions"
+        )
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -2128,11 +2301,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/sharing-settings".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/sharing-settings"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -2145,7 +2319,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_sharing_settings(self, workspace_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_sharing_settings(
+        self, workspace_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update workspace sharing and collaboration settings
 
         HTTP PATCH /workspaces/{workspace_id}/admin/sharing-settings
@@ -2156,11 +2332,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/sharing-settings".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/sharing-settings"
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -2174,7 +2351,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def bulk_content_operations(self, workspace_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def bulk_content_operations(
+        self, workspace_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Perform bulk operations on content
 
         HTTP POST /workspaces/{workspace_id}/admin/content/bulk
@@ -2185,11 +2364,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/content/bulk".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/content/bulk"
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -2213,11 +2393,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/trash".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/trash"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -2230,7 +2411,9 @@ class NotionDataSource:
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def update_trash_settings(self, workspace_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
+    async def update_trash_settings(
+        self, workspace_id: str, request_body: dict[str, Any] | None = None, **kwargs
+    ) -> NotionResponse:
         """Update trash retention and deletion settings
 
         HTTP PATCH /workspaces/{workspace_id}/admin/trash
@@ -2241,11 +2424,12 @@ class NotionDataSource:
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
+
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/workspaces/{workspace_id}/admin/trash".format(workspace_id=workspace_id)
+        url = self.base_url + f"/workspaces/{workspace_id}/admin/trash"
         request = HTTPRequest(
             method="PATCH",
             url=url,

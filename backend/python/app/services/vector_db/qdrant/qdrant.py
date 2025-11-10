@@ -1,5 +1,4 @@
 import time
-from typing import Dict, List, Optional, Union
 
 from qdrant_client import AsyncQdrantClient, QdrantClient  # type: ignore
 from qdrant_client.http.models import (  # type: ignore
@@ -31,6 +30,7 @@ from app.utils.logger import create_logger
 
 logger = create_logger("qdrant_service")
 
+
 class QdrantService(IVectorDBService):
     def __init__(
         self,
@@ -38,21 +38,22 @@ class QdrantService(IVectorDBService):
         is_async: bool = False,
     ) -> None:
         self.config_service = config_service
-        self.client: Optional[QdrantClient | AsyncQdrantClient] = None
+        self.client: QdrantClient | AsyncQdrantClient | None = None
         self.is_async = is_async
 
     @classmethod
     async def create_sync(
         cls,
         config: ConfigurationService | QdrantConfig,
-    ) -> 'QdrantService':
-        """
-        Factory method to create and initialize a QdrantService instance.
+    ) -> "QdrantService":
+        """Factory method to create and initialize a QdrantService instance.
+
         Args:
             logger: Logger instance
             config_service: ConfigurationService instance
         Returns:
             QdrantService: Initialized QdrantService instance
+
         """
         service = cls(config, is_async=False)
         await service.connect_sync()
@@ -62,14 +63,15 @@ class QdrantService(IVectorDBService):
     async def create_async(
         cls,
         config: ConfigurationService | QdrantConfig,
-    ) -> 'QdrantService':
-        """
-        Factory method to create and initialize a QdrantService instance with async client.
+    ) -> "QdrantService":
+        """Factory method to create and initialize a QdrantService instance with async client.
+
         Args:
             logger: Logger instance
             config_service: ConfigurationService instance
         Returns:
             QdrantService: Initialized QdrantService instance with async client
+
         """
         service = cls(config, is_async=True)
         await service.connect_async()
@@ -80,16 +82,18 @@ class QdrantService(IVectorDBService):
         try:
             # Get Qdrant configuration
             if isinstance(self.config_service, ConfigurationService):
-                qdrant_config = await self.config_service.get_config(config_node_constants.QDRANT.value)
+                qdrant_config = await self.config_service.get_config(
+                    config_node_constants.QDRANT.value
+                )
             else:
                 qdrant_config = self.config_service.qdrant_config
             if not qdrant_config:
                 raise ValueError("Qdrant configuration not found")
 
             self.client = AsyncQdrantClient(
-                host=qdrant_config.get("host"), # type: ignore
-                port=qdrant_config.get("port"), # type: ignore
-                api_key=qdrant_config.get("apiKey"), # type: ignore
+                host=qdrant_config.get("host"),  # type: ignore
+                port=qdrant_config.get("port"),  # type: ignore
+                api_key=qdrant_config.get("apiKey"),  # type: ignore
                 prefer_grpc=True,
                 https=False,
                 timeout=180,
@@ -109,16 +113,18 @@ class QdrantService(IVectorDBService):
         try:
             # Get Qdrant configuration
             if isinstance(self.config_service, ConfigurationService):
-                qdrant_config = await self.config_service.get_config(config_node_constants.QDRANT.value)
+                qdrant_config = await self.config_service.get_config(
+                    config_node_constants.QDRANT.value
+                )
             else:
                 qdrant_config = self.config_service.qdrant_config
             if not qdrant_config:
                 raise ValueError("Qdrant configuration not found")
 
             self.client = QdrantClient(
-                host=qdrant_config.get("host"), # type: ignore
-                port=qdrant_config.get("port"), # type: ignore
-                api_key=qdrant_config.get("apiKey"), # type: ignore
+                host=qdrant_config.get("host"),  # type: ignore
+                port=qdrant_config.get("port"),  # type: ignore
+                api_key=qdrant_config.get("apiKey"),  # type: ignore
                 prefer_grpc=True,
                 https=False,
                 timeout=180,
@@ -141,7 +147,7 @@ class QdrantService(IVectorDBService):
     def get_service_name(self) -> str:
         return "qdrant"
 
-    def get_service(self) -> 'QdrantService':
+    def get_service(self) -> "QdrantService":
         return self
 
     def get_service_client(self) -> QdrantClient | AsyncQdrantClient:
@@ -173,13 +179,13 @@ class QdrantService(IVectorDBService):
 
     async def create_collection(
         self,
-        embedding_size: int=1024,
+        embedding_size: int = 1024,
         collection_name: str = VECTOR_DB_COLLECTION_NAME,
         sparse_idf: bool = False,
-        vectors_config: Optional[dict] = None,
-        sparse_vectors_config: Optional[dict] = None,
-        optimizers_config: Optional[dict] = None,
-        quantization_config: Optional[dict] = None,
+        vectors_config: dict | None = None,
+        sparse_vectors_config: dict | None = None,
+        optimizers_config: dict | None = None,
+        quantization_config: dict | None = None,
     ) -> None:
         """Create a collection with default vector configuration if not provided"""
         if self.client is None:
@@ -187,14 +193,16 @@ class QdrantService(IVectorDBService):
 
         # Set default values if not provided
         if vectors_config is None:
-            vectors_config = {"dense": VectorParams(size=embedding_size, distance=Distance.COSINE)}
+            vectors_config = {
+                "dense": VectorParams(size=embedding_size, distance=Distance.COSINE)
+            }
 
         if sparse_vectors_config is None:
             sparse_vectors_config = {
                 "sparse": SparseVectorParams(
                     index=SparseIndexParams(on_disk=False),
-                    modifier=Modifier.IDF if sparse_idf else None
-                )
+                    modifier=Modifier.IDF if sparse_idf else None,
+                ),
             }
 
         if optimizers_config is None:
@@ -205,8 +213,8 @@ class QdrantService(IVectorDBService):
                 scalar=ScalarQuantizationConfig(
                     type=ScalarType.INT8,
                     quantile=0.95,
-                    always_ram=True
-                )
+                    always_ram=True,
+                ),
             )
 
         self.client.create_collection(
@@ -226,7 +234,9 @@ class QdrantService(IVectorDBService):
     ) -> None:
         """Create an index"""
         if self.client is None:
-            raise RuntimeError("Client not connected. Call connect_sync() or connect_async() first.")
+            raise RuntimeError(
+                "Client not connected. Call connect_sync() or connect_async() first."
+            )
 
         if field_schema.get("type") == "keyword":
             field_schema = KeywordIndexParams(
@@ -238,15 +248,14 @@ class QdrantService(IVectorDBService):
 
     async def filter_collection(
         self,
-        filter_mode: Union[str, QdrantFilterMode] = QdrantFilterMode.MUST,
-        must: Optional[Dict[str, FilterValue]] = None,
-        should: Optional[Dict[str, FilterValue]] = None,
-        must_not: Optional[Dict[str, FilterValue]] = None,
-        min_should_match: Optional[int] = None,
+        filter_mode: str | QdrantFilterMode = QdrantFilterMode.MUST,
+        must: dict[str, FilterValue] | None = None,
+        should: dict[str, FilterValue] | None = None,
+        must_not: dict[str, FilterValue] | None = None,
+        min_should_match: int | None = None,
         **kwargs: FilterValue,
     ) -> Filter:
-        """
-        Simple filter builder supporting must (AND), should (OR), and must_not (NOT) conditions
+        """Simple filter builder supporting must (AND), should (OR), and must_not (NOT) conditions
 
         Args:
             mode: Default filter mode for kwargs - FilterMode.MUST, FilterMode.SHOULD, or string
@@ -288,6 +297,7 @@ class QdrantService(IVectorDBService):
                 must_not={"banned": True, "status": "deleted"},
                 min_should_match=1
             )
+
         """
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
@@ -297,7 +307,9 @@ class QdrantService(IVectorDBService):
             try:
                 filter_mode = QdrantFilterMode(filter_mode.lower())
             except ValueError:
-                raise ValueError(f"Invalid mode '{filter_mode}'. Must be 'must', 'should', or 'must_not'")
+                raise ValueError(
+                    f"Invalid mode '{filter_mode}'. Must be 'must', 'should', or 'must_not'"
+                )
 
         # Distribute kwargs based on mode
         all_must_filters = dict(must) if must else {}
@@ -314,9 +326,19 @@ class QdrantService(IVectorDBService):
                 all_must_not_filters.update(kwargs)
 
         # Build conditions for each filter type
-        must_conditions = QdrantUtils.build_conditions(all_must_filters) if all_must_filters else []
-        should_conditions = QdrantUtils.build_conditions(all_should_filters) if all_should_filters else []
-        must_not_conditions = QdrantUtils.build_conditions(all_must_not_filters) if all_must_not_filters else []
+        must_conditions = (
+            QdrantUtils.build_conditions(all_must_filters) if all_must_filters else []
+        )
+        should_conditions = (
+            QdrantUtils.build_conditions(all_should_filters)
+            if all_should_filters
+            else []
+        )
+        must_not_conditions = (
+            QdrantUtils.build_conditions(all_must_not_filters)
+            if all_must_not_filters
+            else []
+        )
 
         # Validate we have at least some conditions
         if not must_conditions and not should_conditions and not must_not_conditions:
@@ -364,8 +386,8 @@ class QdrantService(IVectorDBService):
     def query_nearest_points(
         self,
         collection_name: str,
-        requests: List[QueryRequest],
-    ) -> List[List[PointStruct]]:
+        requests: list[QueryRequest],
+    ) -> list[list[PointStruct]]:
         """Query batch points"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
@@ -374,19 +396,23 @@ class QdrantService(IVectorDBService):
     def upsert_points(
         self,
         collection_name: str,
-        points: List[PointStruct],
+        points: list[PointStruct],
     ) -> None:
         """Upsert points"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
 
         start_time = time.perf_counter()
-        logger.info(f"⏱️ Starting upsert of {len(points)} points to collection '{collection_name}'")
+        logger.info(
+            f"⏱️ Starting upsert of {len(points)} points to collection '{collection_name}'"
+        )
 
         self.client.upsert(collection_name, points)
 
         elapsed_time = time.perf_counter() - start_time
-        logger.info(f"⏱️ Completed upsert of {len(points)} points in {elapsed_time:.2f}s (avg: {elapsed_time/len(points)*1000:.2f}ms per point)")
+        logger.info(
+            f"⏱️ Completed upsert of {len(points)} points in {elapsed_time:.2f}s (avg: {elapsed_time / len(points) * 1000:.2f}ms per point)"
+        )
 
     def delete_points(
         self,
@@ -399,7 +425,7 @@ class QdrantService(IVectorDBService):
         self.client.delete(
             collection_name=collection_name,
             points_selector=FilterSelector(
-                filter=filter
+                filter=filter,
             ),
         )
         logger.info(f"✅ Deleted points from collection '{collection_name}'")

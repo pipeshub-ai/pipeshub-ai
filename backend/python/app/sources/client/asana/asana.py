@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Dict, Generator, Optional, Union
+from collections.abc import Generator
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -7,7 +8,7 @@ try:
     import asana
 except ImportError:
     raise ImportError(
-        "asana is not installed. Please install it with `pip install asana`"
+        "asana is not installed. Please install it with `pip install asana`",
     )
 
 from app.config.configuration_service import ConfigurationService
@@ -19,11 +20,12 @@ class AsanaResponse(BaseModel):
     """Standardized Asana API response wrapper"""
 
     success: bool = Field(..., description="Whether the API call was successful")
-    data: Optional[Union[Dict[str, Any], Generator]] = Field(
-        None, description="Response data from Asana API (dict or generator)"
+    data: dict[str, Any] | Generator | None = Field(
+        None,
+        description="Response data from Asana API (dict or generator)",
     )
-    error: Optional[str] = Field(None, description="Error message if the call failed")
-    message: Optional[str] = Field(None, description="Additional message information")
+    error: str | None = Field(None, description="Error message if the call failed")
+    message: str | None = Field(None, description="Additional message information")
 
     class Config:
         """Pydantic configuration"""
@@ -34,10 +36,10 @@ class AsanaResponse(BaseModel):
                 "data": {"gid": "123456789", "name": "Example Task"},
                 "error": None,
                 "message": None,
-            }
+            },
         }
 
-    def to_dict(self) -> Dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Convert to dictionary for JSON serialization"""
         return self.model_dump()
 
@@ -55,6 +57,7 @@ class AsanaClientViaToken:
     Args:
         access_token: Personal access token from Asana developer console
         return_page_iterator: Whether to return page iterator for list endpoints (default: True)
+
     """
 
     def __init__(
@@ -64,14 +67,15 @@ class AsanaClientViaToken:
     ) -> None:
         self.access_token = access_token
         self.return_page_iterator = return_page_iterator
-        self._configuration: Optional[asana.Configuration] = None
-        self._api_client: Optional[asana.ApiClient] = None
+        self._configuration: asana.Configuration | None = None
+        self._api_client: asana.ApiClient | None = None
 
     def create_client(self) -> asana.ApiClient:
         """Create and configure the Asana API client
 
         Returns:
             Configured asana.ApiClient instance
+
         """
         # Create configuration
         configuration = asana.Configuration()
@@ -93,6 +97,7 @@ class AsanaClientViaToken:
 
         Raises:
             RuntimeError: If client not initialized
+
         """
         if self._api_client is None:
             raise RuntimeError("Client not initialized. Call create_client() first.")
@@ -106,10 +111,11 @@ class AsanaClientViaToken:
 
         Raises:
             RuntimeError: If configuration not initialized
+
         """
         if self._configuration is None:
             raise RuntimeError(
-                "Configuration not initialized. Call create_client() first."
+                "Configuration not initialized. Call create_client() first.",
             )
         return self._configuration
 
@@ -120,11 +126,13 @@ class AsanaTokenConfig(BaseModel):
     Args:
         access_token: Personal access token from Asana
         return_page_iterator: Whether to return page iterator for list endpoints
+
     """
 
     access_token: str = Field(..., description="Personal access token from Asana")
     return_page_iterator: bool = Field(
-        default=True, description="Whether to return page iterator for list endpoints"
+        default=True,
+        description="Whether to return page iterator for list endpoints",
     )
 
     def create_client(self) -> AsanaClientViaToken:
@@ -132,13 +140,14 @@ class AsanaTokenConfig(BaseModel):
 
         Returns:
             AsanaClientViaToken instance
+
         """
         return AsanaClientViaToken(
             access_token=self.access_token,
             return_page_iterator=self.return_page_iterator,
         )
 
-    def to_dict(self) -> Dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Convert the configuration to a dictionary"""
         return self.model_dump()
 
@@ -158,6 +167,7 @@ class AsanaClient(IClient):
 
         Args:
             client: Asana REST client instance
+
         """
         self.client = client
 
@@ -166,6 +176,7 @@ class AsanaClient(IClient):
 
         Returns:
             Asana REST client instance
+
         """
         return self.client
 
@@ -174,6 +185,7 @@ class AsanaClient(IClient):
 
         Returns:
             asana.ApiClient instance
+
         """
         return self.client.get_api_client()
 
@@ -189,6 +201,7 @@ class AsanaClient(IClient):
 
         Returns:
             AsanaClient instance
+
         """
         client = config.create_client()
         client.create_client()  # Initialize the SDK client
@@ -218,9 +231,10 @@ class AsanaClient(IClient):
 
         Raises:
             NotImplementedError: This method requires platform-specific implementation
+
         """
         # TODO: Implement - fetch config from services
         logger.warning("AsanaClient.build_from_services not yet implemented")
         raise NotImplementedError(
-            "build_from_services requires implementation with actual services"
+            "build_from_services requires implementation with actual services",
         )

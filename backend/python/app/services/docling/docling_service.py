@@ -1,5 +1,4 @@
 import base64
-from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -16,13 +15,13 @@ from app.utils.logger import create_logger
 class ProcessRequest(BaseModel):
     record_name: str
     pdf_binary: str  # base64 encoded PDF binary data
-    org_id: Optional[str] = None
+    org_id: str | None = None
 
 
 class ProcessResponse(BaseModel):
     success: bool
-    block_containers: Optional[dict] = None
-    error: Optional[str] = None
+    block_containers: dict | None = None
+    error: str | None = None
 
 
 class DoclingService:
@@ -42,12 +41,12 @@ class DoclingService:
             # Initialize DoclingProcessor
             self.processor = DoclingProcessor(
                 logger=self.logger,
-                config=self.config_service
+                config=self.config_service,
             )
 
             self.logger.info("✅ Docling service initialized successfully")
         except Exception as e:
-            self.logger.error(f"❌ Failed to initialize Docling service: {str(e)}")
+            self.logger.error(f"❌ Failed to initialize Docling service: {e!s}")
             raise
 
     async def process_pdf(self, record_name: str, pdf_binary: bytes) -> BlocksContainer:
@@ -65,7 +64,7 @@ class DoclingService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing PDF {record_name}: {str(e)}")
+            self.logger.error(f"❌ Error processing PDF {record_name}: {e!s}")
             raise
 
     async def health_check(self) -> bool:
@@ -73,30 +72,34 @@ class DoclingService:
         try:
             # Check if service is properly initialized
             if self.processor is None:
-                self.logger.warning("⚠️ DoclingService not initialized: processor is None")
+                self.logger.warning(
+                    "⚠️ DoclingService not initialized: processor is None"
+                )
                 return False
 
             # Additional health checks can be added here
             # For now, just check if the processor exists
             return True
         except Exception as e:
-            self.logger.error(f"❌ Health check failed: {str(e)}")
+            self.logger.error(f"❌ Health check failed: {e!s}")
             return False
 
 
 # Global service instance (to be set by the application wiring)
-docling_service: Optional[DoclingService] = None
+docling_service: DoclingService | None = None
+
 
 def set_docling_service(service: DoclingService) -> None:
     """Wire an initialized DoclingService instance for the route handlers to use."""
     # Avoid using `global` assignment elsewhere; this function is the single writer
     globals()["docling_service"] = service
 
+
 # FastAPI app
 app = FastAPI(
     title="Docling Processing Service",
     description="Microservice for PDF processing using Docling",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 
@@ -129,7 +132,7 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
         except Exception as e:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Invalid base64 PDF data: {str(e)}"
+                detail=f"Invalid base64 PDF data: {e!s}",
             )
 
         # Ensure service is wired
@@ -139,17 +142,16 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
         # Process the PDF
         block_containers = await docling_service.process_pdf(
             request.record_name,
-            pdf_binary
+            pdf_binary,
         )
 
         # Convert BlocksContainer to dict for JSON serialization
         # We'll need to implement a proper serialization method
         block_containers_dict = serialize_blocks_container(block_containers)
 
-
         return ProcessResponse(
             success=True,
-            block_containers=block_containers_dict
+            block_containers=block_containers_dict,
         )
 
     except HTTPException:
@@ -157,8 +159,9 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
     except Exception as e:
         return ProcessResponse(
             success=False,
-            error=f"Processing failed: {str(e)}"
+            error=f"Processing failed: {e!s}",
         )
+
 
 def serialize_blocks_container(blocks_container: BlocksContainer) -> dict:
     """Serialize BlocksContainer to dictionary for JSON response"""
@@ -179,7 +182,7 @@ def run(host: str = "0.0.0.0", port: int = 8081, reload: bool = False) -> None:
         host=host,
         port=port,
         log_level="info",
-        reload=reload
+        reload=reload,
     )
 
 

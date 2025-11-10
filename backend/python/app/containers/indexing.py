@@ -20,14 +20,18 @@ class IndexingAppContainer(BaseAppContainer):
     container_utils = ContainerUtils()
     # Override config_service to use the service-specific logger
     key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
-    config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
+    config_service = providers.Singleton(
+        ConfigurationService, logger=logger, key_value_store=key_value_store
+    )
 
     # Override arango_client and redis_client to use the service-specific config_service
     arango_client = providers.Resource(
-        BaseAppContainer._create_arango_client, config_service=config_service
+        BaseAppContainer._create_arango_client,
+        config_service=config_service,
     )
     redis_client = providers.Resource(
-        BaseAppContainer._create_redis_client, config_service=config_service
+        BaseAppContainer._create_redis_client,
+        config_service=config_service,
     )
     kafka_service = providers.Singleton(lambda: None)  # Not used in indexing service
     arango_service = providers.Resource(
@@ -89,7 +93,12 @@ class IndexingAppContainer(BaseAppContainer):
 
     # Parsers
     parsers = providers.Resource(container_utils.create_parsers, logger=logger)
-    domain_extractor = providers.Resource(container_utils.create_domain_extractor, logger=logger, arango_service=arango_service, config_service=config_service)
+    domain_extractor = providers.Resource(
+        container_utils.create_domain_extractor,
+        logger=logger,
+        arango_service=arango_service,
+        config_service=config_service,
+    )
     # Processor - depends on domain_extractor, indexing_pipeline, and arango_service
     processor = providers.Resource(
         container_utils.create_processor,
@@ -121,8 +130,9 @@ class IndexingAppContainer(BaseAppContainer):
         modules=[
             "app.indexing_main",
             "app.modules.extraction.domain_extraction",
-        ]
+        ],
     )
+
 
 async def initialize_container(container: IndexingAppContainer) -> bool:
     """Initialize container resources"""
@@ -145,5 +155,5 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"❌ Failed to initialize resources: {str(e)}")
+        logger.error(f"❌ Failed to initialize resources: {e!s}")
         raise

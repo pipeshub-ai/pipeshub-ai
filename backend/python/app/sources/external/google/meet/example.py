@@ -2,6 +2,7 @@
 """
 Example script to demonstrate how to use the Google Meet API
 """
+
 import asyncio
 import logging
 
@@ -13,10 +14,15 @@ from app.sources.external.google.meet.meet import GoogleMeetDataSource
 
 async def main() -> None:
     # create configuration service client
-    etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(logger=logging.getLogger(__name__))
+    etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(
+        logger=logging.getLogger(__name__)
+    )
 
     # create configuration service
-    config_service = ConfigurationService(logger=logging.getLogger(__name__), key_value_store=etcd3_encrypted_key_value_store)
+    config_service = ConfigurationService(
+        logger=logging.getLogger(__name__),
+        key_value_store=etcd3_encrypted_key_value_store,
+    )
 
     meet_google_client = await GoogleClient.build_from_services(
         service_name="meet",

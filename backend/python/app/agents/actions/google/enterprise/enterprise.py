@@ -15,6 +15,7 @@ class GoogleDriveEnterprise:
     Returns:
         None
     """
+
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Drive Enterprise tool"""
         self.client = client
@@ -27,9 +28,9 @@ class GoogleDriveEnterprise:
                 name="customer",
                 type=ParameterType.STRING,
                 description="The customer ID to get the list of users for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_users_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of users in the domain
@@ -39,11 +40,14 @@ class GoogleDriveEnterprise:
             tuple[bool, str]: True if the list of users is retrieved, False otherwise
         """
         try:
-            users = self.client.users().list(customer=customer, orderBy="email", projection="full").execute() # type: ignore
+            users = (
+                self.client.users()
+                .list(customer=customer, orderBy="email", projection="full")
+                .execute()
+            )  # type: ignore
             return True, json.dumps(users)
         except Exception as e:
             return False, json.dumps({"error": str(e)})
-
 
     @tool(
         app_name="google_drive_enterprise",
@@ -53,9 +57,9 @@ class GoogleDriveEnterprise:
                 name="customer",
                 type=ParameterType.STRING,
                 description="The customer ID to get the list of groups for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_groups_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of groups in the domain
@@ -65,7 +69,7 @@ class GoogleDriveEnterprise:
             tuple[bool, str]: True if the list of groups is retrieved, False otherwise
         """
         try:
-            groups = self.client.groups().list(customer=customer).execute() # type: ignore
+            groups = self.client.groups().list(customer=customer).execute()  # type: ignore
             return True, json.dumps(groups)
         except Exception as e:
             return False, json.dumps({"error": str(e)})
@@ -78,9 +82,9 @@ class GoogleDriveEnterprise:
                 name="customer",
                 type=ParameterType.STRING,
                 description="The customer ID to get the list of domains for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_domains_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of domains in the domain
@@ -90,7 +94,7 @@ class GoogleDriveEnterprise:
             tuple[bool, str]: True if the list of domains is retrieved, False otherwise
         """
         try:
-            domains = self.client.domains().list(customer=customer).execute() # type: ignore
+            domains = self.client.domains().list(customer=customer).execute()  # type: ignore
             return True, json.dumps(domains)
         except Exception as e:
             return False, json.dumps({"error": str(e)})
@@ -103,9 +107,9 @@ class GoogleDriveEnterprise:
                 name="group_email",
                 type=ParameterType.STRING,
                 description="The email of the group to get the list of members for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_group_members_list(self, group_email: str) -> tuple[bool, str]:
         """Get the list of members in a group
@@ -115,11 +119,10 @@ class GoogleDriveEnterprise:
             tuple[bool, str]: True if the list of members is retrieved, False otherwise
         """
         try:
-            members = self.client.members().get(groupKey=group_email).execute() # type: ignore
+            members = self.client.members().get(groupKey=group_email).execute()  # type: ignore
             return True, json.dumps(members)
         except Exception as e:
             return False, json.dumps({"error": str(e)})
-
 
     @tool(
         app_name="google_drive_enterprise",
@@ -129,9 +132,9 @@ class GoogleDriveEnterprise:
                 name="user_email",
                 type=ParameterType.STRING,
                 description="The email of the user to get the info for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_user_info(self, user_email: str) -> tuple[bool, str]:
         """Get the info of a user
@@ -140,9 +143,8 @@ class GoogleDriveEnterprise:
         Returns:
             tuple[bool, str]: True if the user info is retrieved, False otherwise
         """
-
         try:
-            user_info = self.client.users().get(userKey=user_email).execute() # type: ignore
+            user_info = self.client.users().get(userKey=user_email).execute()  # type: ignore
             return True, json.dumps(user_info)
         except Exception as e:
             return False, json.dumps({"error": str(e)})
@@ -155,9 +157,9 @@ class GoogleDriveEnterprise:
                 name="group_email",
                 type=ParameterType.STRING,
                 description="The email of the group to get the info for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_group_info(self, group_email: str) -> tuple[bool, str]:
         """Get the info of a group
@@ -167,7 +169,7 @@ class GoogleDriveEnterprise:
             tuple[bool, str]: True if the group info is retrieved, False otherwise
         """
         try:
-            group_info = self.client.groups().get(groupKey=group_email).execute() # type: ignore
+            group_info = self.client.groups().get(groupKey=group_email).execute()  # type: ignore
             return True, json.dumps(group_info)
         except Exception as e:
             return False, json.dumps({"error": str(e)})

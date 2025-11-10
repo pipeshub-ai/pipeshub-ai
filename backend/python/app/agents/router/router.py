@@ -1,10 +1,9 @@
-"""
-Router for agent tools API endpoints
+"""Router for agent tools API endpoints
 Provides endpoints for clients to retrieve tool information from ArangoDB
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, HTTPException, Request
@@ -20,26 +19,25 @@ logger = logging.getLogger(__name__)
 
 
 async def get_tools_db(
-    config_service: ConfigurationService
+    config_service: ConfigurationService,
 ) -> ToolsDBManager:
-    """
-    Dependency provider for ToolsDBManager
+    """Dependency provider for ToolsDBManager
     Args:
         config_service: Configuration service dependency
     Returns:
         ToolsDBManager instance
     """
     arangodb_config = await config_service.get_config(
-        config_node_constants.ARANGODB.value
+        config_node_constants.ARANGODB.value,
     )
     if not arangodb_config:
         raise HTTPException(
             status_code=500,
-            detail="ArangoDB configuration not found"
+            detail="ArangoDB configuration not found",
         )
 
     if not arangodb_config or not isinstance(arangodb_config, dict):
-                raise ValueError("ArangoDB configuration not found or invalid")
+        raise ValueError("ArangoDB configuration not found or invalid")
 
     arango_url = str(arangodb_config.get("url"))
     arango_user = str(arangodb_config.get("username"))
@@ -50,17 +48,17 @@ async def get_tools_db(
         url=arango_url,
         username=arango_user,
         password=arango_password,
-        db=arango_db
+        db=arango_db,
     )
     return await ToolsDBManager.create(logging.getLogger(__name__), arango_config)
 
-@router.get("/", response_model=List[Dict[str, Any]])
+
+@router.get("/", response_model=list[dict[str, Any]])
 @inject
 async def get_all_tools(
     request: Request,
-) -> List[Dict[str, Any]]:
-    """
-    Get all available tools with complete information from ArangoDB
+) -> list[dict[str, Any]]:
+    """Get all available tools with complete information from ArangoDB
     Args:
         app_name: Optional filter by app name
         tag: Optional filter by tag
@@ -93,11 +91,19 @@ async def get_all_tools(
                 "examples": tool_node.examples,
                 "tags": tool_node.tags,
                 "parameter_count": len(tool_node.parameters),
-                "required_parameters": [param["name"] for param in tool_node.parameters if param.get("required", False)],
-                "optional_parameters": [param["name"] for param in tool_node.parameters if not param.get("required", False)],
+                "required_parameters": [
+                    param["name"]
+                    for param in tool_node.parameters
+                    if param.get("required", False)
+                ],
+                "optional_parameters": [
+                    param["name"]
+                    for param in tool_node.parameters
+                    if not param.get("required", False)
+                ],
                 "ctag": tool_node.ctag,
                 "created_at": tool_node.created_at,
-                "updated_at": tool_node.updated_at
+                "updated_at": tool_node.updated_at,
             }
 
             tools_data.append(tool_data)
@@ -107,5 +113,5 @@ async def get_all_tools(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve tools: {str(e)}"
+            detail=f"Failed to retrieve tools: {e!s}",
         )

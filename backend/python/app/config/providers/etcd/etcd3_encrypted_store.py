@@ -1,7 +1,8 @@
 import hashlib
 import json
 import os
-from typing import Callable, Dict, Generic, List, Optional, TypeVar, Union
+from collections.abc import Callable
+from typing import Generic, TypeVar
 
 import dotenv
 import etcd3
@@ -20,10 +21,9 @@ logger = create_logger("etcd")
 
 T = TypeVar("T")
 
+
 class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
-    """
-    ETCD3-based implementation of the encrypted key-value store.
-    """
+    """ETCD3-based implementation of the encrypted key-value store."""
 
     def __init__(
         self,
@@ -44,22 +44,21 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         self.logger.debug("🔑 Secret key hashed to 32 bytes and converted to hex")
 
         self.encryption_service = EncryptionService.get_instance(
-            "aes-256-gcm", hex_key, logger
+            "aes-256-gcm",
+            hex_key,
+            logger,
         )
         self.logger.debug("🔐 Initialized EncryptionService")
 
         self.logger.debug("🔧 Creating ETCD store...")
         self.store = self._create_store()
 
-
         self.logger.debug("✅ KeyValueStore initialized successfully")
 
     @property
-    def client(self) -> Optional[etcd3.client]:
+    def client(self) -> etcd3.client | None:
         """Expose the underlying ETCD client for watchers and diagnostics."""
-
         return getattr(self.store, "client", None)
-
 
     def _create_store(self) -> Etcd3DistributedKeyValueStore:
         self.logger.debug("🔧 Creating ETCD store configuration...")
@@ -87,7 +86,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             password=os.getenv("ETCD_PASSWORD", None),
         )
 
-        def serialize(value: Union[str, int, float, bool, Dict, list, None]) -> bytes:
+        def serialize(value: str | float | bool | dict | list | None) -> bytes:
             self.logger.debug("🔄 Serializing value: %s (type: %s)", value, type(value))
             if value is None:
                 self.logger.debug("⚠️ Serializing None value to empty bytes")
@@ -100,7 +99,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             self.logger.debug("✅ Serialized complex value: %s", serialized)
             return serialized
 
-        def deserialize(value: bytes) -> Union[str, int, float, bool, dict, list, None]:
+        def deserialize(value: bytes) -> str | int | float | bool | dict | list | None:
             if not value:
                 self.logger.debug("⚠️ Empty bytes, returning None")
                 return None
@@ -132,7 +131,9 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         self.logger.debug("✅ ETCD store created successfully")
         return store
 
-    async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> bool:
+    async def create_key(
+        self, key: str, value: T, overwrite: bool = True, ttl: int | None = None
+    ) -> bool:
         """Create a new key in etcd."""
         try:
             # Check if key exists
@@ -165,7 +166,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 encrypted_stored_value = await self.store.get_key(key)
                 if encrypted_stored_value:
                     decrypted_value = self.encryption_service.decrypt(
-                        encrypted_stored_value
+                        encrypted_stored_value,
                     )
                     stored_value = json.loads(decrypted_value)
 
@@ -174,22 +175,22 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                         return False
 
                 return True
-            else:
-                self.logger.error("❌ Failed to store key: %s", key)
-                return False
+            self.logger.error("❌ Failed to store key: %s", key)
+            return False
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to store config value for key %s: %s", key, str(e)
+                "❌ Failed to store config value for key %s: %s",
+                key,
+                str(e),
             )
             self.logger.exception("Detailed error:")
             return False
 
-
-    async def update_value(self, key: str, value: T, ttl: Optional[int] = None) -> None:
+    async def update_value(self, key: str, value: T, ttl: int | None = None) -> None:
         return await self.create_key(key, value, True, ttl)
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str) -> T | None:
         try:
             encrypted_value = await self.store.get_key(key)
 
@@ -216,7 +217,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
 
                 except Exception as e:
                     self.logger.error(
-                        f"❌ Failed to process value for key {key}: {str(e)}"
+                        f"❌ Failed to process value for key {key}: {e!s}",
                     )
                     return None
             else:
@@ -231,18 +232,18 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def delete_key(self, key: str) -> bool:
         return await self.store.delete_key(key)
 
-    async def get_all_keys(self) -> List[str]:
+    async def get_all_keys(self) -> list[str]:
         return await self.store.get_all_keys()
 
     async def watch_key(
         self,
         key: str,
-        callback: Callable[[Optional[T]], None],
-        error_callback: Optional[Callable[[Exception], None]] = None,
+        callback: Callable[[T | None], None],
+        error_callback: Callable[[Exception], None] | None = None,
     ) -> None:
         return await self.store.watch_key(key, callback, error_callback)
 
-    async def list_keys_in_directory(self, directory: str) -> List[str]:
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
         return await self.store.list_keys_in_directory(directory)
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:

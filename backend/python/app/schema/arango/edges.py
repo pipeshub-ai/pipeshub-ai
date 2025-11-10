@@ -98,7 +98,10 @@ permissions_schema = {
             "_from": {"type": "string", "minLength": 1},
             "_to": {"type": "string", "minLength": 1},
             "externalPermissionId": {"type": ["string", "null"]},
-            "type": {"type": ["string", "null"], "enum": ["USER", "GROUP", "DOMAIN","TEAM", "ORG"]},
+            "type": {
+                "type": ["string", "null"],
+                "enum": ["USER", "GROUP", "DOMAIN", "TEAM", "ORG"],
+            },
             "role": {
                 "type": "string",
                 "enum": [
@@ -172,7 +175,7 @@ role_based_edge_schema = {
         },
         "required": ["role", "createdAtTimestamp"],
         "additionalProperties": True,
-    }
+    },
 }
 
 # Agent -> Memory
@@ -183,11 +186,14 @@ source_edge_schema = {
             "_from": {"type": "string", "minLength": 1},
             "_to": {"type": "string", "minLength": 1},
             "createdAtTimestamp": {"type": "number"},
-            "source": {"type": "string", "enum": ["CONVERSATION", "KNOWLEDGE_BASE", "APPS"]},
+            "source": {
+                "type": "string",
+                "enum": ["CONVERSATION", "KNOWLEDGE_BASE", "APPS"],
+            },
         },
         "required": ["createdAtTimestamp"],
         "additionalProperties": True,
-    }
+    },
 }
 
 

@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class TokenType(Enum):
     """Enumeration of token types"""
+
     OAUTH2 = "OAUTH2"
     API_KEY = "API_KEY"
     BEARER_TOKEN = "BEARER_TOKEN"
@@ -13,36 +14,30 @@ class TokenType(Enum):
     SAML = "SAML"
     LDAP = "LDAP"
 
+
 class ITokenService(ABC):
     """Base interface for token services"""
 
     @abstractmethod
-    async def authenticate(self, credentials: Dict[str, Any]) -> bool:
+    async def authenticate(self, credentials: dict[str, Any]) -> bool:
         """Authenticate with the service and return a token"""
-        pass
 
     @abstractmethod
-    async def refresh_token(self, refresh_token: str) -> Dict[str, Any]:
+    async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
         """Refresh a token"""
-        pass
 
     @abstractmethod
     async def validate_token(self, token: str) -> bool:
         """Validate a token"""
-        pass
 
     @abstractmethod
     async def revoke_token(self, token: str) -> bool:
         """Revoke a token"""
-        pass
 
     @abstractmethod
-    def get_auth_headers(self) -> Dict[str, str]:
+    def get_auth_headers(self) -> dict[str, str]:
         """Get headers for API calls"""
-        pass
 
     @abstractmethod
-    def get_service(self) -> Optional[object]:
+    def get_service(self) -> object | None:
         """Get the underlying service instance"""
-        pass
-

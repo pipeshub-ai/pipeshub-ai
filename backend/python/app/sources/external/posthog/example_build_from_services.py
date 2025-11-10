@@ -3,6 +3,7 @@
 Simple Notion API search example.
 No pagination, no complexity - just search and print results.
 """
+
 import asyncio
 import os
 
@@ -11,6 +12,7 @@ from app.sources.client.posthog.posthog import PostHogResponse, PostHogTokenConf
 from app.config.configuration_service import ConfigurationService
 import logging
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+
 
 async def main():
     # Set up logging
@@ -21,7 +23,9 @@ async def main():
     etcd3_encrypted_key_value_store = Etcd3EncryptedKeyValueStore(logger=logger)
 
     # create configuration service
-    config_service = ConfigurationService(logger=logger, key_value_store=etcd3_encrypted_key_value_store)
+    config_service = ConfigurationService(
+        logger=logger, key_value_store=etcd3_encrypted_key_value_store
+    )
 
     # Build PostHog client using configuration service (await the async method)
     try:
@@ -34,16 +38,13 @@ async def main():
         logger.error(f"Failed to create PostHog client: {e}")
         print(f"❌ Error creating PostHog client: {e}")
         return
-    
+
     # Create data source and use it
     posthog_data_source = PostHogDataSource(posthog_client)
-    
+
     # Test getting events
     try:
-        response = await posthog_data_source.events(
-            limit=10,
-            event="button_clicked"
-        )
+        response = await posthog_data_source.events(limit=10, event="button_clicked")
         print(f"✅ Get events response: {response}")
     except Exception as e:
         print(f"❌ Error getting events: {e}")
@@ -51,6 +52,7 @@ async def main():
     finally:
         # Properly close the client session
         await posthog_client.get_client().close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

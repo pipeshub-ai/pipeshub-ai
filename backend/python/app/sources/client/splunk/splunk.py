@@ -217,7 +217,9 @@ class SplunkClient(IClient):
             raise
 
     def get_search_results(
-        self, job_id: str, output_mode: str = "json",
+        self,
+        job_id: str,
+        output_mode: str = "json",
     ) -> dict[str, Any] | None:
         """Retrieve search results for a given job ID
         Args:
@@ -246,7 +248,9 @@ class SplunkClient(IClient):
                 elif isinstance(result, results.Message):
                     self.logger.warning(f"Message from Splunk: {result}")
 
-            self.logger.info(f"Retrieved {len(results_list)} results for job ID: {job_id}")
+            self.logger.info(
+                f"Retrieved {len(results_list)} results for job ID: {job_id}"
+            )
             return {"results": results_list, "job_id": job_id}
 
         except Exception as e:
@@ -306,7 +310,11 @@ class SplunkClient(IClient):
                         "Username and password required for username_password auth type",
                     )
                 client_obj = SplunkRESTClientViaUsernamePassword(
-                    host=host, port=port, username=username, password=password, scheme=scheme,
+                    host=host,
+                    port=port,
+                    username=username,
+                    password=password,
+                    scheme=scheme,
                 )
 
             elif auth_type == "TOKEN" or auth_type == "API_TOKEN":
@@ -314,7 +322,10 @@ class SplunkClient(IClient):
                 if not token:
                     raise ValueError("Token required for token auth type")
                 client_obj = SplunkRESTClientViaToken(
-                    host=host, port=port, token=token, scheme=scheme,
+                    host=host,
+                    port=port,
+                    token=token,
+                    scheme=scheme,
                 )
 
             else:
@@ -328,11 +339,14 @@ class SplunkClient(IClient):
 
     @staticmethod
     async def _get_connector_config(
-        logger: logging.Logger, config_service: ConfigurationService,
+        logger: logging.Logger,
+        config_service: ConfigurationService,
     ) -> dict[str, Any]:
         """Fetch connector config from etcd for Splunk."""
         try:
-            config = await config_service.get_config("/services/connectors/splunk/config")
+            config = await config_service.get_config(
+                "/services/connectors/splunk/config"
+            )
             if not config or not isinstance(config, dict):
                 return {}
             return config.get("auth", {}) or {}
@@ -369,4 +383,3 @@ class SplunkClient(IClient):
             config["scheme"] = os.getenv("SPLUNK_SCHEME")
 
         return config
-

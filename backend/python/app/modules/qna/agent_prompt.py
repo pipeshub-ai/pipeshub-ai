@@ -1,10 +1,9 @@
-"""
-Professional Planning-Based Agent System
+"""Professional Planning-Based Agent System
 Enterprise-grade formatting with intelligent planning capabilities
 """
 
 from datetime import datetime
-from typing import Any, List, Tuple
+from typing import Any
 
 # Constants
 CONTENT_PREVIEW_LENGTH = 250
@@ -842,14 +841,17 @@ Remember: You're an intelligent AI agent in a professional environment. Your res
 # CONTEXT BUILDERS
 # ============================================================================
 
-def build_internal_context_for_planning(final_results, include_full_content=False) -> str:
+
+def build_internal_context_for_planning(
+    final_results, include_full_content=False
+) -> str:
     """Build internal knowledge context"""
     if not final_results:
         return "No internal knowledge sources available.\n\nOutput Format: Use Clean Professional Markdown"
 
     context_parts = [
         "## Internal Knowledge Sources Available",
-        "IMPORTANT: Since internal knowledge is available, if you use it, respond in Structured JSON format with citations.\n"
+        "IMPORTANT: Since internal knowledge is available, if you use it, respond in Structured JSON format with citations.\n",
     ]
 
     for idx, result in enumerate(final_results, 1):
@@ -864,7 +866,11 @@ def build_internal_context_for_planning(final_results, include_full_content=Fals
         if include_full_content:
             context_parts.append(f"Content: {content}")
         else:
-            preview = content[:CONTENT_PREVIEW_LENGTH] + "..." if len(content) > CONTENT_PREVIEW_LENGTH else content
+            preview = (
+                content[:CONTENT_PREVIEW_LENGTH] + "..."
+                if len(content) > CONTENT_PREVIEW_LENGTH
+                else content
+            )
             context_parts.append(f"Preview: {preview}")
 
         if "title" in metadata:
@@ -876,7 +882,9 @@ def build_internal_context_for_planning(final_results, include_full_content=Fals
 
         context_parts.append("")
 
-    context_parts.append("\nOutput Format Rule: If you reference any sources [1][2][3], use Structured JSON with citations. If only using tools, use Professional Markdown.")
+    context_parts.append(
+        "\nOutput Format Rule: If you reference any sources [1][2][3], use Structured JSON with citations. If only using tools, use Professional Markdown."
+    )
 
     return "\n".join(context_parts)
 
@@ -896,10 +904,16 @@ def build_conversation_history_context(previous_conversations, max_history=5) ->
         if role == "user_query":
             history_parts.append(f"\nUser (Turn {idx}): {content}")
         elif role == "bot_response":
-            abbreviated = content[:CONVERSATION_PREVIEW_LENGTH] + "..." if len(content) > CONVERSATION_PREVIEW_LENGTH else content
+            abbreviated = (
+                content[:CONVERSATION_PREVIEW_LENGTH] + "..."
+                if len(content) > CONVERSATION_PREVIEW_LENGTH
+                else content
+            )
             history_parts.append(f"Assistant (Turn {idx}): {abbreviated}")
 
-    history_parts.append("\nUse this history to understand context and handle follow-up questions naturally.")
+    history_parts.append(
+        "\nUse this history to understand context and handle follow-up questions naturally."
+    )
 
     return "\n".join(history_parts)
 
@@ -910,7 +924,9 @@ def build_user_context(user_info, org_info) -> str:
         return "No user context available."
 
     parts = ["## User Information Available\n"]
-    parts.append("**IMPORTANT**: You have access to the following user information. Use your judgment to determine when this information is relevant for personalization, user-specific questions, and context-aware responses.\n")
+    parts.append(
+        "**IMPORTANT**: You have access to the following user information. Use your judgment to determine when this information is relevant for personalization, user-specific questions, and context-aware responses.\n"
+    )
 
     # User details
     if user_info.get("userEmail"):
@@ -926,13 +942,17 @@ def build_user_context(user_info, org_info) -> str:
     if org_info.get("orgId"):
         parts.append(f"- **Organization ID**: {org_info['orgId']}")
     if org_info.get("accountType"):
-        parts.append(f"- **Account Type**: {org_info['accountType']} (affects tool permissions)")
+        parts.append(
+            f"- **Account Type**: {org_info['accountType']} (affects tool permissions)"
+        )
     if org_info.get("name"):
         parts.append(f"- **Organization**: {org_info['name']}")
 
     parts.append("\n**Usage Guidelines**:")
     parts.append("- Use your judgment to determine when user information is relevant")
-    parts.append("- Personalize responses when appropriate (e.g., 'Based on your role as...')")
+    parts.append(
+        "- Personalize responses when appropriate (e.g., 'Based on your role as...')"
+    )
     parts.append("- Account type determines tool access (enterprise vs individual)")
     parts.append("- User email enables impersonation for enterprise tools")
     parts.append("- Only reference user context when it adds value to the response")
@@ -943,6 +963,7 @@ def build_user_context(user_info, org_info) -> str:
 # ============================================================================
 # AGENT PROMPT BUILDER
 # ============================================================================
+
 
 def build_agent_prompt(state, max_iterations=30) -> str:
     """Build the professional agent prompt"""
@@ -963,7 +984,7 @@ def build_agent_prompt(state, max_iterations=30) -> str:
         user_context = "No user context available."
 
     conversation_history = build_conversation_history_context(
-        state.get("previous_conversations", [])
+        state.get("previous_conversations", []),
     )
 
     # Get custom system prompt
@@ -973,21 +994,24 @@ def build_agent_prompt(state, max_iterations=30) -> str:
     complete_prompt = agent_system_prompt
     complete_prompt = complete_prompt.replace("{internal_context}", internal_context)
     complete_prompt = complete_prompt.replace("{user_context}", user_context)
-    complete_prompt = complete_prompt.replace("{conversation_history}", conversation_history)
+    complete_prompt = complete_prompt.replace(
+        "{conversation_history}", conversation_history
+    )
     complete_prompt = complete_prompt.replace("{current_datetime}", current_datetime)
     complete_prompt = complete_prompt.replace("{max_iterations}", str(max_iterations))
 
     # Add custom prompt if provided
-    if base_prompt and base_prompt not in ["You are an enterprise questions answering expert", ""]:
+    if base_prompt and base_prompt not in [
+        "You are an enterprise questions answering expert",
+        "",
+    ]:
         complete_prompt = f"{base_prompt}\n\n{complete_prompt}"
 
     return complete_prompt
 
 
-def create_agent_messages(state) -> List[Any]:
-    """
-    Create messages for the agent with enhanced context
-    """
+def create_agent_messages(state) -> list[Any]:
+    """Create messages for the agent with enhanced context"""
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
     messages = []
@@ -1000,7 +1024,11 @@ def create_agent_messages(state) -> List[Any]:
     previous_conversations = state.get("previous_conversations", [])
     max_history = 5
 
-    recent_convs = previous_conversations[-max_history:] if len(previous_conversations) > max_history else previous_conversations
+    recent_convs = (
+        previous_conversations[-max_history:]
+        if len(previous_conversations) > max_history
+        else previous_conversations
+    )
 
     # **CRITICAL**: Extract and remember key information from conversation history
     # Generic extraction - works for ANY tool/service, not hardcoded
@@ -1012,22 +1040,32 @@ def create_agent_messages(state) -> List[Any]:
 
         # Extract any UUID/ID patterns (UUIDs, hex IDs, alphanumeric IDs)
         # Matches: 32-char hex, UUIDs with dashes, long alphanumeric IDs
-        id_patterns = re.findall(r'\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b', content, re.IGNORECASE)  # UUID
+        id_patterns = re.findall(
+            r"\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b",
+            content,
+            re.IGNORECASE,
+        )  # UUID
         if not id_patterns:
-            id_patterns = re.findall(r'\b[a-f0-9]{20,}\b', content)  # Long hex IDs
+            id_patterns = re.findall(r"\b[a-f0-9]{20,}\b", content)  # Long hex IDs
         if not id_patterns:
-            id_patterns = re.findall(r'\b[A-Z0-9]{10,}\b', content)  # Alphanumeric IDs
+            id_patterns = re.findall(r"\b[A-Z0-9]{10,}\b", content)  # Alphanumeric IDs
 
         if id_patterns:
-            extracted_context.append(f"ID/Key mentioned: {id_patterns[0][:20]}...")  # Generic ID reference
+            extracted_context.append(
+                f"ID/Key mentioned: {id_patterns[0][:20]}..."
+            )  # Generic ID reference
 
         # Extract ISO timestamps (YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, etc.)
-        timestamp_patterns = re.findall(r'\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?', content)
+        timestamp_patterns = re.findall(
+            r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?", content
+        )
         if timestamp_patterns:
             extracted_context.append(f"Timestamp: {timestamp_patterns[0]}")
 
         # Extract email addresses (generic pattern)
-        emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', content)
+        emails = re.findall(
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", content
+        )
         if emails:
             extracted_context.append(f"Contact(s): {', '.join(emails[:2])}")
 
@@ -1037,12 +1075,12 @@ def create_agent_messages(state) -> List[Any]:
             extracted_context.append(f"Link: {urls[0][:50]}...")
 
         # Extract @mentions (works for Slack, email, any platform)
-        mentions = re.findall(r'@[\w\-\.]+', content)
+        mentions = re.findall(r"@[\w\-\.]+", content)
         if mentions:
             extracted_context.append(f"Mentions: {', '.join(mentions[:3])}")
 
         # Extract #channels or #tags (works for Slack, social media, etc.)
-        channels = re.findall(r'#[\w\-]+', content)
+        channels = re.findall(r"#[\w\-]+", content)
         if channels:
             extracted_context.append(f"Channels/Tags: {', '.join(channels[:3])}")
 
@@ -1057,7 +1095,10 @@ def create_agent_messages(state) -> List[Any]:
 
     # Add extracted context as a subtle reminder if we found any
     if extracted_context and len(recent_convs) > 0:
-        context_reminder = "\n\n💡 **Context from previous conversation**:\n" + "\n".join(f"- {ctx}" for ctx in extracted_context[:5])
+        context_reminder = (
+            "\n\n💡 **Context from previous conversation**:\n"
+            + "\n".join(f"- {ctx}" for ctx in extracted_context[:5])
+        )
         # Note: This will be added to the system prompt, not as a separate message
         state["conversation_context_hints"] = context_reminder
 
@@ -1085,10 +1126,13 @@ def create_agent_messages(state) -> List[Any]:
 # RESPONSE MODE DETECTION
 # ============================================================================
 
-def detect_response_mode(response_content) -> Tuple[str, Any]:
+
+def detect_response_mode(response_content) -> tuple[str, Any]:
     """Detect if response is structured JSON or conversational"""
     if isinstance(response_content, dict):
-        if "answer" in response_content and ("chunkIndexes" in response_content or "citations" in response_content):
+        if "answer" in response_content and (
+            "chunkIndexes" in response_content or "citations" in response_content
+        ):
             return "structured", response_content
         return "conversational", response_content
 
@@ -1097,7 +1141,7 @@ def detect_response_mode(response_content) -> Tuple[str, Any]:
 
     content = response_content.strip()
 
-    if content.startswith('{') and content.endswith('}'):
+    if content.startswith("{") and content.endswith("}"):
         try:
             import json
 
@@ -1106,7 +1150,9 @@ def detect_response_mode(response_content) -> Tuple[str, Any]:
             cleaned_content = fix_json_string(content)
             parsed = json.loads(cleaned_content)
 
-            if "answer" in parsed and ("chunkIndexes" in parsed or "citations" in parsed):
+            if "answer" in parsed and (
+                "chunkIndexes" in parsed or "citations" in parsed
+            ):
                 return "structured", parsed
 
         except (json.JSONDecodeError, Exception):

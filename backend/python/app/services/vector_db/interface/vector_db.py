@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Union
+from typing import Union
 
 from qdrant_client.http.models import (  # type: ignore
     Filter,
@@ -10,7 +10,7 @@ from qdrant_client.http.models import (  # type: ignore
 from app.services.vector_db.qdrant.filter import QdrantFilterMode
 
 # Type alias for filter values
-FilterValue = Union[str, int, float, bool, List[Union[str, int, float, bool]]]
+FilterValue = Union[str, int, float, bool, list[str | int | float | bool]]
 
 
 class IVectorDBService(ABC):
@@ -27,7 +27,7 @@ class IVectorDBService(ABC):
         raise NotImplementedError("get_service_name() is not implemented")
 
     @abstractmethod
-    def get_service(self) -> 'IVectorDBService':
+    def get_service(self) -> "IVectorDBService":
         raise NotImplementedError("get_service() is not implemented")
 
     @abstractmethod
@@ -38,12 +38,12 @@ class IVectorDBService(ABC):
     async def create_collection(
         self,
         collection_name: str,
-        embedding_size: int=1024,
+        embedding_size: int = 1024,
         sparse_idf: bool = False,
-        vectors_config: Optional[dict] = None,
-        sparse_vectors_config: Optional[dict] = None,
-        optimizers_config: Optional[dict] = None,
-        quantization_config: Optional[dict] = None,
+        vectors_config: dict | None = None,
+        sparse_vectors_config: dict | None = None,
+        optimizers_config: dict | None = None,
+        quantization_config: dict | None = None,
     ) -> None:
         raise NotImplementedError("create_collection() is not implemented")
 
@@ -71,25 +71,27 @@ class IVectorDBService(ABC):
     @abstractmethod
     async def filter_collection(
         self,
-        filter_mode: Union[str, QdrantFilterMode] = QdrantFilterMode.MUST,
-        must: Optional[Dict[str, FilterValue]] = None,
-        should: Optional[Dict[str, FilterValue]] = None,
-        must_not: Optional[Dict[str, FilterValue]] = None,
-        min_should_match: Optional[int] = None,
+        filter_mode: str | QdrantFilterMode = QdrantFilterMode.MUST,
+        must: dict[str, FilterValue] | None = None,
+        should: dict[str, FilterValue] | None = None,
+        must_not: dict[str, FilterValue] | None = None,
+        min_should_match: int | None = None,
         **filters: FilterValue,
     ) -> Filter:
         raise NotImplementedError("filter_collection() is not implemented")
 
     @abstractmethod
-    async def scroll(self, collection_name: str, scroll_filter: Filter, limit: int) -> object:
+    async def scroll(
+        self, collection_name: str, scroll_filter: Filter, limit: int
+    ) -> object:
         raise NotImplementedError("scroll() is not implemented")
 
     @abstractmethod
     def query_nearest_points(
         self,
         collection_name: str,
-        requests: List[QueryRequest],
-    ) -> List[List[PointStruct]]:
+        requests: list[QueryRequest],
+    ) -> list[list[PointStruct]]:
         """Query batch points"""
         raise NotImplementedError("query_nearest_points() is not implemented")
 
@@ -97,7 +99,7 @@ class IVectorDBService(ABC):
     def upsert_points(
         self,
         collection_name: str,
-        points: List[PointStruct],
+        points: list[PointStruct],
     ) -> None:
         """Upsert points"""
         raise NotImplementedError("upsert() is not implemented")

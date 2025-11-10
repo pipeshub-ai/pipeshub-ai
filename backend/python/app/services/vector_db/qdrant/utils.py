@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Union
+from typing import Any, Union
 
 from qdrant_client.http.models import (  # type: ignore
     FieldCondition,
@@ -7,14 +7,13 @@ from qdrant_client.http.models import (  # type: ignore
 )
 
 # Type alias for filter values
-FilterValue = Union[str, int, float, bool, List[Union[str, int, float, bool]]]
+FilterValue = Union[str, int, float, bool, list[str | int | float | bool]]
 
 
 class QdrantUtils:
     @staticmethod
-    def build_conditions(filters: Dict[str, Any]) -> List[FieldCondition]:
-        """
-        Build list of FieldCondition objects from filter dictionary
+    def build_conditions(filters: dict[str, Any]) -> list[FieldCondition]:
+        """Build list of FieldCondition objects from filter dictionary
         Args:
             filters: Dictionary of field: value pairs
         Returns:
@@ -32,16 +31,16 @@ class QdrantUtils:
                         conditions.append(
                             FieldCondition(
                                 key=f"metadata.{key}",
-                                match=MatchAny(any=filtered_list)
-                            )
+                                match=MatchAny(any=filtered_list),
+                            ),
                         )
                 # Handle single values - use MatchValue
                 elif QdrantUtils._is_valid_value(value):
                     conditions.append(
                         FieldCondition(
                             key=f"metadata.{key}",
-                            match=MatchValue(value=value)
-                        )
+                            match=MatchValue(value=value),
+                        ),
                     )
 
         return conditions

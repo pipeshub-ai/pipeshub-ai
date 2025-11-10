@@ -1,5 +1,5 @@
 import asyncio
-from typing import BinaryIO, Dict, List, Optional, Union
+from typing import BinaryIO
 
 from box_sdk_gen import BoxClient  # type: ignore
 from box_sdk_gen.managers.files import (  # type: ignore
@@ -21,8 +21,7 @@ from app.sources.client.box.box import BoxResponse
 
 
 class BoxDataSource:
-    """
-    Complete Box API client wrapper using official Box SDK Gen
+    """Complete Box API client wrapper using official Box SDK Gen
     Auto-generated wrapper for Box SDK Gen methods.
     This class provides unified access to all Box SDK manager methods while
     maintaining the official SDK structure and behavior.
@@ -51,10 +50,11 @@ class BoxDataSource:
     """
 
     def __init__(self, boxClient: CustomBoxClient) -> None:
-        """
-        Initialize the Box SDK wrapper.
+        """Initialize the Box SDK wrapper.
+
         Args:
             boxClient (BoxClient): Box client instance
+
         """
         self._box_client = boxClient
         self._client = None
@@ -76,9 +76,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'files', None)
+        manager = getattr(client, "files", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
 
@@ -88,7 +89,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_by_id(file_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_file_by_id(file_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -104,9 +107,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'files', None)
+        manager = getattr(client, "files", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
 
@@ -116,12 +120,20 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_file_by_id(file_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_file_by_id(file_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def files_update_file_by_id(self, file_id: str, name: Optional[str] = None, parent: Optional[UpdateFileByIdParent] = None, **kwargs) -> BoxResponse:
+    async def files_update_file_by_id(
+        self,
+        file_id: str,
+        name: str | None = None,
+        parent: UpdateFileByIdParent | None = None,
+        **kwargs,
+    ) -> BoxResponse:
         """Update file information
 
         API Endpoint: files.update_file_by_id
@@ -134,9 +146,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'files', None)
+        manager = getattr(client, "files", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
 
@@ -146,12 +159,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_file_by_id(file_id, name=name, parent=parent))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.update_file_by_id(file_id, name=name, parent=parent),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def files_copy_file(self, file_id: str, parent: CopyFileParent, **kwargs) -> BoxResponse:
+    async def files_copy_file(
+        self, file_id: str, parent: CopyFileParent, **kwargs
+    ) -> BoxResponse:
         """Copy a file to a new location
 
         API Endpoint: files.copy_file
@@ -163,9 +181,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'files', None)
+        manager = getattr(client, "files", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
 
@@ -175,12 +194,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.copy_file(file_id, parent))
+            response = await loop.run_in_executor(
+                None, lambda: manager.copy_file(file_id, parent)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def files_get_file_thumbnail_by_id(self, file_id: str, extension: Optional[GetFileThumbnailByIdExtension] = None, **kwargs) -> BoxResponse:
+    async def files_get_file_thumbnail_by_id(
+        self,
+        file_id: str,
+        extension: GetFileThumbnailByIdExtension | None = None,
+        **kwargs,
+    ) -> BoxResponse:
         """Get thumbnail for a file
 
         API Endpoint: files.get_file_thumbnail_by_id
@@ -192,9 +218,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'files', None)
+        manager = getattr(client, "files", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
 
@@ -204,7 +231,10 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_thumbnail_by_id(file_id, extension=extension))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.get_file_thumbnail_by_id(file_id, extension=extension),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -220,9 +250,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'files', None)
+        manager = getattr(client, "files", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
 
@@ -232,7 +263,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_content(file_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_file_content(file_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -248,9 +281,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'files', None)
+        manager = getattr(client, "files", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
 
@@ -260,12 +294,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_versions(file_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_file_versions(file_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def files_promote_file_version(self, file_id: str, file_version_id: str, **kwargs) -> BoxResponse:
+    async def files_promote_file_version(
+        self, file_id: str, file_version_id: str, **kwargs
+    ) -> BoxResponse:
         """Promote a file version to current
 
         API Endpoint: files.promote_file_version
@@ -277,9 +315,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'files', None)
+        manager = getattr(client, "files", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
 
@@ -289,12 +328,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.promote_file_version(file_id, file_version_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.promote_file_version(file_id, file_version_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def files_restore_file_version(self, file_id: str, file_version_id: str, **kwargs) -> BoxResponse:
+    async def files_restore_file_version(
+        self, file_id: str, file_version_id: str, **kwargs
+    ) -> BoxResponse:
         """Restore a previous file version
 
         API Endpoint: files.restore_file_version
@@ -306,9 +349,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'files', None)
+        manager = getattr(client, "files", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
 
@@ -318,12 +362,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.restore_file_version(file_id, file_version_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.restore_file_version(file_id, file_version_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def files_delete_file_version(self, file_id: str, file_version_id: str, **kwargs) -> BoxResponse:
+    async def files_delete_file_version(
+        self, file_id: str, file_version_id: str, **kwargs
+    ) -> BoxResponse:
         """Delete a file version
 
         API Endpoint: files.delete_file_version
@@ -335,9 +383,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'files', None)
+        manager = getattr(client, "files", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
 
@@ -347,7 +396,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_file_version(file_id, file_version_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_file_version(file_id, file_version_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -363,9 +414,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'folders', None)
+        manager = getattr(client, "folders", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
 
@@ -375,12 +427,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_by_id(folder_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_folder_by_id(folder_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def folders_delete_folder_by_id(self, folder_id: str, **kwargs) -> BoxResponse:
+    async def folders_delete_folder_by_id(
+        self, folder_id: str, **kwargs
+    ) -> BoxResponse:
         """Delete a folder by ID
 
         API Endpoint: folders.delete_folder_by_id
@@ -391,9 +447,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'folders', None)
+        manager = getattr(client, "folders", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
 
@@ -403,12 +460,20 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_folder_by_id(folder_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_folder_by_id(folder_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def folders_update_folder_by_id(self, folder_id: str, name: Optional[str] = None, parent: Optional[UpdateFolderByIdParent] = None, **kwargs) -> BoxResponse:
+    async def folders_update_folder_by_id(
+        self,
+        folder_id: str,
+        name: str | None = None,
+        parent: UpdateFolderByIdParent | None = None,
+        **kwargs,
+    ) -> BoxResponse:
         """Update folder information
 
         API Endpoint: folders.update_folder_by_id
@@ -421,9 +486,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'folders', None)
+        manager = getattr(client, "folders", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
 
@@ -433,12 +499,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_folder_by_id(folder_id, name=name, parent=parent))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.update_folder_by_id(
+                    folder_id, name=name, parent=parent
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def folders_create_folder(self, name: str, parent: CreateFolderParent, **kwargs) -> BoxResponse:
+    async def folders_create_folder(
+        self, name: str, parent: CreateFolderParent, **kwargs
+    ) -> BoxResponse:
         """Create a new folder
 
         API Endpoint: folders.create_folder
@@ -450,9 +523,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'folders', None)
+        manager = getattr(client, "folders", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
 
@@ -462,12 +536,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_folder(name, parent))
+            response = await loop.run_in_executor(
+                None, lambda: manager.create_folder(name, parent)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def folders_get_folder_items(self, folder_id: str, limit: Optional[int] = None, **kwargs) -> BoxResponse:
+    async def folders_get_folder_items(
+        self, folder_id: str, limit: int | None = None, **kwargs
+    ) -> BoxResponse:
         """Get items in a folder
 
         API Endpoint: folders.get_folder_items
@@ -479,9 +557,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'folders', None)
+        manager = getattr(client, "folders", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
 
@@ -491,12 +570,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_items(folder_id, limit=limit))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_folder_items(folder_id, limit=limit)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def folders_copy_folder(self, folder_id: str, parent: CreateFolderParent, **kwargs) -> BoxResponse:
+    async def folders_copy_folder(
+        self, folder_id: str, parent: CreateFolderParent, **kwargs
+    ) -> BoxResponse:
         """Copy a folder to a new location
 
         API Endpoint: folders.copy_folder
@@ -508,9 +591,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'folders', None)
+        manager = getattr(client, "folders", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
 
@@ -520,7 +604,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.copy_folder(folder_id, parent))
+            response = await loop.run_in_executor(
+                None, lambda: manager.copy_folder(folder_id, parent)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -533,9 +619,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'users', None)
+        manager = getattr(client, "users", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
 
@@ -561,9 +648,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'users', None)
+        manager = getattr(client, "users", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
 
@@ -573,7 +661,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_user_by_id(user_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_user_by_id(user_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -590,9 +680,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'users', None)
+        manager = getattr(client, "users", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
 
@@ -602,12 +693,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_user(name, login))
+            response = await loop.run_in_executor(
+                None, lambda: manager.create_user(name, login)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def users_update_user_by_id(self, user_id: str, name: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def users_update_user_by_id(
+        self, user_id: str, name: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Update user information
 
         API Endpoint: users.update_user_by_id
@@ -619,9 +714,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'users', None)
+        manager = getattr(client, "users", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
 
@@ -631,7 +727,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_user_by_id(user_id, name=name))
+            response = await loop.run_in_executor(
+                None, lambda: manager.update_user_by_id(user_id, name=name)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -647,9 +745,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'users', None)
+        manager = getattr(client, "users", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
 
@@ -659,12 +758,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_user_by_id(user_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_user_by_id(user_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def users_get_users(self, limit: Optional[int] = None, offset: Optional[int] = None, **kwargs) -> BoxResponse:
+    async def users_get_users(
+        self, limit: int | None = None, offset: int | None = None, **kwargs
+    ) -> BoxResponse:
         """Get all users in the enterprise
 
         API Endpoint: users.get_users
@@ -676,9 +779,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'users', None)
+        manager = getattr(client, "users", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
 
@@ -688,7 +792,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_users(limit=limit, offset=offset))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_users(limit=limit, offset=offset)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -701,9 +807,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'groups', None)
+        manager = getattr(client, "groups", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
 
@@ -729,9 +836,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'groups', None)
+        manager = getattr(client, "groups", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
 
@@ -741,7 +849,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_group_by_id(group_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_group_by_id(group_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -757,9 +867,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'groups', None)
+        manager = getattr(client, "groups", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
 
@@ -769,12 +880,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_group(name))
+            response = await loop.run_in_executor(
+                None, lambda: manager.create_group(name)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def groups_update_group_by_id(self, group_id: str, name: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def groups_update_group_by_id(
+        self, group_id: str, name: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Update group information
 
         API Endpoint: groups.update_group_by_id
@@ -786,9 +901,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'groups', None)
+        manager = getattr(client, "groups", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
 
@@ -798,7 +914,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_group_by_id(group_id, name=name))
+            response = await loop.run_in_executor(
+                None, lambda: manager.update_group_by_id(group_id, name=name)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -814,9 +932,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'groups', None)
+        manager = getattr(client, "groups", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
 
@@ -826,12 +945,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_group_by_id(group_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_group_by_id(group_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def groups_get_group_memberships(self, group_id: str, **kwargs) -> BoxResponse:
+    async def groups_get_group_memberships(
+        self, group_id: str, **kwargs
+    ) -> BoxResponse:
         """Get all members of a group
 
         API Endpoint: groups.get_group_memberships
@@ -842,9 +965,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'groups', None)
+        manager = getattr(client, "groups", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
 
@@ -854,12 +978,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_group_memberships(group_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_group_memberships(group_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def groups_add_user_to_group(self, group_id: str, user_id: str, **kwargs) -> BoxResponse:
+    async def groups_add_user_to_group(
+        self, group_id: str, user_id: str, **kwargs
+    ) -> BoxResponse:
         """Add a user to a group
 
         API Endpoint: groups.add_user_to_group
@@ -871,9 +999,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'groups', None)
+        manager = getattr(client, "groups", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
 
@@ -883,12 +1012,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.add_user_to_group(group_id, user_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.add_user_to_group(group_id, user_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def groups_remove_user_from_group(self, group_id: str, user_id: str, **kwargs) -> BoxResponse:
+    async def groups_remove_user_from_group(
+        self, group_id: str, user_id: str, **kwargs
+    ) -> BoxResponse:
         """Remove a user from a group
 
         API Endpoint: groups.remove_user_from_group
@@ -900,9 +1033,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'groups', None)
+        manager = getattr(client, "groups", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
 
@@ -912,12 +1046,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.remove_user_from_group(group_id, user_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.remove_user_from_group(group_id, user_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaborations_create_collaboration(self, item_id: str, item_type: str, accessible_by: str, role: str, **kwargs) -> BoxResponse:
+    async def collaborations_create_collaboration(
+        self, item_id: str, item_type: str, accessible_by: str, role: str, **kwargs
+    ) -> BoxResponse:
         """Create a collaboration on a file or folder
 
         API Endpoint: collaborations.create_collaboration
@@ -931,11 +1069,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        manager = getattr(client, "collaborations", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaborations' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaborations' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -943,12 +1084,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_collaboration(item_id, item_type, accessible_by, role))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_collaboration(
+                    item_id, item_type, accessible_by, role
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaborations_get_collaboration_by_id(self, collaboration_id: str, **kwargs) -> BoxResponse:
+    async def collaborations_get_collaboration_by_id(
+        self, collaboration_id: str, **kwargs
+    ) -> BoxResponse:
         """Get collaboration information by ID
 
         API Endpoint: collaborations.get_collaboration_by_id
@@ -959,11 +1107,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        manager = getattr(client, "collaborations", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaborations' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaborations' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -971,12 +1122,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_collaboration_by_id(collaboration_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_collaboration_by_id(collaboration_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaborations_update_collaboration(self, collaboration_id: str, role: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def collaborations_update_collaboration(
+        self, collaboration_id: str, role: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Update a collaboration
 
         API Endpoint: collaborations.update_collaboration
@@ -988,11 +1143,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        manager = getattr(client, "collaborations", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaborations' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaborations' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -1000,12 +1158,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_collaboration(collaboration_id, role=role))
+            response = await loop.run_in_executor(
+                None, lambda: manager.update_collaboration(collaboration_id, role=role)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaborations_delete_collaboration(self, collaboration_id: str, **kwargs) -> BoxResponse:
+    async def collaborations_delete_collaboration(
+        self, collaboration_id: str, **kwargs
+    ) -> BoxResponse:
         """Delete a collaboration
 
         API Endpoint: collaborations.delete_collaboration
@@ -1016,11 +1178,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        manager = getattr(client, "collaborations", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaborations' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaborations' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -1028,12 +1193,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_collaboration(collaboration_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_collaboration(collaboration_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaborations_get_file_collaborations(self, file_id: str, **kwargs) -> BoxResponse:
+    async def collaborations_get_file_collaborations(
+        self, file_id: str, **kwargs
+    ) -> BoxResponse:
         """Get all collaborations on a file
 
         API Endpoint: collaborations.get_file_collaborations
@@ -1044,11 +1213,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        manager = getattr(client, "collaborations", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaborations' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaborations' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -1056,12 +1228,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_collaborations(file_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_file_collaborations(file_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaborations_get_folder_collaborations(self, folder_id: str, **kwargs) -> BoxResponse:
+    async def collaborations_get_folder_collaborations(
+        self, folder_id: str, **kwargs
+    ) -> BoxResponse:
         """Get all collaborations on a folder
 
         API Endpoint: collaborations.get_folder_collaborations
@@ -1072,11 +1248,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        manager = getattr(client, "collaborations", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaborations' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaborations' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -1084,7 +1263,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_collaborations(folder_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_folder_collaborations(folder_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1097,11 +1278,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        manager = getattr(client, "collaborations", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaborations' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaborations' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -1109,12 +1293,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_pending_collaborations())
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_pending_collaborations()
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def shared_links_create_shared_link_for_file(self, file_id: str, access: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def shared_links_create_shared_link_for_file(
+        self, file_id: str, access: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Create a shared link for a file
 
         API Endpoint: shared_links.create_shared_link_for_file
@@ -1126,9 +1314,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'shared_links', None)
+        manager = getattr(client, "shared_links", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shared_links' not found")
 
@@ -1138,12 +1327,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_shared_link_for_file(file_id, access=access))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_shared_link_for_file(file_id, access=access),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def shared_links_create_shared_link_for_folder(self, folder_id: str, access: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def shared_links_create_shared_link_for_folder(
+        self, folder_id: str, access: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Create a shared link for a folder
 
         API Endpoint: shared_links.create_shared_link_for_folder
@@ -1155,9 +1349,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'shared_links', None)
+        manager = getattr(client, "shared_links", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shared_links' not found")
 
@@ -1167,12 +1362,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_shared_link_for_folder(folder_id, access=access))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_shared_link_for_folder(folder_id, access=access),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def shared_links_get_shared_link(self, shared_link_url: str, **kwargs) -> BoxResponse:
+    async def shared_links_get_shared_link(
+        self, shared_link_url: str, **kwargs
+    ) -> BoxResponse:
         """Get information about a shared link
 
         API Endpoint: shared_links.get_shared_link
@@ -1183,9 +1383,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'shared_links', None)
+        manager = getattr(client, "shared_links", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shared_links' not found")
 
@@ -1195,12 +1396,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_shared_link(shared_link_url))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_shared_link(shared_link_url)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def shared_links_remove_shared_link(self, item_id: str, item_type: str, **kwargs) -> BoxResponse:
+    async def shared_links_remove_shared_link(
+        self, item_id: str, item_type: str, **kwargs
+    ) -> BoxResponse:
         """Remove a shared link from an item
 
         API Endpoint: shared_links.remove_shared_link
@@ -1212,9 +1417,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'shared_links', None)
+        manager = getattr(client, "shared_links", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shared_links' not found")
 
@@ -1224,12 +1430,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.remove_shared_link(item_id, item_type))
+            response = await loop.run_in_executor(
+                None, lambda: manager.remove_shared_link(item_id, item_type)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def comments_create_comment(self, item_id: str, message: str, **kwargs) -> BoxResponse:
+    async def comments_create_comment(
+        self, item_id: str, message: str, **kwargs
+    ) -> BoxResponse:
         """Create a comment on a file
 
         API Endpoint: comments.create_comment
@@ -1241,9 +1451,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'comments', None)
+        manager = getattr(client, "comments", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
 
@@ -1253,12 +1464,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_comment(item_id, message))
+            response = await loop.run_in_executor(
+                None, lambda: manager.create_comment(item_id, message)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def comments_get_comment_by_id(self, comment_id: str, **kwargs) -> BoxResponse:
+    async def comments_get_comment_by_id(
+        self, comment_id: str, **kwargs
+    ) -> BoxResponse:
         """Get comment information by ID
 
         API Endpoint: comments.get_comment_by_id
@@ -1269,9 +1484,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'comments', None)
+        manager = getattr(client, "comments", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
 
@@ -1281,12 +1497,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_comment_by_id(comment_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_comment_by_id(comment_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def comments_update_comment(self, comment_id: str, message: str, **kwargs) -> BoxResponse:
+    async def comments_update_comment(
+        self, comment_id: str, message: str, **kwargs
+    ) -> BoxResponse:
         """Update a comment
 
         API Endpoint: comments.update_comment
@@ -1298,9 +1518,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'comments', None)
+        manager = getattr(client, "comments", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
 
@@ -1310,7 +1531,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_comment(comment_id, message))
+            response = await loop.run_in_executor(
+                None, lambda: manager.update_comment(comment_id, message)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1326,9 +1549,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'comments', None)
+        manager = getattr(client, "comments", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
 
@@ -1338,7 +1562,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_comment(comment_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_comment(comment_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1354,9 +1580,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'comments', None)
+        manager = getattr(client, "comments", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
 
@@ -1366,12 +1593,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_comments(file_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_file_comments(file_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def comments_reply_to_comment(self, comment_id: str, message: str, **kwargs) -> BoxResponse:
+    async def comments_reply_to_comment(
+        self, comment_id: str, message: str, **kwargs
+    ) -> BoxResponse:
         """Reply to a comment
 
         API Endpoint: comments.reply_to_comment
@@ -1383,9 +1614,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'comments', None)
+        manager = getattr(client, "comments", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
 
@@ -1395,12 +1627,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.reply_to_comment(comment_id, message))
+            response = await loop.run_in_executor(
+                None, lambda: manager.reply_to_comment(comment_id, message)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def tasks_create_task(self, item_id: str, action: str, message: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def tasks_create_task(
+        self, item_id: str, action: str, message: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Create a task on a file
 
         API Endpoint: tasks.create_task
@@ -1413,9 +1649,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'tasks', None)
+        manager = getattr(client, "tasks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
 
@@ -1425,7 +1662,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_task(item_id, action, message=message))
+            response = await loop.run_in_executor(
+                None, lambda: manager.create_task(item_id, action, message=message)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1441,9 +1680,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'tasks', None)
+        manager = getattr(client, "tasks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
 
@@ -1453,12 +1693,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_task_by_id(task_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_task_by_id(task_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def tasks_update_task(self, task_id: str, message: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def tasks_update_task(
+        self, task_id: str, message: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Update a task
 
         API Endpoint: tasks.update_task
@@ -1470,9 +1714,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'tasks', None)
+        manager = getattr(client, "tasks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
 
@@ -1482,7 +1727,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_task(task_id, message=message))
+            response = await loop.run_in_executor(
+                None, lambda: manager.update_task(task_id, message=message)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1498,9 +1745,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'tasks', None)
+        manager = getattr(client, "tasks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
 
@@ -1510,7 +1758,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_task(task_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_task(task_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1526,9 +1776,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'tasks', None)
+        manager = getattr(client, "tasks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
 
@@ -1538,12 +1789,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_tasks(file_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_file_tasks(file_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def tasks_create_task_assignment(self, task_id: str, assign_to: str, **kwargs) -> BoxResponse:
+    async def tasks_create_task_assignment(
+        self, task_id: str, assign_to: str, **kwargs
+    ) -> BoxResponse:
         """Assign a task to a user
 
         API Endpoint: tasks.create_task_assignment
@@ -1555,9 +1810,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'tasks', None)
+        manager = getattr(client, "tasks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
 
@@ -1567,7 +1823,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_task_assignment(task_id, assign_to))
+            response = await loop.run_in_executor(
+                None, lambda: manager.create_task_assignment(task_id, assign_to)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1583,9 +1841,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'tasks', None)
+        manager = getattr(client, "tasks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
 
@@ -1595,12 +1854,21 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_task_assignments(task_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_task_assignments(task_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def webhooks_create_webhook(self, target_id: str, target_type: str, address: str, triggers: List[str], **kwargs) -> BoxResponse:
+    async def webhooks_create_webhook(
+        self,
+        target_id: str,
+        target_type: str,
+        address: str,
+        triggers: list[str],
+        **kwargs,
+    ) -> BoxResponse:
         """Create a webhook
 
         API Endpoint: webhooks.create_webhook
@@ -1614,9 +1882,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'webhooks', None)
+        manager = getattr(client, "webhooks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'webhooks' not found")
 
@@ -1626,12 +1895,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_webhook(target_id, target_type, address, triggers))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_webhook(
+                    target_id, target_type, address, triggers
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def webhooks_get_webhook_by_id(self, webhook_id: str, **kwargs) -> BoxResponse:
+    async def webhooks_get_webhook_by_id(
+        self, webhook_id: str, **kwargs
+    ) -> BoxResponse:
         """Get webhook information by ID
 
         API Endpoint: webhooks.get_webhook_by_id
@@ -1642,9 +1918,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'webhooks', None)
+        manager = getattr(client, "webhooks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'webhooks' not found")
 
@@ -1654,7 +1931,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_webhook_by_id(webhook_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_webhook_by_id(webhook_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1667,9 +1946,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'webhooks', None)
+        manager = getattr(client, "webhooks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'webhooks' not found")
 
@@ -1684,7 +1964,9 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def webhooks_update_webhook(self, webhook_id: str, address: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def webhooks_update_webhook(
+        self, webhook_id: str, address: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Update a webhook
 
         API Endpoint: webhooks.update_webhook
@@ -1696,9 +1978,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'webhooks', None)
+        manager = getattr(client, "webhooks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'webhooks' not found")
 
@@ -1708,7 +1991,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_webhook(webhook_id, address=address))
+            response = await loop.run_in_executor(
+                None, lambda: manager.update_webhook(webhook_id, address=address)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1724,9 +2009,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'webhooks', None)
+        manager = getattr(client, "webhooks", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'webhooks' not found")
 
@@ -1736,12 +2022,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_webhook(webhook_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_webhook(webhook_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def web_links_create_web_link(self, url: str, parent: CreateFolderParent, name: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def web_links_create_web_link(
+        self, url: str, parent: CreateFolderParent, name: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Create a web link
 
         API Endpoint: web_links.create_web_link
@@ -1754,9 +2044,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'web_links', None)
+        manager = getattr(client, "web_links", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'web_links' not found")
 
@@ -1766,12 +2057,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_web_link(url, parent, name=name))
+            response = await loop.run_in_executor(
+                None, lambda: manager.create_web_link(url, parent, name=name)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def web_links_get_web_link_by_id(self, web_link_id: str, **kwargs) -> BoxResponse:
+    async def web_links_get_web_link_by_id(
+        self, web_link_id: str, **kwargs
+    ) -> BoxResponse:
         """Get web link information by ID
 
         API Endpoint: web_links.get_web_link_by_id
@@ -1782,9 +2077,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'web_links', None)
+        manager = getattr(client, "web_links", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'web_links' not found")
 
@@ -1794,12 +2090,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_web_link_by_id(web_link_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_web_link_by_id(web_link_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def web_links_update_web_link(self, web_link_id: str, name: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def web_links_update_web_link(
+        self, web_link_id: str, name: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Update a web link
 
         API Endpoint: web_links.update_web_link
@@ -1811,9 +2111,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'web_links', None)
+        manager = getattr(client, "web_links", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'web_links' not found")
 
@@ -1823,12 +2124,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_web_link(web_link_id, name=name))
+            response = await loop.run_in_executor(
+                None, lambda: manager.update_web_link(web_link_id, name=name)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def web_links_delete_web_link(self, web_link_id: str, **kwargs) -> BoxResponse:
+    async def web_links_delete_web_link(
+        self, web_link_id: str, **kwargs
+    ) -> BoxResponse:
         """Delete a web link
 
         API Endpoint: web_links.delete_web_link
@@ -1839,9 +2144,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'web_links', None)
+        manager = getattr(client, "web_links", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'web_links' not found")
 
@@ -1851,12 +2157,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_web_link(web_link_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_web_link(web_link_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def retention_policies_create_retention_policy(self, policy_name: str, policy_type: str, retention_length: int, **kwargs) -> BoxResponse:
+    async def retention_policies_create_retention_policy(
+        self, policy_name: str, policy_type: str, retention_length: int, **kwargs
+    ) -> BoxResponse:
         """Create a retention policy
 
         API Endpoint: retention_policies.create_retention_policy
@@ -1869,11 +2179,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'retention_policies', None)
+        manager = getattr(client, "retention_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'retention_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'retention_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -1881,7 +2194,12 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_retention_policy(policy_name, policy_type, retention_length))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_retention_policy(
+                    policy_name, policy_type, retention_length
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1894,11 +2212,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'retention_policies', None)
+        manager = getattr(client, "retention_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'retention_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'retention_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -1906,12 +2227,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_retention_policies())
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_retention_policies()
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def retention_policies_get_retention_policy_by_id(self, policy_id: str, **kwargs) -> BoxResponse:
+    async def retention_policies_get_retention_policy_by_id(
+        self, policy_id: str, **kwargs
+    ) -> BoxResponse:
         """Get retention policy information by ID
 
         API Endpoint: retention_policies.get_retention_policy_by_id
@@ -1922,11 +2247,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'retention_policies', None)
+        manager = getattr(client, "retention_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'retention_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'retention_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -1934,12 +2262,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_retention_policy_by_id(policy_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_retention_policy_by_id(policy_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def retention_policies_update_retention_policy(self, policy_id: str, policy_name: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def retention_policies_update_retention_policy(
+        self, policy_id: str, policy_name: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Update a retention policy
 
         API Endpoint: retention_policies.update_retention_policy
@@ -1951,11 +2283,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'retention_policies', None)
+        manager = getattr(client, "retention_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'retention_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'retention_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -1963,12 +2298,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_retention_policy(policy_id, policy_name=policy_name))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.update_retention_policy(
+                    policy_id, policy_name=policy_name
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def retention_policies_delete_retention_policy(self, policy_id: str, **kwargs) -> BoxResponse:
+    async def retention_policies_delete_retention_policy(
+        self, policy_id: str, **kwargs
+    ) -> BoxResponse:
         """Delete a retention policy
 
         API Endpoint: retention_policies.delete_retention_policy
@@ -1979,11 +2321,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'retention_policies', None)
+        manager = getattr(client, "retention_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'retention_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'retention_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -1991,12 +2336,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_retention_policy(policy_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_retention_policy(policy_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def retention_policies_create_retention_policy_assignment(self, policy_id: str, assign_to: str, **kwargs) -> BoxResponse:
+    async def retention_policies_create_retention_policy_assignment(
+        self, policy_id: str, assign_to: str, **kwargs
+    ) -> BoxResponse:
         """Assign a retention policy to a folder or enterprise
 
         API Endpoint: retention_policies.create_retention_policy_assignment
@@ -2008,11 +2357,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'retention_policies', None)
+        manager = getattr(client, "retention_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'retention_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'retention_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2020,12 +2372,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_retention_policy_assignment(policy_id, assign_to))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_retention_policy_assignment(
+                    policy_id, assign_to
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def retention_policies_get_retention_policy_assignments(self, policy_id: str, **kwargs) -> BoxResponse:
+    async def retention_policies_get_retention_policy_assignments(
+        self, policy_id: str, **kwargs
+    ) -> BoxResponse:
         """Get all assignments for a retention policy
 
         API Endpoint: retention_policies.get_retention_policy_assignments
@@ -2036,11 +2395,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'retention_policies', None)
+        manager = getattr(client, "retention_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'retention_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'retention_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2048,12 +2410,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_retention_policy_assignments(policy_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_retention_policy_assignments(policy_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def legal_hold_policies_create_legal_hold_policy(self, policy_name: str, description: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def legal_hold_policies_create_legal_hold_policy(
+        self, policy_name: str, description: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Create a legal hold policy
 
         API Endpoint: legal_hold_policies.create_legal_hold_policy
@@ -2065,11 +2431,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'legal_hold_policies', None)
+        manager = getattr(client, "legal_hold_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'legal_hold_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2077,12 +2446,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_legal_hold_policy(policy_name, description=description))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_legal_hold_policy(
+                    policy_name, description=description
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def legal_hold_policies_get_legal_hold_policies(self, **kwargs) -> BoxResponse:
+    async def legal_hold_policies_get_legal_hold_policies(
+        self, **kwargs
+    ) -> BoxResponse:
         """Get all legal hold policies
 
         API Endpoint: legal_hold_policies.get_legal_hold_policies
@@ -2090,11 +2466,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'legal_hold_policies', None)
+        manager = getattr(client, "legal_hold_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'legal_hold_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2102,12 +2481,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_legal_hold_policies())
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_legal_hold_policies()
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def legal_hold_policies_get_legal_hold_policy_by_id(self, policy_id: str, **kwargs) -> BoxResponse:
+    async def legal_hold_policies_get_legal_hold_policy_by_id(
+        self, policy_id: str, **kwargs
+    ) -> BoxResponse:
         """Get legal hold policy information by ID
 
         API Endpoint: legal_hold_policies.get_legal_hold_policy_by_id
@@ -2118,11 +2501,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'legal_hold_policies', None)
+        manager = getattr(client, "legal_hold_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'legal_hold_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2130,12 +2516,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_legal_hold_policy_by_id(policy_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_legal_hold_policy_by_id(policy_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def legal_hold_policies_update_legal_hold_policy(self, policy_id: str, policy_name: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def legal_hold_policies_update_legal_hold_policy(
+        self, policy_id: str, policy_name: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Update a legal hold policy
 
         API Endpoint: legal_hold_policies.update_legal_hold_policy
@@ -2147,11 +2537,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'legal_hold_policies', None)
+        manager = getattr(client, "legal_hold_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'legal_hold_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2159,12 +2552,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_legal_hold_policy(policy_id, policy_name=policy_name))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.update_legal_hold_policy(
+                    policy_id, policy_name=policy_name
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def legal_hold_policies_delete_legal_hold_policy(self, policy_id: str, **kwargs) -> BoxResponse:
+    async def legal_hold_policies_delete_legal_hold_policy(
+        self, policy_id: str, **kwargs
+    ) -> BoxResponse:
         """Delete a legal hold policy
 
         API Endpoint: legal_hold_policies.delete_legal_hold_policy
@@ -2175,11 +2575,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'legal_hold_policies', None)
+        manager = getattr(client, "legal_hold_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'legal_hold_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2187,12 +2590,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_legal_hold_policy(policy_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_legal_hold_policy(policy_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def legal_hold_policies_create_legal_hold_policy_assignment(self, policy_id: str, assign_to: str, **kwargs) -> BoxResponse:
+    async def legal_hold_policies_create_legal_hold_policy_assignment(
+        self, policy_id: str, assign_to: str, **kwargs
+    ) -> BoxResponse:
         """Assign a legal hold policy to an entity
 
         API Endpoint: legal_hold_policies.create_legal_hold_policy_assignment
@@ -2204,11 +2611,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'legal_hold_policies', None)
+        manager = getattr(client, "legal_hold_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'legal_hold_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2216,12 +2626,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_legal_hold_policy_assignment(policy_id, assign_to))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_legal_hold_policy_assignment(
+                    policy_id, assign_to
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def classifications_get_classification_template(self, **kwargs) -> BoxResponse:
+    async def classifications_get_classification_template(
+        self, **kwargs
+    ) -> BoxResponse:
         """Get the classification metadata template
 
         API Endpoint: classifications.get_classification_template
@@ -2229,11 +2646,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'classifications', None)
+        manager = getattr(client, "classifications", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'classifications' not found")
+            return BoxResponse(
+                success=False, error="Manager 'classifications' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2241,12 +2661,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_classification_template())
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_classification_template()
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def classifications_add_classification_to_file(self, file_id: str, classification: str, **kwargs) -> BoxResponse:
+    async def classifications_add_classification_to_file(
+        self, file_id: str, classification: str, **kwargs
+    ) -> BoxResponse:
         """Add classification to a file
 
         API Endpoint: classifications.add_classification_to_file
@@ -2258,11 +2682,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'classifications', None)
+        manager = getattr(client, "classifications", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'classifications' not found")
+            return BoxResponse(
+                success=False, error="Manager 'classifications' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2270,12 +2697,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.add_classification_to_file(file_id, classification))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.add_classification_to_file(file_id, classification),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def classifications_add_classification_to_folder(self, folder_id: str, classification: str, **kwargs) -> BoxResponse:
+    async def classifications_add_classification_to_folder(
+        self, folder_id: str, classification: str, **kwargs
+    ) -> BoxResponse:
         """Add classification to a folder
 
         API Endpoint: classifications.add_classification_to_folder
@@ -2287,11 +2719,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'classifications', None)
+        manager = getattr(client, "classifications", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'classifications' not found")
+            return BoxResponse(
+                success=False, error="Manager 'classifications' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2299,12 +2734,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.add_classification_to_folder(folder_id, classification))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.add_classification_to_folder(folder_id, classification),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def classifications_update_classification_on_file(self, file_id: str, classification: str, **kwargs) -> BoxResponse:
+    async def classifications_update_classification_on_file(
+        self, file_id: str, classification: str, **kwargs
+    ) -> BoxResponse:
         """Update classification on a file
 
         API Endpoint: classifications.update_classification_on_file
@@ -2316,11 +2756,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'classifications', None)
+        manager = getattr(client, "classifications", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'classifications' not found")
+            return BoxResponse(
+                success=False, error="Manager 'classifications' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2328,12 +2771,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_classification_on_file(file_id, classification))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.update_classification_on_file(file_id, classification),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def classifications_remove_classification_from_file(self, file_id: str, **kwargs) -> BoxResponse:
+    async def classifications_remove_classification_from_file(
+        self, file_id: str, **kwargs
+    ) -> BoxResponse:
         """Remove classification from a file
 
         API Endpoint: classifications.remove_classification_from_file
@@ -2344,11 +2792,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'classifications', None)
+        manager = getattr(client, "classifications", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'classifications' not found")
+            return BoxResponse(
+                success=False, error="Manager 'classifications' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2356,12 +2807,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.remove_classification_from_file(file_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.remove_classification_from_file(file_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def shield_information_barriers_get_shield_information_barriers(self, **kwargs) -> BoxResponse:
+    async def shield_information_barriers_get_shield_information_barriers(
+        self, **kwargs
+    ) -> BoxResponse:
         """Get all shield information barriers
 
         API Endpoint: shield_information_barriers.get_shield_information_barriers
@@ -2369,11 +2824,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'shield_information_barriers', None)
+        manager = getattr(client, "shield_information_barriers", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'shield_information_barriers' not found")
+            return BoxResponse(
+                success=False, error="Manager 'shield_information_barriers' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2381,12 +2839,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_shield_information_barriers())
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_shield_information_barriers()
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def shield_information_barriers_get_shield_information_barrier_by_id(self, barrier_id: str, **kwargs) -> BoxResponse:
+    async def shield_information_barriers_get_shield_information_barrier_by_id(
+        self, barrier_id: str, **kwargs
+    ) -> BoxResponse:
         """Get shield information barrier by ID
 
         API Endpoint: shield_information_barriers.get_shield_information_barrier_by_id
@@ -2397,11 +2859,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'shield_information_barriers', None)
+        manager = getattr(client, "shield_information_barriers", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'shield_information_barriers' not found")
+            return BoxResponse(
+                success=False, error="Manager 'shield_information_barriers' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2409,12 +2874,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_shield_information_barrier_by_id(barrier_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_shield_information_barrier_by_id(barrier_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def shield_information_barriers_create_shield_information_barrier(self, enterprise: str, type: str, **kwargs) -> BoxResponse:
+    async def shield_information_barriers_create_shield_information_barrier(
+        self, enterprise: str, type: str, **kwargs
+    ) -> BoxResponse:
         """Create a shield information barrier
 
         API Endpoint: shield_information_barriers.create_shield_information_barrier
@@ -2426,11 +2895,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'shield_information_barriers', None)
+        manager = getattr(client, "shield_information_barriers", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'shield_information_barriers' not found")
+            return BoxResponse(
+                success=False, error="Manager 'shield_information_barriers' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2438,12 +2910,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_shield_information_barrier(enterprise, type))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_shield_information_barrier(enterprise, type),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def shield_information_barriers_update_shield_information_barrier_status(self, barrier_id: str, status: str, **kwargs) -> BoxResponse:
+    async def shield_information_barriers_update_shield_information_barrier_status(
+        self, barrier_id: str, status: str, **kwargs
+    ) -> BoxResponse:
         """Update shield information barrier status
 
         API Endpoint: shield_information_barriers.update_shield_information_barrier_status
@@ -2455,11 +2932,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'shield_information_barriers', None)
+        manager = getattr(client, "shield_information_barriers", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'shield_information_barriers' not found")
+            return BoxResponse(
+                success=False, error="Manager 'shield_information_barriers' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2467,12 +2947,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_shield_information_barrier_status(barrier_id, status))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.update_shield_information_barrier_status(
+                    barrier_id, status
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def sign_requests_create_sign_request(self, source_files: List[str], signers: List[str], **kwargs) -> BoxResponse:
+    async def sign_requests_create_sign_request(
+        self, source_files: list[str], signers: list[str], **kwargs
+    ) -> BoxResponse:
         """Create a sign request
 
         API Endpoint: sign_requests.create_sign_request
@@ -2484,9 +2971,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'sign_requests', None)
+        manager = getattr(client, "sign_requests", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'sign_requests' not found")
 
@@ -2496,7 +2984,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_sign_request(source_files, signers))
+            response = await loop.run_in_executor(
+                None, lambda: manager.create_sign_request(source_files, signers)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -2509,9 +2999,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'sign_requests', None)
+        manager = getattr(client, "sign_requests", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'sign_requests' not found")
 
@@ -2521,12 +3012,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_sign_requests())
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_sign_requests()
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def sign_requests_get_sign_request_by_id(self, sign_request_id: str, **kwargs) -> BoxResponse:
+    async def sign_requests_get_sign_request_by_id(
+        self, sign_request_id: str, **kwargs
+    ) -> BoxResponse:
         """Get sign request information by ID
 
         API Endpoint: sign_requests.get_sign_request_by_id
@@ -2537,9 +3032,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'sign_requests', None)
+        manager = getattr(client, "sign_requests", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'sign_requests' not found")
 
@@ -2549,12 +3045,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_sign_request_by_id(sign_request_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_sign_request_by_id(sign_request_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def sign_requests_cancel_sign_request(self, sign_request_id: str, **kwargs) -> BoxResponse:
+    async def sign_requests_cancel_sign_request(
+        self, sign_request_id: str, **kwargs
+    ) -> BoxResponse:
         """Cancel a sign request
 
         API Endpoint: sign_requests.cancel_sign_request
@@ -2565,9 +3065,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'sign_requests', None)
+        manager = getattr(client, "sign_requests", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'sign_requests' not found")
 
@@ -2577,12 +3078,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.cancel_sign_request(sign_request_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.cancel_sign_request(sign_request_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def sign_requests_resend_sign_request(self, sign_request_id: str, **kwargs) -> BoxResponse:
+    async def sign_requests_resend_sign_request(
+        self, sign_request_id: str, **kwargs
+    ) -> BoxResponse:
         """Resend a sign request
 
         API Endpoint: sign_requests.resend_sign_request
@@ -2593,9 +3098,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'sign_requests', None)
+        manager = getattr(client, "sign_requests", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'sign_requests' not found")
 
@@ -2605,7 +3111,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.resend_sign_request(sign_request_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.resend_sign_request(sign_request_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -2618,9 +3126,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'workflows', None)
+        manager = getattr(client, "workflows", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'workflows' not found")
 
@@ -2635,7 +3144,9 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def workflows_start_workflow(self, workflow_id: str, files: List[str], folder: str, **kwargs) -> BoxResponse:
+    async def workflows_start_workflow(
+        self, workflow_id: str, files: list[str], folder: str, **kwargs
+    ) -> BoxResponse:
         """Start a workflow
 
         API Endpoint: workflows.start_workflow
@@ -2648,9 +3159,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'workflows', None)
+        manager = getattr(client, "workflows", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'workflows' not found")
 
@@ -2660,12 +3172,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.start_workflow(workflow_id, files, folder))
+            response = await loop.run_in_executor(
+                None, lambda: manager.start_workflow(workflow_id, files, folder)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_templates_get_metadata_templates(self, scope: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def metadata_templates_get_metadata_templates(
+        self, scope: str | None = None, **kwargs
+    ) -> BoxResponse:
         """Get all metadata templates
 
         API Endpoint: metadata_templates.get_metadata_templates
@@ -2676,11 +3192,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata_templates', None)
+        manager = getattr(client, "metadata_templates", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'metadata_templates' not found")
+            return BoxResponse(
+                success=False, error="Manager 'metadata_templates' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2688,12 +3207,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_metadata_templates(scope=scope))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_metadata_templates(scope=scope)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_templates_get_metadata_template(self, scope: str, template_key: str, **kwargs) -> BoxResponse:
+    async def metadata_templates_get_metadata_template(
+        self, scope: str, template_key: str, **kwargs
+    ) -> BoxResponse:
         """Get a specific metadata template
 
         API Endpoint: metadata_templates.get_metadata_template
@@ -2705,11 +3228,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata_templates', None)
+        manager = getattr(client, "metadata_templates", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'metadata_templates' not found")
+            return BoxResponse(
+                success=False, error="Manager 'metadata_templates' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2717,12 +3243,21 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_metadata_template(scope, template_key))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_metadata_template(scope, template_key)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_templates_create_metadata_template(self, scope: str, template_key: str, display_name: str, fields: List[Dict], **kwargs) -> BoxResponse:
+    async def metadata_templates_create_metadata_template(
+        self,
+        scope: str,
+        template_key: str,
+        display_name: str,
+        fields: list[dict],
+        **kwargs,
+    ) -> BoxResponse:
         """Create a metadata template
 
         API Endpoint: metadata_templates.create_metadata_template
@@ -2736,11 +3271,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata_templates', None)
+        manager = getattr(client, "metadata_templates", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'metadata_templates' not found")
+            return BoxResponse(
+                success=False, error="Manager 'metadata_templates' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2748,12 +3286,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_metadata_template(scope, template_key, display_name, fields))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_metadata_template(
+                    scope, template_key, display_name, fields
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_templates_update_metadata_template(self, scope: str, template_key: str, operations: List[Dict], **kwargs) -> BoxResponse:
+    async def metadata_templates_update_metadata_template(
+        self, scope: str, template_key: str, operations: list[dict], **kwargs
+    ) -> BoxResponse:
         """Update a metadata template
 
         API Endpoint: metadata_templates.update_metadata_template
@@ -2766,11 +3311,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata_templates', None)
+        manager = getattr(client, "metadata_templates", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'metadata_templates' not found")
+            return BoxResponse(
+                success=False, error="Manager 'metadata_templates' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2778,12 +3326,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_metadata_template(scope, template_key, operations))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.update_metadata_template(
+                    scope, template_key, operations
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_templates_delete_metadata_template(self, scope: str, template_key: str, **kwargs) -> BoxResponse:
+    async def metadata_templates_delete_metadata_template(
+        self, scope: str, template_key: str, **kwargs
+    ) -> BoxResponse:
         """Delete a metadata template
 
         API Endpoint: metadata_templates.delete_metadata_template
@@ -2795,11 +3350,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata_templates', None)
+        manager = getattr(client, "metadata_templates", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'metadata_templates' not found")
+            return BoxResponse(
+                success=False, error="Manager 'metadata_templates' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -2807,12 +3365,21 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_metadata_template(scope, template_key))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_metadata_template(scope, template_key)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_create_file_metadata(self, file_id: str, scope: str, template_key: str, metadata: Dict[str, str], **kwargs) -> BoxResponse:
+    async def metadata_create_file_metadata(
+        self,
+        file_id: str,
+        scope: str,
+        template_key: str,
+        metadata: dict[str, str],
+        **kwargs,
+    ) -> BoxResponse:
         """Create metadata on a file
 
         API Endpoint: metadata.create_file_metadata
@@ -2826,9 +3393,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata', None)
+        manager = getattr(client, "metadata", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
 
@@ -2838,12 +3406,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_file_metadata(file_id, scope, template_key, metadata))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_file_metadata(
+                    file_id, scope, template_key, metadata
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_get_file_metadata(self, file_id: str, scope: str, template_key: str, **kwargs) -> BoxResponse:
+    async def metadata_get_file_metadata(
+        self, file_id: str, scope: str, template_key: str, **kwargs
+    ) -> BoxResponse:
         """Get metadata on a file
 
         API Endpoint: metadata.get_file_metadata
@@ -2856,9 +3431,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata', None)
+        manager = getattr(client, "metadata", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
 
@@ -2868,12 +3444,21 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_metadata(file_id, scope, template_key))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_file_metadata(file_id, scope, template_key)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_update_file_metadata(self, file_id: str, scope: str, template_key: str, operations: List[Dict], **kwargs) -> BoxResponse:
+    async def metadata_update_file_metadata(
+        self,
+        file_id: str,
+        scope: str,
+        template_key: str,
+        operations: list[dict],
+        **kwargs,
+    ) -> BoxResponse:
         """Update metadata on a file
 
         API Endpoint: metadata.update_file_metadata
@@ -2887,9 +3472,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata', None)
+        manager = getattr(client, "metadata", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
 
@@ -2899,12 +3485,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_file_metadata(file_id, scope, template_key, operations))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.update_file_metadata(
+                    file_id, scope, template_key, operations
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_delete_file_metadata(self, file_id: str, scope: str, template_key: str, **kwargs) -> BoxResponse:
+    async def metadata_delete_file_metadata(
+        self, file_id: str, scope: str, template_key: str, **kwargs
+    ) -> BoxResponse:
         """Delete metadata from a file
 
         API Endpoint: metadata.delete_file_metadata
@@ -2917,9 +3510,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata', None)
+        manager = getattr(client, "metadata", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
 
@@ -2929,12 +3523,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_file_metadata(file_id, scope, template_key))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_file_metadata(file_id, scope, template_key)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_get_all_file_metadata(self, file_id: str, **kwargs) -> BoxResponse:
+    async def metadata_get_all_file_metadata(
+        self, file_id: str, **kwargs
+    ) -> BoxResponse:
         """Get all metadata on a file
 
         API Endpoint: metadata.get_all_file_metadata
@@ -2945,9 +3543,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata', None)
+        manager = getattr(client, "metadata", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
 
@@ -2957,12 +3556,21 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_all_file_metadata(file_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_all_file_metadata(file_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_create_folder_metadata(self, folder_id: str, scope: str, template_key: str, metadata: Dict[str, str], **kwargs) -> BoxResponse:
+    async def metadata_create_folder_metadata(
+        self,
+        folder_id: str,
+        scope: str,
+        template_key: str,
+        metadata: dict[str, str],
+        **kwargs,
+    ) -> BoxResponse:
         """Create metadata on a folder
 
         API Endpoint: metadata.create_folder_metadata
@@ -2976,9 +3584,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata', None)
+        manager = getattr(client, "metadata", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
 
@@ -2988,12 +3597,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_folder_metadata(folder_id, scope, template_key, metadata))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_folder_metadata(
+                    folder_id, scope, template_key, metadata
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_get_folder_metadata(self, folder_id: str, scope: str, template_key: str, **kwargs) -> BoxResponse:
+    async def metadata_get_folder_metadata(
+        self, folder_id: str, scope: str, template_key: str, **kwargs
+    ) -> BoxResponse:
         """Get metadata on a folder
 
         API Endpoint: metadata.get_folder_metadata
@@ -3006,9 +3622,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata', None)
+        manager = getattr(client, "metadata", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
 
@@ -3018,12 +3635,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_metadata(folder_id, scope, template_key))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.get_folder_metadata(folder_id, scope, template_key),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_cascade_policies_create_metadata_cascade_policy(self, folder_id: str, scope: str, template_key: str, **kwargs) -> BoxResponse:
+    async def metadata_cascade_policies_create_metadata_cascade_policy(
+        self, folder_id: str, scope: str, template_key: str, **kwargs
+    ) -> BoxResponse:
         """Create a metadata cascade policy
 
         API Endpoint: metadata_cascade_policies.create_metadata_cascade_policy
@@ -3036,11 +3658,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata_cascade_policies', None)
+        manager = getattr(client, "metadata_cascade_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'metadata_cascade_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'metadata_cascade_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3048,12 +3673,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_metadata_cascade_policy(folder_id, scope, template_key))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_metadata_cascade_policy(
+                    folder_id, scope, template_key
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_cascade_policies_get_metadata_cascade_policies(self, folder_id: str, **kwargs) -> BoxResponse:
+    async def metadata_cascade_policies_get_metadata_cascade_policies(
+        self, folder_id: str, **kwargs
+    ) -> BoxResponse:
         """Get metadata cascade policies for a folder
 
         API Endpoint: metadata_cascade_policies.get_metadata_cascade_policies
@@ -3064,11 +3696,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata_cascade_policies', None)
+        manager = getattr(client, "metadata_cascade_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'metadata_cascade_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'metadata_cascade_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3076,12 +3711,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_metadata_cascade_policies(folder_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_metadata_cascade_policies(folder_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_cascade_policies_get_metadata_cascade_policy(self, policy_id: str, **kwargs) -> BoxResponse:
+    async def metadata_cascade_policies_get_metadata_cascade_policy(
+        self, policy_id: str, **kwargs
+    ) -> BoxResponse:
         """Get a metadata cascade policy by ID
 
         API Endpoint: metadata_cascade_policies.get_metadata_cascade_policy
@@ -3092,11 +3731,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata_cascade_policies', None)
+        manager = getattr(client, "metadata_cascade_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'metadata_cascade_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'metadata_cascade_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3104,12 +3746,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_metadata_cascade_policy(policy_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_metadata_cascade_policy(policy_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_cascade_policies_delete_metadata_cascade_policy(self, policy_id: str, **kwargs) -> BoxResponse:
+    async def metadata_cascade_policies_delete_metadata_cascade_policy(
+        self, policy_id: str, **kwargs
+    ) -> BoxResponse:
         """Delete a metadata cascade policy
 
         API Endpoint: metadata_cascade_policies.delete_metadata_cascade_policy
@@ -3120,11 +3766,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata_cascade_policies', None)
+        manager = getattr(client, "metadata_cascade_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'metadata_cascade_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'metadata_cascade_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3132,12 +3781,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_metadata_cascade_policy(policy_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_metadata_cascade_policy(policy_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def metadata_cascade_policies_force_apply_metadata_cascade_policy(self, policy_id: str, **kwargs) -> BoxResponse:
+    async def metadata_cascade_policies_force_apply_metadata_cascade_policy(
+        self, policy_id: str, **kwargs
+    ) -> BoxResponse:
         """Force apply a metadata cascade policy
 
         API Endpoint: metadata_cascade_policies.force_apply_metadata_cascade_policy
@@ -3148,11 +3801,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'metadata_cascade_policies', None)
+        manager = getattr(client, "metadata_cascade_policies", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'metadata_cascade_policies' not found")
+            return BoxResponse(
+                success=False, error="Manager 'metadata_cascade_policies' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3160,12 +3816,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.force_apply_metadata_cascade_policy(policy_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.force_apply_metadata_cascade_policy(policy_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def events_get_events(self, stream_type: Optional[str] = None, stream_position: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def events_get_events(
+        self,
+        stream_type: str | None = None,
+        stream_position: str | None = None,
+        **kwargs,
+    ) -> BoxResponse:
         """Get events for the current user or enterprise
 
         API Endpoint: events.get_events
@@ -3177,9 +3840,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'events', None)
+        manager = getattr(client, "events", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'events' not found")
 
@@ -3189,12 +3853,22 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_events(stream_type=stream_type, stream_position=stream_position))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.get_events(
+                    stream_type=stream_type, stream_position=stream_position
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def events_get_events_with_long_polling(self, stream_type: Optional[str] = None, stream_position: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def events_get_events_with_long_polling(
+        self,
+        stream_type: str | None = None,
+        stream_position: str | None = None,
+        **kwargs,
+    ) -> BoxResponse:
         """Get events using long polling
 
         API Endpoint: events.get_events_with_long_polling
@@ -3206,9 +3880,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'events', None)
+        manager = getattr(client, "events", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'events' not found")
 
@@ -3218,12 +3893,23 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_events_with_long_polling(stream_type=stream_type, stream_position=stream_position))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.get_events_with_long_polling(
+                    stream_type=stream_type, stream_position=stream_position
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def enterprise_events_get_enterprise_events(self, stream_type: Optional[str] = None, created_after: Optional[str] = None, created_before: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def enterprise_events_get_enterprise_events(
+        self,
+        stream_type: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        **kwargs,
+    ) -> BoxResponse:
         """Get enterprise events
 
         API Endpoint: enterprise_events.get_enterprise_events
@@ -3236,11 +3922,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'enterprise_events', None)
+        manager = getattr(client, "enterprise_events", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'enterprise_events' not found")
+            return BoxResponse(
+                success=False, error="Manager 'enterprise_events' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3248,7 +3937,14 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_enterprise_events(stream_type=stream_type, created_after=created_after, created_before=created_before))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.get_enterprise_events(
+                    stream_type=stream_type,
+                    created_after=created_after,
+                    created_before=created_before,
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -3261,9 +3957,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collections', None)
+        manager = getattr(client, "collections", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collections' not found")
 
@@ -3273,12 +3970,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_collections())
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_collections()
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collections_get_collection_items(self, collection_id: str, **kwargs) -> BoxResponse:
+    async def collections_get_collection_items(
+        self, collection_id: str, **kwargs
+    ) -> BoxResponse:
         """Get items in a collection
 
         API Endpoint: collections.get_collection_items
@@ -3289,9 +3990,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collections', None)
+        manager = getattr(client, "collections", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collections' not found")
 
@@ -3301,12 +4003,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_collection_items(collection_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_collection_items(collection_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collections_add_to_collection(self, collection_id: str, item_id: str, item_type: str, **kwargs) -> BoxResponse:
+    async def collections_add_to_collection(
+        self, collection_id: str, item_id: str, item_type: str, **kwargs
+    ) -> BoxResponse:
         """Add an item to a collection
 
         API Endpoint: collections.add_to_collection
@@ -3319,9 +4025,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collections', None)
+        manager = getattr(client, "collections", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collections' not found")
 
@@ -3331,12 +4038,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.add_to_collection(collection_id, item_id, item_type))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.add_to_collection(collection_id, item_id, item_type),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collections_remove_from_collection(self, collection_id: str, item_id: str, item_type: str, **kwargs) -> BoxResponse:
+    async def collections_remove_from_collection(
+        self, collection_id: str, item_id: str, item_type: str, **kwargs
+    ) -> BoxResponse:
         """Remove an item from a collection
 
         API Endpoint: collections.remove_from_collection
@@ -3349,9 +4061,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collections', None)
+        manager = getattr(client, "collections", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collections' not found")
 
@@ -3361,7 +4074,12 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.remove_from_collection(collection_id, item_id, item_type))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.remove_from_collection(
+                    collection_id, item_id, item_type
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -3374,11 +4092,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'terms_of_service', None)
+        manager = getattr(client, "terms_of_service", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'terms_of_service' not found")
+            return BoxResponse(
+                success=False, error="Manager 'terms_of_service' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3386,12 +4107,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_terms_of_service())
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_terms_of_service()
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def terms_of_service_get_terms_of_service_by_id(self, tos_id: str, **kwargs) -> BoxResponse:
+    async def terms_of_service_get_terms_of_service_by_id(
+        self, tos_id: str, **kwargs
+    ) -> BoxResponse:
         """Get terms of service by ID
 
         API Endpoint: terms_of_service.get_terms_of_service_by_id
@@ -3402,11 +4127,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'terms_of_service', None)
+        manager = getattr(client, "terms_of_service", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'terms_of_service' not found")
+            return BoxResponse(
+                success=False, error="Manager 'terms_of_service' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3414,12 +4142,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_terms_of_service_by_id(tos_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_terms_of_service_by_id(tos_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def terms_of_service_create_terms_of_service_user_status(self, tos_id: str, user_id: str, is_accepted: bool, **kwargs) -> BoxResponse:
+    async def terms_of_service_create_terms_of_service_user_status(
+        self, tos_id: str, user_id: str, is_accepted: bool, **kwargs
+    ) -> BoxResponse:
         """Create terms of service user status
 
         API Endpoint: terms_of_service.create_terms_of_service_user_status
@@ -3432,11 +4164,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'terms_of_service', None)
+        manager = getattr(client, "terms_of_service", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'terms_of_service' not found")
+            return BoxResponse(
+                success=False, error="Manager 'terms_of_service' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3444,12 +4179,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_terms_of_service_user_status(tos_id, user_id, is_accepted))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_terms_of_service_user_status(
+                    tos_id, user_id, is_accepted
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def terms_of_service_get_terms_of_service_user_statuses(self, tos_id: str, **kwargs) -> BoxResponse:
+    async def terms_of_service_get_terms_of_service_user_statuses(
+        self, tos_id: str, **kwargs
+    ) -> BoxResponse:
         """Get all user statuses for terms of service
 
         API Endpoint: terms_of_service.get_terms_of_service_user_statuses
@@ -3460,11 +4202,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'terms_of_service', None)
+        manager = getattr(client, "terms_of_service", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'terms_of_service' not found")
+            return BoxResponse(
+                success=False, error="Manager 'terms_of_service' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3472,12 +4217,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_terms_of_service_user_statuses(tos_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_terms_of_service_user_statuses(tos_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def terms_of_service_update_terms_of_service_user_status(self, tos_user_status_id: str, is_accepted: bool, **kwargs) -> BoxResponse:
+    async def terms_of_service_update_terms_of_service_user_status(
+        self, tos_user_status_id: str, is_accepted: bool, **kwargs
+    ) -> BoxResponse:
         """Update terms of service user status
 
         API Endpoint: terms_of_service.update_terms_of_service_user_status
@@ -3489,11 +4238,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'terms_of_service', None)
+        manager = getattr(client, "terms_of_service", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'terms_of_service' not found")
+            return BoxResponse(
+                success=False, error="Manager 'terms_of_service' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3501,12 +4253,19 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_terms_of_service_user_status(tos_user_status_id, is_accepted))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.update_terms_of_service_user_status(
+                    tos_user_status_id, is_accepted
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaboration_allowlist_get_collaboration_allowlist_entries(self, **kwargs) -> BoxResponse:
+    async def collaboration_allowlist_get_collaboration_allowlist_entries(
+        self, **kwargs
+    ) -> BoxResponse:
         """Get all collaboration allowlist entries
 
         API Endpoint: collaboration_allowlist.get_collaboration_allowlist_entries
@@ -3514,11 +4273,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaboration_allowlist', None)
+        manager = getattr(client, "collaboration_allowlist", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaboration_allowlist' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaboration_allowlist' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3526,12 +4288,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_collaboration_allowlist_entries())
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_collaboration_allowlist_entries()
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaboration_allowlist_create_collaboration_allowlist_entry(self, domain: str, direction: str, **kwargs) -> BoxResponse:
+    async def collaboration_allowlist_create_collaboration_allowlist_entry(
+        self, domain: str, direction: str, **kwargs
+    ) -> BoxResponse:
         """Create a collaboration allowlist entry
 
         API Endpoint: collaboration_allowlist.create_collaboration_allowlist_entry
@@ -3543,11 +4309,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaboration_allowlist', None)
+        manager = getattr(client, "collaboration_allowlist", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaboration_allowlist' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaboration_allowlist' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3555,12 +4324,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_collaboration_allowlist_entry(domain, direction))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_collaboration_allowlist_entry(domain, direction),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaboration_allowlist_get_collaboration_allowlist_entry(self, entry_id: str, **kwargs) -> BoxResponse:
+    async def collaboration_allowlist_get_collaboration_allowlist_entry(
+        self, entry_id: str, **kwargs
+    ) -> BoxResponse:
         """Get collaboration allowlist entry by ID
 
         API Endpoint: collaboration_allowlist.get_collaboration_allowlist_entry
@@ -3571,11 +4345,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaboration_allowlist', None)
+        manager = getattr(client, "collaboration_allowlist", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaboration_allowlist' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaboration_allowlist' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3583,12 +4360,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_collaboration_allowlist_entry(entry_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.get_collaboration_allowlist_entry(entry_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaboration_allowlist_delete_collaboration_allowlist_entry(self, entry_id: str, **kwargs) -> BoxResponse:
+    async def collaboration_allowlist_delete_collaboration_allowlist_entry(
+        self, entry_id: str, **kwargs
+    ) -> BoxResponse:
         """Delete a collaboration allowlist entry
 
         API Endpoint: collaboration_allowlist.delete_collaboration_allowlist_entry
@@ -3599,11 +4380,14 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'collaboration_allowlist', None)
+        manager = getattr(client, "collaboration_allowlist", None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'collaboration_allowlist' not found")
+            return BoxResponse(
+                success=False, error="Manager 'collaboration_allowlist' not found"
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -3611,12 +4395,31 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_collaboration_allowlist_entry(entry_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.delete_collaboration_allowlist_entry(entry_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def search_search_for_content(self, query: str, limit: Optional[int] = None, offset: Optional[int] = None, scope: Optional[str] = None, file_extensions: Optional[List[str]] = None, created_at_range: Optional[str] = None, updated_at_range: Optional[str] = None, size_range: Optional[str] = None, owner_user_ids: Optional[List[str]] = None, ancestor_folder_ids: Optional[List[str]] = None, content_types: Optional[List[str]] = None, type: Optional[str] = None, trash_content: Optional[str] = None, mdfilters: Optional[List[Dict]] = None, **kwargs) -> BoxResponse:
+    async def search_search_for_content(
+        self,
+        query: str,
+        limit: int | None = None,
+        offset: int | None = None,
+        scope: str | None = None,
+        file_extensions: list[str] | None = None,
+        created_at_range: str | None = None,
+        updated_at_range: str | None = None,
+        size_range: str | None = None,
+        owner_user_ids: list[str] | None = None,
+        ancestor_folder_ids: list[str] | None = None,
+        content_types: list[str] | None = None,
+        type: str | None = None,
+        trash_content: str | None = None,
+        mdfilters: list[dict] | None = None,
+        **kwargs,
+    ) -> BoxResponse:
         """Search for content with advanced filters
 
         API Endpoint: search.search_for_content
@@ -3640,9 +4443,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'search', None)
+        manager = getattr(client, "search", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'search' not found")
 
@@ -3652,12 +4456,32 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.search_for_content(query, limit=limit, offset=offset, scope=scope, file_extensions=file_extensions, created_at_range=created_at_range, updated_at_range=updated_at_range, size_range=size_range, owner_user_ids=owner_user_ids, ancestor_folder_ids=ancestor_folder_ids, content_types=content_types, type=type, trash_content=trash_content, mdfilters=mdfilters))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.search_for_content(
+                    query,
+                    limit=limit,
+                    offset=offset,
+                    scope=scope,
+                    file_extensions=file_extensions,
+                    created_at_range=created_at_range,
+                    updated_at_range=updated_at_range,
+                    size_range=size_range,
+                    owner_user_ids=owner_user_ids,
+                    ancestor_folder_ids=ancestor_folder_ids,
+                    content_types=content_types,
+                    type=type,
+                    trash_content=trash_content,
+                    mdfilters=mdfilters,
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def uploads_upload_file(self, attributes: UploadFileAttributes, file: BinaryIO, **kwargs) -> BoxResponse:
+    async def uploads_upload_file(
+        self, attributes: UploadFileAttributes, file: BinaryIO, **kwargs
+    ) -> BoxResponse:
         """Upload a file
 
         API Endpoint: uploads.upload_file
@@ -3669,9 +4493,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'uploads', None)
+        manager = getattr(client, "uploads", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
 
@@ -3681,12 +4506,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.upload_file(attributes, file))
+            response = await loop.run_in_executor(
+                None, lambda: manager.upload_file(attributes, file)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def uploads_upload_file_version(self, file_id: str, file: BinaryIO, **kwargs) -> BoxResponse:
+    async def uploads_upload_file_version(
+        self, file_id: str, file: BinaryIO, **kwargs
+    ) -> BoxResponse:
         """Upload a new version of a file
 
         API Endpoint: uploads.upload_file_version
@@ -3698,9 +4527,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'uploads', None)
+        manager = getattr(client, "uploads", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
 
@@ -3710,12 +4540,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.upload_file_version(file_id, file))
+            response = await loop.run_in_executor(
+                None, lambda: manager.upload_file_version(file_id, file)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def uploads_preflight_file_upload_check(self, name: str, size: int, parent: PreflightFileUploadCheckParent, **kwargs) -> BoxResponse:
+    async def uploads_preflight_file_upload_check(
+        self, name: str, size: int, parent: PreflightFileUploadCheckParent, **kwargs
+    ) -> BoxResponse:
         """Check if file can be uploaded
 
         API Endpoint: uploads.preflight_file_upload_check
@@ -3728,9 +4562,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'uploads', None)
+        manager = getattr(client, "uploads", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
 
@@ -3740,12 +4575,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.preflight_file_upload_check(name, size, parent))
+            response = await loop.run_in_executor(
+                None, lambda: manager.preflight_file_upload_check(name, size, parent)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def uploads_create_upload_session(self, folder_id: str, file_size: int, file_name: str, **kwargs) -> BoxResponse:
+    async def uploads_create_upload_session(
+        self, folder_id: str, file_size: int, file_name: str, **kwargs
+    ) -> BoxResponse:
         """Create an upload session for large files
 
         API Endpoint: uploads.create_upload_session
@@ -3758,9 +4597,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'uploads', None)
+        manager = getattr(client, "uploads", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
 
@@ -3770,12 +4610,17 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_upload_session(folder_id, file_size, file_name))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.create_upload_session(folder_id, file_size, file_name),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def uploads_upload_part(self, upload_session_id: str, part_data: bytes, **kwargs) -> BoxResponse:
+    async def uploads_upload_part(
+        self, upload_session_id: str, part_data: bytes, **kwargs
+    ) -> BoxResponse:
         """Upload a part for chunked upload
 
         API Endpoint: uploads.upload_part
@@ -3787,9 +4632,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'uploads', None)
+        manager = getattr(client, "uploads", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
 
@@ -3799,12 +4645,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.upload_part(upload_session_id, part_data))
+            response = await loop.run_in_executor(
+                None, lambda: manager.upload_part(upload_session_id, part_data)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def uploads_commit_upload_session(self, upload_session_id: str, parts: List[Dict], **kwargs) -> BoxResponse:
+    async def uploads_commit_upload_session(
+        self, upload_session_id: str, parts: list[dict], **kwargs
+    ) -> BoxResponse:
         """Commit an upload session
 
         API Endpoint: uploads.commit_upload_session
@@ -3816,9 +4666,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'uploads', None)
+        manager = getattr(client, "uploads", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
 
@@ -3828,12 +4679,16 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.commit_upload_session(upload_session_id, parts))
+            response = await loop.run_in_executor(
+                None, lambda: manager.commit_upload_session(upload_session_id, parts)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def uploads_abort_upload_session(self, upload_session_id: str, **kwargs) -> BoxResponse:
+    async def uploads_abort_upload_session(
+        self, upload_session_id: str, **kwargs
+    ) -> BoxResponse:
         """Abort an upload session
 
         API Endpoint: uploads.abort_upload_session
@@ -3844,9 +4699,10 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response
+
         """
         client = self._get_client()
-        manager = getattr(client, 'uploads', None)
+        manager = getattr(client, "uploads", None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
 
@@ -3856,7 +4712,9 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.abort_upload_session(upload_session_id))
+            response = await loop.run_in_executor(
+                None, lambda: manager.abort_upload_session(upload_session_id)
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -3865,18 +4723,20 @@ class BoxDataSource:
         """Get the underlying Box client."""
         return self._get_client()
 
-    def get_sdk_info(self) -> Dict[str, Union[int, bool, List[str], Dict[str, int]]]:
+    def get_sdk_info(self) -> dict[str, int | bool | list[str] | dict[str, int]]:
         """Get information about the wrapped SDK methods."""
-        manager_methods = [m for m in self.generated_methods if m.get('namespace')]
+        manager_methods = [m for m in self.generated_methods if m.get("namespace")]
 
-        namespaces: Dict[str, int] = {}
+        namespaces: dict[str, int] = {}
         for method in self.generated_methods:
-            namespace = method.get('namespace') or 'root'
+            namespace = method.get("namespace") or "root"
             if namespace not in namespaces:
                 namespaces[namespace] = 0
             namespaces[namespace] += 1
 
-        endpoints = [m.get('endpoint') for m in self.generated_methods if m.get('endpoint')]
+        endpoints = [
+            m.get("endpoint") for m in self.generated_methods if m.get("endpoint")
+        ]
 
         return {
             "total_methods": len(self.generated_methods),
@@ -3887,14 +4747,30 @@ class BoxDataSource:
                 "core_apis": ["files", "folders", "users", "groups"],
                 "collaboration_apis": ["collaborations", "shared_links"],
                 "content_apis": ["comments", "tasks", "webhooks", "web_links"],
-                "enterprise_apis": ["retention_policies", "legal_hold_policies", "classifications"],
-                "advanced_apis": ["shield_information_barriers", "sign_requests", "workflows"],
-                "metadata_apis": ["metadata_templates", "metadata", "metadata_cascade_policies"],
+                "enterprise_apis": [
+                    "retention_policies",
+                    "legal_hold_policies",
+                    "classifications",
+                ],
+                "advanced_apis": [
+                    "shield_information_barriers",
+                    "sign_requests",
+                    "workflows",
+                ],
+                "metadata_apis": [
+                    "metadata_templates",
+                    "metadata",
+                    "metadata_cascade_policies",
+                ],
                 "events_apis": ["events", "enterprise_events"],
-                "integration_apis": ["collections", "terms_of_service", "collaboration_allowlist"],
+                "integration_apis": [
+                    "collections",
+                    "terms_of_service",
+                    "collaboration_allowlist",
+                ],
                 "search_apis": ["search"],
-                "upload_apis": ["uploads"]
-            }
+                "upload_apis": ["uploads"],
+            },
         }
 
     # Helper methods for common Box operations
@@ -3903,7 +4779,8 @@ class BoxDataSource:
         try:
             client = self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.folders.get_folder_by_id("0")
+                None,
+                lambda: client.folders.get_folder_by_id("0"),
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -3914,7 +4791,8 @@ class BoxDataSource:
         try:
             client = self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.folders.get_folder_by_id(folder_id)
+                None,
+                lambda: client.folders.get_folder_by_id(folder_id),
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -3925,7 +4803,8 @@ class BoxDataSource:
         try:
             client = self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.files.get_file_by_id(file_id)
+                None,
+                lambda: client.files.get_file_by_id(file_id),
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -3936,7 +4815,8 @@ class BoxDataSource:
         try:
             client = self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.users.get_user_me()
+                None,
+                lambda: client.users.get_user_me(),
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -3948,8 +4828,11 @@ class BoxDataSource:
         try:
             client = self._get_client()
             user = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.users.get_user_me()
+                None,
+                lambda: client.users.get_user_me(),
             )
-            return BoxResponse(success=True, data={"enterprise": getattr(user, 'enterprise', None)})
+            return BoxResponse(
+                success=True, data={"enterprise": getattr(user, "enterprise", None)}
+            )
         except Exception as e:
             return BoxResponse(success=False, error=str(e))

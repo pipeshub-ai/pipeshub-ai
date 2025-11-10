@@ -1,7 +1,8 @@
 import json
 import time
+from collections.abc import Callable
 from threading import Lock
-from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
+from typing import Any, Generic, TypeVar
 
 from app.config.key_value_store import KeyValueStore
 from app.utils.logger import create_logger
@@ -12,15 +13,15 @@ T = TypeVar("T")
 
 
 class KeyData(Generic[T]):
-    """
-    Helper class to store value and TTL information.
+    """Helper class to store value and TTL information.
 
     Attributes:
         value: The stored value
         expiry: Optional expiration timestamp
+
     """
 
-    def __init__(self, value: T, ttl: Optional[int] = None) -> None:
+    def __init__(self, value: T, ttl: int | None = None) -> None:
         logger.debug("🔧 Creating KeyData instance")
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
 
@@ -47,8 +48,7 @@ class KeyData(Generic[T]):
 
 
 class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
-    """
-    In-memory implementation of the distributed key-value store.
+    """In-memory implementation of the distributed key-value store.
 
     This implementation is primarily used for testing and development.
     While it implements the full interface, it's not actually distributed
@@ -58,13 +58,14 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         store: Dictionary storing the key-value pairs
         watchers: Dictionary storing active watchers for keys
         lock: Thread-safe lock for concurrent access
+
     """
 
-    def __init__(self, logger, default_json_file_path: Optional[str] = None) -> None:
+    def __init__(self, logger, default_json_file_path: str | None = None) -> None:
         """Initialize an empty in-memory store."""
         logger.debug("🔧 Initializing InMemoryKeyValueStore")
-        self.store: Dict[str, KeyData[T]] = {}
-        self.watchers: Dict[str, List[tuple[Callable[[Optional[T]], None], Any]]] = {}
+        self.store: dict[str, KeyData[T]] = {}
+        self.watchers: dict[str, list[tuple[Callable[[T | None], None], Any]]] = {}
         self.lock = Lock()
 
         if default_json_file_path:
@@ -73,27 +74,26 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
 
         logger.debug("✅ InMemoryKeyValueStore initialized")
 
-    def _load_from_json(self, json_file_path: str) -> Dict[str, KeyData[T]]:
+    def _load_from_json(self, json_file_path: str) -> dict[str, KeyData[T]]:
         """Load data from a JSON file."""
-        with open(json_file_path, 'r') as file:
+        with open(json_file_path) as file:
             data = json.load(file)
         return {key: KeyData(value, None) for key, value in data.items()}
 
     def _cleanup_expired_keys(self) -> None:
         """Clean up expired keys synchronously."""
-        expired_keys = [
-            key for key, data in self.store.items() if data.is_expired()
-        ]
+        expired_keys = [key for key, data in self.store.items() if data.is_expired()]
         if expired_keys:
             logger.debug("📋 Found expired keys: %s", expired_keys)
             for key in expired_keys:
                 logger.debug("🔄 Removing expired key: %s", key)
                 del self.store[key]
             logger.debug(
-                "✅ Cleanup complete, removed %d keys", len(expired_keys)
+                "✅ Cleanup complete, removed %d keys",
+                len(expired_keys),
             )
 
-    def _notify_watchers(self, key: str, value: Optional[T]) -> None:
+    def _notify_watchers(self, key: str, value: T | None) -> None:
         """Notify all watchers of a key about value changes."""
         logger.debug("🔄 Notifying watchers for key: %s", key)
         if key in self.watchers:
@@ -107,9 +107,10 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                     logger.error("❌ Error in watcher callback: %s", str(e))
                     logger.exception("Detailed error:")
 
-    async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> None:
-        """
-        Create a new key-value pair in the store.
+    async def create_key(
+        self, key: str, value: T, overwrite: bool = True, ttl: int | None = None
+    ) -> None:
+        """Create a new key-value pair in the store.
 
         Args:
             key: The key to create
@@ -118,6 +119,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
 
         Raises:
             KeyError: If the key already exists
+
         """
         logger.debug("🔄 Creating key: %s", key)
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
@@ -134,9 +136,8 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             self._notify_watchers(key, value)
             logger.debug("✅ Key created successfully")
 
-    async def update_value(self, key: str, value: T, ttl: Optional[int] = None) -> None:
-        """
-        Update the value for an existing key.
+    async def update_value(self, key: str, value: T, ttl: int | None = None) -> None:
+        """Update the value for an existing key.
 
         Args:
             key: The key to update
@@ -145,6 +146,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
 
         Raises:
             KeyError: If the key doesn't exist or has expired
+
         """
         logger.debug("🔄 Updating key: %s", key)
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
@@ -161,15 +163,15 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             self._notify_watchers(key, value)
             logger.debug("✅ Value updated successfully")
 
-    async def get_key(self, key: str) -> Optional[T]:
-        """
-        Retrieve the value associated with a key.
+    async def get_key(self, key: str) -> T | None:
+        """Retrieve the value associated with a key.
 
         Args:
             key: The key to retrieve
 
         Returns:
             The value associated with the key, or None if the key doesn't exist or has expired
+
         """
         logger.debug("🔍 Getting value for key: %s", key)
 
@@ -179,21 +181,20 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                 data = self.store[key]
                 if not data.is_expired():
                     return data.value
-                else:
-                    logger.debug("⚠️ Key exists but has expired")
+                logger.debug("⚠️ Key exists but has expired")
             else:
                 logger.debug("⚠️ Key not found")
             return None
 
     async def delete_key(self, key: str) -> bool:
-        """
-        Delete a key-value pair from the store.
+        """Delete a key-value pair from the store.
 
         Args:
             key: The key to delete
 
         Returns:
             True if the key was deleted, False if it didn't exist
+
         """
         logger.debug("🔄 Deleting key: %s", key)
 
@@ -210,12 +211,12 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.debug("⚠️ Key not found, nothing to delete")
             return False
 
-    async def get_all_keys(self) -> List[str]:
-        """
-        Retrieve all non-expired keys in the store.
+    async def get_all_keys(self) -> list[str]:
+        """Retrieve all non-expired keys in the store.
 
         Returns:
             List of all valid keys in the store
+
         """
         logger.debug("🔍 Getting all non-expired keys")
 
@@ -230,11 +231,10 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
     async def watch_key(
         self,
         key: str,
-        callback: Callable[[Optional[T]], None],
-        error_callback: Optional[Callable[[Exception], None]] = None,
+        callback: Callable[[T | None], None],
+        error_callback: Callable[[Exception], None] | None = None,
     ) -> int:
-        """
-        Watch a key for changes and execute callbacks when changes occur.
+        """Watch a key for changes and execute callbacks when changes occur.
 
         Args:
             key: The key to watch
@@ -243,6 +243,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
 
         Returns:
             Watch identifier that can be used to cancel the watch
+
         """
         logger.debug("🔄 Setting up watch for key: %s", key)
         watch_id = id(callback)
@@ -260,12 +261,12 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         return watch_id
 
     def cancel_watch(self, key: str, watch_id: str) -> None:
-        """
-        Cancel a watch operation.
+        """Cancel a watch operation.
 
         Args:
             key: The key being watched
             watch_id: The watch identifier returned from watch_key
+
         """
         logger.debug("🔄 Canceling watch for key: %s, watch_id: %s", key, watch_id)
 
@@ -285,15 +286,15 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             else:
                 logger.debug("⚠️ No watchers found for key")
 
-    async def list_keys_in_directory(self, directory: str) -> List[str]:
-        """
-        List all non-expired keys under a specific directory prefix.
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
+        """List all non-expired keys under a specific directory prefix.
 
         Args:
             directory: The directory prefix to search under
 
         Returns:
             List of keys under the specified directory
+
         """
         logger.debug("🔍 Listing keys in directory: %s", directory)
 
@@ -305,7 +306,9 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                 if key.startswith(directory) and not data.is_expired()
             ]
             logger.debug(
-                "📋 Found %d matching keys: %s", len(matching_keys), matching_keys
+                "📋 Found %d matching keys: %s",
+                len(matching_keys),
+                matching_keys,
             )
             return matching_keys
 
@@ -320,5 +323,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             self.store.clear()
             self.watchers.clear()
             logger.debug(
-                "✅ Cleared %d stored items and %d watchers", store_count, watcher_count
+                "✅ Cleared %d stored items and %d watchers",
+                store_count,
+                watcher_count,
             )

@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -15,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class SharePoint:
     """SharePoint tool exposed to the agents"""
+
     def __init__(self, client: MSGraphClient) -> None:
         """Initialize the SharePoint tool"""
         """
@@ -25,13 +25,14 @@ class SharePoint:
         """
         self.client = SharePointDataSource(client)
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
+    def _run_async(self, coro) -> HTTPResponse:  # type: ignore [valid method]
         """Helper method to run async operations in sync context"""
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 # If we're already in an async context, we need to use a thread pool
                 import concurrent.futures
+
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(asyncio.run, coro)
                     return future.result()
@@ -50,56 +51,56 @@ class SharePoint:
                 name="search",
                 type=ParameterType.STRING,
                 description="Search query for sites",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
                 description="Filter query for sites",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="orderby",
                 type=ParameterType.STRING,
                 description="Order by field",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="select",
                 type=ParameterType.STRING,
                 description="Select specific fields",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="expand",
                 type=ParameterType.STRING,
                 description="Expand related entities",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="top",
                 type=ParameterType.INTEGER,
                 description="Number of results to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="skip",
                 type=ParameterType.INTEGER,
                 description="Number of results to skip",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_sites(
         self,
-        search: Optional[str] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        select: Optional[str] = None,
-        expand: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        search: str | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        select: str | None = None,
+        expand: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+    ) -> tuple[bool, str]:
         """Get SharePoint sites"""
         """
         Args:
@@ -115,20 +116,21 @@ class SharePoint:
         """
         try:
             # Use SharePointDataSource method
-            response = self._run_async(self.client.sites_get_all_sites(
-                search=search,
-                filter=filter,
-                orderby=orderby,
-                select=select,
-                expand=expand,
-                top=top,
-                skip=skip
-            ))
+            response = self._run_async(
+                self.client.sites_get_all_sites(
+                    search=search,
+                    filter=filter,
+                    orderby=orderby,
+                    select=select,
+                    expand=expand,
+                    top=top,
+                    skip=skip,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_sites: {e}")
             return False, json.dumps({"error": str(e)})
@@ -142,28 +144,28 @@ class SharePoint:
                 name="site_id",
                 type=ParameterType.STRING,
                 description="The ID of the site to get",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="select",
                 type=ParameterType.STRING,
                 description="Select specific fields",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="expand",
                 type=ParameterType.STRING,
                 description="Expand related entities",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_site(
         self,
         site_id: str,
-        select: Optional[str] = None,
-        expand: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        select: str | None = None,
+        expand: str | None = None,
+    ) -> tuple[bool, str]:
         """Get a specific SharePoint site"""
         """
         Args:
@@ -175,16 +177,17 @@ class SharePoint:
         """
         try:
             # Use SharePointDataSource method
-            response = self._run_async(self.client.sites_site_get_by_path(
-                site_id=site_id,
-                select=select,
-                expand=expand
-            ))
+            response = self._run_async(
+                self.client.sites_site_get_by_path(
+                    site_id=site_id,
+                    select=select,
+                    expand=expand,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_site: {e}")
             return False, json.dumps({"error": str(e)})
@@ -198,63 +201,63 @@ class SharePoint:
                 name="site_id",
                 type=ParameterType.STRING,
                 description="The ID of the site",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="search",
                 type=ParameterType.STRING,
                 description="Search query for lists",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
                 description="Filter query for lists",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="orderby",
                 type=ParameterType.STRING,
                 description="Order by field",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="select",
                 type=ParameterType.STRING,
                 description="Select specific fields",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="expand",
                 type=ParameterType.STRING,
                 description="Expand related entities",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="top",
                 type=ParameterType.INTEGER,
                 description="Number of results to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="skip",
                 type=ParameterType.INTEGER,
                 description="Number of results to skip",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_lists(
         self,
         site_id: str,
-        search: Optional[str] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        select: Optional[str] = None,
-        expand: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        search: str | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        select: str | None = None,
+        expand: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+    ) -> tuple[bool, str]:
         """Get lists from a SharePoint site"""
         """
         Args:
@@ -271,21 +274,22 @@ class SharePoint:
         """
         try:
             # Use SharePointDataSource method
-            response = self._run_async(self.client.sites_list_lists(
-                site_id=site_id,
-                search=search,
-                filter=filter,
-                orderby=orderby,
-                select=select,
-                expand=expand,
-                top=top,
-                skip=skip
-            ))
+            response = self._run_async(
+                self.client.sites_list_lists(
+                    site_id=site_id,
+                    search=search,
+                    filter=filter,
+                    orderby=orderby,
+                    select=select,
+                    expand=expand,
+                    top=top,
+                    skip=skip,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_lists: {e}")
             return False, json.dumps({"error": str(e)})
@@ -299,63 +303,63 @@ class SharePoint:
                 name="site_id",
                 type=ParameterType.STRING,
                 description="The ID of the site",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="search",
                 type=ParameterType.STRING,
                 description="Search query for drives",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
                 description="Filter query for drives",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="orderby",
                 type=ParameterType.STRING,
                 description="Order by field",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="select",
                 type=ParameterType.STRING,
                 description="Select specific fields",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="expand",
                 type=ParameterType.STRING,
                 description="Expand related entities",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="top",
                 type=ParameterType.INTEGER,
                 description="Number of results to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="skip",
                 type=ParameterType.INTEGER,
                 description="Number of results to skip",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_drives(
         self,
         site_id: str,
-        search: Optional[str] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        select: Optional[str] = None,
-        expand: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        search: str | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        select: str | None = None,
+        expand: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+    ) -> tuple[bool, str]:
         """Get drives from a SharePoint site"""
         """
         Args:
@@ -372,21 +376,22 @@ class SharePoint:
         """
         try:
             # Use SharePointDataSource method
-            response = self._run_async(self.client.sites_list_drives(
-                site_id=site_id,
-                search=search,
-                filter=filter,
-                orderby=orderby,
-                select=select,
-                expand=expand,
-                top=top,
-                skip=skip
-            ))
+            response = self._run_async(
+                self.client.sites_list_drives(
+                    site_id=site_id,
+                    search=search,
+                    filter=filter,
+                    orderby=orderby,
+                    select=select,
+                    expand=expand,
+                    top=top,
+                    skip=skip,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_drives: {e}")
             return False, json.dumps({"error": str(e)})
@@ -400,63 +405,63 @@ class SharePoint:
                 name="site_id",
                 type=ParameterType.STRING,
                 description="The ID of the site",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="search",
                 type=ParameterType.STRING,
                 description="Search query for pages",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
                 description="Filter query for pages",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="orderby",
                 type=ParameterType.STRING,
                 description="Order by field",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="select",
                 type=ParameterType.STRING,
                 description="Select specific fields",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="expand",
                 type=ParameterType.STRING,
                 description="Expand related entities",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="top",
                 type=ParameterType.INTEGER,
                 description="Number of results to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="skip",
                 type=ParameterType.INTEGER,
                 description="Number of results to skip",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_pages(
         self,
         site_id: str,
-        search: Optional[str] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        select: Optional[str] = None,
-        expand: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        search: str | None = None,
+        filter: str | None = None,
+        orderby: str | None = None,
+        select: str | None = None,
+        expand: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+    ) -> tuple[bool, str]:
         """Get pages from a SharePoint site"""
         """
         Args:
@@ -473,21 +478,22 @@ class SharePoint:
         """
         try:
             # Use SharePointDataSource method
-            response = self._run_async(self.client.sites_list_pages(
-                site_id=site_id,
-                search=search,
-                filter=filter,
-                orderby=orderby,
-                select=select,
-                expand=expand,
-                top=top,
-                skip=skip
-            ))
+            response = self._run_async(
+                self.client.sites_list_pages(
+                    site_id=site_id,
+                    search=search,
+                    filter=filter,
+                    orderby=orderby,
+                    select=select,
+                    expand=expand,
+                    top=top,
+                    skip=skip,
+                )
+            )
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_pages: {e}")
             return False, json.dumps({"error": str(e)})

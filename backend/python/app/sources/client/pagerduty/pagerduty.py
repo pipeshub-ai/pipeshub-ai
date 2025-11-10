@@ -37,7 +37,8 @@ class PagerDutyResponse(BaseModel):
 
     success: bool = Field(..., description="Whether the API call was successful")
     data: dict[str, Any] | None = Field(
-        None, description="Response data from PagerDuty API",
+        None,
+        description="Response data from PagerDuty API",
     )
     error: str | None = Field(None, description="Error message if the call failed")
     message: str | None = Field(None, description="Additional message information")
@@ -151,7 +152,8 @@ class PagerDutyTokenConfig(BaseModel):
 
     api_token: str = Field(..., description="PagerDuty API token (starts with 'u+')")
     base_url: str | None = Field(
-        None, description="Optional base URL for PagerDuty API",
+        None,
+        description="Optional base URL for PagerDuty API",
     )
 
     def create_client(self) -> PagerDutyRESTClientViaToken:
@@ -307,7 +309,9 @@ class PagerDutyClient(IClient):
 
         """
         try:
-            config = await config_service.get_config("/services/connectors/pagerduty/config")
+            config = await config_service.get_config(
+                "/services/connectors/pagerduty/config"
+            )
             return config or {}
         except (KeyError, ConnectionError, TimeoutError) as e:
             logger.exception(f"Failed to get PagerDuty connector config: {e}")
@@ -315,4 +319,3 @@ class PagerDutyClient(IClient):
         except Exception as e:
             logger.error(f"Unexpected error getting PagerDuty connector config: {e}")
             return {}
-

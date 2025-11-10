@@ -1,5 +1,4 @@
-"""
-Planning-Based Agent Graph
+"""Planning-Based Agent Graph
 Supports complex multi-step workflows with planning, execution, and adaptation
 """
 
@@ -25,9 +24,7 @@ MAX_RETRIES_PER_TOOL = 2
 
 
 def should_continue_with_planning(state: ChatState) -> str:
-    """
-    Enhanced routing with planning awareness and loop detection
-    """
+    """Enhanced routing with planning awareness and loop detection"""
     all_tool_results = state.get("all_tool_results", [])
     tool_call_count = len(all_tool_results)
     max_iterations = MAX_TOOL_ITERATIONS
@@ -41,11 +38,16 @@ def should_continue_with_planning(state: ChatState) -> str:
     # Log basic routing info
     if logger:
         status = "complex workflow" if is_complex else "simple query"
-        logger.debug(f"Routing decision ({status}): pending={has_pending_calls}, iteration={tool_call_count}/{max_iterations}, force_final={force_final_response}")
+        logger.debug(
+            f"Routing decision ({status}): pending={has_pending_calls}, iteration={tool_call_count}/{max_iterations}, force_final={force_final_response}"
+        )
 
         # Enhanced tracking for planning workflows
         if all_tool_results and len(all_tool_results) > 0:
-            recent_tools = [result.get("tool_name", "unknown") for result in all_tool_results[-LAST_N_TOOLS:]]
+            recent_tools = [
+                result.get("tool_name", "unknown")
+                for result in all_tool_results[-LAST_N_TOOLS:]
+            ]
             logger.debug(f"Workflow chain: {' → '.join(recent_tools)}")
 
             # Log workflow progress for complex queries
@@ -55,22 +57,37 @@ def should_continue_with_planning(state: ChatState) -> str:
     # PRIORITY 1: Check for recent failures - let agent create retry tool calls
     # The agent will analyze failures and create new tool calls, which will route to execute_tools
     if all_tool_results and not force_final_response:
-        recent_tool_results = all_tool_results[-RECENT_FAILURE_WINDOW:] if len(all_tool_results) >= RECENT_FAILURE_WINDOW else all_tool_results
-        recent_failures = sum(1 for r in recent_tool_results if r.get("status") == "error")
+        recent_tool_results = (
+            all_tool_results[-RECENT_FAILURE_WINDOW:]
+            if len(all_tool_results) >= RECENT_FAILURE_WINDOW
+            else all_tool_results
+        )
+        recent_failures = sum(
+            1 for r in recent_tool_results if r.get("status") == "error"
+        )
 
         if recent_failures > 0:
             # Check if retries are still allowed
             retry_count = state.get("tool_retry_count", {})
-            failed_tool_names = [r.get("tool_name") for r in recent_tool_results if r.get("status") == "error"]
+            failed_tool_names = [
+                r.get("tool_name")
+                for r in recent_tool_results
+                if r.get("status") == "error"
+            ]
 
-            can_retry = any(retry_count.get(tool, 0) < MAX_RETRIES_PER_TOOL for tool in failed_tool_names)
+            can_retry = any(
+                retry_count.get(tool, 0) < MAX_RETRIES_PER_TOOL
+                for tool in failed_tool_names
+            )
 
             if can_retry and not has_pending_calls:
                 if logger:
-                    logger.info(f"🔄 Recent failures detected ({recent_failures}) - allowing agent to retry")
+                    logger.info(
+                        f"🔄 Recent failures detected ({recent_failures}) - allowing agent to retry"
+                    )
                 # Don't route anywhere yet - let normal logic continue
                 # This allows the agent to have generated tool calls in this iteration
-                pass  # Fall through to normal routing logic
+                # Fall through to normal routing logic
 
     # PRIORITY 2: Check for comprehensive data
     if force_final_response:
@@ -80,15 +97,20 @@ def should_continue_with_planning(state: ChatState) -> str:
 
     # PRIORITY 3: Check for loops only if we don't have comprehensive data
     if logger and all_tool_results and len(all_tool_results) >= LAST_N_TOOLS:
-        last_n_tools = [result.get("tool_name", "unknown") for result in all_tool_results[-LAST_N_TOOLS:]]
+        last_n_tools = [
+            result.get("tool_name", "unknown")
+            for result in all_tool_results[-LAST_N_TOOLS:]
+        ]
         unique_tools = set(last_n_tools)
 
         if len(unique_tools) == 1:
-            logger.warning(f"⚠️ Loop detected: {last_n_tools[0]} called {LAST_N_TOOLS} times in a row")
+            logger.warning(
+                f"⚠️ Loop detected: {last_n_tools[0]} called {LAST_N_TOOLS} times in a row"
+            )
             logger.warning("Forcing termination to prevent infinite loop")
             return "final"
 
-        elif len(unique_tools) == PING_PONG_PATTERN_THRESHOLD:
+        if len(unique_tools) == PING_PONG_PATTERN_THRESHOLD:
             # Check for actual A→B→A→B alternating pattern
             is_ping_pong = True
             for i in range(len(last_n_tools) - 2):
@@ -109,18 +131,18 @@ def should_continue_with_planning(state: ChatState) -> str:
     # PRIORITY 4: Normal routing logic
     if has_pending_calls and tool_call_count < max_iterations:
         return "execute_tools"
-    else:
-        # No pending calls - route to final response
-        if tool_call_count >= max_iterations and logger:
-            logger.warning(f"⚠️ Maximum iterations reached ({max_iterations})")
-            if is_complex:
-                logger.info("Complex workflow exceeded iteration limit - providing best-effort response")
-        return "final"
+    # No pending calls - route to final response
+    if tool_call_count >= max_iterations and logger:
+        logger.warning(f"⚠️ Maximum iterations reached ({max_iterations})")
+        if is_complex:
+            logger.info(
+                "Complex workflow exceeded iteration limit - providing best-effort response"
+            )
+    return "final"
 
 
 def create_agent_graph() -> StateGraph:
-    """
-    Create an advanced planning-based agent graph that supports:
+    """Create an advanced planning-based agent graph that supports:
     - Multi-step workflow planning
     - Dynamic adaptation based on results
     - Complex query decomposition
@@ -129,7 +151,6 @@ def create_agent_graph() -> StateGraph:
 
     The agent uses PLAN → EXECUTE → ADAPT framework for optimal results.
     """
-
     workflow = StateGraph(ChatState)
 
     # =========================================================================
@@ -173,8 +194,8 @@ def create_agent_graph() -> StateGraph:
         check_for_error,
         {
             "continue": "retrieve",
-            "error": "final"
-        }
+            "error": "final",
+        },
     )
 
     # Retrieval → Planning Preparation (with error handling)
@@ -183,8 +204,8 @@ def create_agent_graph() -> StateGraph:
         check_for_error,
         {
             "continue": "prepare",
-            "error": "final"
-        }
+            "error": "final",
+        },
     )
 
     # Preparation → Agent (with error handling)
@@ -193,8 +214,8 @@ def create_agent_graph() -> StateGraph:
         check_for_error,
         {
             "continue": "agent",
-            "error": "final"
-        }
+            "error": "final",
+        },
     )
 
     # Agent Decision Point
@@ -207,8 +228,8 @@ def create_agent_graph() -> StateGraph:
         should_continue_with_planning,
         {
             "execute_tools": "execute_tools",
-            "final": "final"
-        }
+            "final": "final",
+        },
     )
 
     # After tools execute, return to agent for:

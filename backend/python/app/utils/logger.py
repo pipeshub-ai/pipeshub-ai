@@ -24,9 +24,7 @@ logging.basicConfig(
 
 
 def create_logger(service_name: str) -> logging.Logger:
-    """
-    Create a logger for a specific service with file and console handlers
-    """
+    """Create a logger for a specific service with file and console handlers"""
     # Create logger
     logging_level = os.getenv("LOG_LEVEL", "info").lower()
     logger = logging.getLogger(service_name)

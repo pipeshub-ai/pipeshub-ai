@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import threading
-from typing import Coroutine, Dict, List, Optional, Tuple
+from collections.abc import Coroutine
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -24,13 +24,14 @@ class Jira:
 
         Args:
             client: JIRA client object
+
         """
         self.client = JiraDataSource(client)
         # Dedicated background event loop for running coroutines from sync context
         self._bg_loop = asyncio.new_event_loop()
         self._bg_loop_thread = threading.Thread(
             target=self._start_background_loop,
-            daemon=True
+            daemon=True,
         )
         self._bg_loop_thread.start()
 
@@ -47,6 +48,7 @@ class Jira:
 
         Returns:
             HTTPResponse from the executed coroutine
+
         """
         future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
         return future.result()
@@ -54,7 +56,10 @@ class Jira:
     def shutdown(self) -> None:
         """Gracefully stop the background event loop and thread."""
         try:
-            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
+            if (
+                getattr(self, "_bg_loop", None) is not None
+                and self._bg_loop.is_running()
+            ):
                 self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
             if getattr(self, "_bg_loop_thread", None) is not None:
                 self._bg_loop_thread.join()
@@ -67,8 +72,8 @@ class Jira:
         self,
         response: HTTPResponse,
         success_message: str,
-        include_guidance: bool = False
-    ) -> Tuple[bool, str]:
+        include_guidance: bool = False,
+    ) -> tuple[bool, str]:
         """Handle HTTP response and return standardized tuple.
 
         Args:
@@ -78,25 +83,38 @@ class Jira:
 
         Returns:
             Tuple of (success_flag, json_string)
+
         """
-        if response.status in [HttpStatusCode.SUCCESS.value, HttpStatusCode.CREATED.value, HttpStatusCode.NO_CONTENT.value]:
+        if response.status in [
+            HttpStatusCode.SUCCESS.value,
+            HttpStatusCode.CREATED.value,
+            HttpStatusCode.NO_CONTENT.value,
+        ]:
             try:
-                data = response.json() if response.status != HttpStatusCode.NO_CONTENT else {}
-                return True, json.dumps({
-                    "message": success_message,
-                    "data": data
-                })
+                data = (
+                    response.json()
+                    if response.status != HttpStatusCode.NO_CONTENT
+                    else {}
+                )
+                return True, json.dumps(
+                    {
+                        "message": success_message,
+                        "data": data,
+                    }
+                )
             except Exception as e:
                 logger.error(f"Error parsing response: {e}")
-                return True, json.dumps({
-                    "message": success_message,
-                    "data": {}
-                })
+                return True, json.dumps(
+                    {
+                        "message": success_message,
+                        "data": {},
+                    }
+                )
         else:
-            error_text = response.text if hasattr(response, 'text') else str(response)
-            error_response: Dict[str, object] = {
+            error_text = response.text if hasattr(response, "text") else str(response)
+            error_response: dict[str, object] = {
                 "error": f"HTTP {response.status}",
-                "details": error_text
+                "details": error_text,
             }
 
             if include_guidance:
@@ -107,7 +125,7 @@ class Jira:
             logger.error(f"HTTP error {response.status}: {error_text}")
             return False, json.dumps(error_response)
 
-    def _get_error_guidance(self, status_code: int) -> Optional[str]:
+    def _get_error_guidance(self, status_code: int) -> str | None:
         """Provide specific guidance for common JIRA API errors.
 
         Args:
@@ -115,6 +133,7 @@ class Jira:
 
         Returns:
             Guidance message or None
+
         """
         guidance_map = {
             HttpStatusCode.GONE: (
@@ -142,11 +161,11 @@ class Jira:
                 "Bad request. Please check field values and formats. "
                 "Common issues: invalid account IDs, incorrect field types, "
                 "or missing required fields."
-            )
+            ),
         }
         return guidance_map.get(status_code)
 
-    def _convert_text_to_adf(self, text: str) -> Optional[Dict[str, object]]:
+    def _convert_text_to_adf(self, text: str) -> dict[str, object] | None:
         """Convert plain text to Atlassian Document Format (ADF).
 
         Args:
@@ -154,6 +173,7 @@ class Jira:
 
         Returns:
             ADF document structure or None if text is empty
+
         """
         if not text:
             return None
@@ -167,14 +187,14 @@ class Jira:
                     "content": [
                         {
                             "type": "text",
-                            "text": text
-                        }
-                    ]
-                }
-            ]
+                            "text": text,
+                        },
+                    ],
+                },
+            ],
         }
 
-    def _validate_issue_fields(self, fields: Dict[str, object]) -> Tuple[bool, str]:
+    def _validate_issue_fields(self, fields: dict[str, object]) -> tuple[bool, str]:
         """Validate issue fields before creating the issue.
 
         Args:
@@ -182,6 +202,7 @@ class Jira:
 
         Returns:
             Tuple of (is_valid, validation_message)
+
         """
         try:
             # Check required fields
@@ -227,7 +248,10 @@ class Jira:
                     return False, "Components must be a list"
                 for comp in components:
                     if not isinstance(comp, dict) or not comp.get("name"):
-                        return False, "Each component must be a dictionary with 'name' field"
+                        return (
+                            False,
+                            "Each component must be a dictionary with 'name' field",
+                        )
 
             return True, "Fields validation passed"
         except Exception as e:
@@ -236,8 +260,8 @@ class Jira:
     def _resolve_user_to_account_id(
         self,
         project_key: str,
-        query: str
-    ) -> Optional[str]:
+        query: str,
+    ) -> str | None:
         """Resolve a user query to a JIRA account ID.
 
         Args:
@@ -246,6 +270,7 @@ class Jira:
 
         Returns:
             Account ID or None if not found
+
         """
         try:
             # First try assignable users for the project
@@ -253,27 +278,27 @@ class Jira:
                 self.client.find_assignable_users(
                     project=project_key,
                     query=query,
-                    maxResults=1
-                )
+                    maxResults=1,
+                ),
             )
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
                 if data and isinstance(data, list) and len(data) > 0:
-                    return data[0].get('accountId')
+                    return data[0].get("accountId")
 
             # Fallback: global user search
             response = self._run_async(
                 self.client.find_users_by_query(
                     query=query,
-                    maxResults=1
-                )
+                    maxResults=1,
+                ),
             )
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
                 if data and isinstance(data, list) and len(data) > 0:
-                    return data[0].get('accountId')
+                    return data[0].get("accountId")
 
             return None
         except Exception as e:
@@ -288,6 +313,7 @@ class Jira:
 
         Returns:
             Normalized description
+
         """
         try:
             mention_pattern = re.compile(r"<@([A-Z0-9]+)>")
@@ -300,35 +326,38 @@ class Jira:
         tool_name="validate_connection",
         description="Validate JIRA connection and provide diagnostics",
         parameters=[],
-        returns="Connection validation status with diagnostics"
+        returns="Connection validation status with diagnostics",
     )
-    def validate_connection(self) -> Tuple[bool, str]:
+    def validate_connection(self) -> tuple[bool, str]:
         """Validate JIRA connection and provide diagnostics"""
         try:
             client = self.client.get_client()
             auth_header = client.headers.get("Authorization", "")
 
             if not auth_header.startswith("Bearer "):
-                return False, json.dumps({
-                    "message": "Invalid authentication header format",
-                    "error": "Authorization header should start with 'Bearer '"
-                })
+                return False, json.dumps(
+                    {
+                        "message": "Invalid authentication header format",
+                        "error": "Authorization header should start with 'Bearer '",
+                    }
+                )
 
             token = auth_header[7:]
             response = self._run_async(JiraClient.get_accessible_resources(token))
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 resources = response.json()
-                return True, json.dumps({
-                    "message": "JIRA connection is valid",
-                    "accessible_resources": resources
-                })
-            else:
-                return self._handle_response(
-                    response,
-                    "Connection validated",
-                    include_guidance=True
+                return True, json.dumps(
+                    {
+                        "message": "JIRA connection is valid",
+                        "accessible_resources": resources,
+                    }
                 )
+            return self._handle_response(
+                response,
+                "Connection validated",
+                include_guidance=True,
+            )
 
         except Exception as e:
             logger.error(f"Error validating JIRA connection: {e}")
@@ -343,20 +372,22 @@ class Jira:
                 name="text",
                 type=ParameterType.STRING,
                 description="Plain text to convert",
-                required=True
+                required=True,
             ),
         ],
-        returns="ADF document structure"
+        returns="ADF document structure",
     )
-    def convert_text_to_adf(self, text: str) -> Tuple[bool, str]:
+    def convert_text_to_adf(self, text: str) -> tuple[bool, str]:
         """Convert plain text to Atlassian Document Format"""
         try:
             adf_document = self._convert_text_to_adf(text)
-            return True, json.dumps({
-                "message": "Text converted to ADF successfully",
-                "adf_document": adf_document,
-                "usage_note": "Use this ADF document in the 'description' field when creating JIRA issues"
-            })
+            return True, json.dumps(
+                {
+                    "message": "Text converted to ADF successfully",
+                    "adf_document": adf_document,
+                    "usage_note": "Use this ADF document in the 'description' field when creating JIRA issues",
+                }
+            )
         except Exception as e:
             logger.error(f"Error converting text to ADF: {e}")
             return False, json.dumps({"error": str(e)})
@@ -370,77 +401,77 @@ class Jira:
                 name="project_key",
                 type=ParameterType.STRING,
                 description="Project key (e.g., 'SP')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="summary",
                 type=ParameterType.STRING,
                 description="Issue summary/title",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="issue_type_name",
                 type=ParameterType.STRING,
                 description="Issue type (e.g., 'Task', 'Bug', 'Story')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="Issue description",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="assignee_account_id",
                 type=ParameterType.STRING,
                 description="Assignee account ID",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="assignee_query",
                 type=ParameterType.STRING,
                 description="Name or email to resolve assignee",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="priority_name",
                 type=ParameterType.STRING,
                 description="Priority (e.g., 'High', 'Medium', 'Low')",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="labels",
                 type=ParameterType.LIST,
                 description="List of labels",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="components",
                 type=ParameterType.LIST,
                 description="List of component names",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
         ],
-        returns="Created issue details"
+        returns="Created issue details",
     )
     def create_issue(
         self,
         project_key: str,
         summary: str,
         issue_type_name: str,
-        description: Optional[str] = None,
-        assignee_account_id: Optional[str] = None,
-        assignee_query: Optional[str] = None,
-        priority_name: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        components: Optional[List[str]] = None
-    ) -> Tuple[bool, str]:
+        description: str | None = None,
+        assignee_account_id: str | None = None,
+        assignee_query: str | None = None,
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+    ) -> tuple[bool, str]:
         """Create a new JIRA issue"""
         try:
             # Build issue fields
-            fields: Dict[str, object] = {
+            fields: dict[str, object] = {
                 "project": {"key": project_key},
                 "summary": summary,
                 "issuetype": {"name": issue_type_name},
@@ -450,7 +481,7 @@ class Jira:
             if assignee_query and not assignee_account_id:
                 assignee_account_id = self._resolve_user_to_account_id(
                     project_key,
-                    assignee_query
+                    assignee_query,
                 )
 
             if description:
@@ -471,11 +502,13 @@ class Jira:
             # Validate fields
             is_valid, validation_msg = self._validate_issue_fields(fields)
             if not is_valid:
-                return False, json.dumps({
-                    "error": "Field validation failed",
-                    "validation_error": validation_msg,
-                    "fields": fields
-                })
+                return False, json.dumps(
+                    {
+                        "error": "Field validation failed",
+                        "validation_error": validation_msg,
+                        "fields": fields,
+                    }
+                )
 
             # Create issue
             response = self._run_async(self.client.create_issue(fields=fields))
@@ -484,24 +517,28 @@ class Jira:
             if response.status == HttpStatusCode.BAD_REQUEST.value:
                 try:
                     error_body = response.json()
-                    errors = error_body.get('errors', {})
+                    errors = error_body.get("errors", {})
 
-                    if 'reporter' in errors and 'reporter' in fields:
+                    if "reporter" in errors and "reporter" in fields:
                         logger.info("Retrying without reporter field")
-                        del fields['reporter']
-                        response = self._run_async(self.client.create_issue(fields=fields))
+                        del fields["reporter"]
+                        response = self._run_async(
+                            self.client.create_issue(fields=fields)
+                        )
 
-                    elif 'assignee' in errors and 'assignee' in fields:
+                    elif "assignee" in errors and "assignee" in fields:
                         logger.info("Retrying without assignee field")
-                        del fields['assignee']
-                        response = self._run_async(self.client.create_issue(fields=fields))
+                        del fields["assignee"]
+                        response = self._run_async(
+                            self.client.create_issue(fields=fields)
+                        )
                 except Exception:
                     pass
 
             return self._handle_response(
                 response,
                 "Issue created successfully",
-                include_guidance=True
+                include_guidance=True,
             )
 
         except Exception as e:
@@ -513,16 +550,16 @@ class Jira:
         tool_name="get_projects",
         description="Get all JIRA projects",
         parameters=[],
-        returns="List of JIRA projects"
+        returns="List of JIRA projects",
     )
-    def get_projects(self) -> Tuple[bool, str]:
+    def get_projects(self) -> tuple[bool, str]:
         """Get all JIRA projects"""
         try:
             response = self._run_async(self.client.get_all_projects())
             return self._handle_response(
                 response,
                 "Projects fetched successfully",
-                include_guidance=True
+                include_guidance=True,
             )
         except Exception as e:
             logger.error(f"Error getting projects: {e}")
@@ -537,20 +574,20 @@ class Jira:
                 name="project_key",
                 type=ParameterType.STRING,
                 description="Project key",
-                required=True
+                required=True,
             ),
         ],
-        returns="Project details"
+        returns="Project details",
     )
-    def get_project(self, project_key: str) -> Tuple[bool, str]:
+    def get_project(self, project_key: str) -> tuple[bool, str]:
         """Get a specific JIRA project"""
         try:
             response = self._run_async(
-                self.client.get_project(projectIdOrKey=project_key)
+                self.client.get_project(projectIdOrKey=project_key),
             )
             return self._handle_response(
                 response,
-                "Project fetched successfully"
+                "Project fetched successfully",
             )
         except Exception as e:
             logger.error(f"Error getting project: {e}")
@@ -565,23 +602,23 @@ class Jira:
                 name="project_key",
                 type=ParameterType.STRING,
                 description="Project key",
-                required=True
+                required=True,
             ),
         ],
-        returns="List of issues"
+        returns="List of issues",
     )
-    def get_issues(self, project_key: str) -> Tuple[bool, str]:
+    def get_issues(self, project_key: str) -> tuple[bool, str]:
         """Get issues from a project"""
         try:
             response = self._run_async(
                 self.client.search_and_reconsile_issues_using_jql_post(
-                    jql=f"project = {project_key}"
-                )
+                    jql=f"project = {project_key}",
+                ),
             )
             return self._handle_response(
                 response,
                 "Issues fetched successfully",
-                include_guidance=True
+                include_guidance=True,
             )
         except Exception as e:
             logger.error(f"Error getting issues: {e}")
@@ -596,20 +633,20 @@ class Jira:
                 name="issue_key",
                 type=ParameterType.STRING,
                 description="Issue key",
-                required=True
+                required=True,
             ),
         ],
-        returns="Issue details"
+        returns="Issue details",
     )
-    def get_issue(self, issue_key: str) -> Tuple[bool, str]:
+    def get_issue(self, issue_key: str) -> tuple[bool, str]:
         """Get a specific JIRA issue"""
         try:
             response = self._run_async(
-                self.client.get_issue(issueIdOrKey=issue_key)
+                self.client.get_issue(issueIdOrKey=issue_key),
             )
             return self._handle_response(
                 response,
-                "Issue fetched successfully"
+                "Issue fetched successfully",
             )
         except Exception as e:
             logger.error(f"Error getting issue: {e}")
@@ -624,21 +661,21 @@ class Jira:
                 name="jql",
                 type=ParameterType.STRING,
                 description="JQL query string",
-                required=True
+                required=True,
             ),
         ],
-        returns="List of matching issues"
+        returns="List of matching issues",
     )
-    def search_issues(self, jql: str) -> Tuple[bool, str]:
+    def search_issues(self, jql: str) -> tuple[bool, str]:
         """Search for JIRA issues"""
         try:
             response = self._run_async(
-                self.client.search_and_reconsile_issues_using_jql(jql=jql)
+                self.client.search_and_reconsile_issues_using_jql(jql=jql),
             )
             return self._handle_response(
                 response,
                 "Issues fetched successfully",
-                include_guidance=True
+                include_guidance=True,
             )
         except Exception as e:
             logger.error(f"Error searching issues: {e}")
@@ -653,29 +690,29 @@ class Jira:
                 name="issue_key",
                 type=ParameterType.STRING,
                 description="Issue key",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="comment",
                 type=ParameterType.STRING,
                 description="Comment text",
-                required=True
+                required=True,
             ),
         ],
-        returns="Comment details"
+        returns="Comment details",
     )
-    def add_comment(self, issue_key: str, comment: str) -> Tuple[bool, str]:
+    def add_comment(self, issue_key: str, comment: str) -> tuple[bool, str]:
         """Add a comment to an issue"""
         try:
             response = self._run_async(
                 self.client.add_comment(
                     issueIdOrKey=issue_key,
-                    body_body=comment
-                )
+                    body_body=comment,
+                ),
             )
             return self._handle_response(
                 response,
-                "Comment added successfully"
+                "Comment added successfully",
             )
         except Exception as e:
             logger.error(f"Error adding comment: {e}")
@@ -690,20 +727,20 @@ class Jira:
                 name="issue_key",
                 type=ParameterType.STRING,
                 description="Issue key",
-                required=True
+                required=True,
             ),
         ],
-        returns="List of comments"
+        returns="List of comments",
     )
-    def get_comments(self, issue_key: str) -> Tuple[bool, str]:
+    def get_comments(self, issue_key: str) -> tuple[bool, str]:
         """Get comments for an issue"""
         try:
             response = self._run_async(
-                self.client.get_comments(issueIdOrKey=issue_key)
+                self.client.get_comments(issueIdOrKey=issue_key),
             )
             return self._handle_response(
                 response,
-                "Comments fetched successfully"
+                "Comments fetched successfully",
             )
         except Exception as e:
             logger.error(f"Error getting comments: {e}")
@@ -718,33 +755,33 @@ class Jira:
                 name="query",
                 type=ParameterType.STRING,
                 description="Name or email to search",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum results (default 20)",
-                required=False
+                required=False,
             ),
         ],
-        returns="List of users with account IDs"
+        returns="List of users with account IDs",
     )
     def search_users(
         self,
         query: str,
-        max_results: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        max_results: int | None = None,
+    ) -> tuple[bool, str]:
         """Search JIRA users"""
         try:
             response = self._run_async(
                 self.client.find_users_by_query(
                     query=query,
-                    maxResults=max_results
-                )
+                    maxResults=max_results,
+                ),
             )
             return self._handle_response(
                 response,
-                "Users fetched successfully"
+                "Users fetched successfully",
             )
         except Exception as e:
             logger.error(f"Error searching users: {e}")
@@ -759,41 +796,41 @@ class Jira:
                 name="project_key",
                 type=ParameterType.STRING,
                 description="Project key",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
                 description="Optional search query",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum results (default 20)",
-                required=False
+                required=False,
             ),
         ],
-        returns="List of assignable users"
+        returns="List of assignable users",
     )
     def get_assignable_users(
         self,
         project_key: str,
-        query: Optional[str] = None,
-        max_results: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        query: str | None = None,
+        max_results: int | None = None,
+    ) -> tuple[bool, str]:
         """Get assignable users for a project"""
         try:
             response = self._run_async(
                 self.client.find_assignable_users(
                     project=project_key,
                     query=query,
-                    maxResults=max_results
-                )
+                    maxResults=max_results,
+                ),
             )
             return self._handle_response(
                 response,
-                "Assignable users fetched successfully"
+                "Assignable users fetched successfully",
             )
         except Exception as e:
             logger.error(f"Error fetching assignable users: {e}")
@@ -808,22 +845,22 @@ class Jira:
                 name="project_key",
                 type=ParameterType.STRING,
                 description="Project key",
-                required=True
+                required=True,
             ),
         ],
-        returns="Project metadata"
+        returns="Project metadata",
     )
-    def get_project_metadata(self, project_key: str) -> Tuple[bool, str]:
+    def get_project_metadata(self, project_key: str) -> tuple[bool, str]:
         """Get project metadata"""
         try:
             response = self._run_async(
-                self.client.get_project(projectIdOrKey=project_key)
+                self.client.get_project(projectIdOrKey=project_key),
             )
 
             if response.status != HttpStatusCode.SUCCESS.value:
                 return self._handle_response(
                     response,
-                    "Project metadata fetched"
+                    "Project metadata fetched",
                 )
 
             project = response.json()
@@ -835,7 +872,7 @@ class Jira:
                         "id": it.get("id"),
                         "name": it.get("name"),
                         "description": it.get("description"),
-                        "subtask": it.get("subtask", False)
+                        "subtask": it.get("subtask", False),
                     }
                     for it in project.get("issueTypes", [])
                 ],
@@ -843,17 +880,19 @@ class Jira:
                     {
                         "id": comp.get("id"),
                         "name": comp.get("name"),
-                        "description": comp.get("description")
+                        "description": comp.get("description"),
                     }
                     for comp in project.get("components", [])
                 ],
-                "lead": project.get("lead", {}).get("displayName")
+                "lead": project.get("lead", {}).get("displayName"),
             }
 
-            return True, json.dumps({
-                "message": "Project metadata fetched successfully",
-                "metadata": metadata
-            })
+            return True, json.dumps(
+                {
+                    "message": "Project metadata fetched successfully",
+                    "metadata": metadata,
+                }
+            )
         except Exception as e:
             logger.error(f"Error getting project metadata: {e}")
             return False, json.dumps({"error": str(e)})

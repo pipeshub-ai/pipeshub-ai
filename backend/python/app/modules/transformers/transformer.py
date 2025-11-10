@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -8,7 +8,8 @@ from app.models.entities import Record
 
 class TransformContext(BaseModel):
     record: Record
-    settings: Dict[str, Any] = {}
+    settings: dict[str, Any] = {}
+
 
 class Transformer(ABC):
     @abstractmethod

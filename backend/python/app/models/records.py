@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.models.graph import Node
 
@@ -9,77 +9,79 @@ class RecordGroup(Node):
     _key: str
     org_id: str = ""
     name: str = ""
-    description: Optional[str] = None
-    created_at_timestamp: Optional[float] = None
-    updated_at_timestamp: Optional[float] = None
-    last_sync_timestamp: Optional[float] = None
-    source_created_at_timestamp: Optional[float] = None
-    source_last_modified_timestamp: Optional[float] = None
+    description: str | None = None
+    created_at_timestamp: float | None = None
+    updated_at_timestamp: float | None = None
+    last_sync_timestamp: float | None = None
+    source_created_at_timestamp: float | None = None
+    source_last_modified_timestamp: float | None = None
+
 
 @dataclass
 class Record(Node):
     """Base record class for all types of records"""
+
     _key: str = ""
     org_id: str = ""
     record_name: str = ""
     external_record_id: str = ""
-    external_revision_id: Optional[str] = None
+    external_revision_id: str | None = None
     record_type: str = ""  # FILE, DRIVE, WEBPAGE, MESSAGE, MAIL, OTHERS
     version: int = 0
     origin: str = ""  # UPLOAD or CONNECTOR
-    connector_name: Optional[str] = None
-    created_at_timestamp: Optional[float] = None
-    updated_at_timestamp: Optional[float] = None
-    last_sync_timestamp: Optional[float] = None
-    source_created_at_timestamp: Optional[float] = None
-    source_last_modified_timestamp: Optional[float] = None
-    indexing_status: Optional[str] = None
-    extraction_status: Optional[str] = None
+    connector_name: str | None = None
+    created_at_timestamp: float | None = None
+    updated_at_timestamp: float | None = None
+    last_sync_timestamp: float | None = None
+    source_created_at_timestamp: float | None = None
+    source_last_modified_timestamp: float | None = None
+    indexing_status: str | None = None
+    extraction_status: str | None = None
     is_latest_version: bool = True
     is_deleted: bool = False
     is_archived: bool = False
     is_dirty: bool = False
-    reason: Optional[str] = None
-    last_index_timestamp: Optional[float] = None
-    last_extraction_timestamp: Optional[float] = None
-    summary_document_id: Optional[str] = None
-    virtual_record_id: Optional[str] = None
-    deleted_by_user_id: Optional[str] = None
-    web_url: Optional[str] = None,
-    mime_type: Optional[str] = None
+    reason: str | None = None
+    last_index_timestamp: float | None = None
+    last_extraction_timestamp: float | None = None
+    summary_document_id: str | None = None
+    virtual_record_id: str | None = None
+    deleted_by_user_id: str | None = None
+    web_url: str | None = (None,)
+    mime_type: str | None = None
 
     @staticmethod
-    def from_dict(data: Dict[str, Any]) -> 'Record':
+    def from_dict(data: dict[str, Any]) -> "Record":
         record = Record()
 
         record._key = data.get("_key", "")
         record.org_id = data.get("orgId", "")
         record.record_name = data.get("recordName", "")
         record.external_record_id = data.get("externalRecordId", "")
-        record.external_revision_id = data.get("externalRevisionId", None)
+        record.external_revision_id = data.get("externalRevisionId")
         record.record_type = data.get("recordType", "")
         record.version = data.get("version", 0)
         record.origin = data.get("origin", "UPLOAD")
-        record.connector_name = data.get("connectorName", None)
-        record.created_at_timestamp = data.get("createdAtTimestamp", None)
-        record.updated_at_timestamp = data.get("updatedAtTimestamp", None)
-        record.last_sync_timestamp = data.get("lastSyncTimestamp", None)
-        record.source_created_at_timestamp = data.get("sourceCreatedAtTimestamp", None)
-        record.source_last_modified_timestamp = data.get("sourceLastModifiedTimestamp", None)
-        record.indexing_status = data.get("indexingStatus", None)
-        record.extraction_status = data.get("extractionStatus", None)
+        record.connector_name = data.get("connectorName")
+        record.created_at_timestamp = data.get("createdAtTimestamp")
+        record.updated_at_timestamp = data.get("updatedAtTimestamp")
+        record.last_sync_timestamp = data.get("lastSyncTimestamp")
+        record.source_created_at_timestamp = data.get("sourceCreatedAtTimestamp")
+        record.source_last_modified_timestamp = data.get("sourceLastModifiedTimestamp")
+        record.indexing_status = data.get("indexingStatus")
+        record.extraction_status = data.get("extractionStatus")
         record.is_latest_version = data.get("isLatestVersion", True)
         record.is_deleted = data.get("isDeleted", False)
         record.is_archived = data.get("isArchived", False)
         record.is_dirty = data.get("isDirty", False)
-        record.reason = data.get("reason", None)
-        record.last_index_timestamp = data.get("lastIndexTimestamp", None)
-        record.last_extraction_timestamp = data.get("lastExtractionTimestamp", None)
-        record.summary_document_id = data.get("summaryDocumentId", None)
-        record.virtual_record_id = data.get("virtualRecordId", None)
-        record.deleted_by_user_id = data.get("deletedByUserId", None)
-        record.web_url = data.get("webUrl", None)
-        record.mime_type = data.get("mimeType", None)
+        record.reason = data.get("reason")
+        record.last_index_timestamp = data.get("lastIndexTimestamp")
+        record.last_extraction_timestamp = data.get("lastExtractionTimestamp")
+        record.summary_document_id = data.get("summaryDocumentId")
+        record.virtual_record_id = data.get("virtualRecordId")
+        record.deleted_by_user_id = data.get("deletedByUserId")
+        record.web_url = data.get("webUrl")
+        record.mime_type = data.get("mimeType")
         return record
 
     def __post_init__(self) -> None:
@@ -107,7 +109,7 @@ class Record(Node):
     #         raise AttributeError("Cannot modify _key after initialization")
     #     super().__setattr__(name, value)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "_key": self._key,
             "orgId": self.org_id,
@@ -136,62 +138,61 @@ class Record(Node):
             "lastSyncTimestamp": self.last_sync_timestamp,
             "deletedByUserId": self.deleted_by_user_id,
             "webUrl": self.web_url,
-            "mimeType": self.mime_type
+            "mimeType": self.mime_type,
         }
 
     def validate(self) -> bool:
         valid_record_types = ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS"]
         valid_origins = ["UPLOAD", "CONNECTOR"]
-        return (
-            self.record_type in valid_record_types and
-            self.origin in valid_origins
-        )
+        return self.record_type in valid_record_types and self.origin in valid_origins
 
     @property
     def key(self) -> str:
         return self._key
 
+
 @dataclass
 class FileRecord(Node):
     """Specific record type for files"""
+
     _key: str = ""
     org_id: str = ""
     name: str = ""
     is_file: bool = True
-    extension: Optional[str] = None
-    mime_type: Optional[str] = None
-    size_in_bytes: Optional[int] = None
-    web_url: Optional[str] = None
-    path: Optional[str] = None
+    extension: str | None = None
+    mime_type: str | None = None
+    size_in_bytes: int | None = None
+    web_url: str | None = None
+    path: str | None = None
 
-    etag: Optional[str] = None
-    ctag: Optional[str] = None
-    md5_checksum: Optional[str] = None
-    quick_xor_hash: Optional[str] = None
-    crc32_hash: Optional[str] = None
-    sha1_hash: Optional[str] = None
-    sha256_hash: Optional[str] = None
+    etag: str | None = None
+    ctag: str | None = None
+    md5_checksum: str | None = None
+    quick_xor_hash: str | None = None
+    crc32_hash: str | None = None
+    sha1_hash: str | None = None
+    sha256_hash: str | None = None
 
     @staticmethod
-    def from_dict(data: Dict[str, Any]) -> 'FileRecord':
+    def from_dict(data: dict[str, Any]) -> "FileRecord":
         file_record = FileRecord()
         file_record._key = data.get("_key", "")
         file_record.org_id = data.get("orgId", "")
         file_record.name = data.get("name", "")
 
         file_record.is_file = data.get("isFile", True)
-        file_record.extension = data.get("extension", None)
-        file_record.mime_type = data.get("mimeType", None)
-        file_record.size_in_bytes = data.get("sizeInBytes", None)
-        file_record.web_url = data.get("webUrl", None)
-        file_record.path = data.get("path", None)
-        file_record.etag = data.get("etag", None)
-        file_record.ctag = data.get("ctag", None)
-        file_record.md5_checksum = data.get("md5Checksum", None)
-        file_record.quick_xor_hash = data.get("quickXorHash", None)
-        file_record.crc32_hash = data.get("crc32Hash", None)
-        file_record.sha1_hash = data.get("sha1Hash", None)
-        file_record.sha256_hash = data.get("sha256Hash", None)
+        file_record.extension = data.get("extension")
+        file_record.mime_type = data.get("mimeType")
+        file_record.size_in_bytes = data.get("sizeInBytes")
+        file_record.web_url = data.get("webUrl")
+        file_record.path = data.get("path")
+        file_record.etag = data.get("etag")
+        file_record.ctag = data.get("ctag")
+        file_record.md5_checksum = data.get("md5Checksum")
+        file_record.quick_xor_hash = data.get("quickXorHash")
+        file_record.crc32_hash = data.get("crc32Hash")
+        file_record.sha1_hash = data.get("sha1Hash")
+        file_record.sha256_hash = data.get("sha256Hash")
 
         return file_record
 
@@ -203,7 +204,7 @@ class FileRecord(Node):
         if not self.name:
             raise ValueError("name must be set")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "_key": self._key,
             "orgId": self.org_id,
@@ -220,7 +221,7 @@ class FileRecord(Node):
             "quickXorHash": self.quick_xor_hash,
             "crc32Hash": self.crc32_hash,
             "sha1Hash": self.sha1_hash,
-            "sha256Hash": self.sha256_hash
+            "sha256Hash": self.sha256_hash,
         }
 
     def validate(self) -> bool:
@@ -230,31 +231,33 @@ class FileRecord(Node):
     def key(self) -> str:
         return self._key
 
+
 @dataclass
 class MailRecord(Node):
     """Specific record type for emails"""
+
     _key: str
     thread_id: str = ""
     is_parent: bool = False
-    subject: Optional[str] = None
-    from_address: Optional[str] = None
-    to_addresses: List[str] = field(default_factory=list)
-    cc_addresses: List[str] = field(default_factory=list)
-    bcc_addresses: List[str] = field(default_factory=list)
-    web_url: Optional[str] = None
+    subject: str | None = None
+    from_address: str | None = None
+    to_addresses: list[str] = field(default_factory=list)
+    cc_addresses: list[str] = field(default_factory=list)
+    bcc_addresses: list[str] = field(default_factory=list)
+    web_url: str | None = None
 
     @staticmethod
-    def from_dict(data: Dict[str, Any]) -> 'MailRecord':
+    def from_dict(data: dict[str, Any]) -> "MailRecord":
         mail_record = MailRecord()
         mail_record._key = data.get("_key", "")
         mail_record.thread_id = data.get("threadId", "")
         mail_record.is_parent = data.get("isParent", False)
-        mail_record.subject = data.get("subject", None)
-        mail_record.from_address = data.get("from", None)
+        mail_record.subject = data.get("subject")
+        mail_record.from_address = data.get("from")
         mail_record.to_addresses = data.get("to", [])
         mail_record.cc_addresses = data.get("cc", [])
         mail_record.bcc_addresses = data.get("bcc", [])
-        mail_record.web_url = data.get("webUrl", None)
+        mail_record.web_url = data.get("webUrl")
 
         return mail_record
 
@@ -270,8 +273,7 @@ class MailRecord(Node):
         if not self.from_address:
             raise ValueError("from_address must be set")
 
-
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "_key": self._key,
             "threadId": self.thread_id,
@@ -281,7 +283,7 @@ class MailRecord(Node):
             "to": self.to_addresses,
             "cc": self.cc_addresses,
             "bcc": self.bcc_addresses,
-            "webUrl": self.web_url
+            "webUrl": self.web_url,
         }
 
     def validate(self) -> bool:

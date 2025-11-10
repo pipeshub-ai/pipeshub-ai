@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Test script for the Docling service client
-"""
+"""Test script for the Docling service client"""
 
 import asyncio
 import sys
@@ -10,6 +8,7 @@ from pathlib import Path
 # Add the backend/python directory to Python path
 backend_python_path = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(backend_python_path))
+
 
 async def test_docling_client() -> None:
     """Test the Docling client functionality"""
@@ -41,10 +40,11 @@ async def test_docling_client() -> None:
         else:
             print("❌ PDF processing test failed - no result returned")
     except Exception as e:
-        print(f"❌ PDF processing test failed with error: {str(e)}")
+        print(f"❌ PDF processing test failed with error: {e!s}")
 
 
 if __name__ == "__main__":
     # Import inside main to satisfy import-order lint rule
     from app.services.docling.client import DoclingClient
+
     asyncio.run(test_docling_client())

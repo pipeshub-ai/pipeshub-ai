@@ -8,7 +8,12 @@ class SyncTasks:
     """Class to manage sync-related Celery tasks"""
 
     def __init__(
-        self, logger, celery_app: CeleryApp, drive_sync_service, gmail_sync_service, arango_service
+        self,
+        logger,
+        celery_app: CeleryApp,
+        drive_sync_service,
+        gmail_sync_service,
+        arango_service,
     ) -> None:
         self.logger = logger
         self.celery = celery_app
@@ -23,7 +28,7 @@ class SyncTasks:
             raise ValueError("Celery app is not initialized")
 
         # Check if celery has task decorator
-        if not hasattr(self.celery, 'task'):
+        if not hasattr(self.celery, "task"):
             self.logger.error("❌ Celery app does not have 'task' attribute!")
             self.logger.error(f"Celery app type: {type(self.celery)}")
             self.logger.error(f"Celery app attributes: {dir(self.celery)}")
@@ -39,9 +44,9 @@ class SyncTasks:
         celery_instance = self.celery
 
         # If CeleryApp is a wrapper, get the actual Celery instance
-        if hasattr(self.celery, 'app'):
+        if hasattr(self.celery, "app"):
             celery_instance = self.celery.app
-        elif hasattr(self.celery, 'celery'):
+        elif hasattr(self.celery, "celery"):
             celery_instance = self.celery.celery
 
         self.logger.info(f"📌 Using celery instance of type: {type(celery_instance)}")
@@ -59,7 +64,10 @@ class SyncTasks:
             """Renew watches for all services"""
             try:
                 self.logger.info("🔄 Starting scheduled watch renewal cycle")
-                self.logger.info("📅 Current execution time: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                self.logger.info(
+                    "📅 Current execution time: %s",
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
 
                 # Create event loop for async operations
                 loop = asyncio.new_event_loop()
@@ -74,7 +82,7 @@ class SyncTasks:
                 self.logger.info("✅ Watch renewal cycle completed")
 
             except Exception as e:
-                self.logger.error(f"❌ Critical error in watch renewal cycle: {str(e)}")
+                self.logger.error(f"❌ Critical error in watch renewal cycle: {e!s}")
                 self.logger.exception("Detailed error information:")
                 # Only retry for specific exceptions that warrant retries
                 if isinstance(e, (ConnectionError, TimeoutError)):
@@ -90,7 +98,7 @@ class SyncTasks:
         try:
             orgs = await self.arango_service.get_orgs()
         except Exception as e:
-            self.logger.error(f"Failed to fetch organizations: {str(e)}")
+            self.logger.error(f"Failed to fetch organizations: {e!s}")
             raise
 
         for org in orgs:
@@ -98,7 +106,7 @@ class SyncTasks:
             try:
                 users = await self.arango_service.get_users(org_id, active=True)
             except Exception as e:
-                self.logger.error(f"Failed to fetch users for org {org_id}: {str(e)}")
+                self.logger.error(f"Failed to fetch users for org {org_id}: {e!s}")
                 continue
 
             for user in users:
@@ -106,7 +114,9 @@ class SyncTasks:
                 try:
                     await self._renew_user_watches(email)
                 except Exception as e:
-                    self.logger.error(f"Failed to renew watches for user {email}: {str(e)}")
+                    self.logger.error(
+                        f"Failed to renew watches for user {email}: {e!s}"
+                    )
                     continue
 
     async def _renew_user_watches(self, email: str) -> None:
@@ -125,11 +135,13 @@ class SyncTasks:
                     drive_channel_data["token"],
                     drive_channel_data["expiration"],
                 )
-                self.logger.info("✅ Drive watch set up successfully for user: %s", email)
+                self.logger.info(
+                    "✅ Drive watch set up successfully for user: %s", email
+                )
             else:
                 self.logger.warning("Changes watch not created for user: %s", email)
         except Exception as e:
-            self.logger.error(f"Failed to renew Drive watch for {email}: {str(e)}")
+            self.logger.error(f"Failed to renew Drive watch for {email}: {e!s}")
 
         # Renew Gmail watches
         try:
@@ -141,15 +153,16 @@ class SyncTasks:
                     gmail_channel_data["expiration"],
                     email,
                 )
-                self.logger.info("✅ Gmail watch set up successfully for user: %s", email)
+                self.logger.info(
+                    "✅ Gmail watch set up successfully for user: %s", email
+                )
             else:
                 self.logger.warning("Gmail watch not created for user: %s", email)
         except Exception as e:
-            self.logger.error(f"Failed to renew Gmail watch for {email}: {str(e)}")
+            self.logger.error(f"Failed to renew Gmail watch for {email}: {e!s}")
 
     async def drive_manual_sync_control(self, action: str, org_id: str) -> dict:
-        """
-        Manual task to control sync operations
+        """Manual task to control sync operations
         Args:
             action: 'start', 'pause', 'resume', 'init', 'user', 'resync', 'reindex', 'stop'
             org_id: Organization ID
@@ -157,7 +170,7 @@ class SyncTasks:
         try:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.logger.info(
-                f"Manual sync control - Action: {action} at {current_time}"
+                f"Manual sync control - Action: {action} at {current_time}",
             )
 
             if action == "start":
@@ -170,7 +183,7 @@ class SyncTasks:
                     }
                 return {"status": "error", "message": "Failed to queue sync start"}
 
-            elif action == "pause":
+            if action == "pause":
                 self.logger.info("Pausing sync")
 
                 self.drive_sync_service._stop_requested = True
@@ -189,7 +202,7 @@ class SyncTasks:
                     }
                 return {"status": "error", "message": "Failed to queue sync pause"}
 
-            elif action == "resume":
+            if action == "resume":
                 success = await self.drive_sync_service.resume(org_id)
                 if success:
                     return {
@@ -201,12 +214,11 @@ class SyncTasks:
             return {"status": "error", "message": f"Invalid action: {action}"}
 
         except Exception as e:
-            self.logger.error(f"OLDDDDDDDDD Error in manual sync control: {str(e)}")
+            self.logger.error(f"OLDDDDDDDDD Error in manual sync control: {e!s}")
             return {"status": "error", "message": str(e)}
 
     async def gmail_manual_sync_control(self, action: str, org_id) -> dict:
-        """
-        Manual task to control sync operations
+        """Manual task to control sync operations
         Args:
             action: 'start', 'pause', 'resume', 'init', 'user', 'resync', 'reindex', 'stop'
             org_id: Organization ID
@@ -214,7 +226,7 @@ class SyncTasks:
         try:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.logger.info(
-                f"Manual sync control - Action: {action} at {current_time}"
+                f"Manual sync control - Action: {action} at {current_time}",
             )
 
             if action == "start":
@@ -227,7 +239,7 @@ class SyncTasks:
                     }
                 return {"status": "error", "message": "Failed to queue sync start"}
 
-            elif action == "pause":
+            if action == "pause":
                 self.logger.info("Pausing sync")
 
                 self.gmail_sync_service._stop_requested = True
@@ -246,7 +258,7 @@ class SyncTasks:
                     }
                 return {"status": "error", "message": "Failed to queue sync pause"}
 
-            elif action == "resume":
+            if action == "resume":
                 success = await self.gmail_sync_service.resume(org_id)
                 if success:
                     return {
@@ -258,5 +270,5 @@ class SyncTasks:
             return {"status": "error", "message": f"Invalid action: {action}"}
 
         except Exception as e:
-            self.logger.error(f"OLDDDDDDDDD Error in manual sync control: {str(e)}")
+            self.logger.error(f"OLDDDDDDDDD Error in manual sync control: {e!s}")
             return {"status": "error", "message": str(e)}

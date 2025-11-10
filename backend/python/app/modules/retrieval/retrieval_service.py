@@ -1,6 +1,6 @@
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from langchain.chat_models.base import BaseChatModel
 from langchain.embeddings.base import Embeddings
@@ -39,7 +39,7 @@ from app.utils.chat_helpers import (
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 # OPTIMIZATION: User data cache with TTL
-_user_cache: Dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
+_user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
 USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 
@@ -54,15 +54,14 @@ class RetrievalService:
         arango_service: BaseArangoService,
         blob_store: BlobStorage,
     ) -> None:
-        """
-        Initialize the retrieval service with necessary configurations.
+        """Initialize the retrieval service with necessary configurations.
 
         Args:
             collection_name: Name of the collection
             vector_db_service: Vector DB service
             config_service: Configuration service
-        """
 
+        """
         self.logger = logger
         self.config_service = config_service
         self.llm = None
@@ -79,18 +78,20 @@ class RetrievalService:
             )
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
-        self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
+        self.logger.info(
+            f"Retrieval service initialized with collection name: {self.collection_name}"
+        )
         self.vector_store = None
         self.embedding_model = None
         self.embedding_size = None
         self.embedding_model_instance = None
 
-    async def get_llm_instance(self, use_cache: bool = True) -> Optional[BaseChatModel]:
+    async def get_llm_instance(self, use_cache: bool = True) -> BaseChatModel | None:
         try:
             self.logger.info("Getting LLM")
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value,
-                use_cache=use_cache
+                use_cache=use_cache,
             )
             llm_configs = ai_models["llm"]
 
@@ -119,10 +120,12 @@ class RetrievalService:
             self.logger.info("LLM created successfully")
             return self.llm
         except Exception as e:
-            self.logger.error(f"Error getting LLM: {str(e)}")
+            self.logger.error(f"Error getting LLM: {e!s}")
             return None
 
-    async def get_embedding_model_instance(self, use_cache: bool = True) -> Optional[Embeddings]:
+    async def get_embedding_model_instance(
+        self, use_cache: bool = True
+    ) -> Embeddings | None:
         try:
             embedding_model = await self.get_current_embedding_model_name(use_cache)
             if self.embedding_model == embedding_model:
@@ -135,49 +138,60 @@ class RetrievalService:
                     dense_embeddings = get_default_embedding_model()
 
                 else:
-                    self.logger.info(f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}")
+                    self.logger.info(
+                        f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}"
+                    )
                     ai_models = await self.config_service.get_config(
-                        config_node_constants.AI_MODELS.value
+                        config_node_constants.AI_MODELS.value,
                     )
                     dense_embeddings = None
                     if ai_models["embedding"]:
-                        self.logger.info("No default embedding model found, using first available provider")
+                        self.logger.info(
+                            "No default embedding model found, using first available provider"
+                        )
                         configs = ai_models["embedding"]
                         # Try to find the default config
-                        selected_config = next((c for c in configs if c.get("isDefault", False)), None)
+                        selected_config = next(
+                            (c for c in configs if c.get("isDefault", False)), None
+                        )
                         # If no default, take the first one
                         if not selected_config and configs:
                             selected_config = configs[0]
 
                         if selected_config:
-                            dense_embeddings = get_embedding_model(selected_config["provider"], selected_config)
-                            self.logger.info(f"Embedding provider: {selected_config['provider']}")
-
+                            dense_embeddings = get_embedding_model(
+                                selected_config["provider"], selected_config
+                            )
+                            self.logger.info(
+                                f"Embedding provider: {selected_config['provider']}"
+                            )
 
             except Exception as e:
-                self.logger.error(f"Error creating embedding model: {str(e)}")
+                self.logger.error(f"Error creating embedding model: {e!s}")
                 raise EmbeddingModelCreationError(
-                    f"Failed to create embedding model: {str(e)}"
+                    f"Failed to create embedding model: {e!s}",
                 ) from e
 
             # Get the embedding dimensions from the model
 
             self.logger.info(
-                f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}"
+                f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}",
             )
             self.embedding_model_instance = dense_embeddings
             return dense_embeddings
         except Exception as e:
-            self.logger.error(f"Error getting embedding model: {str(e)}")
+            self.logger.error(f"Error getting embedding model: {e!s}")
             return None
 
-    async def get_current_embedding_model_name(self, use_cache: bool = True) -> Optional[str]:
+    async def get_current_embedding_model_name(
+        self, use_cache: bool = True
+    ) -> str | None:
         """Get the current embedding model name from configuration or instance."""
         try:
             # First try to get from AI_MODELS config
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value,
-                use_cache=use_cache
+                use_cache=use_cache,
             )
             if ai_models and "embedding" in ai_models and ai_models["embedding"]:
                 for config in ai_models["embedding"]:
@@ -188,26 +202,25 @@ class RetrievalService:
             # Return default model if no embedding config found
             return DEFAULT_EMBEDDING_MODEL
         except Exception as e:
-            self.logger.error(f"Error getting current embedding model name: {str(e)}")
+            self.logger.error(f"Error getting current embedding model name: {e!s}")
             return DEFAULT_EMBEDDING_MODEL
 
-    def get_embedding_model_name(self, dense_embeddings: Embeddings) -> Optional[str]:
+    def get_embedding_model_name(self, dense_embeddings: Embeddings) -> str | None:
         if hasattr(dense_embeddings, "model_name"):
             return dense_embeddings.model_name
-        elif hasattr(dense_embeddings, "model"):
+        if hasattr(dense_embeddings, "model"):
             return dense_embeddings.model
-        else:
-            return None
+        return None
 
     async def _preprocess_query(self, query: str) -> str:
-        """
-        Preprocess the query text.
+        """Preprocess the query text.
 
         Args:
             query: Raw query text
 
         Returns:
             Preprocessed query text
+
         """
         try:
             # Get current model name from config
@@ -218,10 +231,10 @@ class RetrievalService:
                 return f"Represent this document for retrieval: {query.strip()}"
             return query.strip()
         except Exception as e:
-            self.logger.error(f"Error in query preprocessing: {str(e)}")
+            self.logger.error(f"Error in query preprocessing: {e!s}")
             return query.strip()
 
-    def _format_results(self, results: List[tuple]) -> List[Dict[str, Any]]:
+    def _format_results(self, results: list[tuple]) -> list[dict[str, Any]]:
         """Format search results into a consistent structure with flattened metadata."""
         formatted_results = []
         for doc, score in results:
@@ -229,24 +242,23 @@ class RetrievalService:
                 "score": float(score),
                 "citationType": "vectordb|document",
                 "metadata": doc.metadata,
-                "content": doc.page_content
+                "content": doc.page_content,
             }
             formatted_results.append(formatted_result)
         return formatted_results
 
     async def search_with_filters(
         self,
-        queries: List[str],
+        queries: list[str],
         user_id: str,
         org_id: str,
-        filter_groups: Optional[Dict[str, List[str]]] = None,
+        filter_groups: dict[str, list[str]] | None = None,
         limit: int = 20,
-        virtual_record_ids_from_tool: Optional[List[str]] = None,
-        arango_service: Optional[BaseArangoService] = None,
-        knowledge_search:bool = False,
-    ) -> Dict[str, Any]:
+        virtual_record_ids_from_tool: list[str] | None = None,
+        arango_service: BaseArangoService | None = None,
+        knowledge_search: bool = False,
+    ) -> dict[str, Any]:
         """Perform semantic search on accessible records with multiple queries."""
-
         try:
             # Get accessible records
             if not self.arango_service:
@@ -254,7 +266,7 @@ class RetrievalService:
 
             filter_groups = filter_groups or {}
 
-            kb_ids = filter_groups.get('kb', None) if filter_groups else None
+            kb_ids = filter_groups.get("kb", None) if filter_groups else None
             # Convert filter_groups to format expected by get_accessible_records
             arango_filters = {}
             if filter_groups:  # Only process if filter_groups is not empty
@@ -266,15 +278,22 @@ class RetrievalService:
                     arango_filters[metadata_key] = values
 
             init_tasks = [
-                self._get_accessible_records_task(user_id, org_id, filter_groups, self.arango_service),
+                self._get_accessible_records_task(
+                    user_id, org_id, filter_groups, self.arango_service
+                ),
                 self._get_vector_store_task(),
-                self._get_user_cached(user_id)  # Get user info in parallel with caching
+                self._get_user_cached(
+                    user_id
+                ),  # Get user info in parallel with caching
             ]
 
             accessible_records, vector_store, user = await asyncio.gather(*init_tasks)
 
             if not accessible_records:
-                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(
+                    "No accessible documents found. Please check your permissions or try different search criteria.",
+                    Status.ACCESSIBLE_RECORDS_NOT_FOUND,
+                )
 
             # FIX: Filter out None records before processing
             record_id_to_record_map = {}
@@ -283,39 +302,56 @@ class RetrievalService:
                     record_id_to_record_map[r["_key"]] = r
 
             accessible_virtual_record_ids = [
-                record["virtualRecordId"] for record in record_id_to_record_map.values()
+                record["virtualRecordId"]
+                for record in record_id_to_record_map.values()
                 if record.get("virtualRecordId") is not None
             ]
 
-            self.logger.debug(f"Accessible virtual record ids: {accessible_virtual_record_ids}")
+            self.logger.debug(
+                f"Accessible virtual record ids: {accessible_virtual_record_ids}"
+            )
 
             if virtual_record_ids_from_tool:
-                filter  = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
-                    )
+                filter = await self.vector_db_service.filter_collection(
+                    must={
+                        "orgId": org_id,
+                        "virtualRecordId": virtual_record_ids_from_tool,
+                    },
+                )
             else:
                 filter = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id},
-                        should={"virtualRecordId": accessible_virtual_record_ids}  # Pass as should condition
-                    )
-            search_results = await self._execute_parallel_searches(queries, filter, limit, vector_store)
+                    must={"orgId": org_id},
+                    should={
+                        "virtualRecordId": accessible_virtual_record_ids
+                    },  # Pass as should condition
+                )
+            search_results = await self._execute_parallel_searches(
+                queries, filter, limit, vector_store
+            )
 
             if not search_results:
                 self.logger.debug("No search results found")
-                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+                return self._create_empty_response(
+                    "No relevant documents found for your search query. Try using different keywords or broader search terms.",
+                    Status.EMPTY_RESPONSE,
+                )
 
-            self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
+            self.logger.info(
+                f"Search results count: {len(search_results) if search_results else 0}"
+            )
 
             # OPTIMIZATION: Extract virtual_record_ids using set comprehension (faster than loop)
             self.logger.debug("Starting to extract virtual_record_ids")
-            virtual_record_ids = list({
-                result["metadata"]["virtualRecordId"]
-                for result in search_results
-                if result
-                and isinstance(result, dict)
-                and result.get("metadata")
-                and result["metadata"].get("virtualRecordId") is not None
-            })
+            virtual_record_ids = list(
+                {
+                    result["metadata"]["virtualRecordId"]
+                    for result in search_results
+                    if result
+                    and isinstance(result, dict)
+                    and result.get("metadata")
+                    and result["metadata"].get("virtualRecordId") is not None
+                }
+            )
 
             virtual_record_ids = list(set(virtual_record_ids))
             self.logger.debug(f"Extracted virtual_record_ids: {virtual_record_ids}")
@@ -323,18 +359,26 @@ class RetrievalService:
             virtual_to_record_map = {}
             try:
                 self.logger.debug("About to call _create_virtual_to_record_mapping")
-                virtual_to_record_map = self._create_virtual_to_record_mapping(record_id_to_record_map.values(), virtual_record_ids)
-                self.logger.info(f"Virtual to record map size: {len(virtual_to_record_map)}")
+                virtual_to_record_map = self._create_virtual_to_record_mapping(
+                    record_id_to_record_map.values(), virtual_record_ids
+                )
+                self.logger.info(
+                    f"Virtual to record map size: {len(virtual_to_record_map)}"
+                )
             except Exception as e:
                 self.logger.error(f"Error in _create_virtual_to_record_mapping: {e}")
                 import traceback
+
                 self.logger.error(f"Traceback: {traceback.format_exc()}")
                 raise
 
             unique_record_ids = set(virtual_to_record_map.values())
 
             if not unique_record_ids:
-                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(
+                    "No accessible documents found. Please check your permissions or try different search criteria.",
+                    Status.ACCESSIBLE_RECORDS_NOT_FOUND,
+                )
             self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
             # OPTIMIZATION: First pass - enrich metadata and collect IDs that need additional fetching
@@ -354,13 +398,17 @@ class RetrievalService:
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id]
                     result["metadata"]["recordId"] = record_id
-                    record = record_id_to_record_map.get(record_id, None)
+                    record = record_id_to_record_map.get(record_id)
                     if record:
                         result["metadata"]["origin"] = record.get("origin")
-                        result["metadata"]["connector"] = record.get("connectorName", None)
+                        result["metadata"]["connector"] = record.get(
+                            "connectorName", None
+                        )
                         result["metadata"]["kbId"] = record.get("kbId", None)
                         weburl = record.get("webUrl")
-                        if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
+                        if weburl and weburl.startswith(
+                            "https://mail.google.com/mail?authuser="
+                        ):
                             user_email = user.get("email") if user else None
                             if user_email:
                                 weburl = weburl.replace("{user.email}", user_email)
@@ -376,11 +424,10 @@ class RetrievalService:
                                 mail_record_ids_to_fetch.append(record_id)
                                 result_to_record_map[idx] = (record_id, "mail")
                             continue
-                        else:
-                            result["metadata"]["mimeType"] = record.get("mimeType")
-                            ext =  get_extension_from_mimetype(record.get("mimeType"))
-                            if ext:
-                                result["metadata"]["extension"] = ext
+                        result["metadata"]["mimeType"] = record.get("mimeType")
+                        ext = get_extension_from_mimetype(record.get("mimeType"))
+                        if ext:
+                            result["metadata"]["extension"] = ext
 
                         # Collect IDs that need additional fetching (instead of fetching immediately)
                         if not weburl:
@@ -397,7 +444,13 @@ class RetrievalService:
                             is_block_group = meta.get("isBlockGroup")
                             if is_block_group is not None:
                                 if virtual_id not in virtual_record_id_to_record:
-                                    await get_record(meta,virtual_id,virtual_record_id_to_record,self.blob_store,org_id)
+                                    await get_record(
+                                        meta,
+                                        virtual_id,
+                                        virtual_record_id_to_record,
+                                        self.blob_store,
+                                        org_id,
+                                    )
                                     record = virtual_record_id_to_record[virtual_id]
                                     if record is None:
                                         continue
@@ -410,44 +463,60 @@ class RetrievalService:
             files_map = {}
             mails_map = {}
 
-            async def fetch_files() -> Dict:
+            async def fetch_files() -> dict:
                 if not file_record_ids_to_fetch:
                     return {}
                 try:
                     # Fetch files in parallel
-                    file_results = await asyncio.gather(*[
-                        self.arango_service.get_document(record_id, CollectionNames.FILES.value)
-                        for record_id in file_record_ids_to_fetch
-                    ], return_exceptions=True)
+                    file_results = await asyncio.gather(
+                        *[
+                            self.arango_service.get_document(
+                                record_id, CollectionNames.FILES.value
+                            )
+                            for record_id in file_record_ids_to_fetch
+                        ],
+                        return_exceptions=True,
+                    )
                     return {
                         record_id: result
-                        for record_id, result in zip(file_record_ids_to_fetch, file_results)
+                        for record_id, result in zip(
+                            file_record_ids_to_fetch, file_results
+                        )
                         if result and not isinstance(result, Exception)
                     }
                 except Exception as e:
-                    self.logger.warning(f"Failed to batch fetch files: {str(e)}")
+                    self.logger.warning(f"Failed to batch fetch files: {e!s}")
                     return {}
 
-            async def fetch_mails() -> Dict:
+            async def fetch_mails() -> dict:
                 if not mail_record_ids_to_fetch:
                     return {}
                 try:
                     # Fetch mails in parallel
-                    mail_results = await asyncio.gather(*[
-                        self.arango_service.get_document(record_id, CollectionNames.MAILS.value)
-                        for record_id in mail_record_ids_to_fetch
-                    ], return_exceptions=True)
+                    mail_results = await asyncio.gather(
+                        *[
+                            self.arango_service.get_document(
+                                record_id, CollectionNames.MAILS.value
+                            )
+                            for record_id in mail_record_ids_to_fetch
+                        ],
+                        return_exceptions=True,
+                    )
                     return {
                         record_id: result
-                        for record_id, result in zip(mail_record_ids_to_fetch, mail_results)
+                        for record_id, result in zip(
+                            mail_record_ids_to_fetch, mail_results
+                        )
                         if result and not isinstance(result, Exception)
                     }
                 except Exception as e:
-                    self.logger.warning(f"Failed to batch fetch mails: {str(e)}")
+                    self.logger.warning(f"Failed to batch fetch mails: {e!s}")
                     return {}
 
             if file_record_ids_to_fetch or mail_record_ids_to_fetch:
-                files_map, mails_map = await asyncio.gather(fetch_files(), fetch_mails())
+                files_map, mails_map = await asyncio.gather(
+                    fetch_files(), fetch_mails()
+                )
 
             # Second pass - apply fetched URLs to results
             for idx, (record_id, record_type) in result_to_record_map.items():
@@ -457,11 +526,15 @@ class RetrievalService:
                     continue
 
                 weburl = None
-                fallback_mimetype= None
+                fallback_mimetype = None
                 if record_type == "file" and record_id in files_map:
                     files = files_map[record_id]
                     weburl = files.get("webUrl")
-                    if weburl and record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
+                    if (
+                        weburl
+                        and record.get("connectorName", "")
+                        == Connectors.GOOGLE_MAIL.value
+                    ):
                         user_email = user.get("email") if user else None
                         if user_email:
                             weburl = weburl.replace("{user.email}", user_email)
@@ -469,7 +542,9 @@ class RetrievalService:
                 elif record_type == "mail" and record_id in mails_map:
                     mail = mails_map[record_id]
                     weburl = mail.get("webUrl")
-                    if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
+                    if weburl and weburl.startswith(
+                        "https://mail.google.com/mail?authuser="
+                    ):
                         user_email = user.get("email") if user else None
                         if user_email:
                             weburl = weburl.replace("{user.email}", user_email)
@@ -480,7 +555,7 @@ class RetrievalService:
 
                 if fallback_mimetype:
                     result["metadata"]["mimeType"] = fallback_mimetype
-                    fallback_ext =  get_extension_from_mimetype(fallback_mimetype)
+                    fallback_ext = get_extension_from_mimetype(fallback_mimetype)
                     if fallback_ext:
                         result["metadata"]["extension"] = fallback_ext
 
@@ -494,12 +569,19 @@ class RetrievalService:
             ]
 
             if new_type_results:
-                is_multimodal_llm = False   #doesn't matter for retrieval service
-                flattened_results = await get_flattened_results(new_type_results,self.blob_store,org_id,is_multimodal_llm,virtual_record_id_to_record,from_retrieval_service=True)
+                is_multimodal_llm = False  # doesn't matter for retrieval service
+                flattened_results = await get_flattened_results(
+                    new_type_results,
+                    self.blob_store,
+                    org_id,
+                    is_multimodal_llm,
+                    virtual_record_id_to_record,
+                    from_retrieval_service=True,
+                )
                 for result in flattened_results:
                     block_type = result.get("block_type")
                     if block_type == GroupType.TABLE.value:
-                        _,child_results = result.get("content")
+                        _, child_results = result.get("content")
                         for child in child_results:
                             final_search_results.append(child)
                     else:
@@ -512,17 +594,22 @@ class RetrievalService:
             )
 
             # Filter out incomplete results to prevent citation validation failures
-            required_fields = ['origin', 'recordName', 'recordId', 'mimeType',"orgId"]
+            required_fields = ["origin", "recordName", "recordId", "mimeType", "orgId"]
             complete_results = []
 
             for result in final_search_results:
                 if result.get("content") is None or result.get("content") == "":
                     continue
-                metadata = result.get('metadata', {})
-                if all(field in metadata and metadata[field] is not None for field in required_fields):
+                metadata = result.get("metadata", {})
+                if all(
+                    field in metadata and metadata[field] is not None
+                    for field in required_fields
+                ):
                     complete_results.append(result)
                 else:
-                    self.logger.warning(f"Filtering out result with incomplete metadata. Virtual ID: {metadata.get('virtualRecordId')}, Missing fields: {[f for f in required_fields if f not in metadata]}")
+                    self.logger.warning(
+                        f"Filtering out result with incomplete metadata. Virtual ID: {metadata.get('virtualRecordId')}, Missing fields: {[f for f in required_fields if f not in metadata]}"
+                    )
 
             search_results = complete_results
             if search_results or records:
@@ -538,31 +625,38 @@ class RetrievalService:
                 if kb_ids:
                     response_data["appliedFilters"] = {
                         "kb": kb_ids,
-                        "kb_count": len(kb_ids)
+                        "kb_count": len(kb_ids),
                     }
 
                 return response_data
-            else:
-                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+            return self._create_empty_response(
+                "No relevant documents found for your search query. Try using different keywords or broader search terms.",
+                Status.EMPTY_RESPONSE,
+            )
         except VectorDBEmptyError:
             self.logger.error("VectorDBEmptyError")
             return self._create_empty_response(
-                    "No records indexed yet. Please upload documents or enable connectors to index content",
-                    Status.VECTOR_DB_EMPTY,
-                )
+                "No records indexed yet. Please upload documents or enable connectors to index content",
+                Status.VECTOR_DB_EMPTY,
+            )
         except ValueError as e:
             self.logger.error(f"ValueError: {e}")
-            return self._create_empty_response(f"Bad request: {str(e)}", Status.ERROR)
+            return self._create_empty_response(f"Bad request: {e!s}", Status.ERROR)
         except Exception as e:
             import traceback
+
             tb_str = traceback.format_exc()
-            self.logger.error(f"Filtered search failed: {str(e)}")
+            self.logger.error(f"Filtered search failed: {e!s}")
             self.logger.error(f"Full traceback:\n{tb_str}")
             if virtual_record_ids_from_tool:
                 return {}
-            return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
+            return self._create_empty_response(
+                "Unexpected server error during search.", Status.ERROR
+            )
 
-    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, arango_service: BaseArangoService) -> List[Dict[str, Any]]:
+    async def _get_accessible_records_task(
+        self, user_id, org_id, filter_groups, arango_service: BaseArangoService
+    ) -> list[dict[str, Any]]:
         """Separate task for getting accessible records"""
         filter_groups = filter_groups or {}
         arango_filters = {}
@@ -573,12 +667,13 @@ class RetrievalService:
                 arango_filters[metadata_key] = values
 
         return await arango_service.get_accessible_records(
-            user_id=user_id, org_id=org_id, filters=arango_filters
+            user_id=user_id,
+            org_id=org_id,
+            filters=arango_filters,
         )
 
-    async def _get_user_cached(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """
-        OPTIMIZATION: Get user data with caching to avoid repeated DB calls.
+    async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
+        """OPTIMIZATION: Get user data with caching to avoid repeated DB calls.
         Cache expires after USER_CACHE_TTL seconds (default 5 minutes).
         """
         global _user_cache
@@ -589,9 +684,8 @@ class RetrievalService:
             if time.time() - timestamp < USER_CACHE_TTL:
                 self.logger.debug(f"User cache hit for user_id: {user_id}")
                 return user_data
-            else:
-                # Cache expired, remove it
-                del _user_cache[user_id]
+            # Cache expired, remove it
+            del _user_cache[user_id]
 
         # Cache miss - fetch from database
         self.logger.debug(f"User cache miss for user_id: {user_id}")
@@ -608,7 +702,6 @@ class RetrievalService:
 
         return user_data
 
-
     async def _get_vector_store_task(self) -> QdrantVectorStore:
         """Cached vector store retrieval"""
         if not self.vector_store:
@@ -617,11 +710,13 @@ class RetrievalService:
             self.logger.info(f"Collections: {collections}")
             collection_info = (
                 await self.vector_db_service.get_collection(self.collection_name)
-                if any(col.name == self.collection_name for col in collections.collections) # type: ignore
+                if any(
+                    col.name == self.collection_name for col in collections.collections
+                )  # type: ignore
                 else None
             )
             self.logger.info(f"Collection info: {collection_info}")
-            if not collection_info or collection_info.points_count == 0: # type: ignore
+            if not collection_info or collection_info.points_count == 0:  # type: ignore
                 raise VectorDBEmptyError("Vector DB is empty or collection not found")
 
             # Get cached embedding model
@@ -642,8 +737,9 @@ class RetrievalService:
             self.logger.info(f"Vector store: {self.vector_store}")
         return self.vector_store
 
-
-    async def _execute_parallel_searches(self, queries, filter, limit, vector_store) -> List[Dict[str, Any]]:
+    async def _execute_parallel_searches(
+        self, queries, filter, limit, vector_store
+    ) -> list[dict[str, Any]]:
         """Execute all searches in parallel"""
         all_results = []
 
@@ -652,40 +748,43 @@ class RetrievalService:
             raise ValueError("No dense embeddings found")
 
         # OPTIMIZATION: Parallelize embedding generation for multiple queries
-        query_embeddings = await asyncio.gather(*[
-            dense_embeddings.aembed_query(query) for query in queries
-        ])
+        query_embeddings = await asyncio.gather(
+            *[dense_embeddings.aembed_query(query) for query in queries]
+        )
 
-        query_requests = [models.QueryRequest(
-            query=query_embedding,
-            with_payload=True,
-            limit=limit,
-            using="dense",
-            filter=filter,
-        ) for query_embedding in query_embeddings]
+        query_requests = [
+            models.QueryRequest(
+                query=query_embedding,
+                with_payload=True,
+                limit=limit,
+                using="dense",
+                filter=filter,
+            )
+            for query_embedding in query_embeddings
+        ]
         search_results = self.vector_db_service.query_nearest_points(
             collection_name=self.collection_name,
             requests=query_requests,
         )
         seen_points = set()
         for r in search_results:
-                points = r.points
-                for point in points:
-                    if point.id in seen_points:
-                        continue
-                    seen_points.add(point.id)
-                    metadata=point.payload.get("metadata", {})
-                    metadata.update({"point_id": point.id})
-                    doc = Document(
-                        page_content=point.payload.get("page_content", ""),
-                        metadata=metadata
-                    )
-                    score = point.score
-                    all_results.append((doc, score))
+            points = r.points
+            for point in points:
+                if point.id in seen_points:
+                    continue
+                seen_points.add(point.id)
+                metadata = point.payload.get("metadata", {})
+                metadata.update({"point_id": point.id})
+                doc = Document(
+                    page_content=point.payload.get("page_content", ""),
+                    metadata=metadata,
+                )
+                score = point.score
+                all_results.append((doc, score))
 
         return self._format_results(all_results)
 
-    def _create_empty_response(self, message: str, status: Status) -> Dict[str, Any]:
+    def _create_empty_response(self, message: str, status: Status) -> dict[str, Any]:
         """Helper to create empty response with appropriate HTTP status codes"""
         # Map status types to appropriate HTTP status codes
         status_code_mapping = {
@@ -697,7 +796,9 @@ class RetrievalService:
             Status.EMPTY_RESPONSE: 200,  # OK but no results found
         }
 
-        status_code = status_code_mapping.get(status, 500)  # Default to 500 for unknown status
+        status_code = status_code_mapping.get(
+            status, 500
+        )  # Default to 500 for unknown status
 
         return {
             "searchResults": [],
@@ -707,20 +808,20 @@ class RetrievalService:
             "message": message,
         }
 
-
     def _create_virtual_to_record_mapping(
         self,
-        accessible_records: List[Dict[str, Any]],
-        virtual_record_ids: List[str]
-    ) -> Dict[str, str]:
-        """
-        Create virtual record ID to record ID mapping from already fetched accessible_records.
+        accessible_records: list[dict[str, Any]],
+        virtual_record_ids: list[str],
+    ) -> dict[str, str]:
+        """Create virtual record ID to record ID mapping from already fetched accessible_records.
         This eliminates the need for an additional database query.
+
         Args:
             accessible_records: List of accessible record documents (already fetched)
             virtual_record_ids: List of virtual record IDs from search results
         Returns:
             Dict[str, str]: Mapping of virtual_record_id -> first accessible record_id
+
         """
         # Create a mapping from virtualRecordId to list of record IDs
         virtual_to_records = {}
@@ -734,13 +835,18 @@ class RetrievalService:
                         virtual_to_records[virtual_id] = []
                     virtual_to_records[virtual_id].append(record_id)
 
-
         # Create the final mapping using only the virtual record IDs from search results
         # Use the first record ID for each virtual record ID
         mapping = {}
         for virtual_id in virtual_record_ids:
             # Skip None values and ensure virtual_id exists in virtual_to_records
-            if virtual_id is not None and virtual_id in virtual_to_records and virtual_to_records[virtual_id]:
-                mapping[virtual_id] = virtual_to_records[virtual_id][0]  # Use first record
+            if (
+                virtual_id is not None
+                and virtual_id in virtual_to_records
+                and virtual_to_records[virtual_id]
+            ):
+                mapping[virtual_id] = virtual_to_records[virtual_id][
+                    0
+                ]  # Use first record
 
         return mapping

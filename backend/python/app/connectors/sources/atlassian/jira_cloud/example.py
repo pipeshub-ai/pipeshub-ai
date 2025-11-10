@@ -1,6 +1,5 @@
 import asyncio
 import os
-from typing import Optional
 
 import uvicorn
 from arango import ArangoClient
@@ -23,6 +22,7 @@ from app.utils.logger import create_logger
 
 app = FastAPI()
 
+
 async def test_run() -> None:
     logger = create_logger("jira_connector")
 
@@ -30,35 +30,50 @@ async def test_run() -> None:
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
 
-    arango_service = BaseArangoService(logger, ArangoClient(), config_service, kafka_service)
+    arango_service = BaseArangoService(
+        logger, ArangoClient(), config_service, kafka_service
+    )
     data_store_provider = ArangoDataStore(logger, arango_service)
     await arango_service.connect()
-    data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
+    data_entities_processor = DataSourceEntitiesProcessor(
+        logger, data_store_provider, config_service
+    )
     await data_entities_processor.initialize()
-    await key_value_store.create_key(f"{OAUTH_CONFIG_PATH}/{data_entities_processor.org_id}", {
-        "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
-        "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
-        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
-    })
+    await key_value_store.create_key(
+        f"{OAUTH_CONFIG_PATH}/{data_entities_processor.org_id}",
+        {
+            "client_id": os.getenv("ATLASSIAN_CLIENT_ID"),
+            "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
+            "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI"),
+        },
+    )
 
-    connector = JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
+    connector = JiraConnector(
+        logger, data_entities_processor, data_store_provider, config_service
+    )
     await connector.initialize()
-
 
     app.connector = connector
 
+
 router = APIRouter()
 
+
 @router.get("/oauth/atlassian/start")
-async def oauth_start(return_to: Optional[str] = None) -> RedirectResponse:
-    url = await app.connector.provider.start_authorization(return_to=return_to, use_pkce=True)
+async def oauth_start(return_to: str | None = None) -> RedirectResponse:
+    url = await app.connector.provider.start_authorization(
+        return_to=return_to, use_pkce=True
+    )
     return RedirectResponse(url)
+
 
 @router.get("/oauth/atlassian/callback")
 async def oauth_callback(request: Request) -> RedirectResponse:
     error = request.query_params.get("error")
     if error:
-        raise HTTPException(400, detail=request.query_params.get("error_description", error))
+        raise HTTPException(
+            400, detail=request.query_params.get("error_description", error)
+        )
     code = request.query_params.get("code")
     state = request.query_params.get("state")
     if not code or not state:
@@ -70,13 +85,16 @@ async def oauth_callback(request: Request) -> RedirectResponse:
     # or stash it in a short-lived cookie at /start.
     return RedirectResponse(url="http://localhost:3001")
 
+
 @router.get("/api/v1/org/{org_id}/jira/issues/{issue_id}")
 async def get_issue(org_id: str, issue_id: str) -> Response:
     arango_service = await app.connector.arango_service()
     record = await arango_service.get_record_by_id(issue_id)
     return await app.connector.stream_record(record)
 
+
 app.include_router(router)
+
 
 @app.on_event("startup")
 async def startup_event() -> None:
@@ -86,4 +104,3 @@ async def startup_event() -> None:
 if __name__ == "__main__":
     # asyncio.run(test_run())
     uvicorn.run(app, host="0.0.0.0", port=8088)
-

@@ -1,22 +1,19 @@
-
 import os
-from typing import Dict, Optional
 
 from app.services.featureflag.interfaces.config import IConfigProvider
 from app.utils.logger import create_logger
 
-logger = create_logger(__name__) # TODO fix logger
+logger = create_logger(__name__)  # TODO fix logger
 
 
 class EnvFileProvider(IConfigProvider):
-    """
-    Provider that reads feature flags from .env file
+    """Provider that reads feature flags from .env file
     Implements Single Responsibility Principle - only handles .env file reading
     """
 
     def __init__(self, env_file_path: str) -> None:
         self.env_file_path = env_file_path
-        self._flags: Dict[str, bool] = {}
+        self._flags: dict[str, bool] = {}
         self._load_env_file()
 
     def _load_env_file(self) -> None:
@@ -26,30 +23,30 @@ class EnvFileProvider(IConfigProvider):
             return
 
         try:
-            with open(self.env_file_path, 'r') as f:
+            with open(self.env_file_path) as f:
                 for line in f:
                     line = line.strip()
 
                     # Skip empty lines and comments
-                    if not line or line.startswith('#'):
+                    if not line or line.startswith("#"):
                         continue
 
                     # Parse key=value pairs
-                    if '=' in line:
-                        key, value = line.split('=', 1)
+                    if "=" in line:
+                        key, value = line.split("=", 1)
                         key = key.strip().upper()  # Normalize to uppercase
                         value = value.strip()
 
                         # Store boolean value
                         self._flags[key] = self._parse_bool(value)
-        except IOError as e:
+        except OSError as e:
             logger.error(f"Error loading .env file: {e}")
 
     def _parse_bool(self, value: str) -> bool:
         """Parse string value to boolean"""
-        return value.lower() in ('true', '1', 'yes', 'on', 'enabled')
+        return value.lower() in ("true", "1", "yes", "on", "enabled")
 
-    def get_flag_value(self, flag_name: str) -> Optional[bool]:
+    def get_flag_value(self, flag_name: str) -> bool | None:
         """Get flag value by name"""
         return self._flags.get(flag_name.upper())
 

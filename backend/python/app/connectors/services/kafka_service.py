@@ -1,5 +1,4 @@
 import json
-from typing import Dict
 
 from aiokafka import AIOKafkaProducer
 
@@ -20,7 +19,7 @@ class KafkaService:
         if self.producer is None:
             try:
                 kafka_config = await self.config_service.get_config(
-                    config_node_constants.KAFKA.value
+                    config_node_constants.KAFKA.value,
                 )
                 if not isinstance(kafka_config, dict):
                     raise ValueError("Kafka configuration must be a dictionary")
@@ -33,14 +32,16 @@ class KafkaService:
                     and brokers.startswith("[")
                     and brokers.endswith("]")
                 ):
-                    brokers = brokers.strip("[]").replace("'", "").replace('"', "").strip()
+                    brokers = (
+                        brokers.strip("[]").replace("'", "").replace('"', "").strip()
+                    )
 
                 producer_config = {
                     "bootstrap_servers": brokers,  # aiokafka uses bootstrap_servers
                     "client_id": kafka_config.get("client_id", "file-processor"),
                     "request_timeout_ms": 30000,
                     "retry_backoff_ms": 100,
-                    "enable_idempotence": True
+                    "enable_idempotence": True,
                 }
 
                 self.producer = AIOKafkaProducer(**producer_config)
@@ -48,12 +49,11 @@ class KafkaService:
                 self.logger.info("✅ Kafka producer initialized and started")
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to initialize Kafka producer: {str(e)}")
+                self.logger.error(f"❌ Failed to initialize Kafka producer: {e!s}")
                 raise
 
-    async def publish_event(self, topic: str, event: Dict) -> bool:
-        """
-        Publish an event to a specified Kafka topic.
+    async def publish_event(self, topic: str, event: dict) -> bool:
+        """Publish an event to a specified Kafka topic.
         :param topic: The Kafka topic to publish to
         :param event: Dictionary containing the event data
         :return: True if successful, False otherwise
@@ -63,17 +63,21 @@ class KafkaService:
             await self._ensure_producer()
 
             # Convert event to JSON bytes for aiokafka
-            message_value = json.dumps(event).encode('utf-8')
+            message_value = json.dumps(event).encode("utf-8")
 
             # Use recordId from payload as key if available, otherwise use timestamp
             record_id = event.get("payload", {}).get("recordId")
-            message_key = str(record_id).encode('utf-8') if record_id else str(event.get("timestamp", "")).encode('utf-8')
+            message_key = (
+                str(record_id).encode("utf-8")
+                if record_id
+                else str(event.get("timestamp", "")).encode("utf-8")
+            )
 
             # Send message and wait for delivery
             record_metadata = await self.producer.send_and_wait(
                 topic=topic,
                 key=message_key,
-                value=message_value
+                value=message_value,
             )
 
             # Log successful delivery
@@ -81,18 +85,19 @@ class KafkaService:
                 "✅ Event successfully published to %s [%s] at offset %s",
                 record_metadata.topic,
                 record_metadata.partition,
-                record_metadata.offset
+                record_metadata.offset,
             )
 
             return True
 
         except Exception as e:
-            self.logger.error("❌ Failed to publish event to topic %s: %s", topic, str(e))
+            self.logger.error(
+                "❌ Failed to publish event to topic %s: %s", topic, str(e)
+            )
             raise
 
     async def send_event_to_kafka(self, event_data) -> bool | None:
-        """
-        Send an event to Kafka asynchronously.
+        """Send an event to Kafka asynchronously.
         :param event_data: Dictionary containing file processing details
         """
         try:
@@ -119,20 +124,20 @@ class KafkaService:
                     "createdAtTimestamp": event_data.get("createdAtSourceTimestamp"),
                     "updatedAtTimestamp": event_data.get("modifiedAtSourceTimestamp"),
                     "sourceCreatedAtTimestamp": event_data.get(
-                        "createdAtSourceTimestamp"
+                        "createdAtSourceTimestamp",
                     ),
                 },
             }
 
             # Convert to JSON bytes for aiokafka
-            message_value = json.dumps(formatted_event).encode('utf-8')
-            message_key = str(formatted_event["payload"]["recordId"]).encode('utf-8')
+            message_value = json.dumps(formatted_event).encode("utf-8")
+            message_key = str(formatted_event["payload"]["recordId"]).encode("utf-8")
 
             # Send message and wait for delivery
             record_metadata = await self.producer.send_and_wait(
                 topic="record-events",
                 key=message_key,
-                value=message_value
+                value=message_value,
             )
 
             # Log successful delivery
@@ -141,7 +146,7 @@ class KafkaService:
                 formatted_event["payload"]["recordId"],
                 record_metadata.topic,
                 record_metadata.partition,
-                record_metadata.offset
+                record_metadata.offset,
             )
 
             return True
@@ -158,7 +163,7 @@ class KafkaService:
                 self.producer = None
                 self.logger.info("✅ Kafka producer stopped successfully")
             except Exception as e:
-                self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
+                self.logger.error(f"❌ Error stopping Kafka producer: {e!s}")
 
     async def __aenter__(self) -> "KafkaService":
         """Async context manager entry"""

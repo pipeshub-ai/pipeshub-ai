@@ -13,11 +13,15 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.BELONGS_TO.value,
-        "from_vertex_collections": [CollectionNames.USERS.value,CollectionNames.RECORDS.value,CollectionNames.FILES.value],
+        "from_vertex_collections": [
+            CollectionNames.USERS.value,
+            CollectionNames.RECORDS.value,
+            CollectionNames.FILES.value,
+        ],
         "to_vertex_collections": [
             CollectionNames.GROUPS.value,
             CollectionNames.ORGS.value,
-            CollectionNames.RECORD_GROUPS.value
+            CollectionNames.RECORD_GROUPS.value,
         ],
     },
     {
@@ -57,23 +61,48 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.INTER_CATEGORY_RELATIONS.value,
-        "from_vertex_collections": [CollectionNames.CATEGORIES.value, CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value, CollectionNames.SUBCATEGORIES3.value],
-        "to_vertex_collections": [CollectionNames.CATEGORIES.value, CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value, CollectionNames.SUBCATEGORIES3.value],
+        "from_vertex_collections": [
+            CollectionNames.CATEGORIES.value,
+            CollectionNames.SUBCATEGORIES1.value,
+            CollectionNames.SUBCATEGORIES2.value,
+            CollectionNames.SUBCATEGORIES3.value,
+        ],
+        "to_vertex_collections": [
+            CollectionNames.CATEGORIES.value,
+            CollectionNames.SUBCATEGORIES1.value,
+            CollectionNames.SUBCATEGORIES2.value,
+            CollectionNames.SUBCATEGORIES3.value,
+        ],
     },
     {
         "edge_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value],
+        "from_vertex_collections": [
+            CollectionNames.USERS.value,
+            CollectionNames.TEAMS.value,
+        ],
         "to_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
     },
     {
         "edge_collection": CollectionNames.IS_OF_TYPE.value,
         "from_vertex_collections": [CollectionNames.RECORDS.value],
-        "to_vertex_collections": [CollectionNames.FILES.value, CollectionNames.MAILS.value, CollectionNames.WEBPAGES.value, CollectionNames.TICKETS.value],
+        "to_vertex_collections": [
+            CollectionNames.FILES.value,
+            CollectionNames.MAILS.value,
+            CollectionNames.WEBPAGES.value,
+            CollectionNames.TICKETS.value,
+        ],
     },
     {
         "edge_collection": CollectionNames.RECORD_RELATIONS.value,
-        "from_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value,CollectionNames.RECORD_GROUPS.value],
-        "to_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value],
+        "from_vertex_collections": [
+            CollectionNames.RECORDS.value,
+            CollectionNames.FILES.value,
+            CollectionNames.RECORD_GROUPS.value,
+        ],
+        "to_vertex_collections": [
+            CollectionNames.RECORDS.value,
+            CollectionNames.FILES.value,
+        ],
     },
     {
         "edge_collection": CollectionNames.USER_DRIVE_RELATION.value,
@@ -92,7 +121,14 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.PERMISSION.value,
-        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value],
-        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value],
+        "from_vertex_collections": [
+            CollectionNames.USERS.value,
+            CollectionNames.TEAMS.value,
+        ],
+        "to_vertex_collections": [
+            CollectionNames.AGENT_INSTANCES.value,
+            CollectionNames.AGENT_TEMPLATES.value,
+            CollectionNames.TEAMS.value,
+        ],
     },
 ]

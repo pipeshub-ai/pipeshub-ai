@@ -137,7 +137,10 @@ record_schema = {
                 "enum": [record_type.value for record_type in RecordType],
             },
             "version": {"type": "number", "default": 0},
-            "origin": {"type": "string", "enum": [origin.value for origin in OriginTypes]},
+            "origin": {
+                "type": "string",
+                "enum": [origin.value for origin in OriginTypes],
+            },
             "connectorName": {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
@@ -164,7 +167,7 @@ record_schema = {
                     "COMPLETED",
                     "FILE_TYPE_NOT_SUPPORTED",
                     "AUTO_INDEX_OFF",
-                    "ENABLE_MULTIMODAL_MODELS"
+                    "ENABLE_MULTIMODAL_MODELS",
                 ],
             },
             "extractionStatus": {
@@ -176,7 +179,7 @@ record_schema = {
                     "FAILED",
                     "COMPLETED",
                     "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF"
+                    "AUTO_INDEX_OFF",
                 ],
             },
             "isLatestVersion": {"type": "boolean", "default": True},
@@ -193,7 +196,7 @@ record_schema = {
             "externalRecordId",
             "recordType",
             "origin",
-            "createdAtTimestamp"
+            "createdAtTimestamp",
         ],
         "additionalProperties": False,
     },
@@ -207,7 +210,7 @@ file_record_schema = {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
-            "recordGroupId": {"type":"string"},  # kb id
+            "recordGroupId": {"type": "string"},  # kb id
             "name": {"type": "string", "minLength": 1},
             "isFile": {"type": "boolean"},
             "extension": {"type": ["string", "null"]},
@@ -330,8 +333,8 @@ record_group_schema = {
             },
             "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},
-            "createdBy":{"type": ["string", "null"]},
-            "deletedByUserId":{"type": ["string", "null"]},
+            "createdBy": {"type": ["string", "null"]},
+            "deletedByUserId": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "lastSyncTimestamp": {"type": "number"},
@@ -378,10 +381,10 @@ agent_template_schema = {
             "systemPrompt": {"type": "string", "minLength": 1},
             "tools": {
                 "type": "array",
-                "items" :{
+                "items": {
                     "type": "object",
                     "properties": {
-                        #scoped name for tool wild card (google.* (all tools for google)) (e.g. app_name.tool_name, google.search)
+                        # scoped name for tool wild card (google.* (all tools for google)) (e.g. app_name.tool_name, google.search)
                         "name": {"type": "string", "minLength": 1},
                         "description": {"type": "string", "minLength": 1},
                     },
@@ -393,7 +396,7 @@ agent_template_schema = {
             },
             "models": {
                 "type": "array",
-                "items" :{
+                "items": {
                     "type": "object",
                     "properties": {
                         "name": {"type": "string", "minLength": 1},
@@ -410,7 +413,19 @@ agent_template_schema = {
             "memory": {
                 "type": "object",
                 "properties": {
-                    "type": {"type": "array", "items": {"type": "string", "enum": ["CONVERSATIONS", "KNOWLEDGE_BASE", "APPS", "ACTIVITIES", "VECTOR_DB"]}},
+                    "type": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "CONVERSATIONS",
+                                "KNOWLEDGE_BASE",
+                                "APPS",
+                                "ACTIVITIES",
+                                "VECTOR_DB",
+                            ],
+                        },
+                    },
                 },
                 "nullable": True,
                 "required": ["type"],
@@ -458,13 +473,15 @@ agent_schema = {
             },
             "models": {
                 "type": "array",
-                "items": {"type": "object", "properties": {
-                    "provider": {"type": "string"},
-                    "modelName": {"type": "string"},
-                    "isReasoning": {"type": "boolean", "default": False},
-                },
-                "required": ["provider", "modelName", "isReasoning"],
-                "additionalProperties": True,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "provider": {"type": "string"},
+                        "modelName": {"type": "string"},
+                        "isReasoning": {"type": "boolean", "default": False},
+                    },
+                    "required": ["provider", "modelName", "isReasoning"],
+                    "additionalProperties": True,
                 },
                 "default": [],
             },
@@ -480,9 +497,11 @@ agent_schema = {
             },
             "vectorDBs": {
                 "type": "array",
-                "items": {"type": "object", "properties": {
-                    "id": {"type": "string"},
-                    "name": {"type": "string"},
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "name": {"type": "string"},
                     },
                     "required": ["id", "name"],
                     "additionalProperties": True,
@@ -498,7 +517,14 @@ agent_schema = {
             "deletedAtTimestamp": {"type": "number"},
             "isDeleted": {"type": "boolean", "default": False},
         },
-        "required": ["name", "description", "startMessage", "systemPrompt", "tools", "models"],
+        "required": [
+            "name",
+            "description",
+            "startMessage",
+            "systemPrompt",
+            "tools",
+            "models",
+        ],
         "additionalProperties": True,
     },
     "level": "strict",

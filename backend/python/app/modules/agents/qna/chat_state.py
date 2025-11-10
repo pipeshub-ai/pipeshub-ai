@@ -1,5 +1,5 @@
 from logging import Logger
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import BaseMessage
@@ -12,7 +12,8 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 
 class Document(TypedDict):
     page_content: str
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
+
 
 class ChatState(TypedDict):
     logger: Logger
@@ -23,72 +24,82 @@ class ChatState(TypedDict):
     reranker_service: RerankerService
 
     query: str
-    limit: int # Number of chunks to retrieve from the vector database
-    messages: List[BaseMessage]  # Changed to BaseMessage for tool calling
-    previous_conversations: List[Dict[str, str]]
+    limit: int  # Number of chunks to retrieve from the vector database
+    messages: list[BaseMessage]  # Changed to BaseMessage for tool calling
+    previous_conversations: list[dict[str, str]]
     quick_mode: bool  # Renamed from decompose_query to avoid conflict
-    filters: Optional[Dict[str, Any]]
+    filters: dict[str, Any] | None
     retrieval_mode: str
 
     # Query analysis results
-    query_analysis: Optional[Dict[str, Any]]  # Results from query analysis
+    query_analysis: dict[str, Any] | None  # Results from query analysis
 
     # Original query processing (now optional)
-    decomposed_queries: List[Dict[str, str]]
-    rewritten_queries: List[str]
-    expanded_queries: List[str]
-    web_search_queries: List[str]  # Web search queries for tool calling
+    decomposed_queries: list[dict[str, str]]
+    rewritten_queries: list[str]
+    expanded_queries: list[str]
+    web_search_queries: list[str]  # Web search queries for tool calling
 
     # Search results (conditional)
-    search_results: List[Document]
-    final_results: List[Document]
+    search_results: list[Document]
+    final_results: list[Document]
 
     # User and org info
-    user_info: Optional[Dict[str, Any]]
-    org_info: Optional[Dict[str, Any]]
-    response: Optional[str]
-    error: Optional[Dict[str, Any]]
+    user_info: dict[str, Any] | None
+    org_info: dict[str, Any] | None
+    response: str | None
+    error: dict[str, Any] | None
     org_id: str
     user_id: str
     user_email: str
     send_user_info: bool
 
     # Enhanced features
-    system_prompt: Optional[str]  # User-defined system prompt
-    apps: Optional[List[str]]  # List of app IDs to search in
-    kb: Optional[List[str]]  # List of KB IDs to search in
-    tools: Optional[List[str]]  # List of tool names to enable for this agent
-    output_file_path: Optional[str]  # Optional file path for saving responses
+    system_prompt: str | None  # User-defined system prompt
+    apps: list[str] | None  # List of app IDs to search in
+    kb: list[str] | None  # List of KB IDs to search in
+    tools: list[str] | None  # List of tool names to enable for this agent
+    output_file_path: str | None  # Optional file path for saving responses
 
     # Tool calling specific fields - no ToolExecutor dependency
-    pending_tool_calls: Optional[bool]  # Whether the agent has pending tool calls
-    tool_results: Optional[List[Dict[str, Any]]]  # Results of current tool execution
-    all_tool_results: Optional[List[Dict[str, Any]]]  # All tool results for the session
+    pending_tool_calls: bool | None  # Whether the agent has pending tool calls
+    tool_results: list[dict[str, Any]] | None  # Results of current tool execution
+    all_tool_results: list[dict[str, Any]] | None  # All tool results for the session
 
     # Enhanced tool result tracking for better LLM context
-    tool_execution_summary: Optional[Dict[str, Any]]  # Summary of what tools have been executed
-    tool_data_available: Optional[Dict[str, Any]]  # What data is available from tool executions
-    tool_repetition_warnings: Optional[List[str]]  # Warnings about repeated tool calls
-    data_sufficiency: Optional[Dict[str, Any]]  # Analysis of whether we have sufficient data to answer the query
+    tool_execution_summary: (
+        dict[str, Any] | None
+    )  # Summary of what tools have been executed
+    tool_data_available: (
+        dict[str, Any] | None
+    )  # What data is available from tool executions
+    tool_repetition_warnings: list[str] | None  # Warnings about repeated tool calls
+    data_sufficiency: (
+        dict[str, Any] | None
+    )  # Analysis of whether we have sufficient data to answer the query
 
     # Loop detection and graceful handling
-    force_final_response: Optional[bool]  # Flag to force final response instead of tool execution
-    loop_detected: Optional[bool]  # Whether a loop was detected
-    loop_reason: Optional[str]  # Reason for loop detection
-    max_iterations: Optional[int]  # Maximum tool iteration limit
+    force_final_response: (
+        bool | None
+    )  # Flag to force final response instead of tool execution
+    loop_detected: bool | None  # Whether a loop was detected
+    loop_reason: str | None  # Reason for loop detection
+    max_iterations: int | None  # Maximum tool iteration limit
 
     # Web search specific fields
-    web_search_results: Optional[List[Dict[str, Any]]]  # Stored web search results
-    web_search_template_context: Optional[Dict[str, Any]]  # Template context for web search formatting
+    web_search_results: list[dict[str, Any]] | None  # Stored web search results
+    web_search_template_context: (
+        dict[str, Any] | None
+    )  # Template context for web search formatting
 
     # Pure registry integration - no executor
-    available_tools: Optional[List[str]]  # List of all available tools from registry
-    tool_configs: Optional[Dict[str, Any]]  # Tool configurations (Slack tokens, etc.)
-    registry_tool_instances: Optional[Dict[str, Any]]  # Cached tool instances
+    available_tools: list[str] | None  # List of all available tools from registry
+    tool_configs: dict[str, Any] | None  # Tool configurations (Slack tokens, etc.)
+    registry_tool_instances: dict[str, Any] | None  # Cached tool instances
+
 
 def cleanup_state_after_retrieval(state: ChatState) -> None:
-    """
-    Clean up state after retrieval phase to reduce memory pollution.
+    """Clean up state after retrieval phase to reduce memory pollution.
     Removes temporary fields that are no longer needed.
     """
     # Clean up intermediate query processing fields after retrieval
@@ -107,13 +118,12 @@ def cleanup_state_after_retrieval(state: ChatState) -> None:
         state["query_analysis"] = {
             "intent": analysis.get("intent"),
             "complexity": analysis.get("complexity"),
-            "needs_tools": analysis.get("needs_tools", False)
+            "needs_tools": analysis.get("needs_tools", False),
         }
 
 
 def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
-    """
-    Clean up old tool results to prevent context pollution.
+    """Clean up old tool results to prevent context pollution.
     Keeps only recent results that are relevant for current conversation.
     """
     all_results = state.get("all_tool_results", [])
@@ -127,17 +137,25 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
         state["tool_repetition_warnings"] = []
 
 
-def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
-                        logger: Logger, retrieval_service: RetrievalService, arango_service: BaseArangoService,
-                        reranker_service: RerankerService, org_info: Dict[str, Any] = None) -> ChatState:
+def build_initial_state(
+    chat_query: dict[str, Any],
+    user_info: dict[str, Any],
+    llm: BaseChatModel,
+    logger: Logger,
+    retrieval_service: RetrievalService,
+    arango_service: BaseArangoService,
+    reranker_service: RerankerService,
+    org_info: dict[str, Any] = None,
+) -> ChatState:
     """Build the initial state from the chat query and user info"""
-
     # Get user-defined system prompt or use default
-    system_prompt = chat_query.get("systemPrompt", "You are an enterprise questions answering expert")
+    system_prompt = chat_query.get(
+        "systemPrompt", "You are an enterprise questions answering expert"
+    )
 
     # Get tools configuration - no restrictions, let LLM decide
-    tools = chat_query.get("tools", None)  # None means all tools available
-    output_file_path = chat_query.get("outputFilePath", None)
+    tools = chat_query.get("tools")  # None means all tools available
+    output_file_path = chat_query.get("outputFilePath")
 
     # Build filters based on allowed apps and knowledge bases
     filters = chat_query.get("filters", {})
@@ -157,20 +175,16 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "quick_mode": chat_query.get("quickMode", False),  # Renamed
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
-
         # Query analysis (will be populated by analyze_query_node)
         "query_analysis": None,
-
         # Original query processing (now optional - may not be used)
         "decomposed_queries": [],
         "rewritten_queries": [],
         "expanded_queries": [],
-        "web_search_queries": [], # Initialize web_search_queries
-
+        "web_search_queries": [],  # Initialize web_search_queries
         # Search results (conditional)
         "search_results": [],
         "final_results": [],
-
         # User and response data
         "user_info": user_info,
         "org_info": org_info or None,
@@ -185,35 +199,29 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "retrieval_service": retrieval_service,
         "arango_service": arango_service,
         "reranker_service": reranker_service,
-
         # Enhanced features
         "system_prompt": system_prompt,
         "apps": apps,
         "kb": kb,
         "tools": tools,
         "output_file_path": output_file_path,
-
         # Tool calling specific fields - direct execution
         "pending_tool_calls": False,
         "tool_results": None,
         "all_tool_results": [],
-
         # Enhanced tool result tracking
         "tool_execution_summary": {},
         "tool_data_available": {},
         "tool_repetition_warnings": [],
         "data_sufficiency": {},
-
         # Loop detection and graceful handling
         "force_final_response": False,
         "max_iterations": 30,  # Maximum tool iteration limit
         "loop_detected": False,
         "loop_reason": None,
-
         # Web search specific fields
         "web_search_results": None,
         "web_search_template_context": None,
-
         # Pure registry integration - no executor dependency
         "available_tools": None,
         "tool_configs": None,

@@ -2,8 +2,9 @@
 import asyncio
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import TypeVar
 from uuid import uuid4
 
 import google.oauth2.credentials
@@ -38,7 +39,7 @@ from app.connectors.utils.decorators import exponential_backoff, token_refresh
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class DriveUserService:
@@ -57,6 +58,7 @@ class DriveUserService:
         Args:
             config (Config): Configuration object
             rate_limiter (DriveAPIRateLimiter): Rate limiter for Drive API
+
         """
         self.logger = logger
         self.logger.info("🚀 Initializing DriveService")
@@ -76,7 +78,7 @@ class DriveUserService:
         # Protect shared google service across threads
         self._service_lock = threading.Lock()
 
-    async def _get_drive_scopes(self) -> List[str]:
+    async def _get_drive_scopes(self) -> list[str]:
         """Get scopes for drive, with fallback to default readonly scope."""
         SCOPES = await self.google_token_handler.get_account_scopes(app_name="drive")
         if not SCOPES:
@@ -95,7 +97,9 @@ class DriveUserService:
             SCOPES = await self._get_drive_scopes()
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
-                    org_id, user_id, app_name="drive"
+                    org_id,
+                    user_id,
+                    app_name="drive",
                 )
             except Exception as e:
                 raise GoogleAuthError(
@@ -132,10 +136,13 @@ class DriveUserService:
                     expiry_ms = creds_data.get("access_token_expiry_time")
                     if expiry_ms:
                         self.token_expiry = datetime.fromtimestamp(
-                            int(expiry_ms) / 1000, tz=timezone.utc
+                            int(expiry_ms) / 1000,
+                            tz=timezone.utc,
                         )
                     else:
-                        self.token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+                        self.token_expiry = datetime.now(timezone.utc) + timedelta(
+                            hours=1
+                        )
                 self.logger.info("✅ Token expiry time: %s", self.token_expiry)
             except Exception as e:
                 self.logger.warning("Failed to set token expiry: %s", str(e))
@@ -174,14 +181,18 @@ class DriveUserService:
         now = datetime.now(timezone.utc)
         time_until_refresh = self.token_expiry - now - timedelta(minutes=20)
         self.logger.info(
-            f"Time until refresh: {time_until_refresh.total_seconds()} seconds"
+            f"Time until refresh: {time_until_refresh.total_seconds()} seconds",
         )
 
         if time_until_refresh.total_seconds() <= 0:
-            await self.google_token_handler.refresh_token(self.org_id, self.user_id, app_name="drive")
+            await self.google_token_handler.refresh_token(
+                self.org_id, self.user_id, app_name="drive"
+            )
 
             creds_data = await self.google_token_handler.get_individual_token(
-                self.org_id, self.user_id, app_name="drive"
+                self.org_id,
+                self.user_id,
+                app_name="drive",
             )
             SCOPES = await self._get_drive_scopes()
             creds = google.oauth2.credentials.Credentials(
@@ -209,10 +220,13 @@ class DriveUserService:
                     expiry_ms = creds_data.get("access_token_expiry_time")
                     if expiry_ms:
                         self.token_expiry = datetime.fromtimestamp(
-                            int(expiry_ms) / 1000, tz=timezone.utc
+                            int(expiry_ms) / 1000,
+                            tz=timezone.utc,
                         )
                     else:
-                        self.token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+                        self.token_expiry = datetime.now(timezone.utc) + timedelta(
+                            hours=1
+                        )
             except Exception as e:
                 self.logger.warning("Failed to set refreshed token expiry: %s", str(e))
 
@@ -225,14 +239,18 @@ class DriveUserService:
             self.user_id = user_id
 
             self.service = build(
-                "drive", "v3", credentials=self.credentials, cache_discovery=False
+                "drive",
+                "v3",
+                credentials=self.credentials,
+                cache_discovery=False,
             )
             self.logger.debug("Self Drive Service: %s", self.service)
             return True
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to connect to Enterprise Drive Service: %s", str(e)
+                "❌ Failed to connect to Enterprise Drive Service: %s",
+                str(e),
             )
             return False
 
@@ -252,12 +270,12 @@ class DriveUserService:
             self.logger.info("✅ Drive service disconnected successfully")
             return True
         except Exception as e:
-            self.logger.error(f"❌ Failed to disconnect Drive service: {str(e)}")
+            self.logger.error(f"❌ Failed to disconnect Drive service: {e!s}")
             return False
 
     @exponential_backoff()
     @token_refresh
-    async def list_individual_user(self, org_id) -> List[Dict]:
+    async def list_individual_user(self, org_id) -> list[dict]:
         """Get individual user info"""
         try:
             self.logger.info("🚀 Getting individual user info")
@@ -291,8 +309,10 @@ class DriveUserService:
     @exponential_backoff()
     @token_refresh
     async def list_files_in_folder(
-        self, folder_id: str, include_subfolders: bool = True
-    ) -> List[Dict]:
+        self,
+        folder_id: str,
+        include_subfolders: bool = True,
+    ) -> list[dict]:
         """List all files in a folder and optionally its subfolders using BFS"""
         try:
             self.logger.info("🚀 Listing files in folder %s", folder_id)
@@ -353,7 +373,9 @@ class DriveUserService:
                         break
 
             self.logger.info(
-                "✅ Found %s files in folder %s", len(all_files), folder_id
+                "✅ Found %s files in folder %s",
+                len(all_files),
+                folder_id,
             )
             return all_files
 
@@ -367,7 +389,7 @@ class DriveUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_shared_drives(self) -> List[Dict]:
+    async def list_shared_drives(self) -> list[dict]:
         """List all shared drives"""
         try:
             self.logger.info("🚀 Listing shared drives")
@@ -416,7 +438,7 @@ class DriveUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def create_changes_watch(self, token = None) -> Optional[Dict]:
+    async def create_changes_watch(self, token=None) -> dict | None:
         """Set up changes.watch for all changes"""
         try:
             self.logger.info("🚀 Creating changes watch")
@@ -425,13 +447,15 @@ class DriveUserService:
                 channel_id = str(uuid.uuid4())
                 try:
                     endpoints = await self.config_service.get_config(
-                        config_node_constants.ENDPOINTS.value
+                        config_node_constants.ENDPOINTS.value,
                     )
                     webhook_endpoint = endpoints.get("connectors", {}).get(
-                        "publicEndpoint"
+                        "publicEndpoint",
                     )
                     if not webhook_endpoint:
-                        webhook_endpoint = endpoints.get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                        webhook_endpoint = endpoints.get("connectors", {}).get(
+                            "endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value
+                        )
                         if not webhook_endpoint:
                             raise DriveOperationError(
                                 "Missing webhook endpoint configuration",
@@ -454,7 +478,7 @@ class DriveUserService:
                         or "localhost" in webhook_endpoint
                     ):
                         self.logger.warning(
-                            "⚠️ Skipping changes watch - webhook endpoint uses HTTP or localhost"
+                            "⚠️ Skipping changes watch - webhook endpoint uses HTTP or localhost",
                         )
                         data = {
                             "channelId": None,
@@ -497,7 +521,8 @@ class DriveUserService:
                         .execute()
                     )
                     self.logger.info(
-                        "🚀 Changes watch created successfully: %s", response
+                        "🚀 Changes watch created successfully: %s",
+                        response,
                     )
                 except HttpError as e:
                     if e.resp.status == HttpStatusCode.FORBIDDEN.value:
@@ -534,7 +559,7 @@ class DriveUserService:
                 details={"error": str(e)},
             )
 
-    async def stop_watch(self, channel_id: Optional[str], resource_id: Optional[str]) -> bool:
+    async def stop_watch(self, channel_id: str | None, resource_id: str | None) -> bool:
         """Stop a changes watch"""
         try:
             if channel_id is None or resource_id is None:
@@ -542,7 +567,7 @@ class DriveUserService:
                 return True
 
             self.service.channels().stop(
-                body={"id": channel_id, "resourceId": resource_id}
+                body={"id": channel_id, "resourceId": resource_id},
             ).execute()
             self.logger.info("✅ Changes watch stopped successfully")
             return True
@@ -552,7 +577,7 @@ class DriveUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def get_changes(self, page_token: str) -> Tuple[List[Dict], Optional[str]]:
+    async def get_changes(self, page_token: str) -> tuple[list[dict], str | None]:
         """Get all changes since the given page token"""
         try:
             self.logger.info("🚀 Getting changes since page token: %s", page_token)
@@ -578,7 +603,9 @@ class DriveUserService:
                             .execute()
                         )
                 except HttpError as e:
-                    if e.resp.status == HttpStatusCode.NOT_FOUND.value:  # Invalid page token
+                    if (
+                        e.resp.status == HttpStatusCode.NOT_FOUND.value
+                    ):  # Invalid page token
                         self.logger.error("❌ Invalid page token %s", page_token)
                         new_token = await self.get_start_page_token_api()
                         if not new_token:
@@ -588,7 +615,7 @@ class DriveUserService:
                                 details={"page_token": page_token},
                             )
                         return [], new_token
-                    elif e.resp.status == HttpStatusCode.FORBIDDEN.value:
+                    if e.resp.status == HttpStatusCode.FORBIDDEN.value:
                         raise DrivePermissionError(
                             "Permission denied getting changes: " + str(e),
                             details={"page_token": page_token, "error": str(e)},
@@ -608,7 +635,9 @@ class DriveUserService:
                     break
 
             self.logger.info(
-                "✅ Found %s changes since page token: %s", len(changes), page_token
+                "✅ Found %s changes since page token: %s",
+                len(changes),
+                page_token,
             )
             return changes, next_token
 
@@ -622,7 +651,7 @@ class DriveUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def get_start_page_token_api(self) -> Optional[str]:
+    async def get_start_page_token_api(self) -> str | None:
         """Get current page token for changes"""
         try:
             self.logger.info("🚀 Getting start page token")
@@ -670,12 +699,15 @@ class DriveUserService:
     @exponential_backoff()
     @token_refresh
     async def batch_fetch_metadata_and_permissions(
-        self, file_ids: List[str], files: Optional[List[Dict]] = None
-    ) -> List[Dict]:
+        self,
+        file_ids: list[str],
+        files: list[dict] | None = None,
+    ) -> list[dict]:
         """Fetch comprehensive metadata using batch requests"""
         try:
             self.logger.info(
-                "🚀 Batch fetching metadata and content for %s files", len(file_ids)
+                "🚀 Batch fetching metadata and content for %s files",
+                len(file_ids),
             )
             failed_items = []
             metadata_results = {}
@@ -696,7 +728,8 @@ class DriveUserService:
                         metadata_results[file_id].update(response)
                     elif req_type == "perm":
                         metadata_results[file_id]["permissions"] = response.get(
-                            "permissions", []
+                            "permissions",
+                            [],
                         )
                 else:
                     error_details = {
@@ -798,7 +831,8 @@ class DriveUserService:
                             result["headRevisionId"] = ""
 
                         self.logger.info(
-                            "✅ Fetched head revision ID for file: %s", file_id
+                            "✅ Fetched head revision ID for file: %s",
+                            file_id,
                         )
                     except HttpError as e:
                         if e.resp.status == HttpStatusCode.FORBIDDEN.value:
@@ -812,7 +846,7 @@ class DriveUserService:
                                     "file_id": file_id,
                                     "request_type": "revision",
                                     "error": str(e),
-                                }
+                                },
                             )
                         else:
                             raise DriveOperationError(
@@ -897,61 +931,61 @@ class DriveUserService:
                         "virtualRecordId": None,
                     },
                 }
-            else:
-                try:
-                    response = (
-                        self.service.drives()
-                        .get(
-                            driveId=drive_id, fields="id,name,capabilities,createdTime"
-                        )
-                        .execute()
+            try:
+                response = (
+                    self.service.drives()
+                    .get(
+                        driveId=drive_id,
+                        fields="id,name,capabilities,createdTime",
                     )
-                except HttpError as e:
-                    if e.resp.status == HttpStatusCode.FORBIDDEN.value:
-                        raise DrivePermissionError(
-                            "Permission denied accessing shared drive: " + str(e),
-                            details={"drive_id": drive_id, "error": str(e)},
-                        )
-                    raise DriveOperationError(
-                        "Failed to get shared drive info: " + str(e),
+                    .execute()
+                )
+            except HttpError as e:
+                if e.resp.status == HttpStatusCode.FORBIDDEN.value:
+                    raise DrivePermissionError(
+                        "Permission denied accessing shared drive: " + str(e),
                         details={"drive_id": drive_id, "error": str(e)},
                     )
+                raise DriveOperationError(
+                    "Failed to get shared drive info: " + str(e),
+                    details={"drive_id": drive_id, "error": str(e)},
+                )
 
-                drive_key = str(uuid.uuid4())
-                current_time = get_epoch_timestamp_in_ms()
+            drive_key = str(uuid.uuid4())
+            current_time = get_epoch_timestamp_in_ms()
 
-                return {
-                    "drive": {
-                        "_key": drive_key,
-                        "id": response.get("id"),
-                        "name": response.get("name"),
-                        "access_level": (
-                            "writer"
-                            if response.get("capabilities", {}).get("canEdit")
-                            else "reader"
-                        ),
-                        "isShared": True,
-                    },
-                    "record": {
-                        "_key": drive_key,
-                        "orgId": org_id,
-                        "recordName": response.get("name"),
-                        "recordType": RecordTypes.DRIVE.value,
-                        "externalRecordId": response.get("id"),
-                        "externalRevisionId": response.get("id"),
-                        "origin": OriginTypes.CONNECTOR.value,
-                        "connectorName": Connectors.GOOGLE_DRIVE.value,
-                        "version": 0,
-                        "createdAtTimestamp": current_time,
-                        "updatedAtTimestamp": current_time,
-                        "lastSyncTimestamp": current_time,
-                        "sourceCreatedAtTimestamp": current_time,
-                        "sourceLastModifiedTimestamp": current_time,
-                        "isArchived": False,
-                        "isDeleted": False,
-                        "virtualRecordId": None,
-                    },
-                }
+            return {
+                "drive": {
+                    "_key": drive_key,
+                    "id": response.get("id"),
+                    "name": response.get("name"),
+                    "access_level": (
+                        "writer"
+                        if response.get("capabilities", {}).get("canEdit")
+                        else "reader"
+                    ),
+                    "isShared": True,
+                },
+                "record": {
+                    "_key": drive_key,
+                    "orgId": org_id,
+                    "recordName": response.get("name"),
+                    "recordType": RecordTypes.DRIVE.value,
+                    "externalRecordId": response.get("id"),
+                    "externalRevisionId": response.get("id"),
+                    "origin": OriginTypes.CONNECTOR.value,
+                    "connectorName": Connectors.GOOGLE_DRIVE.value,
+                    "version": 0,
+                    "createdAtTimestamp": current_time,
+                    "updatedAtTimestamp": current_time,
+                    "lastSyncTimestamp": current_time,
+                    "sourceCreatedAtTimestamp": current_time,
+                    "sourceLastModifiedTimestamp": current_time,
+                    "isArchived": False,
+                    "isDeleted": False,
+                    "virtualRecordId": None,
+                },
+            }
 
         except (DrivePermissionError, DriveOperationError):
             raise
@@ -963,7 +997,7 @@ class DriveUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def get_shared_with_me_files(self, user_email: str) -> List[Dict]:
+    async def get_shared_with_me_files(self, user_email: str) -> list[dict]:
         """Get all files shared with the user along with their metadata and permissions"""
         try:
             self.logger.info("🚀 Getting files shared with me")
@@ -1004,7 +1038,8 @@ class DriveUserService:
                 user_permission = {
                     "id": str(uuid.uuid4()),  # Generate unique permission ID
                     "type": "user",
-                    "role": file.get("sharingUser", {}).get("me", True) and "owner" or "reader",
+                    "role": (file.get("sharingUser", {}).get("me", True) and "owner")
+                    or "reader",
                     "emailAddress": user_email,
                     "displayName": file.get("sharingUser", {}).get("displayName", ""),
                     "photoLink": file.get("sharingUser", {}).get("photoLink", ""),
@@ -1013,10 +1048,13 @@ class DriveUserService:
                     "permissionDetails": [
                         {
                             "permissionType": "user",
-                            "role": file.get("sharingUser", {}).get("me", True) and "owner" or "reader",
-                            "inherited": False
-                        }
-                    ]
+                            "role": (
+                                file.get("sharingUser", {}).get("me", True) and "owner"
+                            )
+                            or "reader",
+                            "inherited": False,
+                        },
+                    ],
                 }
 
                 # Create permission entry for the owner
@@ -1033,9 +1071,9 @@ class DriveUserService:
                         {
                             "permissionType": "user",
                             "role": "owner",
-                            "inherited": False
-                        }
-                    ]
+                            "inherited": False,
+                        },
+                    ],
                 }
 
                 # Add permissions array to file metadata
@@ -1052,7 +1090,9 @@ class DriveUserService:
             self.logger.info("✅ Found %s files shared with me", len(files))
             for file in files:
                 self.logger.info(
-                    "📄 Shared file: %s (id: %s)", file.get("name"), file.get("id")
+                    "📄 Shared file: %s (id: %s)",
+                    file.get("name"),
+                    file.get("id"),
                 )
                 self.logger.debug("File details: %s", file)
 
@@ -1067,25 +1107,47 @@ class DriveUserService:
             )
 
     # Async wrapper methods for blocking operations
-    async def list_files_in_folder_async(self, folder_id: str, include_subfolders: bool = True) -> List[Dict]:
+    async def list_files_in_folder_async(
+        self, folder_id: str, include_subfolders: bool = True
+    ) -> list[dict]:
         """Async wrapper for list_files_in_folder to run in separate thread"""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.list_files_in_folder, folder_id, include_subfolders))
+        return await loop.run_in_executor(
+            None,
+            lambda: self._run_with_service_lock(
+                self.list_files_in_folder, folder_id, include_subfolders
+            ),
+        )
 
-    async def batch_fetch_metadata_and_permissions_async(self, file_ids: List[str], files: Optional[List[Dict]] = None) -> List[Dict]:
+    async def batch_fetch_metadata_and_permissions_async(
+        self, file_ids: list[str], files: list[dict] | None = None
+    ) -> list[dict]:
         """Async wrapper for batch_fetch_metadata_and_permissions to run in separate thread"""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.batch_fetch_metadata_and_permissions, file_ids, files))
+        return await loop.run_in_executor(
+            None,
+            lambda: self._run_with_service_lock(
+                self.batch_fetch_metadata_and_permissions, file_ids, files
+            ),
+        )
 
     async def get_drive_info_async(self, drive_id: str, org_id: str) -> dict:
         """Async wrapper for get_drive_info to run in separate thread"""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.get_drive_info, drive_id, org_id))
+        return await loop.run_in_executor(
+            None,
+            lambda: self._run_with_service_lock(self.get_drive_info, drive_id, org_id),
+        )
 
-    async def get_shared_with_me_files_async(self, user_email: str) -> List[Dict]:
+    async def get_shared_with_me_files_async(self, user_email: str) -> list[dict]:
         """Async wrapper for get_shared_with_me_files to run in separate thread"""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: self._run_with_service_lock(self.get_shared_with_me_files, user_email))
+        return await loop.run_in_executor(
+            None,
+            lambda: self._run_with_service_lock(
+                self.get_shared_with_me_files, user_email
+            ),
+        )
 
     def _run_with_service_lock(self, func: Callable[..., T], *args, **kwargs) -> T:
         with self._service_lock:

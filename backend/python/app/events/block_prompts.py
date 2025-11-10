@@ -36,5 +36,3 @@ Below is the document content:
  {{ formatted_document_blocks }}
 Now, please provide the JSON with your identified sections.
 """
-
-

@@ -42,6 +42,7 @@ from app.utils.redis_util import build_redis_url
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
 class ContainerUtils:
     """Utility class for container operations"""
+
     def __init__(self) -> None:
         self.logger = create_logger("container_utils")
 
@@ -63,7 +64,9 @@ class ContainerUtils:
         kafka_service,
     ) -> BaseArangoService:
         """Async factory to create and connect BaseArangoService"""
-        service = BaseArangoService(logger, arango_client, config_service, kafka_service)
+        service = BaseArangoService(
+            logger, arango_client, config_service, kafka_service
+        )
         await service.connect()
         return service
 
@@ -95,9 +98,13 @@ class ContainerUtils:
         # Add any necessary async initialization
         return extractor
 
-    async def create_vector_store(self, logger, arango_service, config_service, vector_db_service, collection_name) -> VectorStore:
+    async def create_vector_store(
+        self, logger, arango_service, config_service, vector_db_service, collection_name
+    ) -> VectorStore:
         """Async factory for VectorStore"""
-        vector_store = VectorStore(logger, config_service, arango_service, collection_name, vector_db_service)
+        vector_store = VectorStore(
+            logger, config_service, arango_service, collection_name, vector_db_service
+        )
         return vector_store
 
     async def create_arango(self, arango_service, logger) -> Arango:
@@ -105,17 +112,28 @@ class ContainerUtils:
         arango = Arango(arango_service, logger)
         return arango
 
-    async def create_sink_orchestrator(self, logger, arango, blob_storage, vector_store, arango_service) -> SinkOrchestrator:
+    async def create_sink_orchestrator(
+        self, logger, arango, blob_storage, vector_store, arango_service
+    ) -> SinkOrchestrator:
         """Async factory for SinkOrchestrator"""
-        orchestrator = SinkOrchestrator(arango=arango, blob_storage=blob_storage, vector_store=vector_store, arango_service=arango_service)
+        orchestrator = SinkOrchestrator(
+            arango=arango,
+            blob_storage=blob_storage,
+            vector_store=vector_store,
+            arango_service=arango_service,
+        )
         return orchestrator
 
-    async def create_document_extractor(self, logger, arango_service, config_service) -> DocumentExtraction:
+    async def create_document_extractor(
+        self, logger, arango_service, config_service
+    ) -> DocumentExtraction:
         """Async factory for DocumentExtraction"""
         extractor = DocumentExtraction(logger, arango_service, config_service)
         return extractor
 
-    async def create_blob_storage(self, logger, config_service, arango_service) -> BlobStorage:
+    async def create_blob_storage(
+        self, logger, config_service, arango_service
+    ) -> BlobStorage:
         """Async factory for BlobStorage"""
         blob_storage = BlobStorage(logger, config_service, arango_service)
         return blob_storage
@@ -178,7 +196,9 @@ class ContainerUtils:
     ) -> EventProcessor:
         """Async factory for EventProcessor"""
         event_processor = EventProcessor(
-            logger=logger, processor=processor, arango_service=arango_service
+            logger=logger,
+            processor=processor,
+            arango_service=arango_service,
         )
         # Add any necessary async initialization
         return event_processor
@@ -190,7 +210,7 @@ class ContainerUtils:
     ) -> RedisScheduler:
         """Async factory for RedisScheduler"""
         redis_config = await config_service.get_config(
-            config_node_constants.REDIS.value
+            config_node_constants.REDIS.value,
         )
         if redis_config and isinstance(redis_config, dict):
             # Build Redis URL with password if provided
@@ -199,7 +219,7 @@ class ContainerUtils:
             redis_url=redis_url,
             logger=logger,
             config_service=config_service,
-            delay_hours=1
+            delay_hours=1,
         )
         return redis_scheduler
 
@@ -211,7 +231,9 @@ class ContainerUtils:
         kafka_service,
     ) -> BaseArangoService:
         """Async factory to create and connect BaseArangoService"""
-        service = BaseArangoService(logger, arango_client, config_service, kafka_service)
+        service = BaseArangoService(
+            logger, arango_client, config_service, kafka_service
+        )
         await service.connect()
         return service
 

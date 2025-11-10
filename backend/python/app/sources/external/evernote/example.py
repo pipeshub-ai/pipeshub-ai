@@ -20,11 +20,10 @@ sandbox = os.getenv("EVERNOTE_SANDBOX", "False").lower() == "true"
 if token is None or note_store_url is None:
     raise ValueError("EVERNOTE_TOKEN, EVERNOTE_NOTE_STORE_URL")
 
+
 async def list_notebooks_example():
     config = EvernoteTokenConfig(
-        token=token,
-        note_store_url=note_store_url,
-        sandbox=sandbox
+        token=token, note_store_url=note_store_url, sandbox=sandbox
     )
 
     evernote_client = EvernoteClient.build_with_config(config)
@@ -43,10 +42,10 @@ async def list_notebooks_example():
             print(f"     Created: {notebook.get('created', 'N/A')}")
             print(f"     Updated: {notebook.get('updated', 'N/A')}")
 
-            if notebook.get('defaultNotebook'):
+            if notebook.get("defaultNotebook"):
                 print("Default Notebook")
 
-            if notebook.get('stack'):
+            if notebook.get("stack"):
                 print(f"Stack: {notebook.get('stack')}")
 
             print()
@@ -66,4 +65,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

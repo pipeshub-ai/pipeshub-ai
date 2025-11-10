@@ -2,14 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import (
     Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Tuple,
-    Union,
     cast,
 )
 
@@ -48,7 +43,9 @@ def _check_response(response: dict) -> dict:
     return response
 
 
-def embed_with_retry(embeddings: VoyageEmbeddings, **kwargs: dict[str, Any]) -> dict[str, Any]:
+def embed_with_retry(
+    embeddings: VoyageEmbeddings, **kwargs: dict[str, Any]
+) -> dict[str, Any]:
     """Use tenacity to retry the embedding call."""
     retry_decorator = _create_retry_decorator(embeddings)
 
@@ -58,7 +55,6 @@ def embed_with_retry(embeddings: VoyageEmbeddings, **kwargs: dict[str, Any]) -> 
         return _check_response(response.json())
 
     return _embed_with_retry(**kwargs)
-
 
 
 class VoyageEmbeddings(BaseModel, Embeddings):
@@ -75,16 +71,17 @@ class VoyageEmbeddings(BaseModel, Embeddings):
             voyage = VoyageEmbeddings(voyage_api_key="your-api-key", model="voyage-2")
             text = "This is a test query."
             query_result = voyage.embed_query(text)
+
     """
 
     model: str
     voyage_api_base: str = "https://api.voyageai.com/v1/embeddings"
-    voyage_api_key: Optional[SecretStr] = None
+    voyage_api_key: SecretStr | None = None
     batch_size: int
     """Maximum number of texts to embed in each API request."""
     max_retries: int = 6
     """Maximum number of retries to make when generating."""
-    request_timeout: Optional[Union[float, Tuple[float, float]]] = None
+    request_timeout: float | tuple[float, float] | None = None
     """Timeout in seconds for the API request."""
     show_progress_bar: bool = False
     """Whether to show a progress bar when embedding. Must have tqdm installed if set
@@ -102,10 +99,10 @@ class VoyageEmbeddings(BaseModel, Embeddings):
 
     @model_validator(mode="before")
     @classmethod
-    def validate_environment(cls, values: Dict) -> Dict:
+    def validate_environment(cls, values: dict) -> dict:
         """Validate that api key and python package exists in environment."""
         values["voyage_api_key"] = convert_to_secret_str(
-            get_from_dict_or_env(values, "voyage_api_key", "VOYAGE_API_KEY")
+            get_from_dict_or_env(values, "voyage_api_key", "VOYAGE_API_KEY"),
         )
 
         if "model" not in values:
@@ -113,7 +110,7 @@ class VoyageEmbeddings(BaseModel, Embeddings):
             logger.warning(
                 "model will become a required arg for VoyageAIEmbeddings, "
                 "we recommend to specify it when using this class. "
-                "Currently the default is set to voyage-01."
+                "Currently the default is set to voyage-01.",
             )
 
         if "batch_size" not in values:
@@ -126,29 +123,39 @@ class VoyageEmbeddings(BaseModel, Embeddings):
         return values
 
     def _invocation_params(
-        self, input: List[str], input_type: Optional[str] = None
-    ) -> Dict:
-        api_key = cast(SecretStr, self.voyage_api_key).get_secret_value()
+        self,
+        input: list[str],
+        input_type: str | None = None,
+    ) -> dict:
+        api_key = cast("SecretStr", self.voyage_api_key).get_secret_value()
         model = self.model
         if model == "voyage-multimodal-3":
             logger.debug("Using voyage-multimodal-3 multimodal embeddings endpoint")
             url = "https://api.voyageai.com/v1/multimodalembeddings"
-            inputs =[]
+            inputs = []
             for text in input:
                 if text.startswith("data:image"):
-                    inputs.append({
-                        "content" : [{
-                            "type": "image_base64",
-                            "image_base64": text
-                        }]
-                    })
+                    inputs.append(
+                        {
+                            "content": [
+                                {
+                                    "type": "image_base64",
+                                    "image_base64": text,
+                                }
+                            ],
+                        }
+                    )
                 else:
-                    inputs.append({
-                        "content" : [{
-                            "type": "text",
-                            "text": text
-                        }]
-                    })
+                    inputs.append(
+                        {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": text,
+                                }
+                            ],
+                        }
+                    )
             json_data = {
                 "model": model,
                 "inputs": inputs,
@@ -162,7 +169,7 @@ class VoyageEmbeddings(BaseModel, Embeddings):
                 "input_type": input_type,
                 "truncation": self.truncation,
             }
-        params: Dict = {
+        params: dict = {
             "url": url,
             "headers": {"Authorization": f"Bearer {api_key}"},
             "json": json_data,
@@ -172,11 +179,11 @@ class VoyageEmbeddings(BaseModel, Embeddings):
 
     def _get_embeddings(
         self,
-        texts: List[str],
-        batch_size: Optional[int] = None,
-        input_type: Optional[str] = None,
-    ) -> List[List[float]]:
-        embeddings: List[List[float]] = []
+        texts: list[str],
+        batch_size: int | None = None,
+        input_type: str | None = None,
+    ) -> list[list[float]]:
+        embeddings: list[list[float]] = []
 
         if batch_size is None:
             batch_size = self.batch_size
@@ -187,7 +194,7 @@ class VoyageEmbeddings(BaseModel, Embeddings):
             except ImportError as e:
                 raise ImportError(
                     "Must have tqdm installed if `show_progress_bar` is set to True. "
-                    "Please install with `pip install tqdm`."
+                    "Please install with `pip install tqdm`.",
                 ) from e
 
             _iter = tqdm(range(0, len(texts), batch_size))
@@ -197,21 +204,22 @@ class VoyageEmbeddings(BaseModel, Embeddings):
         if input_type and input_type not in ["query", "document"]:
             raise ValueError(
                 f"input_type {input_type} is invalid. Options: None, 'query', "
-                "'document'."
+                "'document'.",
             )
 
         for i in _iter:
             response = embed_with_retry(
                 self,
                 **self._invocation_params(
-                    input=texts[i : i + batch_size], input_type=input_type
+                    input=texts[i : i + batch_size],
+                    input_type=input_type,
                 ),
             )
             embeddings.extend(r["embedding"] for r in response["data"])
 
         return embeddings
 
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Call out to Voyage Embedding endpoint for embedding search docs.
 
         Args:
@@ -219,12 +227,15 @@ class VoyageEmbeddings(BaseModel, Embeddings):
 
         Returns:
             List of embeddings, one for each text.
+
         """
         return self._get_embeddings(
-            texts, batch_size=self.batch_size, input_type="document"
+            texts,
+            batch_size=self.batch_size,
+            input_type="document",
         )
 
-    def embed_query(self, text: str) -> List[float]:
+    def embed_query(self, text: str) -> list[float]:
         """Call out to Voyage Embedding endpoint for embedding query text.
 
         Args:
@@ -232,14 +243,20 @@ class VoyageEmbeddings(BaseModel, Embeddings):
 
         Returns:
             Embedding for the text.
+
         """
         return self._get_embeddings(
-            [text], batch_size=self.batch_size, input_type="query"
+            [text],
+            batch_size=self.batch_size,
+            input_type="query",
         )[0]
 
     def embed_general_texts(
-        self, texts: List[str], *, input_type: Optional[str] = None
-    ) -> List[List[float]]:
+        self,
+        texts: list[str],
+        *,
+        input_type: str | None = None,
+    ) -> list[list[float]]:
         """Call out to Voyage Embedding endpoint for embedding general text.
 
         Args:
@@ -249,8 +266,10 @@ class VoyageEmbeddings(BaseModel, Embeddings):
 
         Returns:
             Embedding for the text.
+
         """
         return self._get_embeddings(
-            texts, batch_size=self.batch_size, input_type=input_type
+            texts,
+            batch_size=self.batch_size,
+            input_type=input_type,
         )
-

@@ -17,7 +17,9 @@ from app.sources.client.pagerduty.pagerduty import (
 from app.sources.external.pagerduty.pagerduty import PagerDutyDataSource
 
 
-def _print_response(title: str, response: PagerDutyResponse, max_items: int = 3) -> None:
+def _print_response(
+    title: str, response: PagerDutyResponse, max_items: int = 3
+) -> None:
     """Print a PagerDutyResponse in a clean, summarized format."""
     print(title)
 
@@ -31,33 +33,56 @@ def _print_response(title: str, response: PagerDutyResponse, max_items: int = 3)
         return
 
     # Handle list responses (incidents, services, users, etc.)
-    for key in ["incidents", "services", "users", "schedules", "oncalls", "escalation_policies", "teams", "contact_methods"]:
+    for key in [
+        "incidents",
+        "services",
+        "users",
+        "schedules",
+        "oncalls",
+        "escalation_policies",
+        "teams",
+        "contact_methods",
+    ]:
         if key in data:
             items = data[key]
             print(f"  [OK] Found {len(items)} {key}")
             for i, item in enumerate(items[:max_items], 1):
                 # Print only key fields for each item
                 if key == "incidents":
-                    print(f"    {i}. [{item.get('incident_number')}] {item.get('title')} - Status: {item.get('status')} (ID: {item.get('id')})")
+                    print(
+                        f"    {i}. [{item.get('incident_number')}] {item.get('title')} - Status: {item.get('status')} (ID: {item.get('id')})"
+                    )
                 elif key == "services":
-                    print(f"    {i}. {item.get('name')} - Status: {item.get('status')} (ID: {item.get('id')})")
+                    print(
+                        f"    {i}. {item.get('name')} - Status: {item.get('status')} (ID: {item.get('id')})"
+                    )
                 elif key == "users":
-                    print(f"    {i}. {item.get('name')} ({item.get('email')}) - Role: {item.get('role')} (ID: {item.get('id')})")
+                    print(
+                        f"    {i}. {item.get('name')} ({item.get('email')}) - Role: {item.get('role')} (ID: {item.get('id')})"
+                    )
                 elif key == "schedules":
                     print(f"    {i}. {item.get('name')} (ID: {item.get('id')})")
                 elif key == "oncalls":
                     user = item.get("user", {})
                     policy = item.get("escalation_policy", {})
-                    print(f"    {i}. {user.get('summary')} on {policy.get('summary')} - Level: {item.get('escalation_level')}")
+                    print(
+                        f"    {i}. {user.get('summary')} on {policy.get('summary')} - Level: {item.get('escalation_level')}"
+                    )
                 elif key == "escalation_policies":
                     rules_count = len(item.get("escalation_rules", []))
-                    print(f"    {i}. {item.get('name')} - {rules_count} rules (ID: {item.get('id')})")
+                    print(
+                        f"    {i}. {item.get('name')} - {rules_count} rules (ID: {item.get('id')})"
+                    )
                 elif key == "teams":
                     print(f"    {i}. {item.get('name')} (ID: {item.get('id')})")
                 elif key == "contact_methods":
-                    print(f"    {i}. {item.get('type')} - {item.get('summary')} (ID: {item.get('id')})")
+                    print(
+                        f"    {i}. {item.get('type')} - {item.get('summary')} (ID: {item.get('id')})"
+                    )
                 else:
-                    print(f"    {i}. {item.get('name', item.get('summary', item.get('id')))}")
+                    print(
+                        f"    {i}. {item.get('name', item.get('summary', item.get('id')))}"
+                    )
 
             if len(items) > max_items:
                 print(f"    ... and {len(items) - max_items} more")
@@ -71,7 +96,9 @@ def _print_response(title: str, response: PagerDutyResponse, max_items: int = 3)
 
             if key == "incident":
                 print(f"    • Title: {item.get('title')}")
-                print(f"    • Status: {item.get('status')} | Urgency: {item.get('urgency')}")
+                print(
+                    f"    • Status: {item.get('status')} | Urgency: {item.get('urgency')}"
+                )
                 print(f"    • Created: {item.get('created_at')}")
                 print(f"    • ID: {item.get('id')}")
                 if item.get("assignments"):
@@ -84,7 +111,9 @@ def _print_response(title: str, response: PagerDutyResponse, max_items: int = 3)
                 print(f"    • ID: {item.get('id')}")
                 policy = item.get("escalation_policy", {})
                 if policy:
-                    print(f"    • Escalation Policy: {policy.get('name', policy.get('summary'))}")
+                    print(
+                        f"    • Escalation Policy: {policy.get('name', policy.get('summary'))}"
+                    )
                 integrations = item.get("integrations", [])
                 print(f"    • Integrations: {len(integrations)}")
             elif key == "user":
@@ -212,7 +241,11 @@ async def example_with_token() -> None:
     _print_response("Teams:", teams_response)
 
     # Example 9: Get specific incident (if any exist)
-    if incidents_response.success and incidents_response.data and incidents_response.data.get("incidents"):
+    if (
+        incidents_response.success
+        and incidents_response.data
+        and incidents_response.data.get("incidents")
+    ):
         first_incident = incidents_response.data["incidents"][0]
         incident_id = first_incident["id"]
 
@@ -226,7 +259,11 @@ async def example_with_token() -> None:
         _print_response("Incident notes:", notes_response)
 
     # Example 11: Get specific service (if any exist)
-    if services_response.success and services_response.data and services_response.data.get("services"):
+    if (
+        services_response.success
+        and services_response.data
+        and services_response.data.get("services")
+    ):
         first_service = services_response.data["services"][0]
         service_id = first_service["id"]
 

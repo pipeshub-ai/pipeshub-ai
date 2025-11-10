@@ -4,7 +4,11 @@ from app.modules.transformers.transformer import TransformContext
 
 
 class IndexingPipeline:
-    def __init__(self, document_extraction: DocumentExtraction, sink_orchestrator: SinkOrchestrator) -> None:
+    def __init__(
+        self,
+        document_extraction: DocumentExtraction,
+        sink_orchestrator: SinkOrchestrator,
+    ) -> None:
         self.document_extraction = document_extraction
         self.sink_orchestrator = sink_orchestrator
 

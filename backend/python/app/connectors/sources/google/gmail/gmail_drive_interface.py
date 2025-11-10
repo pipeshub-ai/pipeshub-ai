@@ -1,5 +1,3 @@
-from typing import Dict, Optional
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType
 from app.connectors.sources.google.google_drive.drive_user_service import (
@@ -34,11 +32,11 @@ class GmailDriveInterface:
     async def get_drive_file(
         self,
         file_id: str,
-        user_email: Optional[str] = None,
-        org_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        account_type: Optional[str] = None,
-    ) -> Optional[Dict]:
+        user_email: str | None = None,
+        org_id: str | None = None,
+        user_id: str | None = None,
+        account_type: str | None = None,
+    ) -> dict | None:
         """Get Drive file metadata using file ID
 
         Args:
@@ -47,10 +45,14 @@ class GmailDriveInterface:
 
         Returns:
             Optional[Dict]: File metadata if found, None otherwise
+
         """
         try:
             # For enterprise setup
-            if account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value:
+            if (
+                account_type == AccountType.ENTERPRISE.value
+                or account_type == AccountType.BUSINESS.value
+            ):
                 if not user_email:
                     self.logger.error("❌ User email required for enterprise setup")
                     return None
@@ -64,44 +66,42 @@ class GmailDriveInterface:
 
                 # Get user-specific service
                 user_service = await self.drive_service.create_drive_user_service(
-                    user_email
+                    user_email,
                 )
                 if not user_service:
                     self.logger.error(
-                        f"❌ Failed to create user service for {user_email}"
+                        f"❌ Failed to create user service for {user_email}",
                     )
                     return None
 
                 metadata = await user_service.batch_fetch_metadata_and_permissions(
-                    [file_id]
+                    [file_id],
                 )
                 return metadata[0]
 
             # For individual setup
-            else:
-                # Create user service if not provided
-                if not isinstance(self.drive_service, DriveUserService):
-                    self.drive_service = DriveUserService(
-                        logger=self.logger,
-                        config_service=self.config_service,
-                        rate_limiter=self.rate_limiter,
-                        google_token_handler=self.google_token_handler,
-                        credentials=self.credentials,
-                    )
-
-                    if not await self.drive_service.connect_individual_user(
-                        org_id, user_id
-                    ):
-                        self.logger.error("❌ Failed to connect to Drive User service")
-                        return None
-
-                metadata = (
-                    await self.drive_service.batch_fetch_metadata_and_permissions(
-                        [file_id]
-                    )
+            # Create user service if not provided
+            if not isinstance(self.drive_service, DriveUserService):
+                self.drive_service = DriveUserService(
+                    logger=self.logger,
+                    config_service=self.config_service,
+                    rate_limiter=self.rate_limiter,
+                    google_token_handler=self.google_token_handler,
+                    credentials=self.credentials,
                 )
-                return metadata[0]
+
+                if not await self.drive_service.connect_individual_user(
+                    org_id,
+                    user_id,
+                ):
+                    self.logger.error("❌ Failed to connect to Drive User service")
+                    return None
+
+            metadata = await self.drive_service.batch_fetch_metadata_and_permissions(
+                [file_id],
+            )
+            return metadata[0]
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get Drive file {file_id}: {str(e)}")
+            self.logger.error(f"❌ Failed to get Drive file {file_id}: {e!s}")
             return None
