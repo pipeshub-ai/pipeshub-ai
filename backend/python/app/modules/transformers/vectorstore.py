@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import re
 import time
 import uuid
@@ -135,7 +134,7 @@ class VectorStore(Transformer):
                     b64_part += "=" * missing
                 return b64_part
 
-           
+
 
             # Assume raw base64
 
@@ -423,7 +422,7 @@ class VectorStore(Transformer):
     ) -> List[PointStruct]:
         """Process image embeddings using Cohere API."""
         import cohere
-        
+
         co = cohere.ClientV2(api_key=self.api_key)
         points = []
 
@@ -483,7 +482,7 @@ class VectorStore(Transformer):
                 points.append(result)
             elif isinstance(result, Exception):
                 self.logger.warning(f"Failed to embed image: {str(result)}")
-        
+
         return points
 
     async def _process_image_embeddings_voyage(
@@ -541,7 +540,7 @@ class VectorStore(Transformer):
                 points.extend(result)
             elif isinstance(result, Exception):
                 self.logger.warning(f"Voyage batch processing exception: {str(result)}")
-        
+
         return points
 
     async def _process_image_embeddings_bedrock(
@@ -549,9 +548,10 @@ class VectorStore(Transformer):
     ) -> List[PointStruct]:
         """Process image embeddings using AWS Bedrock."""
         import json
+
         import boto3
         from botocore.exceptions import ClientError, NoCredentialsError
-        
+
         try:
             client_kwargs = {
                 "service_name": "bedrock-runtime",
@@ -633,15 +633,14 @@ class VectorStore(Transformer):
                 points.append(result)
             elif isinstance(result, Exception):
                 self.logger.warning(f"Failed to embed image with Bedrock: {str(result)}")
-        
+
         return points
 
     async def _process_image_embeddings_jina(
         self, image_chunks: List[dict], image_base64s: List[str]
     ) -> List[PointStruct]:
         """Process image embeddings using Jina AI."""
-        import httpx
-        
+
         batch_size = 32
         points = []
 
@@ -664,13 +663,13 @@ class VectorStore(Transformer):
                     if normalized_b64 is not None:
                         valid_indices.append(batch_start + idx)
                         valid_normalized_images.append(normalized_b64)
-                
+
                 if not valid_normalized_images:
                     self.logger.warning(
                         f"No valid images in Jina AI batch starting at {batch_start} after normalization"
                     )
                     return []
-                
+
                 data = {
                     "model": self.model_name,
                     "input": [
@@ -729,7 +728,7 @@ class VectorStore(Transformer):
                     points.extend(result)
                 elif isinstance(result, Exception):
                     self.logger.warning(f"Jina AI batch processing exception: {str(result)}")
-        
+
         return points
 
     async def _process_image_embeddings(
@@ -753,7 +752,7 @@ class VectorStore(Transformer):
         if points:
             start_time = time.perf_counter()
             self.logger.info(f"⏱️ Starting image embeddings insertion for {len(points)} points")
-            
+
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
@@ -761,7 +760,7 @@ class VectorStore(Transformer):
                     collection_name=self.collection_name, points=points
                 ),
             )
-            
+
             elapsed_time = time.perf_counter() - start_time
             self.logger.info(
                 f"✅ Successfully added {len(points)} image embeddings to vector store in {elapsed_time:.2f}s"
@@ -773,7 +772,7 @@ class VectorStore(Transformer):
 
     async def _process_document_chunks(self, langchain_document_chunks: List[Document]) -> None:
         """Process and store document chunks in the vector store."""
-        start_time = time.perf_counter()
+        time.perf_counter()
         self.logger.info(f"⏱️ Starting langchain document embeddings insertion for {len(langchain_document_chunks)} documents")
 
         batch_size = _DEFAULT_DOCUMENT_BATCH_SIZE
@@ -822,7 +821,7 @@ class VectorStore(Transformer):
         """Update record indexing status in the database."""
         if not chunks:
             return
-        
+
         meta = chunks[0].metadata if isinstance(chunks[0], Document) else chunks[0].get("metadata", {})
         record = await self.arango_service.get_document(
             record_id, CollectionNames.RECORDS.value
@@ -832,7 +831,7 @@ class VectorStore(Transformer):
                 "Record not found in database",
                 doc_id=record_id,
             )
-        
+
         doc = dict(record)
         doc.update(
             {
