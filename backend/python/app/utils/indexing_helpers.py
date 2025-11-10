@@ -203,7 +203,7 @@ def _normalize_bbox(
     ]
 
 
-def image_bytes_to_base64(image_bytes, extention):
+def image_bytes_to_base64(image_bytes, extention) -> str:
     mime_type = f"image/{extention}"
     base64_encoded = base64.b64encode(image_bytes).decode('utf-8')
     return f"data:{mime_type};base64,{base64_encoded}"
