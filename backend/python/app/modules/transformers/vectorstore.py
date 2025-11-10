@@ -135,13 +135,7 @@ class VectorStore(Transformer):
                     b64_part += "=" * missing
                 return b64_part
 
-            # http(s) URL
-            if uri.startswith("http://") or uri.startswith("https://"):
-                async with httpx.AsyncClient(timeout=20.0) as client:
-                    resp = await client.get(uri)
-                    if resp.status_code != HTTP_OK or not resp.content:
-                        return None
-                    return base64.b64encode(resp.content).decode("ascii")
+           
 
             # Assume raw base64
 
@@ -445,7 +439,7 @@ class VectorStore(Transformer):
             }
 
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 response = await loop.run_in_executor(
                     None,
                     lambda: co.embed(
@@ -561,12 +555,12 @@ class VectorStore(Transformer):
         try:
             client_kwargs = {
                 "service_name": "bedrock-runtime",
-                "region_name": self.region_name,
             }
-            if self.aws_access_key_id and self.aws_secret_access_key:
+            if self.aws_access_key_id and self.aws_secret_access_key and self.region_name:
                 client_kwargs.update({
                     "aws_access_key_id": self.aws_access_key_id,
                     "aws_secret_access_key": self.aws_secret_access_key,
+                    "region_name": self.region_name,
                 })
             bedrock = boto3.client(**client_kwargs)
         except NoCredentialsError as cred_err:
@@ -591,7 +585,7 @@ class VectorStore(Transformer):
             }
 
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 response = await loop.run_in_executor(
                     None,
                     lambda: bedrock.invoke_model(
@@ -663,22 +657,36 @@ class VectorStore(Transformer):
                     self._normalize_image_to_base64(image_base64)
                     for image_base64 in batch_images
                 ])
+                # Track which original indices correspond to successfully normalized images
+                valid_indices = []
+                valid_normalized_images = []
+                for idx, normalized_b64 in enumerate(normalized_images):
+                    if normalized_b64 is not None:
+                        valid_indices.append(batch_start + idx)
+                        valid_normalized_images.append(normalized_b64)
+                
+                if not valid_normalized_images:
+                    self.logger.warning(
+                        f"No valid images in Jina AI batch starting at {batch_start} after normalization"
+                    )
+                    return []
+                
                 data = {
                     "model": self.model_name,
                     "input": [
                         {"image": normalized_b64}
-                        for normalized_b64 in normalized_images
-                        if normalized_b64 is not None
+                        for normalized_b64 in valid_normalized_images
                     ]
                 }
 
                 response = await client.post(url, headers=headers, json=data)
                 response_body = response.json()
-                embeddings = [data["embedding"] for data in response_body["data"]]
+                embeddings = [r["embedding"] for r in response_body["data"]]
 
                 batch_points = []
                 for i, embedding in enumerate(embeddings):
-                    chunk_idx = batch_start + i
+                    # Use the tracked valid index instead of simple increment
+                    chunk_idx = valid_indices[i]
                     image_chunk = image_chunks[chunk_idx]
                     point = PointStruct(
                         id=str(uuid.uuid4()),
@@ -746,8 +754,12 @@ class VectorStore(Transformer):
             start_time = time.perf_counter()
             self.logger.info(f"⏱️ Starting image embeddings insertion for {len(points)} points")
             
-            self.vector_db_service.upsert_points(
-                collection_name=self.collection_name, points=points
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self.vector_db_service.upsert_points(
+                    collection_name=self.collection_name, points=points
+                ),
             )
             
             elapsed_time = time.perf_counter() - start_time
