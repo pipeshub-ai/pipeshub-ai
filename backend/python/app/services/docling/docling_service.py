@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from typing import Optional
 
@@ -136,10 +137,13 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
         if docling_service is None:
             raise HTTPException(status_code=500, detail="Docling service not available")
 
-        # Process the PDF
-        block_containers = await docling_service.process_pdf(
-            request.record_name,
-            pdf_binary
+        # Process the PDF with 40 minute timeout
+        block_containers = await asyncio.wait_for(
+            docling_service.process_pdf(
+                request.record_name,
+                pdf_binary
+            ),
+            timeout=2400.0  # 40 minutes in seconds
         )
 
         # Convert BlocksContainer to dict for JSON serialization
@@ -152,6 +156,11 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
             block_containers=block_containers_dict
         )
 
+    except asyncio.TimeoutError:
+        return ProcessResponse(
+            success=False,
+            error="Processing timed out after 40 minutes"
+        )
     except HTTPException:
         raise
     except Exception as e:
