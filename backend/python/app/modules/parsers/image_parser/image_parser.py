@@ -10,6 +10,7 @@ from cairosvg import svg2png
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
 VALID_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp','.svg']
+VIEWBOX_NUM_COMPONENTS = 4
 class ImageParser:
     def __init__(self, logger) -> None:
         self.logger = logger
@@ -182,10 +183,10 @@ class ImageParser:
         """
         Extract width and height from SVG content.
         Tries to get dimensions from width/height attributes, then from viewBox if not available.
-        
+
         Args:
             svg_str: SVG content as a string
-            
+
         Returns:
             Tuple of (width, height) in pixels, or (None, None) if not found
         """
@@ -193,19 +194,19 @@ class ImageParser:
             # Find the <svg> tag (case-insensitive)
             svg_tag_pattern = r'<svg[^>]*?>'
             match = re.search(svg_tag_pattern, svg_str, re.IGNORECASE)
-            
+
             if not match:
                 return None, None
-            
+
             svg_tag = match.group(0)
-            
+
             # Try to extract width attribute
             width_match = re.search(r'width\s*=\s*["\']?([^"\'>\s]+)', svg_tag, re.IGNORECASE)
             height_match = re.search(r'height\s*=\s*["\']?([^"\'>\s]+)', svg_tag, re.IGNORECASE)
-            
+
             width = None
             height = None
-            
+
             if width_match:
                 width_str = width_match.group(1).strip()
                 # Remove units (px, pt, etc.) and convert to int
@@ -215,7 +216,7 @@ class ImageParser:
                         width = int(float(width_value))
                     except ValueError:
                         pass
-            
+
             if height_match:
                 height_str = height_match.group(1).strip()
                 # Remove units (px, pt, etc.) and convert to int
@@ -225,18 +226,18 @@ class ImageParser:
                         height = int(float(height_value))
                     except ValueError:
                         pass
-            
+
             # If both found, return them
             if width and height:
                 return width, height
-            
+
             # If not found, try viewBox (format: "x y width height")
             viewbox_match = re.search(r'viewBox\s*=\s*["\']?([^"\'>]+)', svg_tag, re.IGNORECASE)
             if viewbox_match:
                 viewbox_str = viewbox_match.group(1).strip()
                 # Extract numbers from viewBox
                 viewbox_numbers = re.findall(r'[-+]?\d*\.?\d+', viewbox_str)
-                if len(viewbox_numbers) >= 4:
+                if len(viewbox_numbers) >= VIEWBOX_NUM_COMPONENTS:
                     try:
                         vb_width = int(float(viewbox_numbers[2]))
                         vb_height = int(float(viewbox_numbers[3]))
@@ -247,9 +248,9 @@ class ImageParser:
                             height = vb_height
                     except (ValueError, IndexError):
                         pass
-            
+
             return width, height
-            
+
         except Exception:
             return None, None
 
@@ -258,10 +259,10 @@ class ImageParser:
         """
         Sanitize SVG content to fix common XML parsing issues, including unbound namespace prefixes.
         This function ensures that common SVG namespace declarations are present in the root <svg> element.
-        
+
         Args:
             svg_str: SVG content as a string
-            
+
         Returns:
             Sanitized SVG content as bytes
         """
@@ -269,14 +270,14 @@ class ImageParser:
             # Find the <svg> tag (case-insensitive)
             svg_tag_pattern = r'(<svg[^>]*?)>'
             match = re.search(svg_tag_pattern, svg_str, re.IGNORECASE)
-            
+
             if not match:
                 # If no <svg> tag found, return as-is
                 return svg_str.encode('utf-8')
-            
+
             svg_tag = match.group(1)
             fixed_tag = svg_tag
-            
+
             # Add xmlns if completely missing
             if 'xmlns=' not in fixed_tag.lower() and 'xmlns:' not in fixed_tag.lower():
                 fixed_tag += ' xmlns="http://www.w3.org/2000/svg"'
@@ -285,21 +286,21 @@ class ImageParser:
                 # Check if it has xmlns:something but not xmlns itself
                 if not re.search(r'xmlns\s*=\s*["\']', fixed_tag, re.IGNORECASE):
                     fixed_tag += ' xmlns="http://www.w3.org/2000/svg"'
-            
+
             # Add xlink namespace if xlink: is used anywhere but namespace not declared
             if re.search(r'\bxlink:', svg_str, re.IGNORECASE):
                 if 'xmlns:xlink=' not in fixed_tag.lower():
                     fixed_tag += ' xmlns:xlink="http://www.w3.org/1999/xlink"'
-            
+
             # If we made changes, replace the original tag
             if fixed_tag != svg_tag:
                 svg_str = svg_str[:match.start()] + fixed_tag + '>' + svg_str[match.end():]
-                
+
         except Exception:
             # If sanitization fails, return original content
             # cairosvg might still be able to handle it or will give a clearer error
             pass
-        
+
         return svg_str.encode('utf-8')
 
     @staticmethod
@@ -343,16 +344,16 @@ class ImageParser:
             # Extract dimensions from SVG if not provided
             final_width = output_width
             final_height = output_height
-            
+
             if not final_width or not final_height:
                 svg_width, svg_height = ImageParser._extract_svg_dimensions(svg_str)
-                
+
                 # Use extracted dimensions if not provided
                 if not final_width:
                     final_width = svg_width
                 if not final_height:
                     final_height = svg_height
-                
+
                 # If still no dimensions found, use defaults
                 # Default to 800x600 if no dimensions available
                 if not final_width:
