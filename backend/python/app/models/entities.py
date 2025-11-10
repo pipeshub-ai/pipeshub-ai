@@ -1,5 +1,4 @@
 from enum import Enum
-from optparse import Option
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 

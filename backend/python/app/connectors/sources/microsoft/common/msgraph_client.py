@@ -443,15 +443,15 @@ class MSGraphClient:
         except Exception as ex:
             self.logger.error(f"Unexpected error fetching file permissions for File ID {item_id}: {ex}")
             return []
-    
+
     async def list_folder_children(self, drive_id: str, folder_id: str) -> List[DriveItem]:
         """
         List all children of a folder.
-        
+
         Args:
             drive_id: The drive ID
             folder_id: The folder ID
-            
+
         Returns:
             List of DriveItem objects
         """
@@ -459,20 +459,20 @@ class MSGraphClient:
             children = []
             async with self.rate_limiter:
                 result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.get()
-            
+
             if result and result.value:
                 children.extend(result.value)
-            
+
             # Handle pagination
             while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
                 async with self.rate_limiter:
                     result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.with_url(result.odata_next_link).get()
                 if result and result.value:
                     children.extend(result.value)
-            
+
             self.logger.info(f"Retrieved {len(children)} children for folder {folder_id}")
             return children
-            
+
         except ODataError as e:
             self.logger.error(f"Error listing folder children for {folder_id}: {e}")
             return []

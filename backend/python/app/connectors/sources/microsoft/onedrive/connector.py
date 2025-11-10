@@ -438,16 +438,16 @@ class OneDriveConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"❌ Error processing item in generator: {e}", exc_info=True)
                 continue
-    
+
     async def _update_folder_children_permissions(
-        self, 
-        drive_id: str, 
-        folder_id: str, 
+        self,
+        drive_id: str,
+        folder_id: str,
         inherited_permissions: Optional[List[Permission]] = None
     ) -> None:
         """
         Recursively update permissions for all children of a folder.
-        
+
         Args:
             drive_id: The drive ID
             folder_id: The folder ID whose children need permission updates
@@ -456,25 +456,25 @@ class OneDriveConnector(BaseConnector):
         try:
             # Get all children of this folder
             children = await self.msgraph_client.list_folder_children(drive_id, folder_id)
-            
+
             for child in children:
                 try:
                     # Get the child's current permissions
                     child_permissions = await self.msgraph_client.get_file_permission(
-                        drive_id, 
+                        drive_id,
                         child.id
                     )
-                    
+
                     # Convert to our permission model
                     converted_permissions = await self._convert_to_permissions(child_permissions)
-                    
+
                     # Update the child's permissions in database
                     async with self.data_store_provider.transaction() as tx_store:
                         existing_child_record = await tx_store.get_record_by_external_id(
                             connector_name=self.connector_name,
                             external_id=child.id
                         )
-                        
+
                         if existing_child_record:
                             # Update the record with new permissions
                             await self.data_entities_processor.on_updated_record_permissions(
@@ -482,7 +482,7 @@ class OneDriveConnector(BaseConnector):
                                 permissions=converted_permissions
                             )
                             self.logger.info(f"Updated permissions for child item {child.id}")
-                    
+
                     # If this child is also a folder, recurse
                     if child.folder is not None:
                         await self._update_folder_children_permissions(
@@ -490,11 +490,11 @@ class OneDriveConnector(BaseConnector):
                             folder_id=child.id
                             # inherited_permissions=converted_permissions
                         )
-                        
+
                 except Exception as child_ex:
                     self.logger.error(f"Error updating child {child.id}: {child_ex}", exc_info=True)
                     continue
-                    
+
         except Exception as ex:
             self.logger.error(f"Error updating folder children permissions for {folder_id}: {ex}", exc_info=True)
 

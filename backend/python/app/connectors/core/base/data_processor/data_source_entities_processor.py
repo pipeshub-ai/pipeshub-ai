@@ -112,7 +112,7 @@ class DataSourceEntitiesProcessor:
 
                 #Create inherit permissions edge between parent record and child record
                 # await tx_store.create_inherit_permissions_relation_record(parent_record.id, record.id)
-                
+
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
         record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
