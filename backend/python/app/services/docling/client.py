@@ -34,6 +34,11 @@ class DoclingClient:
         Returns:
             BlocksContainer if successful, None if failed
         """
+        # Validate pdf_binary type
+        if not isinstance(pdf_binary, bytes):
+            self.logger.error(f"❌ Invalid pdf_binary type: expected bytes, got {type(pdf_binary).__name__}")
+            return None
+
         # Validate payload size
         if len(pdf_binary) > 100 * 1024 * 1024:  # 100MB limit
             self.logger.error(f"❌ PDF too large for processing: {len(pdf_binary)} bytes (max: 100MB)")
@@ -100,24 +105,34 @@ class DoclingClient:
                             return None
                     else:
                         self.logger.error(f"❌ Docling service HTTP error {response.status_code}: {response.text}")
+
+                        # Check if it's a service unavailable error
+                        if response.status_code in [502, 503, 504]:
+                            self.logger.warning(f"⚠️ Service temporarily unavailable (HTTP {response.status_code})")
+
                         if attempt < self.max_retries - 1:
-                            self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
-                            await asyncio.sleep(self.retry_delay)
+                            delay = self.retry_delay * (2 ** attempt)
+                            self.logger.info(f"🔄 Retrying in {delay} seconds...")
+                            await asyncio.sleep(delay)
                             continue
                         return None
 
                 except httpx.TimeoutException as e:
                     self.logger.error(f"❌ Timeout processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
                     if attempt < self.max_retries - 1:
-                        self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
-                        await asyncio.sleep(self.retry_delay)
+                        delay = self.retry_delay * (2 ** attempt)
+                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
+                        await asyncio.sleep(delay)
                         continue
                     return None
                 except httpx.ConnectError as e:
                     self.logger.error(f"❌ Connection error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
+                    self.logger.warning("⚠️ Service appears to be down (connection refused)")
+
                     if attempt < self.max_retries - 1:
-                        self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
-                        await asyncio.sleep(self.retry_delay)
+                        delay = self.retry_delay * (2 ** attempt)
+                        self.logger.info(f"🔄 Service may be starting up. Retrying in {delay} seconds...")
+                        await asyncio.sleep(delay)
                         continue
                     return None
                 except httpx.WriteError as e:
@@ -135,15 +150,18 @@ class DoclingClient:
                 except httpx.RequestError as e:
                     self.logger.error(f"❌ Request error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
                     if attempt < self.max_retries - 1:
-                        self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
-                        await asyncio.sleep(self.retry_delay)
+                        delay = self.retry_delay * (2 ** attempt)
+                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
+                        await asyncio.sleep(delay)
                         continue
                     return None
                 except Exception as e:
                     self.logger.error(f"❌ Unexpected error processing PDF {record_name} (attempt {attempt + 1}): {str(e)}")
+                    self.logger.exception(e)  # Log full traceback for debugging
                     if attempt < self.max_retries - 1:
-                        self.logger.info(f"🔄 Retrying in {self.retry_delay} seconds...")
-                        await asyncio.sleep(self.retry_delay)
+                        delay = self.retry_delay * (2 ** attempt)
+                        self.logger.info(f"🔄 Retrying in {delay} seconds...")
+                        await asyncio.sleep(delay)
                         continue
                     return None
 
@@ -167,6 +185,34 @@ class DoclingClient:
             self.logger.error(f"❌ Failed to parse blocks container: {str(e)}")
             raise
 
+    async def _check_service_health(self, client: httpx.AsyncClient) -> bool:
+        """
+        Internal method to check service health using an existing client
+
+        Args:
+            client: Existing httpx.AsyncClient instance
+
+        Returns:
+            True if service is healthy, False otherwise
+        """
+        try:
+            response = await client.get(
+                f"{self.service_url}/health",
+                timeout=10.0
+            )
+            is_healthy = response.status_code == HttpStatusCode.SUCCESS.value
+            if is_healthy:
+                self.logger.info("✅ Docling service is healthy")
+            else:
+                self.logger.warning(f"⚠️ Docling service health check returned status {response.status_code}")
+            return is_healthy
+        except httpx.ConnectError:
+            self.logger.error("❌ Cannot connect to Docling service - service appears to be down")
+            return False
+        except Exception as e:
+            self.logger.error(f"❌ Health check failed: {str(e)}")
+            return False
+
     async def health_check(self) -> bool:
         """Check if the Docling service is healthy"""
         try:
@@ -178,8 +224,7 @@ class DoclingClient:
             )
 
             async with httpx.AsyncClient(timeout=timeout_config) as client:
-                response = await client.get(f"{self.service_url}/health")
-                return response.status_code == HttpStatusCode.SUCCESS.value
+                return await self._check_service_health(client)
         except Exception as e:
             self.logger.error(f"❌ Health check failed: {str(e)}")
             return False
