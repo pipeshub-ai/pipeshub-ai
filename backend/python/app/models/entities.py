@@ -1,4 +1,5 @@
 from enum import Enum
+from optparse import Option
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -79,6 +80,7 @@ class Record(BaseModel):
     signed_url: Optional[str] = None
     fetch_signed_url: Optional[str] = None
     preview_renderable: Optional[bool] = True
+    is_shared: Optional[bool] = False
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: Optional[SemanticMetadata] = None
@@ -111,6 +113,7 @@ class Record(BaseModel):
             "isArchived": False,
             "deletedByUserId": None,
             "previewRenderable": self.preview_renderable,
+            "isShared": self.is_shared,
         }
 
     @staticmethod
@@ -147,6 +150,7 @@ class Record(BaseModel):
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp", None),
             virtual_record_id=arango_base_record.get("virtualRecordId", None),
             preview_renderable=arango_base_record.get("previewRenderable", True),
+            is_shared=arango_base_record.get("isShared", False),
         )
 
     def to_kafka_record(self) -> Dict:

@@ -221,6 +221,11 @@ class OneDriveConnector(BaseConnector):
             metadata_changed = False
             content_changed = False
             permissions_changed = False
+            is_shared_folder = False
+            is_shared_folder = (
+                item.folder is not None and  # It's a folder
+                hasattr(item, 'shared') and item.shared is not None  # Has shared property
+            )
 
             if existing_record:
                 # Check for metadata changes
@@ -264,6 +269,7 @@ class OneDriveConnector(BaseConnector):
                 source_updated_at=int(item.last_modified_date_time.timestamp() * 1000),
                 weburl=item.web_url,
                 signed_url=signed_url,
+                is_shared=is_shared_folder,
                 mime_type=item.file.mime_type if item.file else MimeTypes.FOLDER.value,
                 parent_external_record_id=item.parent_reference.id if item.parent_reference else None,
                 external_record_group_id=item.parent_reference.drive_id if item.parent_reference else None,
@@ -293,7 +299,15 @@ class OneDriveConnector(BaseConnector):
                 # compare permissions with existing permissions (To be implemented)
                 if new_permissions:
                     permissions_changed = True
+                    is_updated = True
 
+            if existing_record and existing_record.is_shared != is_shared_folder:
+                metadata_changed = True
+                is_updated = True
+                await self._update_folder_children_permissions(
+                    drive_id=item.parent_reference.drive_id,
+                        folder_id=item.id
+                    )
 
 
             return RecordUpdate(
@@ -424,6 +438,65 @@ class OneDriveConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"❌ Error processing item in generator: {e}", exc_info=True)
                 continue
+    
+    async def _update_folder_children_permissions(
+        self, 
+        drive_id: str, 
+        folder_id: str, 
+        inherited_permissions: Optional[List[Permission]] = None
+    ) -> None:
+        """
+        Recursively update permissions for all children of a folder.
+        
+        Args:
+            drive_id: The drive ID
+            folder_id: The folder ID whose children need permission updates
+            inherited_permissions: The permissions to apply to children
+        """
+        try:
+            # Get all children of this folder
+            children = await self.msgraph_client.list_folder_children(drive_id, folder_id)
+            
+            for child in children:
+                try:
+                    # Get the child's current permissions
+                    child_permissions = await self.msgraph_client.get_file_permission(
+                        drive_id, 
+                        child.id
+                    )
+                    
+                    # Convert to our permission model
+                    converted_permissions = await self._convert_to_permissions(child_permissions)
+                    
+                    # Update the child's permissions in database
+                    async with self.data_store_provider.transaction() as tx_store:
+                        existing_child_record = await tx_store.get_record_by_external_id(
+                            connector_name=self.connector_name,
+                            external_id=child.id
+                        )
+                        
+                        if existing_child_record:
+                            # Update the record with new permissions
+                            await self.data_entities_processor.on_updated_record_permissions(
+                                record=existing_child_record,
+                                permissions=converted_permissions
+                            )
+                            self.logger.info(f"Updated permissions for child item {child.id}")
+                    
+                    # If this child is also a folder, recurse
+                    if child.folder is not None:
+                        await self._update_folder_children_permissions(
+                            drive_id=drive_id,
+                            folder_id=child.id
+                            # inherited_permissions=converted_permissions
+                        )
+                        
+                except Exception as child_ex:
+                    self.logger.error(f"Error updating child {child.id}: {child_ex}", exc_info=True)
+                    continue
+                    
+        except Exception as ex:
+            self.logger.error(f"Error updating folder children permissions for {folder_id}: {ex}", exc_info=True)
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """
@@ -643,6 +716,7 @@ class OneDriveConnector(BaseConnector):
             while True:
                 # Fetch delta changes
                 result = await self.msgraph_client.get_delta_response(url)
+
                 drive_items = result.get('drive_items')
                 if not result or not drive_items:
                     break

@@ -222,6 +222,7 @@ record_schema = {
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
+            "isShared": {"type": ["boolean", "null"], "default": False},
         },
         "required": [
             "recordName",
