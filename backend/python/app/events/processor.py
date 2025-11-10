@@ -728,10 +728,7 @@ class Processor:
 
             # Extract domain metadata from paragraphs
             self.logger.info("🎯 Extracting domain metadata")
-            domain_metadata = None
-            paragraphs = ocr_result.get("paragraphs", [])
             blocks_from_ocr = ocr_result.get("blocks", [])
-            sentences = ocr_result.get("sentences", [])
             blocks = []
             index = 0
             table_rows = {}

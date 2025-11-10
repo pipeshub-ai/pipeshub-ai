@@ -1,3 +1,4 @@
+import base64
 import json
 from typing import Dict, List, Tuple, Union
 
@@ -200,9 +201,6 @@ def _normalize_bbox(
         {"x": x1 / page_width, "y": y1 / page_height},
         {"x": x0 / page_width, "y": y1 / page_height},
     ]
-
-
-import base64
 
 
 def image_bytes_to_base64(image_bytes, extention):
