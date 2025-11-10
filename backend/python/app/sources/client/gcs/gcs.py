@@ -1,6 +1,5 @@
 import json
 import os
-from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, Union
 
 try:
@@ -13,6 +12,8 @@ except ImportError:
     raise ImportError(
         "gcloud-aio-storage or google-auth is not installed. Please install with `pip install gcloud-aio-storage google-auth`."
     )
+
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
@@ -31,29 +32,38 @@ class GCSBucketError(Exception):
         self.details = details or {}
 
 
-@dataclass
-class GCSResponse:
+class GCSResponse(BaseModel):
     success: bool
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return self.model_dump()
 
     def to_json(self) -> str:
-        return json.dumps(self.to_dict())
+        return self.model_dump_json()
 
 
 # HTTP status codes used
 HTTP_CONFLICT = 409
 
 
-@dataclass
-class GCSServiceAccountJsonConfig:
+class GCSServiceAccountJsonConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     serviceAccountJson: str
     bucketName: str
     projectId: Optional[str] = None
+
+    @field_validator('serviceAccountJson')
+    @classmethod
+    def validate_sa_json(cls, v: str) -> str:
+        try:
+            json.loads(v)
+            return v
+        except json.JSONDecodeError:
+            raise ValueError('serviceAccountJson is not valid JSON')
 
     def _get_credentials(self) -> Credentials:
         try:
@@ -65,7 +75,6 @@ class GCSServiceAccountJsonConfig:
     async def create_storage_client(self) -> Storage:
         try:
             creds = self._get_credentials()
-            # Storage client does not accept a 'project' kwarg; project is passed to per-call methods
             return Storage(credentials=creds)
         except Exception as e:
             raise GCSConfigurationError(f"Failed to create Storage client: {e}")
@@ -77,11 +86,19 @@ class GCSServiceAccountJsonConfig:
         return {"authentication_method": "service_account_json", "project_id": self.projectId, "bucket_name": self.bucketName}
 
 
-@dataclass
-class GCSServiceAccountFileConfig:
+class GCSServiceAccountFileConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     serviceAccountFile: str
     bucketName: str
     projectId: Optional[str] = None
+
+    @field_validator('serviceAccountFile')
+    @classmethod
+    def validate_sa_file(cls, v: str) -> str:
+        if not os.path.exists(v):
+            raise ValueError(f'serviceAccountFile not found at path: {v}')
+        return v
 
     def _get_credentials(self) -> Credentials:
         try:
@@ -103,14 +120,14 @@ class GCSServiceAccountFileConfig:
         return {"authentication_method": "service_account_file", "project_id": self.projectId, "bucket_name": self.bucketName}
 
 
-@dataclass
-class GCSADCConfig:
+class GCSADCConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     bucketName: str
     projectId: Optional[str] = None
 
     async def create_storage_client(self) -> Storage:
         try:
-            # ADC: let library resolve credentials from environment/metadata
             return Storage()
         except Exception as e:
             raise GCSConfigurationError(f"Failed to create Storage client via ADC: {e}")
@@ -148,11 +165,9 @@ class GCSRESTClient:
         bucket_name = self.get_bucket_name()
         try:
             client = await self.get_storage_client()
-            # Existence check: attempt to list; if it 404s, report missing (creation via emulator requires external call)
             await client.list_objects(bucket_name)
             return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "exists"}, message=f"Bucket \"{bucket_name}\" already exists")
         except Exception as e:
-            # If running against emulator, attempt to create bucket via JSON API
             emulator = os.environ.get("STORAGE_EMULATOR_HOST")
             if emulator:
                 project = self.get_project_id() or "demo-project"
@@ -163,7 +178,6 @@ class GCSRESTClient:
                         async with session.post(url, json=payload) as resp:
                             if resp.status in (200, 201):
                                 return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "created"}, message=f"Bucket \"{bucket_name}\" created successfully (emulator)")
-                            # If already exists, treat as exists
                             if resp.status == HTTP_CONFLICT:
                                 return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "exists"}, message=f"Bucket \"{bucket_name}\" already exists (emulator)")
                             text = await resp.text()
@@ -171,7 +185,6 @@ class GCSRESTClient:
                 except Exception as ce:
                     raise GCSBucketError(f"Error creating bucket in emulator: {ce}", bucket_name=bucket_name)
 
-            # Non-emulator path: surface guidance
             raise GCSBucketError(
                 f"Bucket '{bucket_name}' not found or inaccessible. Create it or grant access.",
                 bucket_name=bucket_name,
@@ -182,6 +195,21 @@ class GCSRESTClient:
         if self._storage_client is not None:
             await self._storage_client.close()
             self._storage_client = None
+
+
+class SAJsonAuth(BaseModel):
+    serviceAccountJson: str
+    bucketName: str
+    projectId: Optional[str] = None
+
+class SAFileAuth(BaseModel):
+    serviceAccountFile: str
+    bucketName: str
+    projectId: Optional[str] = None
+
+class ADCAuth(BaseModel):
+    bucketName: str
+    projectId: Optional[str] = None
 
 
 class GCSClient(IClient):
@@ -232,33 +260,39 @@ class GCSClient(IClient):
 
             auth_type = config_data.get("authType", "ADC")
             auth_config = config_data.get("auth", {})
-            bucket_name = auth_config.get("bucketName")
-
-            if not bucket_name:
-                raise GCSConfigurationError("bucketName is required in GCS configuration")
 
             if auth_type == "SERVICE_ACCOUNT_JSON":
-                sa_json = auth_config.get("serviceAccountJson")
-                project_id = auth_config.get("projectId")
-                if not sa_json:
-                    raise GCSConfigurationError("serviceAccountJson is required for SERVICE_ACCOUNT_JSON authType")
-                config = GCSServiceAccountJsonConfig(serviceAccountJson=sa_json, bucketName=bucket_name, projectId=project_id)
+                parsed_auth = SAJsonAuth.model_validate(auth_config)
+                config = GCSServiceAccountJsonConfig(
+                    serviceAccountJson=parsed_auth.serviceAccountJson,
+                    bucketName=parsed_auth.bucketName,
+                    projectId=parsed_auth.projectId
+                )
                 return cls.build_with_service_account_json_config(config)
 
             if auth_type == "SERVICE_ACCOUNT_FILE":
-                sa_file = auth_config.get("serviceAccountFile")
-                project_id = auth_config.get("projectId")
-                if not sa_file:
-                    raise GCSConfigurationError("serviceAccountFile is required for SERVICE_ACCOUNT_FILE authType")
-                config = GCSServiceAccountFileConfig(serviceAccountFile=sa_file, bucketName=bucket_name, projectId=project_id)
+                parsed_auth = SAFileAuth.model_validate(auth_config)
+                config = GCSServiceAccountFileConfig(
+                    serviceAccountFile=parsed_auth.serviceAccountFile,
+                    bucketName=parsed_auth.bucketName,
+                    projectId=parsed_auth.projectId
+                )
                 return cls.build_with_service_account_file_config(config)
 
             if auth_type == "ADC":
-                project_id = auth_config.get("projectId")
-                config = GCSADCConfig(bucketName=bucket_name, projectId=project_id)
+                parsed_auth = ADCAuth.model_validate(auth_config)
+                config = GCSADCConfig(
+                    bucketName=parsed_auth.bucketName,
+                    projectId=parsed_auth.projectId
+                )
                 return cls.build_with_adc_config(config)
 
             raise GCSConfigurationError(f"Unsupported authType: {auth_type}")
+
+        except ValidationError as e:
+            logger.error(f"Invalid GCS configuration provided: {e}")
+            raise GCSConfigurationError("Invalid GCS configuration", details=e.errors())
+
         except Exception as e:
             logger.error(f"Failed to build GCS client from services: {e}")
             raise GCSConfigurationError(f"Failed to build GCS client: {e}")
@@ -271,5 +305,3 @@ class GCSClient(IClient):
             return config_data or {}
         except Exception as e:
             raise GCSConfigurationError(f"Failed to get {connector_name} configuration: {e}")
-
-
