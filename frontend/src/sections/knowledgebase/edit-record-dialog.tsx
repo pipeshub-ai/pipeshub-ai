@@ -286,6 +286,8 @@ const SingleFileUploadDialog: React.FC<SingleFileUploadDialogProps> = ({
       case 'jpeg':
       case 'png':
       case 'gif':
+      case 'webp':
+      case 'svg':
         return fileImageBoxIcon;
       case 'zip':
       case 'rar':

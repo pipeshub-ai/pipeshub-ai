@@ -105,7 +105,7 @@ export function createOrgRouter(container: Container) {
     },
   );
 
-  router.patch(
+  router.put(
     '/',
     authMiddleware.authenticate,
     metricsMiddleware(container),

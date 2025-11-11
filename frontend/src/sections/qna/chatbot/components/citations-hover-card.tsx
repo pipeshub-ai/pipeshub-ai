@@ -274,6 +274,11 @@ const CitationHoverCard = ({
       'md',
       'ppt',
       'pptx',
+      'jpg',
+      'jpeg',
+      'png',
+      'webp',
+      'svg',
     ];
     return viewableExtensions.includes(extension);
   }

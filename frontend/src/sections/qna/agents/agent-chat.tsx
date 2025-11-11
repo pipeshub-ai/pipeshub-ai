@@ -43,6 +43,7 @@ import ChatMessagesArea from 'src/sections/qna/chatbot/components/chat-message-a
 import PdfHighlighterComp from 'src/sections/qna/chatbot/components/pdf-highlighter';
 import MarkdownViewer from 'src/sections/qna/chatbot/components/markdown-highlighter';
 import DocxHighlighterComp from 'src/sections/qna/chatbot/components/docx-highlighter';
+import ImageHighlighter from 'src/sections/qna/chatbot/components/image-highlighter';
 import { StreamingContext } from 'src/sections/qna/chatbot/components/chat-message';
 import { processStreamingContentLegacy } from 'src/sections/qna/chatbot/utils/styles/content-processing';
 import { useConnectors } from 'src/sections/accountdetails/connectors/hooks/use-connectors';
@@ -584,6 +585,7 @@ const AgentChat = () => {
   const [isMarkdown, setIsMarkdown] = useState<boolean>(false);
   const [isHtml, setIsHtml] = useState<boolean>(false);
   const [isTextFile, setIsTextFile] = useState<boolean>(false);
+  const [isImage, setIsImage] = useState<boolean>(false);
   const [highlightedCitation, setHighlightedCitation] = useState<CustomCitation | null>(null);
   const [snackbar, setSnackbar] = useState({
     open: false,
@@ -1292,6 +1294,7 @@ const AgentChat = () => {
     setTimeout(() => {
       setOpenPdfView(false);
       setIsExcel(false);
+      setIsImage(false);
       setAggregatedCitations(null);
       setTransitioning(false);
       setFileBuffer(null);
@@ -1564,6 +1567,7 @@ const AgentChat = () => {
     setIsMarkdown(['mdx', 'md'].includes(citationMeta?.extension));
     setIsHtml(['html'].includes(citationMeta?.extension));
     setIsTextFile(['txt'].includes(citationMeta?.extension));
+    setIsImage(['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(citationMeta?.extension));
     setIsExcel(isExcelOrCSV);
     setIsPdf(['pptx', 'ppt', 'pdf'].includes(citationMeta?.extension));
 
@@ -1827,6 +1831,15 @@ const AgentChat = () => {
                 ) : isTextFile ? (
                   <TextViewer
                     key="text-viewer"
+                    url={pdfUrl}
+                    buffer={fileBuffer}
+                    citations={aggregatedCitations}
+                    highlightCitation={highlightedCitation}
+                    onClosePdf={onClosePdf}
+                  />
+                ) : isImage ? (
+                  <ImageHighlighter
+                    key="image-highlighter"
                     url={pdfUrl}
                     buffer={fileBuffer}
                     citations={aggregatedCitations}

@@ -46,6 +46,7 @@ import HtmlViewer from '../qna/chatbot/components/html-highlighter';
 import TextViewer from '../qna/chatbot/components/text-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { KnowledgeBaseAPI } from './services/api';
+import ImageHighlighter from '../qna/chatbot/components/image-highlighter';
 
 // Simplified state management for viewport mode
 interface DocumentViewerState {
@@ -83,6 +84,8 @@ const getFileIcon = (extension: string, recordType?: string) => {
     case 'jpeg':
     case 'png':
     case 'gif':
+    case 'webp':
+    case 'svg':
       return imageIcon;
     case 'zip':
     case 'rar':
@@ -125,6 +128,8 @@ const getExtensionColor = (extension: string, recordType?: string) => {
     case 'jpg':
     case 'jpeg':
     case 'png':
+    case 'webp':
+    case 'svg':
       return '#4BAFFF';
     case 'zip':
     case 'rar':
@@ -147,6 +152,8 @@ function getDocumentType(extension: string, recordType?: string) {
   if (extension === 'txt') return 'text';
   if (extension === 'md') return 'md';
   if (extension === 'mdx') return 'mdx';
+  if (['ppt', 'pptx'].includes(extension)) return 'ppt';
+  if (['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(extension)) return 'image';
   return 'other';
 }
 
@@ -646,7 +653,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
         }, 800);
 
         // Support mail records in addition to existing types
-        if (!['pdf', 'excel', 'docx', 'html', 'text', 'md', 'mdx'].includes(documentType)) {
+        if (!['pdf', 'excel', 'docx', 'html', 'text', 'md', 'mdx', 'image'].includes(documentType)) {
           setSnackbar({
             open: true,
             message: `Unsupported document type: ${extension}`,
@@ -753,6 +760,15 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             url={fileUrl}
             citations={recordCitations?.documents || []}
             buffer={fileBuffer}
+          />
+        );
+      case 'image':
+        return (
+          <ImageHighlighter
+            {...commonProps}
+            url={fileUrl}
+            buffer={fileBuffer}
+            citations={recordCitations?.documents || []}
           />
         );
       default:
