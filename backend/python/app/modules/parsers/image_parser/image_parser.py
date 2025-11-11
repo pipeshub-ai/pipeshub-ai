@@ -5,7 +5,6 @@ from typing import Optional
 from urllib.parse import unquote, urlparse
 
 import aiohttp
-from cairosvg import svg2png
 
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
@@ -366,6 +365,7 @@ class ImageParser:
 
             # Convert SVG to PNG using cairosvg
             # cairosvg requires explicit dimensions when SVG doesn't have them
+            from cairosvg import svg2png
             png_data = svg2png(
                 bytestring=sanitized_svg_data,
                 output_width=final_width,
