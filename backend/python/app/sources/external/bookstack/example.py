@@ -104,9 +104,9 @@ async def main() -> None:
     # print(book)
 
     
-    print("\nList all chapters")
-    chapters = await data_source.list_chapters()
-    print(chapters)
+    # print("\nList all chapters")
+    # chapters = await data_source.list_chapters()
+    # print(chapters)
 
     # print("\n get chapter")
     # chapter = await data_source.get_chapter(chapter_id=1)
@@ -120,42 +120,46 @@ async def main() -> None:
     # page = await data_source.get_page(page_id=1)
     # print(page)
 
-    print("\nList Permissions")
-    permissions = await data_source.get_content_permissions(content_type="page", content_id=12)
-    print(permissions)
+    print("\n List attachments")
+    attachments = await data_source.list_attachments()
+    print(attachments)
 
-    print("\nAudit log")
-    audit_log = await data_source.list_audit_log(
-        filter={
-            'type': 'permissions_update',
-            'created_at:gte': '2025-10-22T14:00:00Z'
-        }
-    )
-    print(audit_log)
+    # print("\nList Permissions")
+    # permissions = await data_source.get_content_permissions(content_type="page", content_id=12)
+    # print(permissions)
 
-    if audit_log.success and audit_log.data and audit_log.data.get('data'):
-        # 1. Access the first log entry in the list
-        log_entry = audit_log.data['data'][0]
+    # print("\nAudit log")
+    # audit_log = await data_source.list_audit_log(
+    #     filter={
+    #         'type': 'permissions_update',
+    #         'created_at:gte': '2025-10-22T14:00:00Z'
+    #     }
+    # )
+    # print(audit_log)
 
-        # 2. Get the 'detail' string, which is '(5) Harshit'
-        detail_string = log_entry['detail']
+    # if audit_log.success and audit_log.data and audit_log.data.get('data'):
+    #     # 1. Access the first log entry in the list
+    #     log_entry = audit_log.data['data'][0]
 
-        # 3. Parse the string to get the name and ID
-        # We split by the first space to separate the ID part from the name part.
-        try:
-            id_part, user_name = detail_string.split(' ', 1)
+    #     # 2. Get the 'detail' string, which is '(5) Harshit'
+    #     detail_string = log_entry['detail']
 
-            # Remove the parentheses from the ID part and convert it to an integer
-            user_id = int(id_part.strip('()'))
+    #     # 3. Parse the string to get the name and ID
+    #     # We split by the first space to separate the ID part from the name part.
+    #     try:
+    #         id_part, user_name = detail_string.split(' ', 1)
 
-            print(f"The user created is: {user_name}")
-            print(f"The user ID from detail is: {user_id}")
+    #         # Remove the parentheses from the ID part and convert it to an integer
+    #         user_id = int(id_part.strip('()'))
 
-        except (IndexError, ValueError):
-            print(f"Could not parse the user name and ID from detail: '{detail_string}'")
+    #         print(f"The user created is: {user_name}")
+    #         print(f"The user ID from detail is: {user_id}")
 
-    else:
-        print("No 'user_create' logs found in the response or the request failed.")
+    #     except (IndexError, ValueError):
+    #         print(f"Could not parse the user name and ID from detail: '{detail_string}'")
+
+    # else:
+    #     print("No 'user_create' logs found in the response or the request failed.")
 
     # print("\nExport Page Markdown")
     # markdown = await data_source.export_page_markdown(1)

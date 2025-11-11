@@ -620,7 +620,7 @@ async def askAIStream(
                     is_multimodal_llm,
                     tools=tools,
                     tool_runtime_kwargs=tool_runtime_kwargs,
-                    target_words_per_chunk=3,
+                    target_words_per_chunk=2,
                     mode=query_info.mode,
 
                 ):

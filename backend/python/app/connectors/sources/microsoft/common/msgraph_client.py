@@ -13,6 +13,7 @@ from msgraph.generated.models.base_delta_function_response import (
     BaseDeltaFunctionResponse,
 )
 from msgraph.generated.models.drive_item import DriveItem
+from msgraph.generated.models.group import Group
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
@@ -93,6 +94,32 @@ class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
         param writer: Serialization writer to use to serialize this model
         Returns: None
         """
+        if writer is None:
+            raise TypeError("writer cannot be null.")
+        super().serialize(writer)
+        writer.write_collection_of_object_values("value", self.value)
+
+@dataclass
+class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
+    # The value property specialized for Groups
+    value: Optional[List[Group]] = None
+
+    @staticmethod
+    def create_from_discriminator_value(parse_node: ParseNode) -> "GroupDeltaGetResponse":
+        if parse_node is None:
+            raise TypeError("parse_node cannot be null.")
+        return GroupDeltaGetResponse()
+
+    def get_field_deserializers(self) -> Dict[str, Callable[[ParseNode], None]]:
+        fields: Dict[str, Callable[[Any], None]] = {
+            # Use Group here instead of DriveItem
+            "value": lambda n: setattr(self, 'value', n.get_collection_of_object_values(Group)),
+        }
+        super_fields = super().get_field_deserializers()
+        fields.update(super_fields)
+        return fields
+
+    def serialize(self, writer: SerializationWriter) -> None:
         if writer is None:
             raise TypeError("writer cannot be null.")
         super().serialize(writer)
@@ -221,6 +248,31 @@ class MSGraphClient:
             self.logger.error(f"Unexpected error fetching users: {ex}")
             raise ex
 
+    async def get_user_email(self, user_id: str) -> Optional[str]:
+        """
+        Fetches the email of a specific user by ID.
+        Tries 'mail' first, falls back to 'userPrincipalName'.
+        """
+        try:
+            async with self.rate_limiter:
+                # Only select the fields we strictly need to keep it fast
+                query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
+                    select=['id', 'mail', 'userPrincipalName']
+                )
+                request_configuration = RequestConfiguration(
+                    query_parameters=query_params
+                )
+
+                user = await self.client.users.by_user_id(user_id).get(request_configuration)
+
+                if user:
+                    return user.mail or user.user_principal_name
+            return None
+        except Exception as ex:
+            # Log debug instead of error because sometimes users might be deleted before we fetch them
+            self.logger.warning(f"Could not fetch details for user {user_id}: {ex}")
+            return None
+
     async def get_delta_response_sharepoint(self, url: str) -> dict:
         response = {'delta_link': None, 'next_link': None, 'drive_items': []}
 
@@ -306,6 +358,58 @@ class MSGraphClient:
             self.logger.error(f"Error fetching delta response for URL {url}: {ex}")
             raise ex
 
+    async def get_groups_delta_response(self, url: str) -> dict:
+        """
+        Retrieves groups using delta query to track changes.
+        Note: This doesn't include members - they need to be fetched separately.
+
+        Args:
+            url (str): The full Microsoft Graph API URL to query.
+
+        Returns:
+            dict: Dictionary containing 'delta_link', 'next_link', and 'groups'.
+        """
+        try:
+            response = {
+                'delta_link': None,
+                'next_link': None,
+                'groups': []
+            }
+
+            async with self.rate_limiter:
+                request_info = RequestInformation(Method.GET, url)
+                error_mapping: Dict[str, type[ParsableFactory]] = {
+                    "4XX": ODataError,
+                    "5XX": ODataError,
+                }
+
+                # Send request using request_adapter
+                result = await self.client.request_adapter.send_async(
+                    request_info=request_info,
+                    parsable_factory=GroupDeltaGetResponse,
+                    error_map=error_mapping
+                )
+
+                # Extract the groups
+                if hasattr(result, 'value') and result.value:
+                    response['groups'] = result.value
+
+                # Extract the next link if available
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    response['next_link'] = result.odata_next_link
+
+                # Extract the delta link if available
+                if hasattr(result, 'odata_delta_link') and result.odata_delta_link:
+                    response['delta_link'] = result.odata_delta_link
+
+            self.logger.info(f"Retrieved groups delta response with {len(response['groups'])} groups")
+            return response
+
+        except Exception as ex:
+            self.logger.error(f"Error fetching groups delta response for URL {url}: {ex}")
+            raise ex
+
+
     async def get_file_permission(self, drive_id: str, item_id: str) -> List['Permission']:
         """
         Retrieves permissions for a specified file by Drive ID and File ID.
@@ -338,6 +442,42 @@ class MSGraphClient:
             return []
         except Exception as ex:
             self.logger.error(f"Unexpected error fetching file permissions for File ID {item_id}: {ex}")
+            return []
+
+    async def list_folder_children(self, drive_id: str, folder_id: str) -> List[DriveItem]:
+        """
+        List all children of a folder.
+
+        Args:
+            drive_id: The drive ID
+            folder_id: The folder ID
+
+        Returns:
+            List of DriveItem objects
+        """
+        try:
+            children = []
+            async with self.rate_limiter:
+                result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.get()
+
+            if result and result.value:
+                children.extend(result.value)
+
+            # Handle pagination
+            while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
+                async with self.rate_limiter:
+                    result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.with_url(result.odata_next_link).get()
+                if result and result.value:
+                    children.extend(result.value)
+
+            self.logger.info(f"Retrieved {len(children)} children for folder {folder_id}")
+            return children
+
+        except ODataError as e:
+            self.logger.error(f"Error listing folder children for {folder_id}: {e}")
+            return []
+        except Exception as ex:
+            self.logger.error(f"Unexpected error listing folder children for {folder_id}: {ex}")
             return []
 
     async def get_signed_url(self, drive_id: str, item_id: str) -> Optional[str]:

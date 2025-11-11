@@ -16,6 +16,7 @@ from app.connectors.core.base.data_store.data_store import (
 )
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
+    AppRole,
     AppUser,
     AppUserGroup,
     FileRecord,
@@ -179,6 +180,15 @@ class DataSourceEntitiesProcessor:
                     else:
                         self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
                         continue
+                elif permission.entity_type == EntityType.ROLE.value:
+                    user_role = None
+                    if permission.external_id:
+                        user_role = await tx_store.get_app_role_by_external_id(external_id=permission.external_id, connector_name=record.connector_name)
+                    if user_role:
+                        from_collection = f"{CollectionNames.ROLES.value}/{user_role.id}"
+                    else:
+                        self.logger.warning(f"User role with external ID {permission.external_id} for {record.connector_name} not found in database")
+                        continue
                 elif permission.entity_type == EntityType.ORG.value:
                     from_collection = f"{CollectionNames.ORGS.value}/{self.org_id}"
 
@@ -336,7 +346,10 @@ class DataSourceEntitiesProcessor:
             )
 
     async def on_record_metadata_update(self, record: Record) -> None:
-        pass
+        async with self.data_store_provider.transaction() as tx_store:
+            existing_record = await tx_store.get_record_by_external_id(connector_name=record.connector_name,
+                                                                   external_id=record.external_record_id)
+            await self._handle_updated_record(record, existing_record, tx_store)
 
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
@@ -362,6 +375,9 @@ class DataSourceEntitiesProcessor:
                         self.logger.info(f"Updating existing record group with id: {record_group.id}")
                         # Ensure update timestamp is fresh for the edge
                         record_group.updated_at = get_epoch_timestamp_in_ms()
+
+                        # To Delete the previously existing edges to record group and create new permissions
+                        await tx_store.delete_edges_to(to_key=f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}", collection=CollectionNames.PERMISSION.value)
 
                     # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
@@ -450,6 +466,18 @@ class DataSourceEntitiesProcessor:
                             else:
                                 self.logger.warning(f"Could not find group with external_id {permission.external_id} for RecordGroup permission.")
 
+                        elif permission.entity_type == EntityType.ROLE:
+                            user_role = None
+                            if permission.external_id:
+                                user_role = await tx_store.get_app_role_by_external_id(
+                                    connector_name=record_group.connector_name,
+                                    external_id=permission.external_id
+                                )
+
+                            if user_role:
+                                from_collection = f"{CollectionNames.ROLES.value}/{user_role.id}"
+                            else:
+                                self.logger.warning(f"Could not find role with external_id {permission.external_id} for RecordGroup permission.")
                         # (The ORG case is no longer needed here as it's handled by BELONGS_TO)
 
                         if from_collection:
@@ -579,6 +607,77 @@ class DataSourceEntitiesProcessor:
 
         except Exception as e:
             self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
+            raise e
+
+    async def on_new_app_roles(self, roles: List[Tuple[AppRole, List[AppUser]]]) -> None:
+        """
+        Processes new app roles, upserts them, and creates permission edges
+        from users to these roles.
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                for role, members in roles:
+                    # Set the org_id on the object, as it's needed for the doc
+                    role.org_id = self.org_id
+
+                    self.logger.info(f"Processing app role: {role.name}")
+                    self.logger.info(f"Processing role members: {members}")
+
+                    # Check if the app role already exists in the DB
+                    existing_app_role = await tx_store.get_app_role_by_external_id(
+                        connector_name=role.app_name,
+                        external_id=role.source_role_id
+                    )
+
+                    if existing_app_role is None:
+                        # The ID is already set by default_factory, but we log
+                        self.logger.info(f"Creating new app role with id: {role.id}")
+                    else:
+                        # Overwrite the new UUID with the existing one
+                        role.id = existing_app_role.id
+                        self.logger.info(f"Updating existing app role with id: {role.id}")
+                        role.updated_at = get_epoch_timestamp_in_ms()
+
+                    # 1. Upsert the app role document
+                    await tx_store.batch_upsert_app_roles([role])
+
+
+                    role_permissions = []
+                    # Set the 'to' side of the edge to be this role
+                    to_collection = f"{CollectionNames.ROLES.value}/{role.id}"
+
+                    for member in members:
+                        from_collection = None
+                        user = None
+                        if member.email:
+                            # Find the user's internal DB ID
+                            user = await tx_store.get_user_by_email(member.email)
+
+                        if not user:
+                            self.logger.warning(f"Could not find user with email {member.email} for AppRole permission.")
+                            continue
+
+                        permission = Permission(
+                            external_id=member.id,
+                            email=member.email,
+                            type=PermissionType.READ,
+                            entity_type=EntityType.USER
+                        )
+                        from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+
+                        role_permissions.append(
+                            permission.to_arango_permission(from_collection, to_collection)
+                        )
+
+                    # Batch create (upsert) all permission edges for this role
+                    if role_permissions:
+                        self.logger.info(f"Creating/updating {len(role_permissions)} PERMISSION edges for AppRole {role.id}")
+                        await tx_store.batch_create_edges(
+                            role_permissions, collection=CollectionNames.PERMISSION.value
+                        )
+
+        except Exception as e:
+            self.logger.error(f"Transaction on_new_app_roles failed: {str(e)}")
             raise e
 
     async def on_new_app(self, app: App) -> None:
@@ -777,6 +876,57 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error(
                 f"Failed to delete user group {external_group_id}: {str(e)}",
+                exc_info=True
+            )
+            return False
+
+    async def on_app_role_deleted(
+        self,
+        external_role_id: str,
+        connector_name: str
+    ) -> bool:
+        """
+        Delete an app role and all its associated edges from the database.
+
+        Args:
+            external_role_id: The external ID of the role from the source system
+            connector_name: The name of the connector (e.g., 'BOOKSTACK')
+
+        Returns:
+            bool: True if the role was successfully deleted, False otherwise
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                # 1. Look up the app role by external ID
+                app_role = await tx_store.get_app_role_by_external_id(
+                    connector_name=connector_name,
+                    external_id=external_role_id
+                )
+
+                if not app_role:
+                    self.logger.warning(
+                        f"Cannot delete role: Role with external ID {external_role_id} not found in database"
+                    )
+                    return False
+
+                role_internal_id = app_role.id
+                role_name = app_role.name
+
+                self.logger.info(f"Deleting app role: {role_name} (internal_id: {role_internal_id})")
+
+                # Delete the node and all associated edges
+                await tx_store.delete_nodes_and_edges([role_internal_id], CollectionNames.ROLES.value)
+
+                self.logger.info(
+                    f"Successfully deleted app role {role_name} "
+                    f"(external_id: {external_role_id}, internal_id: {role_internal_id}) "
+                    f"and all associated edges"
+                )
+                return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to delete app role {external_role_id}: {str(e)}",
                 exc_info=True
             )
             return False

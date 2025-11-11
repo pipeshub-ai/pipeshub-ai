@@ -16,6 +16,7 @@ class PermissionType(str, Enum):
 class EntityType(str, Enum):
     USER = "USER"
     GROUP = "GROUP"
+    ROLE = "ROLE"
     DOMAIN = "DOMAIN"
     ORG = "ORG"
     TEAM = "TEAM"

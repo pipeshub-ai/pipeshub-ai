@@ -498,7 +498,7 @@ async def stream_llm_response(
     messages,
     final_results,
     logger,
-    target_words_per_chunk: int = 3,
+    target_words_per_chunk: int = 2,
     mode: Optional[str] = "json",
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
