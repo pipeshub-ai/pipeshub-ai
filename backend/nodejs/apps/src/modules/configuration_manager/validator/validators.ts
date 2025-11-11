@@ -418,8 +418,13 @@ export const llmProvider = z.enum([
   'xai'
 ]);
 
-// Combined provider type that accepts both embedding and LLM providers
-export const providerType = z.union([embeddingProvider, llmProvider]);
+export const ocrProvider = z.enum([
+  'azureDI',
+  'ocrmypdf'
+]);
+
+// Combined provider type that accepts embedding, LLM, and OCR providers
+export const providerType = z.union([embeddingProvider, llmProvider, ocrProvider]);
 
 // Model Configuration schema
 export const configurationSchema = z.object({

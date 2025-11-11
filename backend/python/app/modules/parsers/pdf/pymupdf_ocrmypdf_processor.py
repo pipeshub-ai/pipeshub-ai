@@ -1,6 +1,7 @@
+
 import os
 import tempfile
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import fitz
 import ocrmypdf
@@ -8,14 +9,21 @@ import spacy
 from spacy.language import Language
 from spacy.tokens import Doc
 
+from app.models.blocks import Block, BlockType, CitationMetadata, DataFormat, Point
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.utils.indexing_helpers import (
+    _normalize_bbox,
+    image_bytes_to_base64,
+    process_table_pymupdf,
+)
 
 LENGTH_THRESHOLD = 2
 
 class PyMuPDFOCRStrategy(OCRStrategy):
-    def __init__(self, logger, language: str = "eng") -> None:
+    def __init__(self, logger, config, language: str = "eng") -> None:
         self.logger = logger
         self.language = language
+        self.config = config
         self.doc = None
         self._processed_pages = {}
         self._needs_ocr = False
@@ -117,8 +125,9 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             self.ocr_pdf_content = None
 
         self.logger.debug("🔄 Pre-processing document to match Azure's structure")
-        self.document_analysis_result = self._preprocess_document()
+        self.document_analysis_result = await self._preprocess_document()
         self.logger.info(f"✅ Document loaded with {len(self.doc)} pages")
+
 
     @Language.component("custom_sentence_boundary")
     def custom_sentence_boundary(doc) -> Doc:
@@ -339,7 +348,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             if line_text.strip():
                 line_data = {
                     "content": line_text.strip(),
-                    "bounding_box": self._normalize_bbox(
+                    "bounding_box": _normalize_bbox(
                         line["bbox"], page_width, page_height
                     ),
                 }
@@ -353,7 +362,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                     ):  # Include empty spans for multi-span lines
                         span_data = {
                             "text": span.get("text", ""),
-                            "bounding_box": self._normalize_bbox(
+                            "bounding_box": _normalize_bbox(
                                 span["bbox"], page_width, page_height
                             ),
                             "font": span.get("font"),
@@ -368,7 +377,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                             if word_text:
                                 word = {
                                     "content": word_text,
-                                    "bounding_box": self._normalize_bbox(
+                                    "bounding_box": _normalize_bbox(
                                         char["bbox"], page_width, page_height
                                     ),
                                     "confidence": None,
@@ -408,7 +417,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         # Create paragraph from block
         paragraph = {
             "content": block_text.strip(),
-            "bounding_box": self._normalize_bbox(
+            "bounding_box": _normalize_bbox(
                 block["bbox"], page_width, page_height
             ),
             "block_number": block_number,
@@ -478,7 +487,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         return merged_block
 
-    def _preprocess_document(self) -> Dict[str, Any]:
+    async def _preprocess_document(self) -> Dict[str, Any]:
         """Pre-process document to match Azure's structure"""
         self.logger.debug("🔄 Starting document pre-processing")
         result = {
@@ -487,6 +496,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             "paragraphs": [],
             "sentences": [],
             "tables": [],
+            "blocks": [],
             "key_value_pairs": [],
         }
 
@@ -538,7 +548,6 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                     processed_block = self._process_block_text(
                         block, page_width, page_height, block_number
                     )
-
                     # Add to page-level collections
                     page_dict["lines"].extend(processed_block["lines"])
                     page_dict["words"].extend(processed_block["words"])
@@ -561,7 +570,30 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                             page_idx + 1,
                             sentence["block_number"],
                         )
-                block_number += 1
+                    result["blocks"].append(processed_block["paragraph"])
+                    block_number += 1
+                elif block.get("type") == 1:  # Image block
+                    ext = block.get("ext")
+                    if ext not in ["png", "jpg", "jpeg", "webp"]:
+                        continue
+                    image_bytes = block.get("image", None)
+                    if image_bytes:
+                        image_base64 = image_bytes_to_base64(image_bytes, ext)
+                        bbox = _normalize_bbox(block["bbox"], page_width, page_height) if block.get("bbox") else None
+                        bbox = [Point(x=p["x"], y=p["y"]) for p in bbox]
+                        block = Block(
+                            type=BlockType.IMAGE,
+                            format=DataFormat.BASE64,
+                            data={"uri": image_base64},
+                            comments=[],
+                            citation_metadata=CitationMetadata(
+                                page_number=page_idx + 1,
+                                bounding_boxes=bbox,
+                            ),
+                        )
+                        result["blocks"].append(block)
+
+            await process_table_pymupdf(page, result, self.config,page_idx+1)
 
             self.logger.debug(f"✅ Completed processing page {page_idx + 1}")
             self.logger.debug("📊 Page statistics:")
@@ -576,39 +608,9 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         return result
 
-    async def extract_text(self) -> Dict[str, Any]:
-        """Extract text and layout information"""
-        self.logger.debug("📊 Starting text extraction")
-        if not self.doc or not self.document_analysis_result:
-            self.logger.error("❌ Document not loaded")
-            raise ValueError("Document not loaded. Call load_document first.")
 
-        self.logger.debug("📊 Returning document analysis result:")
-        self.logger.debug(f"- Pages: {len(self.document_analysis_result['pages'])}")
-        self.logger.debug(
-            f"- Paragraphs: {len(self.document_analysis_result['paragraphs'])}"
-        )
-        self.logger.debug(
-            f"- Sentences: {len(self.document_analysis_result['sentences'])}"
-        )
 
-        self.logger.info("✅ Text extraction completed")
-        return self.document_analysis_result
 
-    def _normalize_bbox(
-        self,
-        bbox: Tuple[float, float, float, float],
-        page_width: float,
-        page_height: float,
-    ) -> List[Dict[str, float]]:
-        """Normalize bounding box coordinates to 0-1 range"""
-        x0, y0, x1, y1 = bbox
-        return [
-            {"x": x0 / page_width, "y": y0 / page_height},
-            {"x": x1 / page_width, "y": y0 / page_height},
-            {"x": x1 / page_width, "y": y1 / page_height},
-            {"x": x0 / page_width, "y": y1 / page_height},
-        ]
 
     async def process_page(self, page) -> Dict[str, Any]:
         """Process a single page"""
@@ -627,7 +629,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                     {
                         "content": text.strip(),
                         "confidence": None,
-                        "bounding_box": self._normalize_bbox(
+                        "bounding_box": _normalize_bbox(
                             (x0, y0, x1, y1), page_width, page_height
                         ),
                     }
@@ -642,7 +644,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                     lines.append(
                         {
                             "content": text.strip(),
-                            "bounding_box": self._normalize_bbox(
+                            "bounding_box": _normalize_bbox(
                                 line["bbox"], page_width, page_height
                             ),
                         }
@@ -756,3 +758,4 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         debug_doc.save(output_path)
         debug_doc.close()
         self.logger.info(f"✅ Debug PDF saved to {output_path}")
+

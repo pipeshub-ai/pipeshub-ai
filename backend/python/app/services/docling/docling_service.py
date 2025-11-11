@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from typing import Optional
 
@@ -10,6 +11,7 @@ from app.models.blocks import BlocksContainer
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.utils.logger import create_logger
 
+PDF_PROCESSING_TIMEOUT_SECONDS = 40 * 60
 # ConfigService will be injected via dependency injection
 
 
@@ -136,10 +138,13 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
         if docling_service is None:
             raise HTTPException(status_code=500, detail="Docling service not available")
 
-        # Process the PDF
-        block_containers = await docling_service.process_pdf(
-            request.record_name,
-            pdf_binary
+        # Process the PDF with 40 minute timeout
+        block_containers = await asyncio.wait_for(
+            docling_service.process_pdf(
+                request.record_name,
+                pdf_binary
+            ),
+            timeout=PDF_PROCESSING_TIMEOUT_SECONDS  # 40 minutes in seconds
         )
 
         # Convert BlocksContainer to dict for JSON serialization
@@ -152,6 +157,11 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
             block_containers=block_containers_dict
         )
 
+    except asyncio.TimeoutError:
+        return ProcessResponse(
+            success=False,
+            error=f"Processing timed out after {PDF_PROCESSING_TIMEOUT_SECONDS} seconds"
+        )
     except HTTPException:
         raise
     except Exception as e:

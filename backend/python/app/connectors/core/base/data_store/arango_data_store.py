@@ -14,6 +14,7 @@ from app.models.entities import (
     Anyone,
     AnyoneSameOrg,
     AnyoneWithLink,
+    AppRole,
     AppUser,
     AppUserGroup,
     Domain,
@@ -117,11 +118,17 @@ class ArangoTransactionStore(TransactionStore):
     async def delete_edges_to_groups(self, from_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to_groups(from_key, collection, transaction=self.txn)
 
+    async def delete_edges_between_collections(self, from_key: str, edge_collection: str, to_collection: str) -> None:
+        return await self.arango_service.delete_edges_between_collections(from_key, edge_collection, to_collection, transaction=self.txn)
+
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.arango_service.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
 
     async def get_user_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppUserGroup]:
         return await self.arango_service.get_user_group_by_external_id(connector_name, external_id, transaction=self.txn)
+
+    async def get_app_role_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppRole]:
+        return await self.arango_service.get_app_role_by_external_id(connector_name, external_id, transaction=self.txn)
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
@@ -315,6 +322,14 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.batch_upsert_nodes(
                             [user_group.to_arango_base_user_group() for user_group in user_groups],
                             collection=CollectionNames.GROUPS.value,
+                            transaction=self.txn
+                        )
+
+    async def batch_upsert_app_roles(self, app_roles: List[AppRole]) -> None:
+
+        return await self.arango_service.batch_upsert_nodes(
+                            [app_role.to_arango_base_role() for app_role in app_roles],
+                            collection=CollectionNames.ROLES.value,
                             transaction=self.txn
                         )
 
