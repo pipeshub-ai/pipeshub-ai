@@ -4,8 +4,11 @@ import re
 from typing import Optional
 from urllib.parse import unquote, urlparse
 
+try:
+    from cairosvg import svg2png
+except ImportError:
+    svg2png = None
 import aiohttp
-from cairosvg import svg2png
 
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
@@ -366,6 +369,8 @@ class ImageParser:
 
             # Convert SVG to PNG using cairosvg
             # cairosvg requires explicit dimensions when SVG doesn't have them
+            if svg2png is None:
+                raise Exception("import from cairosvg failed")
             png_data = svg2png(
                 bytestring=sanitized_svg_data,
                 output_width=final_width,
