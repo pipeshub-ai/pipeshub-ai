@@ -69,8 +69,8 @@ class GCSServiceAccountJsonConfig(BaseModel):
         try:
             info = json.loads(self.serviceAccountJson)
             return service_account.Credentials.from_service_account_info(info)
-        except Exception as e:
-            raise GCSConfigurationError("Invalid serviceAccountJson provided", {"error": str(e)})
+        except (json.JSONDecodeError, ValueError) as e:
+            raise GCSConfigurationError("Invalid serviceAccountJson provided", {"error": str(e)}) from e
 
     async def create_storage_client(self) -> Storage:
         try:
@@ -294,8 +294,8 @@ class GCSClient(IClient):
             raise GCSConfigurationError("Invalid GCS configuration", details=e.errors())
 
         except Exception as e:
-            logger.error(f"Failed to build GCS client from services: {e}")
-            raise GCSConfigurationError(f"Failed to build GCS client: {e}")
+            logger.error(f"Failed to build GCS client from services: {e}", exc_info=True)
+            raise GCSConfigurationError(f"Failed to build GCS client: {e}") from e
 
     @staticmethod
     async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> Dict[str, Any]:
