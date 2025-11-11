@@ -175,8 +175,8 @@ python -m app.sources.external.zoom.example
 
 ## 🧩 Credits
 
-- **Contributor:** Siddhant Roy 
-- **Mail ID:** roysiddhant2003@gmail.com 
-- **Integration:** Zoom API (Server-to-Server OAuth)
-- **Tested APIs:** User Info, Meetings, Meeting Creation
-- **Framework:** PipesHub Python Backend
+## 🧑‍💻 Contributor
+
+**Siddhant Roy**  
+📧 Email: roysiddhant2003@gmail.com  
+🔗 GitHub: [https://github.com/roy-sid](https://github.com/roy-sid)
