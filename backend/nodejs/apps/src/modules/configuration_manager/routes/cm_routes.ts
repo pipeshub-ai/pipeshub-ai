@@ -56,6 +56,9 @@ import {
   setSharePointCredentials,
   setOneDriveCredentials,
   getConnectorConfig,
+  getPlatformSettings,
+  setPlatformSettings,
+  getAvailablePlatformFeatureFlags,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -73,6 +76,7 @@ import {
   mongoDBConfigSchema,
   arangoDBConfigSchema,
   qdrantConfigSchema,
+  platformSettingsSchema,
   urlSchema,
   metricsCollectionPushIntervalSchema,
   metricsCollectionToggleSchema,
@@ -545,6 +549,32 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     getQdrantConfig(keyValueStoreService),
+  );
+
+  // Platform settings
+  router.post(
+    '/platform/settings',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(platformSettingsSchema),
+    setPlatformSettings(keyValueStoreService),
+  );
+
+  router.get(
+    '/platform/settings',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    getPlatformSettings(keyValueStoreService),
+  );
+
+  router.get(
+    '/platform/feature-flags/available',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    getAvailablePlatformFeatureFlags(),
   );
 
   // message broker config routes

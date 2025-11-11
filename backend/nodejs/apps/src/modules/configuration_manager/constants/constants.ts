@@ -56,3 +56,20 @@ export interface AIServiceResponse {
   data?: any;
   msg?: string;
 }
+
+// Platform feature flags (maintainable list)
+export interface PlatformFeatureFlagDef {
+  key: string;
+  label: string;
+  description?: string;
+  defaultEnabled?: boolean;
+}
+
+export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
+  {
+    key: 'ENABLE_BETA_CONNECTORS',
+    label: 'Enable Beta Connectors',
+    description: 'Allow usage of beta connector integrations that may be unstable.',
+    defaultEnabled: false,
+  },
+];

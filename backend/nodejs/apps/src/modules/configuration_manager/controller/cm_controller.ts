@@ -51,6 +51,8 @@ import {
   AIServiceCommand,
 } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
+import { getPlatformSettingsFromStore } from '../utils/util';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -399,6 +401,57 @@ export const getSmtpConfig =
       next(error);
     }
   };
+
+// Platform settings
+export const setPlatformSettings =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { fileUploadMaxSizeBytes, featureFlags } = req.body;
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedPlatformSettings = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify({ fileUploadMaxSizeBytes, featureFlags, updatedAt: new Date().toISOString() }));
+      
+      await keyValueStoreService.set<string>(
+        configPaths.platform.settings,
+        encryptedPlatformSettings,
+      );
+
+      res.status(200).json({ message: 'Platform settings saved' }).end();
+    } catch (error: any) {
+      logger.error('Error setting platform settings', { error });
+      next(error);
+    }
+  };
+
+export const getPlatformSettings =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const settings = await getPlatformSettingsFromStore(keyValueStoreService);
+      res.status(200).json(settings).end();
+    } catch (error: any) {
+      logger.error('Error getting platform settings', { error });
+      next(error);
+    }
+  };
+
+export const getAvailablePlatformFeatureFlags =
+  () =>
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    _next: NextFunction,
+  ) => {
+    res.status(200).json({ flags: PLATFORM_FEATURE_FLAGS }).end();
+  };
+
 
 export const getAzureAdAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>

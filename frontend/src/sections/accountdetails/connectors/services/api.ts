@@ -11,6 +11,12 @@ export class ConnectorApiService {
         return response.data.connectors || [];
     }
 
+    static async getConnectorByName(connectorName: string): Promise<Connector> {
+        const response = await axios.get(`${BASE_URL}/${connectorName}`);
+        if (!response.data) throw new Error('Failed to fetch connector');
+        return response.data.connector;
+    }
+
     static async getActiveConnectors(): Promise<Connector[]> {
         const response = await axios.get(`${BASE_URL}/active`);
         if (!response.data) throw new Error('Failed to fetch active connectors');
@@ -33,6 +39,15 @@ export class ConnectorApiService {
         const response = await axios.get(`${BASE_URL}/schema/${connectorName}`);
         if (!response.data) throw new Error('Failed to fetch connector schema');
         return response.data.schema;
+    }
+
+    static async getConnectorConfigAndSchema(connectorName: string): Promise<{ config: ConnectorConfig; schema: any }> {
+        const response = await axios.get(`${BASE_URL}/config-schema/${connectorName}`);
+        if (!response.data) throw new Error('Failed to fetch connector config and schema');
+        return {
+            config: response.data.config,
+            schema: response.data.schema
+        };
     }
 
     static async updateConnectorConfig(connectorName: string, config: any): Promise<any> {

@@ -6,6 +6,7 @@ import {
   ForbiddenError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -23,25 +24,36 @@ const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
   'Connector Service is currently unavailable. Please check your network connection or try again later.';
 
 const handleBackendError = (error: any, operation: string): Error => {
-  if (error.response) {
-    const { status, data } = error.response;
+  if (error) {
+    if (
+      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
+      (typeof error?.message === 'string' &&
+        error.message.includes('fetch failed'))
+    ) {
+      return new ServiceUnavailableError(
+        CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
+        error,
+      );
+    }
+    
+    const { statusCode, data, message } = error;
     const errorDetail =
-      data?.detail || data?.reason || data?.message || 'Unknown error';
+      data?.detail || data?.reason || data?.message || message || 'Unknown error';
 
     logger.error(`Backend error during ${operation}`, {
-      status,
+      statusCode,
       errorDetail,
       fullResponse: data,
     });
 
     if (errorDetail === 'ECONNREFUSED') {
-      throw new InternalServerError(
+      throw new ServiceUnavailableError(
         CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
         error,
       );
     }
 
-    switch (status) {
+    switch (statusCode) {
       case 400:
         return new BadRequestError(errorDetail);
       case 401:
@@ -70,7 +82,7 @@ const executeConnectorCommand = async (
   uri: string,
   method: HttpMethod,
   headers: Record<string, string>,
-  body?: any
+  body?: any,
 ) => {
   const connectorCommandOptions: ConnectorServiceCommandOptions = {
     uri,
@@ -89,15 +101,15 @@ const executeConnectorCommand = async (
 const handleConnectorResponse = (
   connectorResponse: any,
   res: Response,
-  notFoundMessage: string,
-  failureMessage: string
+  operation: string,
+  failureMessage: string,
 ) => {
   if (connectorResponse && connectorResponse.statusCode !== 200) {
-    throw new BadRequestError(failureMessage);
+    throw handleBackendError(connectorResponse, operation);
   }
   const connectorsData = connectorResponse.data;
   if (!connectorsData) {
-    throw new NotFoundError(notFoundMessage);
+    throw new NotFoundError(`${operation} failed: ${failureMessage}`);
   }
   res.status(200).json(connectorsData);
 };
@@ -120,14 +132,14 @@ export const getConnectors =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors`,
         HttpMethod.GET,
-        req.headers as Record<string, string>
+        req.headers as Record<string, string>,
       );
-      
+
       handleConnectorResponse(
         connectorResponse,
         res,
         'Connectors not found',
-        'Failed to get all connectors'
+        'get all connectors',
       );
     } catch (error: any) {
       logger.error('Error getting all connectors', {
@@ -137,6 +149,43 @@ export const getConnectors =
         data: error.response?.data,
       });
       const handleError = handleBackendError(error, 'get all connectors');
+      next(handleError);
+    }
+  };
+
+export const getConnectorByName =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorName } = req.params;
+      if (!connectorName) {
+        throw new BadRequestError('Connector name is required');
+      }
+      logger.info(`Getting connector by name: ${connectorName}`);
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector not found',
+        'get connector by name',
+      );
+    } catch (error: any) {
+      logger.error('Error getting connector by name', {
+        error: error.message,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handleError = handleBackendError(error, 'get connector by name');
       next(handleError);
     }
   };
@@ -157,14 +206,14 @@ export const getActiveConnectors =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/active`,
         HttpMethod.GET,
-        req.headers as Record<string, string>
+        req.headers as Record<string, string>,
       );
-      
+
       handleConnectorResponse(
         connectorResponse,
         res,
         'Active connectors not found',
-        'Failed to get all active connectors'
+        'get all active connectors',
       );
     } catch (error: any) {
       logger.error('Error getting all active connectors', {
@@ -197,14 +246,14 @@ export const getInactiveConnectors =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/inactive`,
         HttpMethod.GET,
-        req.headers as Record<string, string>
+        req.headers as Record<string, string>,
       );
-      
+
       handleConnectorResponse(
         connectorResponse,
         res,
         'Inactive connectors not found',
-        'Failed to get all inactive connectors'
+        'get all inactive connectors',
       );
     } catch (error: any) {
       logger.error('Error getting all inactive connectors', {
@@ -237,14 +286,14 @@ export const getConnectorConfig =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/config/${connectorName}`,
         HttpMethod.GET,
-        req.headers as Record<string, string>
+        req.headers as Record<string, string>,
       );
-      
+
       handleConnectorResponse(
         connectorResponse,
         res,
         'Connector config not found',
-        'Failed to get connector config'
+        'get connector config',
       );
     } catch (error: any) {
       logger.error('Error getting connector config', {
@@ -267,8 +316,8 @@ export const updateConnectorConfig =
   ): Promise<void> => {
     try {
       const { connectorName } = req.params;
-      const { auth, sync, filters,baseUrl } = req.body;
-      const config = { auth, sync, filters, base_url: baseUrl};
+      const { auth, sync, filters, baseUrl } = req.body;
+      const config = { auth, sync, filters, base_url: baseUrl };
       if (!connectorName) {
         throw new BadRequestError('Connector name is required');
       }
@@ -280,14 +329,14 @@ export const updateConnectorConfig =
         `${appConfig.connectorBackend}/api/v1/connectors/config/${connectorName}`,
         HttpMethod.PUT,
         req.headers as Record<string, string>,
-        config
+        config,
       );
-      
+
       handleConnectorResponse(
         connectorResponse,
         res,
         'Connector config not found',
-        'Failed to update connector config'
+        'update connector config',
       );
     } catch (error: any) {
       logger.error('Error updating connector config', {
@@ -317,14 +366,14 @@ export const getConnectorSchema =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/schema/${connectorName}`,
         HttpMethod.GET,
-        req.headers as Record<string, string>
+        req.headers as Record<string, string>,
       );
-      
+
       handleConnectorResponse(
         connectorResponse,
         res,
         'Connector schema not found',
-        'Failed to get connector schema'
+        'get connector schema',
       );
     } catch (error: any) {
       logger.error('Error getting connector schema', {
@@ -334,6 +383,43 @@ export const getConnectorSchema =
         data: error.response?.data,
       });
       const handleError = handleBackendError(error, 'get connector schema');
+      next(handleError);
+    }
+  };
+
+export const getConnectorConfigAndSchema =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorName } = req.params;
+      if (!connectorName) {
+        throw new BadRequestError('Connector name is required');
+      }
+      logger.info(`Getting connector config and schema for ${connectorName}`);
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/config-schema/${connectorName}`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Connector config and schema not found',
+        'get connector config and schema',
+      );
+    } catch (error: any) {
+      logger.error('Error getting connector config and schema', {
+        error: error.message,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handleError = handleBackendError(error, 'get connector config and schema');
       next(handleError);
     }
   };
@@ -354,14 +440,14 @@ export const toggleConnector =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/toggle/${connectorName}`,
         HttpMethod.POST,
-        req.headers as Record<string, string>
+        req.headers as Record<string, string>,
       );
-      
+
       handleConnectorResponse(
         connectorResponse,
         res,
         'Connector not found',
-        'Failed to toggle connector'
+        'toggle connector',
       );
     } catch (error: any) {
       logger.error('Error toggling connector', {
@@ -398,12 +484,12 @@ export const getOAuthAuthorizationUrl =
         HttpMethod.GET,
         req.headers as Record<string, string>,
       );
-      
+
       handleConnectorResponse(
         connectorResponse,
         res,
         'OAuth authorization url not found',
-        'Failed to get OAuth authorization url'
+        'get OAuth authorization url',
       );
     } catch (error: any) {
       logger.error('Error getting OAuth authorization url', {
@@ -436,14 +522,14 @@ export const getConnectorFilterOptions =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/filters/${connectorName}`,
         HttpMethod.GET,
-        req.headers as Record<string, string>
+        req.headers as Record<string, string>,
       );
-      
+
       handleConnectorResponse(
         connectorResponse,
         res,
         'Connector filter options not found',
-        'Failed to get connector filter options'
+        'get connector filter options',
       );
     } catch (error: any) {
       logger.error('Error getting connector filter options', {
@@ -481,14 +567,14 @@ export const saveConnectorFilterOptions =
         `${appConfig.connectorBackend}/api/v1/connectors/filters/${connectorName}`,
         HttpMethod.POST,
         req.headers as Record<string, string>,
-        filterOptions
+        filterOptions,
       );
-      
+
       handleConnectorResponse(
         connectorResponse,
         res,
         'Connector filter options not found',
-        'Failed to save connector filter options'
+        'save connector filter options',
       );
     } catch (error: any) {
       logger.error('Error saving connector filter options', {
@@ -515,7 +601,7 @@ export const handleOAuthCallback =
     try {
       const { connectorName } = req.params;
       const { baseUrl } = req.query;
-      const {code, state, error} = req.query;
+      const { code, state, error } = req.query;
       if (!connectorName) {
         throw new BadRequestError('Connector name is required');
       }
@@ -523,7 +609,7 @@ export const handleOAuthCallback =
       if (!code || !state) {
         throw new BadRequestError('Code and state are required');
       }
-      
+
       const queryParams = new URLSearchParams();
       if (code) queryParams.set('code', String(code));
       if (state) queryParams.set('state', String(state));
@@ -537,41 +623,47 @@ export const handleOAuthCallback =
         HttpMethod.GET,
         req.headers as Record<string, string>,
       );
-      
-          // Check if the response is a redirect (from Python backend)
-          if (connectorResponse && connectorResponse.statusCode === 302 && connectorResponse.headers?.location) {
-            // Python backend returned a redirect; send JSON so frontend navigates to avoid CORS
-            const redirectUrl = connectorResponse.headers?.location;
-            if (redirectUrl) {
-              res.status(200).json({ redirectUrl });
-              return;
-            }
-          }
-          
-          // Check if Python backend returned JSON response (success/error with redirect URL)
-          if (connectorResponse && connectorResponse.data) {
-            const responseData = connectorResponse.data as any;
-            // Normalize possible string values
-            const successFlag = Boolean(responseData.success);
-            const redirectUrlFromJson = responseData.redirect_url as string | undefined;
-            if (responseData.success && redirectUrlFromJson) {
-              // Return JSON for frontend navigation
-              res.status(200).json({ redirectUrl: redirectUrlFromJson });
-              return;
-            } else if (!successFlag && redirectUrlFromJson) {
-              // Return JSON error with redirect target
-              res.status(200).json({ redirectUrl: redirectUrlFromJson });
-              return;
-            }
-          }
-          
-          // If not a redirect, handle as normal response
-          handleConnectorResponse(
-            connectorResponse,
-            res,
-            'OAuth callback not found',
-            'Failed to handle OAuth callback'
-          );
+
+      // Check if the response is a redirect (from Python backend)
+      if (
+        connectorResponse &&
+        connectorResponse.statusCode === 302 &&
+        connectorResponse.headers?.location
+      ) {
+        // Python backend returned a redirect; send JSON so frontend navigates to avoid CORS
+        const redirectUrl = connectorResponse.headers?.location;
+        if (redirectUrl) {
+          res.status(200).json({ redirectUrl });
+          return;
+        }
+      }
+
+      // Check if Python backend returned JSON response (success/error with redirect URL)
+      if (connectorResponse && connectorResponse.data) {
+        const responseData = connectorResponse.data as any;
+        // Normalize possible string values
+        const successFlag = Boolean(responseData.success);
+        const redirectUrlFromJson = responseData.redirect_url as
+          | string
+          | undefined;
+        if (responseData.success && redirectUrlFromJson) {
+          // Return JSON for frontend navigation
+          res.status(200).json({ redirectUrl: redirectUrlFromJson });
+          return;
+        } else if (!successFlag && redirectUrlFromJson) {
+          // Return JSON error with redirect target
+          res.status(200).json({ redirectUrl: redirectUrlFromJson });
+          return;
+        }
+      }
+
+      // If not a redirect, handle as normal response
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'handle OAuth callback failed',
+        'handle OAuth callback',
+      );
     } catch (error: any) {
       logger.error('Error handling OAuth callback', {
         error: error.message,

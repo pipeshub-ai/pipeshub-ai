@@ -813,7 +813,7 @@ class ConnectorAppContainer(BaseAppContainer):
         config_service=config_service,
     )
 
-    feature_flag_service = providers.Singleton(container_utils.create_feature_flag_service)
+    feature_flag_service = providers.Singleton(container_utils.create_feature_flag_service, config_service=config_service)
 
     # Services that will be initialized based on account type
     # Define lazy dependencies for account-based services:

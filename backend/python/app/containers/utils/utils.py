@@ -28,6 +28,7 @@ from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.featureflag.featureflag import FeatureFlagService
+from app.services.featureflag.provider.etcd import EtcdProvider
 from app.services.scheduler.redis_scheduler.redis_scheduler import RedisScheduler
 from app.services.vector_db.const.const import (
     VECTOR_DB_COLLECTION_NAME,
@@ -236,7 +237,22 @@ class ContainerUtils:
 
     async def create_feature_flag_service(
         self,
+        config_service: ConfigurationService | None = None,
     ) -> FeatureFlagService:
-        """Async factory for FeatureFlagService"""
-        feature_flag_service = FeatureFlagService.get_service()
-        return feature_flag_service
+        """Async factory for FeatureFlagService
+
+        Preference order:
+        1) EtcdProvider-backed provider (uses get_config under the hood)
+        2) Env provider fallback
+        """
+        if config_service is not None:
+            print("Creating EtcdProvider")
+            provider = EtcdProvider(config_service)
+            try:
+                await provider.refresh()
+            except Exception as e:
+                self.logger.debug(f"Feature flag provider refresh failed: {e}")
+            return await FeatureFlagService.init_with_etcd_provider(provider, self.logger)
+        else:
+            print("Creating EnvFileProvider")
+            return FeatureFlagService.get_service()

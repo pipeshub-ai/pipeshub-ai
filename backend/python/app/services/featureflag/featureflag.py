@@ -22,11 +22,13 @@ Usage:
 """
 
 import os
+from logging import Logger
 from threading import Lock
 from typing import Optional
 
 from app.services.featureflag.interfaces.config import IConfigProvider
 from app.services.featureflag.provider.env import EnvFileProvider
+from app.services.featureflag.provider.etcd import EtcdProvider
 
 DEFAULT_ENV_PATH = '../../../.env'
 
@@ -89,6 +91,26 @@ class FeatureFlagService:
         with cls._lock:
             cls._instance = None
 
+    @classmethod
+    async def init_with_etcd_provider(
+        cls,
+        provider: EtcdProvider,
+        logger: Logger,
+    ) -> 'FeatureFlagService':
+        """
+        Initialize the singleton to use EtcdProvider as the provider.
+
+        The provider is refreshed once during initialization.
+        """
+        with cls._lock:
+            try:
+                await provider.refresh()
+            except Exception as e:
+                logger.debug(f"Feature flag provider refresh failed: {e}")
+                pass
+            cls._instance = cls(provider)
+            return cls._instance
+
     def is_feature_enabled(self, flag_name: str, default: bool = False) -> bool:
         """
         Check if a feature flag is enabled
@@ -103,9 +125,9 @@ class FeatureFlagService:
         value = self._provider.get_flag_value(flag_name)
         return value if value is not None else default
 
-    def refresh(self) -> None:
+    async def refresh(self) -> None:
         """Refresh feature flags from the provider"""
-        self._provider.refresh()
+        await self._provider.refresh()
 
     def set_provider(self, provider: IConfigProvider) -> None:
         """

@@ -58,7 +58,7 @@ import {
   reindexRecordSchema,
   getConnectorStatsSchema,
 } from '../validators/validators';
-import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
+// Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';
 import { RecordRelationService } from '../services/kb.relation.service';
@@ -67,6 +67,16 @@ import { RecordsEventProducer } from '../services/records_events.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { SyncEventProducer } from '../services/sync_events.service';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
+import { FileProcessorService } from '../../../libs/middlewares/file_processor/fp.service';
+import { KB_UPLOAD_LIMITS } from '../constants/kb.constants';
+import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
+import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import { RequestHandler, Response, NextFunction } from 'express';
+import { Logger } from '../../../libs/services/logger.service';
+
+const logger = Logger.getInstance({
+  service: 'KnowledgeBaseRoutes',
+});
 
 export function createKnowledgeBaseRouter(container: Container): Router {
   const router = Router();
@@ -88,6 +98,55 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     'KeyValueStoreService',
   );
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+
+  // Helper: resolve current max upload size (bytes) from platform settings
+  const resolveMaxUploadSize = async (): Promise<number> => {
+    try {
+      const settings = await getPlatformSettingsFromStore(keyValueStoreService);
+      return settings.fileUploadMaxSizeBytes;
+    } catch (_e) {
+      // Fallback to default if utility fails
+      return KB_UPLOAD_LIMITS.defaultMaxFileSizeBytes;
+    }
+  };
+
+  // Create per-request dynamic buffer upload processor
+  const createDynamicBufferUpload = (opts: {
+    fieldName: string;
+    allowedMimeTypes: string[];
+    maxFilesAllowed: number;
+    isMultipleFilesAllowed: boolean;
+    strictFileUpload: boolean;
+  }): RequestHandler[] => {
+    const handler: RequestHandler = async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const maxFileSize = await resolveMaxUploadSize();
+        const service = new FileProcessorService({
+          fieldName: opts.fieldName,
+          allowedMimeTypes: opts.allowedMimeTypes,
+          maxFilesAllowed: opts.maxFilesAllowed,
+          isMultipleFilesAllowed: opts.isMultipleFilesAllowed,
+          processingType: FileProcessingType.BUFFER,
+          maxFileSize,
+          strictFileUpload: opts.strictFileUpload,
+        });
+        const upload = service.upload();
+        upload(req, res, (err: any) => {
+          if (err) return next(err);
+          const process = service.processFiles();
+          process(req, res, next);
+        });
+      } catch (_e) {
+        logger.error('Error creating dynamic buffer upload', { error: _e });
+        next(_e);
+      }
+    };
+    return [handler];
+  };
 
   // create knowledge base
   router.post(
@@ -130,15 +189,13 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     '/record/:recordId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    ...FileProcessorFactory.createBufferUploadProcessor({
+    ...createDynamicBufferUpload({
       fieldName: 'file',
       allowedMimeTypes: Object.values(extensionToMimeType),
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
-      processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024 * 30,
       strictFileUpload: false,
-    }).getMiddleware,
+    }),
     ValidationMiddleware.validate(updateRecordSchema),
     updateRecord(keyValueStoreService, appConfig),
   );
@@ -152,7 +209,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     deleteRecord(appConfig),
   );
 
-  // Old api for streaming records 
+  // Old api for streaming records
   router.get(
     '/stream/record/:recordId',
     authMiddleware.authenticate,
@@ -200,6 +257,31 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     resyncConnectorRecords(recordRelationService, appConfig),
   );
 
+  // Limits endpoint for clients to discover constraints
+  router.get(
+    '/limits',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    async (
+      _req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        res
+          .status(200)
+          .json({
+            maxFilesPerRequest: KB_UPLOAD_LIMITS.maxFilesPerRequest,
+            maxFileSizeBytes: await resolveMaxUploadSize(),
+          })
+          .end();
+      } catch (_e) {
+        logger.error('Error getting limits', { error: _e });
+        next(_e);
+      }
+    },
+  );
+
   // get specific knowledge base
   router.get(
     '/:kbId',
@@ -241,16 +323,14 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     '/:kbId/upload',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    // File processing middleware
-    ...FileProcessorFactory.createBufferUploadProcessor({
+    // File processing middleware (dynamic max size)
+    ...createDynamicBufferUpload({
       fieldName: 'files',
       allowedMimeTypes: Object.values(extensionToMimeType),
-      maxFilesAllowed: 1000, // Allow more files for folder uploads
+      maxFilesAllowed: KB_UPLOAD_LIMITS.maxFilesPerRequest,
       isMultipleFilesAllowed: true,
-      processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024 * 30, // 30MB per file
       strictFileUpload: true,
-    }).getMiddleware,
+    }),
 
     // Validation middleware
     ValidationMiddleware.validate(uploadRecordsSchema),
@@ -264,16 +344,14 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     '/:kbId/folder/:folderId/upload',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    // File processing middleware
-    ...FileProcessorFactory.createBufferUploadProcessor({
+    // File processing middleware (dynamic max size)
+    ...createDynamicBufferUpload({
       fieldName: 'files',
       allowedMimeTypes: Object.values(extensionToMimeType),
-      maxFilesAllowed: 1000, // Allow more files for folder uploads
+      maxFilesAllowed: KB_UPLOAD_LIMITS.maxFilesPerRequest,
       isMultipleFilesAllowed: true,
-      processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024 * 30, // 30MB per file
       strictFileUpload: true,
-    }).getMiddleware,
+    }),
 
     // Validation middleware
     ValidationMiddleware.validate(uploadRecordsToFolderSchema),

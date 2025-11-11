@@ -45,6 +45,7 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
+from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
@@ -66,6 +67,7 @@ from app.containers.connector import ConnectorAppContainer
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
+from app.services.featureflag.config.config import CONFIG
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.llm import get_llm
@@ -2070,6 +2072,52 @@ async def get_connector_stats_endpoint(
         raise HTTPException(status_code=500, detail=result["message"])
 
 
+async def check_beta_connector_access(
+    app_name: str,
+    request: Request
+) -> None:
+    """
+    Check if the connector is a beta connector and if beta connectors are enabled.
+    Raises HTTPException if beta connectors are disabled and the connector is beta.
+
+    Args:
+        app_name: Name of the connector
+        request: FastAPI request object
+
+    Raises:
+        HTTPException: 403 if beta connectors are disabled and connector is beta
+    """
+    try:
+        container = request.app.container
+        feature_flag_service = await container.feature_flag_service()
+
+        # Refresh feature flags to get latest values
+        try:
+            await feature_flag_service.refresh()
+        except Exception as e:
+            container.logger().debug(f"Feature flag refresh failed: {e}")
+
+        # Check if beta connectors are enabled
+        beta_enabled = feature_flag_service.is_feature_enabled(CONFIG.ENABLE_BETA_CONNECTORS)
+
+        if not beta_enabled:
+            # Check if this connector is a beta connector
+            beta_connectors = ConnectorFactory.list_beta_connectors()
+            normalized_name = app_name.replace(' ', '').lower()
+
+            if normalized_name in beta_connectors:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Beta connectors are not enabled. The connector '{app_name}' is a beta connector and cannot be accessed. Please enable beta connectors in platform settings to use this connector."
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # On error, log but don't block access (fail-open for safety)
+        container = request.app.container
+        container.logger().debug(f"Beta connector check failed: {e}")
+
+
 @router.get("/api/v1/connectors/config/{app_name}")
 async def get_connector_config(
     app_name: str,
@@ -2078,13 +2126,18 @@ async def get_connector_config(
 ) -> Dict[str, Any]:
     """
     Retrieve connector configuration using registry metadata and etcd (no DB requirement).
+    Optimized to use batch-fetched statuses.
     """
+    # Check beta connector access
+    await check_beta_connector_access(app_name, request)
+
     try:
         container = request.app.container
         logger = container.logger()
         logger.info(f"Getting connector config for {app_name}")
 
         # Read connector metadata from registry (source of truth)
+        # This now uses batch-fetched statuses internally for better performance
         connector_registry = request.app.state.connector_registry
         registry_entry = await connector_registry.get_connector_by_name(app_name)
         if not registry_entry:
@@ -2130,6 +2183,74 @@ async def get_connector_config(
         raise HTTPException(status_code=500, detail=f"Failed to get connector config for {app_name}")
 
 
+@router.get("/api/v1/connectors/config-schema/{app_name}")
+async def get_connector_config_and_schema(
+    app_name: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service)
+) -> Dict[str, Any]:
+    """
+    Retrieve both connector configuration and schema in a single request.
+    This reduces API calls from 2 to 1, improving performance.
+    """
+    # Check beta connector access
+    await check_beta_connector_access(app_name, request)
+
+    try:
+        container = request.app.container
+        logger = container.logger()
+        logger.info(f"Getting connector config and schema for {app_name}")
+
+        # Read connector metadata from registry (source of truth)
+        connector_registry = request.app.state.connector_registry
+        registry_entry = await connector_registry.get_connector_by_name(app_name)
+        if not registry_entry:
+            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found in registry")
+
+        # Load config from etcd (may be empty on first load)
+        try:
+            config_service = container.config_service()
+            filtered_app_name = _sanitize_app_name(app_name)
+            config_key: str = f"/services/connectors/{filtered_app_name}/config"
+            config: Optional[Dict[str, Any]] = await config_service.get_config(config_key)
+        except Exception as e:
+            logger.error(f"Failed to load config from etcd for {app_name}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to load config from etcd for {app_name}")
+
+        if not config:
+            config = {"auth": {}, "sync": {}, "filters": {}}
+        config = config.copy() if config else {"auth": {}, "sync": {}, "filters": {}}
+        config.pop("credentials", None)
+        config.pop("oauth", None)
+
+        # Get schema from registry entry
+        schema = registry_entry.get("config", {})
+
+        response_dict: Dict[str, Any] = {
+            "name": registry_entry["name"],
+            "appGroupId": registry_entry.get("appGroupId"),
+            "appGroup": registry_entry.get("appGroup"),
+            "authType": registry_entry.get("authType"),
+            "appDescription": registry_entry.get("appDescription", ""),
+            "appCategories": registry_entry.get("appCategories", []),
+            "supportsRealtime": registry_entry.get("supportsRealtime", False),
+            "supportsSync": registry_entry.get("supportsSync", False),
+            "iconPath": registry_entry.get("iconPath", "/assets/icons/connectors/default.svg"),
+            "config": config,
+            "isActive": registry_entry.get("isActive", False),
+            "isConfigured": registry_entry.get("isConfigured", False),
+            "isAuthenticated": registry_entry.get("isAuthenticated", False),
+        }
+
+        return {"success": True, "config": response_dict, "schema": schema}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger = request.app.container.logger()
+        logger.error(f"Failed to get connector config and schema for {app_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get connector config and schema for {app_name}")
+
+
 @router.get("/api/v1/connectors")
 async def get_connectors(
     request: Request,
@@ -2153,6 +2274,7 @@ async def get_connectors(
         return {"success": True, "connectors": result}
     else:
         raise HTTPException(status_code=404, detail="No connectors found")
+
 
 @router.get("/api/v1/connectors/active")
 async def get_active_connector(
@@ -2179,6 +2301,51 @@ async def get_inactive_connector(
     result: List[Dict[str, Any]] = await connector_registry.get_inactive_connector()
     return {"success": True, "connectors": result}
 
+
+@router.get("/api/v1/connectors/{app_name}")
+async def get_connector_by_name(
+    app_name: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service)
+) -> Dict[str, Any]:
+    """
+    Retrieve a single connector by name.
+    Optimized to use batch-fetched statuses.
+    Note: This route must come after /active and /inactive to avoid conflicts.
+
+    Args:
+        app_name: Name of the connector
+        request: FastAPI request object
+        arango_service: Injected ArangoService dependency
+
+    Returns:
+        Dict containing success status and connector data
+
+    Raises:
+        HTTPException: 404 if connector not found, 403 if beta connector access denied
+    """
+    # Check beta connector access
+    await check_beta_connector_access(app_name, request)
+
+    try:
+        container = request.app.container
+        logger = container.logger()
+        logger.info(f"Getting connector by name: {app_name}")
+
+        connector_registry = request.app.state.connector_registry
+        result: Optional[Dict[str, Any]] = await connector_registry.get_connector_by_name(app_name)
+
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
+
+        return {"success": True, "connector": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger = request.app.container.logger()
+        logger.error(f"Failed to get connector {app_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get connector {app_name}")
+
 @router.get("/api/v1/connectors/schema/{app_name}")
 async def get_connector_schema(
     app_name: str,
@@ -2186,7 +2353,8 @@ async def get_connector_schema(
     arango_service: BaseArangoService = Depends(get_arango_service)
 ) -> Dict[str, Any]:
     """
-    Retrieve connector schema from database config.
+    Retrieve connector schema from registry metadata.
+    Optimized to use batch-fetched statuses.
 
     Args:
         app_name: Name of the connector
@@ -2197,20 +2365,29 @@ async def get_connector_schema(
         Dict containing success status and connector schema
 
     Raises:
-        HTTPException: 404 if connector not found
+        HTTPException: 404 if connector not found, 403 if beta connector access denied
     """
-    container = request.app.container
-    logger = container.logger()
-    logger.info(f"Getting connector schema for {app_name}")
-    connector_registry = request.app.state.connector_registry
-    result: Optional[Dict[str, Any]] = await connector_registry.get_connector_by_name(app_name)
-    if not result:
-        raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
+    # Check beta connector access
+    await check_beta_connector_access(app_name, request)
 
-    # Return the config object as schema
-    schema = result.get("config", {})
+    try:
+        container = request.app.container
+        logger = container.logger()
+        logger.info(f"Getting connector schema for {app_name}")
+        connector_registry = request.app.state.connector_registry
+        result: Optional[Dict[str, Any]] = await connector_registry.get_connector_by_name(app_name)
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
 
-    return {"success": True, "schema": schema}
+        # Return the config object as schema
+        schema = result.get("config", {})
+        return {"success": True, "schema": schema}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger = request.app.container.logger()
+        logger.error(f"Failed to get connector schema for {app_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get connector schema for {app_name}")
 
 
 @router.get("/api/v1/connectors/{app_name}/oauth/authorize")
@@ -2231,6 +2408,9 @@ async def get_oauth_authorization_url(
     Returns:
         Dict containing authorization URL and state
     """
+    # Check beta connector access
+    await check_beta_connector_access(app_name, request)
+
     container = request.app.container
     logger = container.logger()
 
@@ -2347,6 +2527,9 @@ async def handle_oauth_callback(
     """GET callback handler for OAuth redirects.
     This endpoint processes the OAuth callback and redirects to the frontend with the result.
     """
+    # Check beta connector access
+    await check_beta_connector_access(app_name, request)
+
     container = request.app.container
     logger = container.logger()
     config_service = container.config_service()
@@ -2778,6 +2961,9 @@ async def get_connector_filters(
     Returns:
         Dict containing available filter options
     """
+    # Check beta connector access
+    await check_beta_connector_access(app_name, request)
+
     container = request.app.container
     logger = container.logger()
 
@@ -2859,6 +3045,9 @@ async def save_connector_filters(
     Returns:
         Dict containing success status
     """
+    # Check beta connector access
+    await check_beta_connector_access(app_name, request)
+
     container = request.app.container
     logger = container.logger()
 
@@ -2914,8 +3103,11 @@ async def update_connector_config(
         Dict containing success status and updated configuration
 
     Raises:
-        HTTPException: 400 if invalid JSON, 404 if connector config not found
+        HTTPException: 400 if invalid JSON, 404 if connector config not found, 403 if beta connector access denied
     """
+    # Check beta connector access
+    await check_beta_connector_access(app_name, request)
+
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
@@ -3021,8 +3213,11 @@ async def toggle_connector(
         Dict containing success status and message
 
     Raises:
-        HTTPException: 404 if org/connector not found, 500 for internal errors
+        HTTPException: 404 if org/connector not found, 403 if beta connector access denied, 500 for internal errors
     """
+    # Check beta connector access
+    await check_beta_connector_access(app_name, request)
+
     container = request.app.container
     logger = container.logger()
     producer = container.messaging_producer

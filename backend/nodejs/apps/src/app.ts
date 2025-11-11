@@ -42,6 +42,7 @@ import {
   AppConfig,
 } from './modules/tokens_manager/config/config';
 import { NotificationService } from './modules/notification/service/notification.service';
+import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import {
   createSwaggerContainer,
   SwaggerConfig,
@@ -271,6 +272,9 @@ export class Application {
         },
       }),
     );
+
+    // Global rate limiter - applies to all routes
+    this.app.use(createGlobalRateLimiter(this.logger));
   }
 
   private configureRoutes(): void {

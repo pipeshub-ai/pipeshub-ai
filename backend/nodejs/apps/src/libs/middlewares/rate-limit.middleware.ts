@@ -1,81 +1,99 @@
-// import { Request, Response, NextFunction } from 'express';
-// import { Redis } from 'ioredis';
-// import { Logger } from '../services/logger.service';
-// import { TooManyRequestsError } from '../errors/http.errors';
+import { Request, Response, RequestHandler } from 'express';
+import rateLimit, { Options } from 'express-rate-limit';
+import { Logger } from '../services/logger.service';
+import { TooManyRequestsError } from '../errors/http.errors';
+import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
 
-// export interface RateLimitConfig {
-//   windowMs: number;
-//   max: number;
-//   keyPrefix?: string;
-//   handler?: (req: Request, res: Response) => void;
-//   skipFailure?: boolean;
-// }
+// Single global rate limiter: 10,000 requests per 1 minute
+export function createGlobalRateLimiter(logger: Logger): RequestHandler {
+  const config: Partial<Options> = {
+    windowMs: 60 * 1000,
+    max: process.env.MAX_REQUESTS_PER_MINUTE ? parseInt(process.env.MAX_REQUESTS_PER_MINUTE, 10) : 10000,
+    standardHeaders: true,
+    legacyHeaders: false,
 
-// export class RateLimitMiddleware {
-//   private redis: Redis;
-//   private logger: Logger;
+    keyGenerator: (req: Request): string => {
+      const authenticatedUserReq = req as AuthenticatedUserRequest;
+      const authenticatedServiceReq = req as AuthenticatedServiceRequest;
 
-//   constructor() {
-//     this.redis = new Redis(process.env.REDIS_URL!);
-//     this.logger = Logger.getInstance();
-//   }
+      if (authenticatedUserReq.user?.userId) {
+        return `user:${authenticatedUserReq.user.userId}`;
+      }
+      if (authenticatedServiceReq.tokenPayload?.orgId) {
+        return `org:${authenticatedServiceReq.tokenPayload.orgId}`;
+      }
+      const ip = getClientIp(req);
+      return `ip:${ip}`;
+    },
 
-//   createLimiter(config: RateLimitConfig) {
-//     const keyPrefix = config.keyPrefix || 'rate-limit:';
+    skip: (req: Request): boolean => {
+      const authenticatedServiceReq = req as AuthenticatedServiceRequest;
+      if (authenticatedServiceReq.tokenPayload) {
+        logger.debug('Skipping rate limit for service request', {
+          orgId: authenticatedServiceReq.tokenPayload.orgId,
+          userId: authenticatedServiceReq.tokenPayload.userId,
+        });
+        return true;
+      }
+      return false;
+    },
 
-//     return async (req: Request, res: Response, next: NextFunction) => {
-//       try {
-//         const key = `${keyPrefix}${req.ip}:${req.path}`;
+    handler: (req: Request, res: Response): void => {
+      const retryAfter = res.getHeader('Retry-After');
+      const rateLimitKey = getRateLimitKey(req);
 
-//         const result = await this.redis
-//           .multi()
-//           .incr(key)
-//           .expire(key, Math.ceil(config.windowMs / 1000))
-//           .exec();
+      logger.warn('Rate limit exceeded', {
+        key: rateLimitKey,
+        path: req.path,
+        method: req.method,
+        ip: getClientIp(req),
+        retryAfter,
+      });
 
-//         if (!result || result[0][0]) {
-//           throw new Error('Redis operation failed');
-//         }
+      const error = new TooManyRequestsError('Too many requests. Please try again later.');
+      res.status(429).json({
+        error: {
+          code: error.code,
+          message: error.message,
+          retryAfter: retryAfter ? parseInt(retryAfter as string, 10) : null,
+        },
+      });
+    },
+  };
 
-//         const current = result[0][1] as number;
+  function getRateLimitKey(req: Request): string {
+    const authenticatedUserReq = req as AuthenticatedUserRequest;
+    const authenticatedServiceReq = req as AuthenticatedServiceRequest;
+    if (authenticatedUserReq.user?.userId) {
+      return `user:${authenticatedUserReq.user.userId}`;
+    }
+    if (authenticatedServiceReq.tokenPayload?.orgId) {
+      return `org:${authenticatedServiceReq.tokenPayload.orgId}`;
+    }
+    return `ip:${getClientIp(req)}`;
+  }
 
-//         // Set rate limit headers
-//         res.setHeader('X-RateLimit-Limit', config.max);
-//         res.setHeader(
-//           'X-RateLimit-Remaining',
-//           Math.max(0, config.max - current),
-//         );
-//         res.setHeader(
-//           'X-RateLimit-Reset',
-//           new Date(Date.now() + config.windowMs).toISOString(),
-//         );
+  function getClientIp(req: Request): string {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (forwarded) {
+      const forwardedValue = typeof forwarded === 'string' ? forwarded : forwarded[0];
+      if (forwardedValue) {
+        const ips = forwardedValue.split(',');
+        const firstIp = ips[0];
+        if (firstIp) {
+          return firstIp.trim();
+        }
+      }
+    }
+    const realIp = req.headers['x-real-ip'];
+    if (realIp) {
+      const realIpValue = typeof realIp === 'string' ? realIp : realIp[0];
+      if (realIpValue) {
+        return realIpValue;
+      }
+    }
+    return req.ip || req.socket.remoteAddress || 'unknown';
+  }
 
-//         if (current > config.max) {
-//           this.logger.warn('Rate limit exceeded', {
-//             ip: req.ip,
-//             path: req.path,
-//             current,
-//             max: config.max,
-//           });
-
-//           if (config.skipFailure) {
-//             return next();
-//           }
-
-//           if (config.handler) {
-//             return config.handler(req, res);
-//           }
-
-//           throw new TooManyRequestsError('Too many requests', {
-//             limit: config.max,
-//             windowMs: config.windowMs,
-//           });
-//         }
-
-//         next();
-//       } catch (error) {
-//         next(error);
-//       }
-//     };
-//   }
-// }
+  return rateLimit(config);
+}

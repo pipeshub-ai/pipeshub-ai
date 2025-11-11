@@ -63,4 +63,7 @@ export const configPaths = {
     connector: '/services/connector',
     query: '/services/query',
   },
+  platform: {
+    settings: '/services/platform/settings',
+  },
 };

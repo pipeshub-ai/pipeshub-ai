@@ -182,6 +182,22 @@ export const qdrantConfigSchema = z.object({
   }),
 });
 
+// Platform settings schema (feature flags and upload limits)
+export const platformSettingsSchema = z.object({
+  body: z.object({
+    fileUploadMaxSizeBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(1024 * 1024 * 1024, { message: 'Max 1GB per file' }) // safety upper bound
+      .describe('Max per-file upload size in bytes'),
+    featureFlags: z
+      .record(z.boolean())
+      .default({})
+      .describe('Feature flags map, e.g., { ENABLE_WORKFLOW_BUILDER: true }'),
+  }),
+});
+
 export const kafkaConfigSchema = z.object({
   body: z.object({
     brokers: z.array(z.string().url()), // Ensures an array of valid URLs
