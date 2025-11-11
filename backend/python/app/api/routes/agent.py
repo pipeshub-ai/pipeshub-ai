@@ -562,6 +562,28 @@ async def create_agent(request: Request) -> JSONResponse:
                     detail="At least one reasoning model must be present in the models array. Please add a reasoning model to your agent configuration."
                 )
 
+        # Validate connector instances: Only one connector instance per appGroup can be added
+        connector_instances = body_dict.get("connectorInstances", [])
+        if connector_instances and isinstance(connector_instances, list):
+            app_type_map = {}
+            duplicate_app_types = []
+
+            for instance in connector_instances:
+                if isinstance(instance, dict):
+                    app_type = instance.get("type")
+                    if app_type:
+                        if app_type in app_type_map:
+                            if app_type not in duplicate_app_types:
+                                duplicate_app_types.append(app_type)
+                        else:
+                            app_type_map[app_type] = instance
+
+            if duplicate_app_types:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only one connector instance per app group can be added. Duplicate app groups found: {', '.join(duplicate_app_types)}"
+                )
+
         agent = {
             "_key": str(uuid.uuid4()),
             "name": body_dict.get("name"),
@@ -572,6 +594,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "models": body_dict.get("models"),
             "apps": body_dict.get("apps"),
             "kb": body_dict.get("kb"),
+            "connectorInstances": connector_instances,
             "vectorDBs": body_dict.get("vectorDBs"),
             "tags": body_dict.get("tags"),
             "orgId": user_info.get("orgId"),
@@ -580,6 +603,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "updatedAtTimestamp": time,
             "isDeleted": False,
         }
+        logger.info(f"Agent: {agent}")
         # Create the agent
         result = await arango_service.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value)
         if not result:
@@ -707,6 +731,28 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         # Only OWNER can edit the agent
         if not agent_with_permission.get("can_edit", False):
             raise HTTPException(status_code=403, detail="Only the owner can edit this agent")
+
+        # Validate connector instances: Only one connector instance per appGroup can be added
+        connector_instances = body_dict.get("connectorInstances", [])
+        if connector_instances and isinstance(connector_instances, list):
+            app_group_map = {}
+            duplicate_app_groups = []
+
+            for instance in connector_instances:
+                if isinstance(instance, dict):
+                    app_group = instance.get("appGroup")
+                    if app_group:
+                        if app_group in app_group_map:
+                            if app_group not in duplicate_app_groups:
+                                duplicate_app_groups.append(app_group)
+                        else:
+                            app_group_map[app_group] = instance
+
+            if duplicate_app_groups:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only one connector instance per app group can be added. Duplicate app groups found: {', '.join(duplicate_app_groups)}"
+                )
 
         # Update the agent
         result = await arango_service.update_agent(agent_id, body_dict, user.get("_key"))
@@ -985,7 +1031,8 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             filters = {
                 "apps": agent.get("apps"),
                 "kb": agent.get("kb"),
-                "vectorDBs": agent.get("vectorDBs")
+                "vectorDBs": agent.get("vectorDBs"),
+                "connectorInstances": agent.get("connectorInstances", [])
             }
 
         # Override individual filter values if they exist in chat query
@@ -996,6 +1043,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 filters["kb"] = chat_query.filters.get("kb")
             if chat_query.filters.get("vectorDBs") is not None:
                 filters["vectorDBs"] = chat_query.filters.get("vectorDBs")
+
+        if agent.get("connectorInstances"):
+            filters["connectorInstances"] = agent.get("connectorInstances")
 
         # Override tools if provided in chat query
         tools = chat_query.tools if chat_query.tools is not None else agent.get("tools")
@@ -1099,7 +1149,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             filters = {
                 "apps": agent.get("apps"),
                 "kb": agent.get("kb"),
-                "vectorDBs": agent.get("vectorDBs")
+                "vectorDBs": agent.get("vectorDBs"),
+                "connectorInstances": agent.get("connectorInstances", [])
             }
 
         # Override individual filter values if they exist in chat query
@@ -1110,6 +1161,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 filters["kb"] = chat_query.filters.get("kb")
             if chat_query.filters.get("vectorDBs") is not None:
                 filters["vectorDBs"] = chat_query.filters.get("vectorDBs")
+
+        if agent.get("connectorInstances"):
+            filters["connectorInstances"] = agent.get("connectorInstances")
 
         # Override tools if provided in chat query
         if chat_query.tools is not None:

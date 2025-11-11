@@ -1060,12 +1060,17 @@ export const toggleConnectorInstance =
   ): Promise<void> => {
     try {
       const { connectorId } = req.params;
+      const { type } = req.body;
 
       if (!connectorId) {
         throw new BadRequestError('Connector ID is required');
       }
 
-      logger.info(`Toggling connector instance ${connectorId}`);
+      if (!type) {
+        throw new BadRequestError('Toggle type is required');
+      }
+
+      logger.info(`Toggling connector instance ${connectorId} with type ${type}`);
 
       const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
@@ -1076,6 +1081,7 @@ export const toggleConnectorInstance =
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/toggle`,
         HttpMethod.POST,
         headers,
+        { type },
       );
 
       handleConnectorResponse(
@@ -1152,3 +1158,71 @@ export const getConnectorSchema =
       next(handledError);
     }
   };
+
+
+  /**
+ * Get all active agent instances.
+ */
+export const getActiveAgentInstances =
+(appConfig: AppConfig) =>
+async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const { userId } = req.user || {};
+    const { scope, page, limit, search } = req.query;
+
+    if (!userId) {
+      throw new UnauthorizedError('User authentication required');
+    }
+
+    logger.info(`Getting connector registry for user ${userId}`);
+
+    const queryParams = new URLSearchParams();
+    if (scope) {
+      queryParams.append('scope', String(scope));
+    }
+
+    if (page) {
+      queryParams.append('page', String(page));
+    }
+    if (limit) {
+      queryParams.append('limit', String(limit));
+    }
+    if (search) {
+      queryParams.append('search', String(search));
+    }
+
+    const isAdmin = await isUserAdmin(req);
+    const headers: Record<string, string> = {
+      ...(req.headers as Record<string, string>),
+      'X-Is-Admin': isAdmin ? 'true' : 'false',
+    };
+    const connectorResponse = await executeConnectorCommand(
+      `${appConfig.connectorBackend}/api/v1/connectors/agents/active?${queryParams.toString()}`,
+      HttpMethod.GET,
+      headers,
+    );
+
+    handleConnectorResponse(
+      connectorResponse,
+      res,
+      'Active agent instances not found',
+      'Failed to get active agent instances',
+    );
+  } catch (error: any) {
+    logger.error('Error getting active agent instances', {
+      error: error.message,
+      userId: req.user?.userId,
+      status: error.response?.status,
+      data: error.response?.data,
+    });
+    const handledError = handleBackendError(
+      error,
+      'get active agent instances',
+    );
+    next(handledError);
+  }
+};

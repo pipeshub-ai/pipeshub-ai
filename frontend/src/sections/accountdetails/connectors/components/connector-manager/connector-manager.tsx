@@ -93,7 +93,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
   const authType = (connector.authType || '').toUpperCase();
   const isOauth = authType === 'OAUTH';
   const canEnable = isActive ? true : isOauth ? isAuthenticated : isConfigured;
-  const supportsSync = !!(connectorConfig?.config?.sync?.supportedStrategies?.length);
+  const supportsSync = connector.supportsSync || false;
 
   // Determine whether to show Authenticate button
   const isGoogleWorkspace = connector.appGroup === 'Google Workspace';
@@ -146,7 +146,6 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                   isEnablingWithFilters={isEnablingWithFilters}
                   onToggle={handleToggleConnector}
                   hideAuthenticate={hideAuthenticate}
-                  supportsSync={supportsSync}
                 />
               </Grid>
 
@@ -166,7 +165,6 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                     setRenameOpen(true);
                   }}
                   hideAuthenticate={hideAuthenticate}
-                  supportsSync={supportsSync}
                 />
               </Grid>
             </Grid>

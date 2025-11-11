@@ -22,6 +22,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   setNodes,
   onNodeEdit,
   onNodeDelete,
+  onError,
 }) => (
   <Box
     sx={{
@@ -54,6 +55,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
       sidebarWidth={sidebarWidth}
       onNodeEdit={onNodeEdit}
       onNodeDelete={onNodeDelete}
+      onError={onError}
     />
   </Box>
 );

@@ -1,4 +1,9 @@
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    ConnectorScopes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.models.entities import RecordGroupType, RecordType
 
 # User schema for ArangoDB
@@ -97,8 +102,9 @@ app_schema = {
             "type": {"type": "string"},
             "appGroup": {"type": "string"},
             "authType": {"type": "string"},
-            "scope": {"type": "string", "enum": ["personal", "team"]},
+            "scope": {"type": "string", "enum": [scope.value for scope in ConnectorScopes]},
             "isActive": {"type": "boolean", "default": True},
+            "isAgentActive": {"type": "boolean", "default": False},
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
             "createdBy": {"type": ["string", "null"]},
@@ -159,26 +165,13 @@ record_schema = {
             "indexingStatus": {
                 "type": "string",
                 "enum": [
-                    "NOT_STARTED",
-                    "IN_PROGRESS",
-                    "PAUSED",
-                    "FAILED",
-                    "COMPLETED",
-                    "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF",
-                    "ENABLE_MULTIMODAL_MODELS"
+                    status.value for status in ProgressStatus
                 ],
             },
             "extractionStatus": {
                 "type": "string",
                 "enum": [
-                    "NOT_STARTED",
-                    "IN_PROGRESS",
-                    "PAUSED",
-                    "FAILED",
-                    "COMPLETED",
-                    "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF"
+                    status.value for status in ProgressStatus
                 ],
             },
             "isLatestVersion": {"type": "boolean", "default": True},
@@ -480,6 +473,19 @@ agent_schema = {
             "kb": {
                 "type": "array",
                 "items": {"type": "string"},
+                "default": [],
+            },
+            "connectorInstances": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "scope": {"type": "string", "enum": [scope.value for scope in ConnectorScopes]},
+                    "type": {"type": "string"},
+                    },
+                    "required": ["id", "name", "scope", "type"],
+                    "additionalProperties": True,
+                },
                 "default": [],
             },
             "vectorDBs": {

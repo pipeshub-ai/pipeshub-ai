@@ -8,7 +8,7 @@ import playIcon from '@iconify-icons/mdi/play';
 import keyIcon from '@iconify-icons/mdi/key';
 import deleteIcon from '@iconify-icons/mdi/delete';
 import editIcon from '@iconify-icons/mdi/pencil';
-import { Connector } from '../../types/types';
+import { Connector, ConnectorToggleType } from '../../types/types';
 
 interface ConnectorActionsSidebarProps {
   connector: Connector;
@@ -17,11 +17,10 @@ interface ConnectorActionsSidebarProps {
   onAuthenticate: () => void;
   onConfigure: () => void;
   onRefresh: () => void;
-  onToggle: (enabled: boolean) => void;
+  onToggle: (enabled: boolean, type: ConnectorToggleType) => void;
   onDelete: () => void;
   onRename: () => void;
   hideAuthenticate?: boolean;
-  supportsSync?: boolean;
 }
 
 const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
@@ -35,7 +34,6 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
   onDelete,
   onRename,
   hideAuthenticate,
-  supportsSync = false,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -52,7 +50,7 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
         ? isConfigured
         : isAuthenticated
       : isConfigured;
-
+  const supportsSync = connector.supportsSync || false;
   return (
     <Stack spacing={1.5}>
       {/* Quick Actions */}
@@ -128,7 +126,7 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
               fullWidth
               size="small"
               startIcon={<Iconify icon={isActive ? pauseIcon : playIcon} width={14} height={14} />}
-              onClick={() => onToggle(!isActive)}
+              onClick={() => onToggle(!isActive, 'sync')}
               disabled={!isActive && !canEnable}
               sx={{
                 textTransform: 'none',
@@ -146,7 +144,7 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
                 },
               }}
             >
-              {isActive ? 'Disable' : 'Enable'}
+              {isActive ? 'Disable Sync' : 'Enable Sync'}
             </Button>
           )}
           <Button

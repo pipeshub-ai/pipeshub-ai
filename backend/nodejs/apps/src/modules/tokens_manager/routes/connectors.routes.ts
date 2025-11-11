@@ -48,6 +48,7 @@ import {
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
   getConnectorSchema,
+  getActiveAgentInstances,
 } from '../controllers/connector.controllers';
 import { ConnectorsConfig } from '../../configuration_manager/schema/connectors.schema';
 import { GoogleWorkspaceApp, scopeToAppMap } from '../types/connector.types';
@@ -172,6 +173,17 @@ const saveConnectorInstanceFilterOptionsSchema = z.object({
 });
 
 /**
+ * Schema for validating connector toggle type parameter
+ */
+const connectorToggleSchema = z.object({
+  body: z.object({
+    type: z.enum(['sync', 'agent']),
+  }),
+  params: z.object({
+    connectorId: z.string().min(1, 'Connector ID is required'),
+  }),
+});
+/**
  * Schema for validating connector type parameter
  */
 const connectorTypeParamSchema = z.object({
@@ -294,6 +306,17 @@ export function createConnectorRouter(container: Container): Router {
     getInactiveConnectorInstances(config)
   );
 
+  /**
+   * GET /instances/agents/active
+   * Get all active agent instances
+   */
+  router.get(
+    '/agents/active',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(connectorListSchema),
+    getActiveAgentInstances(config)
+  );
   /**
    * GET /instances/configured
    * Get all configured connector instances
@@ -453,7 +476,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     metricsMiddleware(container),
     userAdminCheck,
-    ValidationMiddleware.validate(connectorIdParamSchema),
+    ValidationMiddleware.validate(connectorToggleSchema),
     toggleConnectorInstance(config)
   );
 

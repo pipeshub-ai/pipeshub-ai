@@ -7,7 +7,7 @@
  */
 
 import axios from "src/utils/axios";
-import { Connector, ConnectorConfig, ConnectorRegistry } from "../types/types";
+import { Connector, ConnectorConfig, ConnectorRegistry, ConnectorToggleType } from "../types/types";
 
 const BASE_URL = '/api/v1/connectors';
 
@@ -259,12 +259,41 @@ export class ConnectorApiService {
   /**
    * Toggle connector instance active status
    */
-  static async toggleConnectorInstance(connectorId: string): Promise<boolean> {
-    const response = await axios.post(`${BASE_URL}/${connectorId}/toggle`);
+  static async toggleConnectorInstance(connectorId: string, type: ConnectorToggleType): Promise<boolean> {
+    const response = await axios.post(`${BASE_URL}/${connectorId}/toggle`, { type });
     if (!response.data) throw new Error('Failed to toggle connector instance');
     return response.data.success;
   }
 
+  /**
+   Get all active agent instances
+   */
+    /**
+   * Get all active agent connector instances
+   * @param scope - Optional scope filter ('personal' | 'team')
+   * @param page - Page number (default: 1)
+   * @param limit - Items per page (default: 20)
+   * @param search - Optional search query
+   */
+    static async getActiveAgentConnectorInstances(
+      page?: number,
+      limit?: number,
+      search?: string,
+    ): Promise<{ connectors: Connector[]; pagination: any }> {
+      const params: any = {};
+      if (typeof page === 'number' && Number.isFinite(page)) params.page = page;
+      if (typeof limit === 'number' && Number.isFinite(limit)) params.limit = limit;
+      if (search) params.search = search;
+      
+      const response = await axios.get(`${BASE_URL}/agents/active`, { params });
+      if (!response.data) throw new Error('Failed to fetch configured connector instances');
+      console.log(response.data);
+      return {
+        connectors: response.data.connectors || [],
+        pagination: response.data.pagination || {}
+      };
+    }
+  
   // ============================================================================
   // Legacy APIs (Backward Compatibility)
   // ============================================================================
@@ -328,7 +357,7 @@ export class ConnectorApiService {
     if (!instance || !instance._key) {
       throw new Error(`Connector instance not found for name: ${connectorName}`);
     }
-    return this.toggleConnectorInstance(instance._key);
+    return this.toggleConnectorInstance(instance._key, 'sync');
   }
 
   /**

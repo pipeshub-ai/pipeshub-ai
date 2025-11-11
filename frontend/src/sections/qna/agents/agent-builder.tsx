@@ -38,6 +38,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     availableTools,
     availableModels,
     availableKnowledgeBases,
+    activeAgentConnectors,
     loading,
     loadedAgent,
     error,
@@ -79,7 +80,8 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   const { nodeTemplates } = useAgentBuilderNodeTemplates(
     availableTools,
     availableModels,
-    availableKnowledgeBases
+    availableKnowledgeBases,
+    activeAgentConnectors
   );
 
   // Flow reconstruction hook
@@ -316,6 +318,57 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   // Handle connections
   const onConnect = useCallback(
     (connection: Connection) => {
+      // Get source and target nodes
+      const sourceNode = nodes.find((n) => n.id === connection.source);
+      const targetNode = nodes.find((n) => n.id === connection.target);
+
+      // Validate connection rules
+      if (sourceNode && targetNode) {
+        const sourceType = sourceNode.data.type;
+        const targetType = targetNode.data.type;
+
+        // Tools should connect to connector instances, not agent
+        if (sourceType.startsWith('tool-') && targetType === 'agent-core') {
+          setError('Tools must be connected to connector instances, not directly to the agent');
+          return;
+        }
+
+        // Tools should only connect to connector instances
+        if (sourceType.startsWith('tool-') && !targetType.startsWith('connector-group-')) {
+          setError('Tools must be connected to connector instances');
+          return;
+        }
+
+        // Connector instances should connect to agent's actions handle, not tools
+        if (sourceType.startsWith('connector-group-') && targetType === 'agent-core') {
+          if (connection.targetHandle !== 'actions') {
+            setError('Connector instances must be connected to the agent\'s actions handle');
+            return;
+          }
+
+          // Validate: Only one connector instance per connector type can be added
+          const connectorAppType = sourceNode.data.config?.type;
+          if (connectorAppType) {
+            const existingConnectorNodes = nodes.filter(
+              (n) => n.data.type.startsWith('connector-group-') &&
+              n.data.config?.type === connectorAppType &&
+              n.id !== sourceNode.id
+            );
+
+            if (existingConnectorNodes.length > 0) {
+              setError(`Only one connector instance per app group (${connectorAppType}) can be added to an agent`);
+              return;
+            }
+          }
+        }
+
+        // Connector instances should only connect to agent's actions handle
+        if (sourceType.startsWith('connector-group-') && targetType !== 'agent-core') {
+          setError('Connector instances must be connected to the agent\'s actions handle');
+          return;
+        }
+      }
+
       const newEdge = {
         id: `e-${connection.source}-${connection.target}-${Date.now()}`,
         ...connection,
@@ -328,7 +381,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
       };
       setEdges((eds) => addEdge(newEdge as any, eds));
     },
-    [setEdges, theme]
+    [setEdges, theme, nodes, setError]
   );
 
   // Handle edge selection and deletion
@@ -528,6 +581,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
           setNodeToDelete(nodeId);
           setDeleteDialogOpen(true);
         }}
+        onError={(error: string) => setError(error)}
       />
 
       {/* Notifications */}

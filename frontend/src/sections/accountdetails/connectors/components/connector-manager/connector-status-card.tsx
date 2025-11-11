@@ -17,9 +17,8 @@ interface ConnectorStatusCardProps {
   connector: Connector;
   isAuthenticated: boolean;
   isEnablingWithFilters: boolean;
-  onToggle: (enabled: boolean) => void;
+  onToggle: (enabled: boolean, type: 'sync' | 'agent') => void;
   hideAuthenticate?: boolean;
-  supportsSync?: boolean;
 }
 
 const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
@@ -28,12 +27,12 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
   isEnablingWithFilters,
   onToggle,
   hideAuthenticate,
-  supportsSync = false,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const isConfigured = connector.isConfigured || false;
   const isActive = connector.isActive || false;
+  const isAgentActive = connector.isAgentActive || false;
   const authType = (connector.authType || '').toUpperCase();
   const isOauth = authType === 'OAUTH';
   const canEnable = isActive
@@ -44,6 +43,8 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
         : isAuthenticated
       : isConfigured;
   const enableBlocked = !isActive && !canEnable;
+  const supportsSync = connector.supportsSync || false;
+  const supportsAgent = connector.supportsAgent || false;
 
   const getTooltipMessage = () => {
     if (!isActive && !canEnable) {
@@ -213,7 +214,7 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
           <Stack direction="row" alignItems="center" justifyContent="space-between">
             <Box>
               <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                Connector Status
+                Connector Sync
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
                 {isActive
@@ -241,9 +242,80 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
                       // Block enabling if prerequisites not met
                       return;
                     }
-                    onToggle(next);
+                    onToggle(next, 'sync');
                   }}
                   disabled={!isActive && !canEnable}
+                  color="primary"
+                  size="medium"
+                  sx={{
+                    '& .MuiSwitch-switchBase.Mui-checked': {
+                      color: theme.palette.primary.main,
+                      '&:hover': {
+                        backgroundColor: isDark
+                          ? alpha(theme.palette.primary.main, 0.9)
+                          : alpha(theme.palette.primary.main, 0.1),
+                      },
+                    },
+                    '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+                      backgroundColor: isDark
+                        ? theme.palette.primary.main
+                        : theme.palette.primary.main,
+                    },
+                  }}
+                />
+              </div>
+            </Tooltip>
+          </Stack>
+        </Box>
+      )}
+
+      {supportsAgent && (
+        <Box
+          sx={{
+            p: 2,
+            mt: 2,
+            borderRadius: 1,
+            bgcolor:
+              theme.palette.mode === 'dark'
+                ? isDark
+                  ? alpha(theme.palette.background.default, 0.3)
+                  : alpha(theme.palette.background.default, 0.3)
+                : alpha(theme.palette.grey[50], 0.5),
+            border: `1px solid ${theme.palette.divider}`,
+          }}
+        >
+          <Stack direction="row" alignItems="center" justifyContent="space-between">
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+                Enable Agent
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
+                {isAgentActive
+                  ? 'Active and agent is enabled'
+                  : isConfigured
+                    ? 'Configured but agent is disabled'
+                    : 'Needs configuration to enable agent'}
+              </Typography>
+            </Box>
+
+            <Tooltip
+              title={getTooltipMessage()}
+              placement="top"
+              arrow
+              disableHoverListener={!enableBlocked}
+            >
+              <div>
+                <Switch
+                  checked={isAgentActive}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    if (next && !canEnable) {
+                      // Block enabling if prerequisites not met
+                      return;
+                    }
+                    onToggle(next, 'agent');
+                  }}
+                  disabled={!isAgentActive && !canEnable}
                   color="primary"
                   size="medium"
                   sx={{

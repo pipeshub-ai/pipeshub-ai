@@ -3,11 +3,14 @@ import { useState, useCallback, useEffect } from 'react';
 import type { Agent } from 'src/types/agent';
 import AgentApiService from '../../services/api';
 import type { UseAgentBuilderDataReturn } from '../../types/agent';
+import { Connector } from 'src/sections/accountdetails/connectors/types/types';
+import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 
 export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | null): UseAgentBuilderDataReturn => {
   const [availableTools, setAvailableTools] = useState<any[]>([]);
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<any[]>([]);
+  const [activeAgentConnectors, setActiveAgentConnectors] = useState<Connector[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadedAgent, setLoadedAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,17 +36,18 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
       setError(null);
 
       // Load basic resources first
-      const [toolsResponse, modelsResponse, kbResponse] = await Promise.all([
+      const [toolsResponse, modelsResponse, kbResponse, activeAgentConnectorsResponse] = await Promise.all([
         AgentApiService.getAvailableTools(),
         AgentApiService.getAvailableModels(),
         AgentApiService.getKnowledgeBases(),
+        ConnectorApiService.getActiveAgentConnectorInstances(1, 100, ''),
       ]);
 
       setAvailableTools(toolsResponse || []);
       const models = Array.isArray(modelsResponse) ? modelsResponse : [];
       setAvailableModels(models);
       setAvailableKnowledgeBases(kbResponse?.knowledgeBases || []);
-
+      setActiveAgentConnectors(activeAgentConnectorsResponse?.connectors || []);
       // If editing an agent, load the agent details after basic resources
       if (editingAgent?._key) {
         await loadAgentDetails(editingAgent._key);
@@ -72,6 +76,7 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
     availableTools,
     availableModels,
     availableKnowledgeBases,
+    activeAgentConnectors,
     loading,
     loadedAgent,
     error,

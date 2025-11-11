@@ -1,5 +1,5 @@
 // src/sections/agents/components/flow-builder-sidebar.tsx
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -107,9 +107,12 @@ import googleDocsIcon from '@iconify-icons/logos/google';
 import googleMeetIcon from '@iconify-icons/logos/google-meet';
 import notionIcon from '@iconify-icons/logos/notion';
 import { useConnectors } from '../../../../accountdetails/connectors/context';
+import connectorIcon from '@iconify-icons/mdi/database-plus';
 
 // Utility functions
 import { normalizeDisplayName } from '../../utils/agent';
+import { ConnectorApiService } from '../../../../accountdetails/connectors/services/api';
+import { Connector } from 'src/sections/accountdetails/connectors/types/types';
 
 interface NodeTemplate {
   type: string;
@@ -119,7 +122,7 @@ interface NodeTemplate {
   defaultConfig: Record<string, any>;
   inputs: string[];
   outputs: string[];
-  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'outputs' | 'agent';
+  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'connectors' | 'outputs' | 'agent';
 }
 
 interface FlowBuilderSidebarProps {
@@ -146,11 +149,20 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     'Vector Stores': false,
   });
   const [expandedApps, setExpandedApps] = useState<Record<string, boolean>>({});
+  const [activeAgentConnectors, setActiveAgentConnectors] = useState<Connector[]>([]);
 
   // Get connector data from the hook
   const { activeConnectors } = useConnectors();
   const allConnectors = [...activeConnectors];
 
+
+  useEffect(() => {
+    const fetchActiveAgentConnectors = async () => {
+      const result = await ConnectorApiService.getActiveAgentConnectorInstances(1, 100, '');
+      setActiveAgentConnectors(result.connectors);
+    };
+    fetchActiveAgentConnectors();
+  }, []);
   // Filter templates based on search query
   const filteredTemplates = useMemo(() => {
     if (!searchQuery.trim()) return nodeTemplates;
@@ -218,6 +230,27 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     return grouped;
   }, [filteredTemplates]);
 
+  // Group individual tools by app name for dropdown
+  const groupedByConnector = useMemo(() => {
+    const individualConnectors = filteredTemplates.filter(
+      (t) =>
+        t.category === 'connectors' && t.type.startsWith('connector-')
+    );
+    const grouped: Record<string, NodeTemplate[]> = {};
+
+    individualConnectors.forEach((connector) => {
+      const connectorName = connector?.defaultConfig?.appGroup || 'Other';
+      const displayName = normalizeDisplayName(connectorName);
+
+      if (!grouped[displayName]) {
+        grouped[displayName] = [];
+      }
+      grouped[displayName].push(connector);
+    }); 
+
+    return grouped;
+  }, [filteredTemplates]);
+
   // Get memory-related nodes for Memory section
   const kbGroupNode = useMemo(
     () => filteredTemplates.find((t) => t.type === 'kb-group'),
@@ -263,7 +296,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   const renderDraggableItem = (
     template: NodeTemplate,
     isSubItem = false,
-    sectionType?: 'tools' | 'apps' | 'kbs'
+    sectionType?: 'tools' | 'apps' | 'kbs' | 'connectors'
   ) => {
     // Get the appropriate icon based on the item type
     let itemIcon = template.icon;
@@ -288,6 +321,9 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       }
     } else if (sectionType === 'tools' && template.defaultConfig?.appName) {
       itemIcon = getToolIcon(template.type, template.defaultConfig.appName);
+    } else if (sectionType === 'connectors' && template.defaultConfig?.name) {
+      itemIcon = template.defaultConfig.iconPath;
+      isDynamicIcon = true;
     }
 
     // Generic string-path icon support
@@ -301,6 +337,8 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       hoverColor = theme.palette.info.main;
     } else if (sectionType === 'kbs') {
       hoverColor = theme.palette.warning.main;
+    } else if (sectionType === 'connectors') {
+      hoverColor = theme.palette.info.main;
     }
 
     return (
@@ -465,7 +503,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   const renderDropdownContent = (
     items: NodeTemplate[],
     borderColor = theme.palette.primary.main,
-    sectionType?: 'tools' | 'apps' | 'kbs'
+    sectionType?: 'tools' | 'apps' | 'kbs' | 'connectors'
   ) => (
     <Box
       sx={{
@@ -508,6 +546,11 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       name: 'Knowledge',
       icon: dataIcon,
       categories: ['knowledge'],
+    },
+    {
+      name: 'Connectors',
+      icon: connectorIcon,
+      categories: ['connectors'],
     },
     {
       name: 'Tools',
@@ -916,6 +959,10 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
               const isExpanded = expandedCategories[config.name];
               const hasItems = categoryTemplates.length > 0;
 
+              if (config.name === 'Connectors') {
+                console.log(categoryTemplates);
+              }
+
               return (
                 <Box key={config.name}>
                   <ListItem
@@ -1042,7 +1089,36 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                           .filter((t) => !t.type.startsWith('kb-') && !t.type.startsWith('app-'))
                           .map((template) => renderDraggableItem(template))}
                       </Box>
-                    ) : hasItems ? (
+                    ) : 
+                    config.name === 'Connectors' ? (
+                      <Box sx={{ pl: 0 }}>
+                      {Object.entries(groupedByConnector).map(([connectorName, connectors]) => {
+                        const isConnectorExpanded = expandedApps[connectorName];
+                        const appGroup = appToolNodes.find(
+                          (node) => node.defaultConfig?.name === connectorName
+                        );
+
+                        const connectorIcon = connectors[0]?.defaultConfig?.iconPath || '/assets/icons/connectors/default.svg';
+
+                        return (
+                          <Box key={connectorName}>
+                            {renderExpandableGroup(
+                              connectorName,
+                              connectorIcon,
+                              connectors.length,
+                              isConnectorExpanded,
+                              () => handleAppToggle(connectorName),
+                              appGroup?.type
+                            )}
+                            <Collapse in={isConnectorExpanded} timeout="auto" unmountOnExit>
+                              {renderDropdownContent(connectors, theme.palette.primary.main, 'connectors')}
+                            </Collapse>
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                    ) :
+                    hasItems ? (
                       <List dense sx={{ py: 0 }}>
                         {categoryTemplates.map((template) => renderDraggableItem(template))}
                       </List>

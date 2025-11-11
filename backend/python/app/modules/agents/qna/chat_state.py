@@ -57,8 +57,10 @@ class ChatState(TypedDict):
     system_prompt: Optional[str]  # User-defined system prompt
     apps: Optional[List[str]]  # List of app IDs to search in
     kb: Optional[List[str]]  # List of KB IDs to search in
+    connector_instances: Optional[List[Dict[str, Any]]]  # List of connector instances with id, type, name
     tools: Optional[List[str]]  # List of tool names to enable for this agent
     output_file_path: Optional[str]  # Optional file path for saving responses
+    tool_to_connector_map: Optional[Dict[str, str]]  # Mapping from app_name (tool) to connector instance ID
 
     # Tool calling specific fields - no ToolExecutor dependency
     pending_tool_calls: Optional[bool]  # Whether the agent has pending tool calls
@@ -85,6 +87,36 @@ class ChatState(TypedDict):
     available_tools: Optional[List[str]]  # List of all available tools from registry
     tool_configs: Optional[Dict[str, Any]]  # Tool configurations (Slack tokens, etc.)
     registry_tool_instances: Optional[Dict[str, Any]]  # Cached tool instances
+
+def _build_tool_to_connector_map(connector_instances: List[Dict[str, Any]]) -> Dict[str, str]:
+    """
+    Build a mapping from app_name (connector type) to connector instance ID.
+
+    Args:
+        connector_instances: List of connector instances with id, type, name
+
+    Returns:
+        Dictionary mapping app_name (type) to connector instance ID
+    """
+    if not connector_instances:
+        return {}
+
+    tool_to_connector = {}
+    for instance in connector_instances:
+        if isinstance(instance, dict):
+            connector_id = instance.get("id")
+            connector_type = instance.get("type")
+
+            if connector_id and connector_type:
+                # Map connector type (e.g., "SLACK", "JIRA") to connector instance ID
+                # Normalize the type to uppercase for consistent matching
+                normalized_type = connector_type.replace(" ", "").lower()
+                tool_to_connector[normalized_type] = connector_id
+                # Also map the original type (case-sensitive) for flexibility
+                tool_to_connector[connector_type] = connector_id
+
+    return tool_to_connector
+
 
 def cleanup_state_after_retrieval(state: ChatState) -> None:
     """
@@ -143,9 +175,11 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
     filters = chat_query.get("filters", {})
     apps = filters.get("apps", None)
     kb = filters.get("kb", None)
+    connector_instances = filters.get("connectorInstances", None)  # List of dicts with id, type, name
 
     logger.debug(f"apps: {apps}")
     logger.debug(f"kb: {kb}")
+    logger.debug(f"connector_instances: {connector_instances}")
     logger.debug(f"tools: {tools}")
     logger.debug(f"output_file_path: {output_file_path}")
 
@@ -190,8 +224,10 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "system_prompt": system_prompt,
         "apps": apps,
         "kb": kb,
+        "connector_instances": connector_instances,
         "tools": tools,
         "output_file_path": output_file_path,
+        "tool_to_connector_map": _build_tool_to_connector_map(connector_instances) if connector_instances else None,
 
         # Tool calling specific fields - direct execution
         "pending_tool_calls": False,

@@ -779,37 +779,41 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
                   {' '}
                   {/* Keep comfortable gap */}
-                  {connectedNodesByHandle.actions.slice(0, 3).map((actionNode, index) => (
+                  {/* Show connector instances connected to actions handle */}
+                  {connectedNodesByHandle.actions
+                    .filter((actionNode) => actionNode.type.startsWith('connector-group-'))
+                    .slice(0, 3)
+                    .map((connectorNode, index) => (
+                      <Chip
+                        key={index}
+                        label={
+                          connectorNode.config?.name?.length > 12
+                            ? `${connectorNode.config.name.slice(0, 12)}...`
+                            : connectorNode.config?.name || connectorNode.label
+                        }
+                        size="small"
+                        sx={{
+                          height: 24, // Keep comfortable size
+                          fontSize: '0.7rem', // Keep comfortable size
+                          fontWeight: 600,
+                          backgroundColor: isDark ? alpha(colors.info, 0.9) : alpha(colors.info, 0.1),
+                          color: colors.info,
+                          border: `1px solid ${alpha(colors.info, 0.3)}`,
+                          '&:hover': {
+                            backgroundColor: isDark ? alpha(colors.info, 0.2) : alpha(colors.info, 0.2),
+                            borderColor: colors.info,
+                            transform: 'scale(1.05)',
+                            boxShadow: `0 2px 8px ${alpha(colors.info, 0.3)}`,
+                            color: isDark ? colors.info : colors.info,
+                          },
+                          transition: 'all 0.2s ease',
+                          '& .MuiChip-label': { px: 1 }, // Keep comfortable padding
+                        }}
+                      />
+                    ))}
+                  {connectedNodesByHandle.actions.filter((actionNode) => actionNode.type.startsWith('connector-group-')).length > 3 && (
                     <Chip
-                      key={index}
-                      label={
-                        actionNode.label.length > 12
-                          ? `${actionNode.label.slice(0, 12)}...`
-                          : actionNode.label
-                      }
-                      size="small"
-                      sx={{
-                        height: 24, // Keep comfortable size
-                        fontSize: '0.7rem', // Keep comfortable size
-                        fontWeight: 600,
-                        backgroundColor: isDark ? alpha(colors.info, 0.9) : alpha(colors.info, 0.1),
-                        color: colors.info,
-                        border: `1px solid ${alpha(colors.info, 0.3)}`,
-                        '&:hover': {
-                          backgroundColor: isDark ? alpha(colors.info, 0.2) : alpha(colors.info, 0.2),
-                          borderColor: colors.info,
-                          transform: 'scale(1.05)',
-                          boxShadow: `0 2px 8px ${alpha(colors.info, 0.3)}`,
-                          color: isDark ? colors.info : colors.info,
-                        },
-                        transition: 'all 0.2s ease',
-                        '& .MuiChip-label': { px: 1 }, // Keep comfortable padding
-                      }}
-                    />
-                  ))}
-                  {connectedNodesByHandle.actions.length > 3 && (
-                    <Chip
-                      label={`+${connectedNodesByHandle.actions.length - 3}`}
+                      label={`+${connectedNodesByHandle.actions.filter((actionNode) => actionNode.type.startsWith('connector-group-')).length - 3}`}
                       size="small"
                       sx={{
                         height: 24, // Keep comfortable size
@@ -834,7 +838,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 <Typography
                   sx={{ fontSize: '0.85rem', color: colors.text.muted, fontStyle: 'italic' }} // Keep comfortable size
                 >
-                  No actions connected
+                  No connector instances connected
                 </Typography>
               )}
             </Box>
@@ -1272,9 +1276,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
         sx={{
           p: 2.5,
           borderBottom: `1px solid ${colors.border.subtle}`,
-          background: isDark
-            ? `linear-gradient(135deg, ${alpha('#2a2a2a', 0.8)} 0%, ${alpha('#1e1e1e', 0.9)} 100%)`
-            : `linear-gradient(135deg, ${alpha('#f8fafc', 0.8)} 0%, ${alpha('#ffffff', 0.9)} 100%)`,
+          // background: isDark
+          //   ? `linear-gradient(135deg, ${alpha('#2a2a2a', 0.8)} 0%, ${alpha('#1e1e1e', 0.9)} 100%)`
+          //   : `linear-gradient(135deg, ${alpha('#f8fafc', 0.8)} 0%, ${alpha('#ffffff', 0.9)} 100%)`,
           borderRadius: '12px 12px 0 0',
           position: 'relative',
         }}
@@ -1286,19 +1290,29 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 width: 28,
                 height: 28,
                 borderRadius: 2,
-                background: `linear-gradient(135deg, ${colors.info} 0%, ${colors.primary} 100%)`,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 boxShadow: `0 2px 8px ${alpha(colors.info, 0.3)}`,
               }}
             >
-              <Icon
-                icon={data.icon || toolIcon}
-                width={14}
-                height={14}
-                style={{ color: '#ffffff' }}
-              />
+              {
+                data.type.startsWith('connector-group-') || data.type.startsWith('app-') ? (
+                  <img
+                    src={data.config?.iconPath}
+                    alt={data.label}
+                    width={20}
+                    height={20}
+                  />
+                ) : (
+                  <Icon
+                    icon={data.icon || toolIcon}
+                    width={20}
+                    height={20}
+                    style={{ color: theme.palette.text.primary }}
+                  />
+                )
+              }
             </Box>
             <Typography
               variant="h6"
@@ -1487,11 +1501,11 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 gap: 1,
               }}
             >
-              <Icon
-                icon={cloudIcon}
+              <img
+                src={data.config?.iconPath}
+                alt={data.label}
                 width={12}
                 height={12}
-                style={{ color: colors.warning }}
               />
               App
             </Typography>
@@ -1519,6 +1533,136 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
               >
                 {data.config?.appDisplayName || data.label}
               </Typography>
+            </Box>
+          </Box>
+        )}
+       
+        {/* Connector Group Section for connector group nodes */}
+        {data.type.startsWith('connector-group-') && (
+          <Box sx={{ mb: 2 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                fontWeight: 700,
+                color: colors.text.primary,
+                fontSize: '0.75rem',
+                mb: 1.5,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+              }}
+            >
+              <img
+                src={data.config?.iconPath}
+                alt={data.label}
+                width={12}
+                height={12}
+              />
+              Connector
+            </Typography>
+            <Box
+              sx={{
+                p: 2,
+                backgroundColor: colors.background.section,
+                borderRadius: 2,
+                border: `1px solid ${colors.border.subtle}`,
+                transition: 'all 0.2s ease',
+                minHeight: 45,
+                position: 'relative',
+                '&:hover': {
+                  backgroundColor: colors.background.hover,
+                  borderColor: colors.border.main,
+                },
+              }}
+            >
+              <Typography
+                sx={{
+                  fontSize: '0.75rem',
+                  color: colors.text.primary,
+                  fontWeight: 600,
+                  lineHeight: 1.3,
+                }}
+              >
+                {data.config?.name || data.label}
+              </Typography>
+              {/* Show connected tools */}
+              {(() => {
+                // Flow: Tool (source) → Connector Instance (target)
+                const connectedTools = storeEdges
+                  .filter((e: any) => {
+                    const sourceNode = storeNodes.find((n: any) => n.id === e.source);
+                    const sourceType = sourceNode?.data?.type;
+                    return e.target === data.id && typeof sourceType === 'string' && sourceType.startsWith('tool-');
+                  })
+                  .map((e: any) => {
+                    const toolNode = storeNodes.find((n: any) => n.id === e.source);
+                    return toolNode?.data as any;
+                  })
+                  .filter(Boolean);
+
+                if (connectedTools.length > 0) {
+                  return (
+                    <Box sx={{ mt: 1.5, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                      {connectedTools.slice(0, 3).map((tool: any, index: number) => (
+                        <Chip
+                          key={index}
+                          label={tool.label.length > 12 ? `${tool.label.slice(0, 12)}...` : tool.label}
+                          size="small"
+                          sx={{
+                            height: 20,
+                            fontSize: '0.65rem',
+                            fontWeight: 600,
+                            backgroundColor: isDark ? alpha(colors.info, 0.9) : alpha(colors.info, 0.1),
+                            color: colors.info,
+                            border: `1px solid ${alpha(colors.info, 0.3)}`,
+                            '&:hover': {
+                              backgroundColor: isDark ? alpha(colors.info, 0.2) : alpha(colors.info, 0.2),
+                              borderColor: colors.info,
+                              transform: 'scale(1.05)',
+                            },
+                            transition: 'all 0.2s ease',
+                            '& .MuiChip-label': { px: 0.75 },
+                          }}
+                        />
+                      ))}
+                      {connectedTools.length > 3 && (
+                        <Chip
+                          label={`+${connectedTools.length - 3}`}
+                          size="small"
+                          sx={{
+                            height: 20,
+                            fontSize: '0.65rem',
+                            fontWeight: 600,
+                            backgroundColor: isDark ? alpha(colors.text.secondary, 0.1) : alpha(colors.text.secondary, 0.1),
+                            color: colors.text.secondary,
+                            border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
+                            '&:hover': {
+                              backgroundColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                            },
+                            transition: 'all 0.2s ease',
+                            '& .MuiChip-label': { px: 0.75 },
+                          }}
+                        />
+                      )}
+                    </Box>
+                  );
+                }
+                return (
+                  <Typography
+                    sx={{
+                      fontSize: '0.65rem',
+                      color: colors.text.secondary,
+                      fontWeight: 500,
+                      mt: 0.5,
+                      fontStyle: 'italic',
+                    }}
+                  >
+                    No tools connected
+                  </Typography>
+                );
+              })()}
             </Box>
           </Box>
         )}

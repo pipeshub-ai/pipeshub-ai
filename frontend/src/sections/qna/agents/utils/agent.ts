@@ -4,6 +4,7 @@ import type {
   AgentFormData,
   AgentTemplateFormData,
   AgentFilterOptions,
+  ConnectorInstance,
 } from 'src/types/agent';
 
 import chatIcon from '@iconify-icons/mdi/chat';
@@ -96,6 +97,7 @@ export const getInitialAgentFormData = (): AgentFormData => ({
   models: [],
   apps: [],
   kb: [],
+  connectorInstances: [],
   vectorDBs: [],
   tags: [],
 });
@@ -465,22 +467,58 @@ export const extractAgentConfigFromFlow = (
   const models: { provider: string; modelName: string; isReasoning: boolean }[] = [];
   const kb: string[] = [];
   const apps: string[] = [];
+  const connectorInstances: ConnectorInstance[] = [];
+
+  // Extract connector instances from nodes
+  nodes.forEach((node) => {
+    if (node.data.type.startsWith('connector-group-')) {
+      const connectorInstance = {
+        id: node.data.config?.id || node.id,
+        name: node.data.config?.name || node.data.label,
+        type: node.data.config?.type || node.data.config?.name,
+        scope: node.data.config?.scope || 'personal',
+      };
+      connectorInstances.push(connectorInstance);
+    }
+  });
+
+  // Extract tools that are connected to connector instances
+  // Flow: Tool (source) → Connector Instance (target)
+  edges.forEach((edge) => {
+    const sourceNode = nodes.find((n) => n.id === edge.source);
+    const targetNode = nodes.find((n) => n.id === edge.target);
+
+    // If a tool is connected to a connector instance, extract the tool
+    if (sourceNode?.data.type.startsWith('tool-') && targetNode?.data.type.startsWith('connector-group-')) {
+      const toolName = sourceNode.data.config?.fullName || sourceNode.data.config?.toolId;
+      if (toolName && !tools.includes(toolName)) {
+        tools.push(toolName);
+      }
+    }
+  });
 
   nodes.forEach((node) => {
     if (node.data.type.startsWith('tool-group-')) {
       // Handle tool group nodes - extract all tools from the group
       if (node.data.config?.tools && Array.isArray(node.data.config.tools)) {
         node.data.config.tools.forEach((tool: any) => {
-          if (tool.fullName) {
+          if (tool.fullName && !tools.includes(tool.fullName)) {
             tools.push(tool.fullName);
           }
         });
       }
     } else if (node.data.type.startsWith('tool-')) {
-      // Handle individual tool nodes
+      // Handle individual tool nodes - only add if connected to a connector instance
       const toolName = node.data.config?.fullName || node.data.config?.toolId;
-      if (toolName) {
-        tools.push(toolName);
+      if (toolName && !tools.includes(toolName)) {
+        // Check if this tool is connected to a connector instance
+        // Flow: Tool (source) → Connector Instance (target)
+        const isConnectedToConnector = edges.some(
+          (e) => e.source === node.id && nodes.find((n) => n.id === e.target)?.data.type.startsWith('connector-group-')
+        );
+        if (isConnectedToConnector) {
+          tools.push(toolName);
+        }
       }
     } else if (node.data.type.startsWith('llm-')) {
       models.push({
@@ -537,6 +575,7 @@ export const extractAgentConfigFromFlow = (
     models,
     apps,
     kb,
+    connectorInstances,
     vectorDBs: [],
     tags: currentAgent?.tags || ['flow-based', 'visual-workflow'],
     flow: {

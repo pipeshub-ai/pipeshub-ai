@@ -50,6 +50,8 @@ from app.connectors.core.registry.connector_builder import (
         .add_filter_field(CommonFields.file_types_filter(), "static")
         .add_filter_field(CommonFields.folders_filter(),
                           "https://www.googleapis.com/drive/v3/files?q=mimeType='application/vnd.google-apps.folder'&fields=files(id,name,parents)")
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class GoogleDriveConnector:
@@ -104,6 +106,8 @@ class GoogleDriveConnector:
             display_name="Gmail Labels",
             description="Select Gmail labels to sync messages from"
         ), "https://gmail.googleapis.com/gmail/v1/users/me/labels")
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class GmailConnector:
@@ -151,6 +155,7 @@ class GmailConnector:
         .add_filter_field(CommonFields.channels_filter(),
                           "https://slack.com/api/conversations.list")
         .with_sync_support(False)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class SlackConnector:
@@ -195,6 +200,8 @@ class SlackConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class  NotionConnector:
@@ -244,6 +251,8 @@ class  NotionConnector:
         .with_webhook_config(True, ["event.created", "event.modified", "event.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class CalendarConnector:
@@ -294,6 +303,8 @@ class CalendarConnector:
         .with_webhook_config(True, ["space.created", "space.modified", "space.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class MeetConnector:
@@ -344,6 +355,8 @@ class MeetConnector:
         .with_webhook_config(True, ["document.created", "document.modified", "document.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class DocsConnector:
@@ -391,6 +404,8 @@ class DocsConnector:
         .with_webhook_config(True, ["sheet.created", "sheet.modified", "sheet.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class SheetsConnector:
@@ -441,6 +456,8 @@ class SheetsConnector:
         .with_webhook_config(True, ["form.created", "form.modified", "form.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class FormsConnector:
@@ -489,6 +506,8 @@ class FormsConnector:
         .with_webhook_config(True, ["slide.created", "slide.modified", "slide.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class SlidesConnector:
@@ -533,6 +552,8 @@ class SlidesConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class AirtableConnector:
@@ -609,6 +630,8 @@ class AirtableConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class AzureBlobConnector:
@@ -669,6 +692,8 @@ class AzureBlobConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class BookStackConnector:
@@ -782,6 +807,8 @@ class LinearConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class S3Connector:
@@ -842,6 +869,8 @@ class S3Connector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class ServiceNowConnector:
@@ -901,6 +930,8 @@ class ServiceNowConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class ZendeskConnector:

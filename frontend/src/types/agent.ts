@@ -37,6 +37,7 @@ export interface Agent {
   }[];
   apps: string[];
   kb: string[];
+  connectorInstances?: ConnectorInstance[];
   vectorDBs: string[];
   tags: string[];
   templateId?: string;
@@ -108,6 +109,13 @@ export interface AgentTemplateFormData {
   isDeleted?: boolean;
 }
 
+export interface ConnectorInstance {
+  id: string;
+  name: string;
+  type: string;
+  scope?: string;
+}
+
 export interface AgentFormData {
   name: string;
   description: string;
@@ -121,6 +129,7 @@ export interface AgentFormData {
   }[];
   apps: string[];
   kb: string[];
+  connectorInstances?: ConnectorInstance[];
   vectorDBs: string[];
   tags: string[];
   templateId?: string;

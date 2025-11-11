@@ -72,6 +72,7 @@ class ConnectorConfigBuilder:
             "iconPath": "/assets/icons/connectors/default.svg",
             "supportsRealtime": False,
             "supportsSync": True,
+            "supportsAgent": True,
             "documentationLinks": [],
             "auth": {
                 "type": "OAUTH",
@@ -136,6 +137,11 @@ class ConnectorConfigBuilder:
     def with_sync_support(self, supported: bool = True) -> 'ConnectorConfigBuilder':
         """Enable or disable sync support"""
         self.config["supportsSync"] = supported
+        return self
+
+    def with_agent_support(self, supported: bool = True) -> 'ConnectorConfigBuilder':
+        """Enable or disable agent support"""
+        self.config["supportsAgent"] = supported
         return self
 
     def add_documentation_link(self, link: DocumentationLink) -> 'ConnectorConfigBuilder':

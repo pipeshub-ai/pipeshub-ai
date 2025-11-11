@@ -8,7 +8,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAccountType } from 'src/hooks/use-account-type';
-import { Connector, ConnectorConfig } from '../types/types';
+import { Connector, ConnectorConfig, ConnectorToggleType } from '../types/types';
 import { ConnectorApiService } from '../services/api';
 import { CrawlingManagerApi } from '../services/crawling-manager';
 import { buildCronFromSchedule } from '../utils/cron';
@@ -28,7 +28,7 @@ interface UseConnectorManagerReturn {
   isEnablingWithFilters: boolean;
 
   // Actions
-  handleToggleConnector: (enabled: boolean) => Promise<void>;
+  handleToggleConnector: (enabled: boolean, type: ConnectorToggleType) => Promise<void>;
   handleAuthenticate: () => Promise<void>;
   handleConfigureClick: () => void;
   handleConfigClose: () => void;
@@ -113,7 +113,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
 
   // Handle connector toggle (enable/disable)
   const handleToggleConnector = useCallback(
-    async (enabled: boolean) => {
+    async (enabled: boolean, type: ConnectorToggleType) => {
       if (!connector || !connectorId) return;
 
       try {
@@ -147,7 +147,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
         const scheduledCfg = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
 
         setLoading(true);
-        const successResponse = await ConnectorApiService.toggleConnectorInstance(connectorId);
+        const successResponse = await ConnectorApiService.toggleConnectorInstance(connectorId, type);
 
         if (successResponse) {
           setConnector((prev) => (prev ? { ...prev, isActive: enabled } : null));
@@ -211,7 +211,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
         setLoading(true);
         await ConnectorApiService.saveConnectorInstanceFilters(connectorId, filters);
         // After saving filters, enable the connector
-        const successResponse = await ConnectorApiService.toggleConnectorInstance(connectorId);
+        const successResponse = await ConnectorApiService.toggleConnectorInstance(connectorId, 'sync');
         if (successResponse) {
           setConnector((prev) => (prev ? { ...prev, isActive: true } : null));
           setSuccessMessage(`${connector.name} enabled successfully`);

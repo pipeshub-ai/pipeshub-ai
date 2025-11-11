@@ -1,5 +1,6 @@
 // src/sections/qna/agents/utils/flow-builder-types.ts
 import type { Agent } from 'src/types/agent';
+import { Connector } from 'src/sections/accountdetails/connectors/types/types';
 
 // Core data interfaces
 export interface NodeData extends Record<string, unknown> {
@@ -22,7 +23,7 @@ export interface NodeTemplate {
   defaultConfig: Record<string, any>;
   inputs: string[];
   outputs: string[];
-  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'outputs' | 'agent';
+  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'connectors' | 'outputs' | 'agent';
 }
 
 // Component props interfaces
@@ -65,6 +66,7 @@ export interface AgentBuilderCanvasWrapperProps {
   setNodes: React.Dispatch<React.SetStateAction<any[]>>;
   onNodeEdit?: (nodeId: string, data: any) => void;
   onNodeDelete?: (nodeId: string) => void;
+  onError?: (error: string) => void;
 }
 
 export interface AgentBuilderNotificationPanelProps {
@@ -97,6 +99,7 @@ export interface UseAgentBuilderDataReturn {
   availableTools: any[];
   availableModels: any[];
   availableKnowledgeBases: any[];
+  activeAgentConnectors: Connector[];
   loading: boolean;
   loadedAgent: Agent | null;
   error: string | null;

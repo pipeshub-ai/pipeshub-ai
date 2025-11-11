@@ -231,9 +231,11 @@ interface Connector {
   iconPath: string;
   isActive: boolean;
   isConfigured: boolean;
+  isAgentActive: boolean;
   isAuthenticated?: boolean;
   supportsRealtime: boolean;
   supportsSync: boolean;
+  supportsAgent: boolean;
   scope?: 'personal' | 'team';
   createdBy?: string;
   updatedBy?: string;
@@ -254,6 +256,7 @@ interface ConnectorRegistry {
   iconPath: string;
   supportsRealtime: boolean;
   supportsSync: boolean;
+  supportsAgent: boolean;
   connectorScopes?: ('personal' | 'team')[];
   config: {
     auth: any;
@@ -307,6 +310,8 @@ interface ConnectorStatsResponse {
   data: ConnectorStatsData | null;
 }
 
+type ConnectorToggleType = 'sync' | 'agent';
+
 
 // Export all types
 export type { 
@@ -330,5 +335,6 @@ export type {
   ConditionalDisplayRule,
   ConditionalDisplayConfig,
   ConnectorStatsData,
-  ConnectorStatsResponse
+  ConnectorStatsResponse,
+  ConnectorToggleType
 };

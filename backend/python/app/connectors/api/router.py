@@ -2694,6 +2694,7 @@ async def get_connector_instance_config(
             "appCategories": instance.get("appCategories", []),
             "supportsRealtime": instance.get("supportsRealtime", False),
             "supportsSync": instance.get("supportsSync", False),
+            "supportsAgent": instance.get("supportsAgent", False),
             "iconPath": instance.get("iconPath", "/assets/icons/connectors/default.svg"),
             "config": config,
             "isActive": instance.get("isActive", False),
@@ -4012,9 +4013,19 @@ async def toggle_connector_instance(
         "userId": request.state.user.get("userId")
     }
 
-    logger.info(f"Toggling connector instance {connector_id}")
 
     try:
+        body = await request.json()
+        toggle_type = body.get("type")
+        if not toggle_type or toggle_type not in ["sync", "agent"]:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Toggle type is required and must be 'sync' or 'agent'. Got {toggle_type}"
+            )
+
+        logger.info(f"Toggling connector instance {connector_id} {toggle_type} status")
+
+
         # Get organization
         org = await arango_service.get_document(
             user_info["orgId"],
@@ -4060,11 +4071,20 @@ async def toggle_connector_instance(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator can toggle this connector"
             )
-        current_status = instance["isActive"]
+        current_sync_status = instance["isActive"]
+        current_agent_status = instance.get("isAgentActive", False)
         connector_type = instance.get("type", "").upper()
 
+        # Determine target status
+        if toggle_type == "sync":
+            target_status = not current_sync_status
+            status_field = "isActive"
+        else:  # agent
+            target_status = not current_agent_status
+            status_field = "isAgentActive"
+
         # Validate prerequisites when enabling
-        if not current_status:
+        if toggle_type == "sync" and not current_sync_status:
             auth_type = (instance.get("authType") or "").upper()
             config_service = container.config_service()
             config_path = _get_config_path_for_instance(connector_id)
@@ -4101,9 +4121,24 @@ async def toggle_connector_instance(
                         detail="Connector must be configured before enabling"
                     )
 
+        if toggle_type == "agent" and not current_agent_status:
+            # Check if connector supports agent functionality
+            if not instance.get("supportsAgent", False):
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail="This connector does not support agent functionality"
+                )
+
+            if not instance.get("isConfigured", False):
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail="Connector must be configured before enabling"
+                )
+
+
         # Update connector status
         updates = {
-            "isActive": not current_status,
+            status_field: target_status,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             "updatedBy": user_id
         }
@@ -4119,44 +4154,44 @@ async def toggle_connector_instance(
                 detail=f"Failed to update {instance.get('name')} connector instance status"
             )
 
-        new_status = not current_status
-        logger.info(f"Successfully toggled connector instance {connector_id} to {new_status}")
+        logger.info(f"Successfully toggled connector instance {connector_id} {toggle_type} to {target_status}")
 
-        # Prepare event messaging
-        event_type = "appEnabled" if new_status else "appDisabled"
-        credentials_route = f"api/v1/configurationManager/internal/connectors/{connector_id}/config"
+        if toggle_type == "sync":
+            # Prepare event messaging
+            event_type = "appEnabled" if target_status else "appDisabled"
+            credentials_route = f"api/v1/configurationManager/internal/connectors/{connector_id}/config"
 
-        payload = {
-            "orgId": user_info["orgId"],
-            "appGroup": instance["appGroup"],
-            "appGroupId": instance.get("appGroupId"),
-            "credentialsRoute": credentials_route,
-            "apps": [connector_type.replace(" ", "").lower()],
-            "connectorId": connector_id,
-            "syncAction": "immediate"
-        }
+            payload = {
+                "orgId": user_info["orgId"],
+                "appGroup": instance["appGroup"],
+                "appGroupId": instance.get("appGroupId"),
+                "credentialsRoute": credentials_route,
+                "apps": [connector_type.replace(" ", "").lower()],
+                "connectorId": connector_id,
+                "syncAction": "immediate"
+            }
 
-        message = {
-            "eventType": event_type,
-            "payload": payload,
-            "timestamp": get_epoch_timestamp_in_ms()
-        }
+            message = {
+                "eventType": event_type,
+                "payload": payload,
+                "timestamp": get_epoch_timestamp_in_ms()
+            }
 
-        # Send message to sync-events topic
-        await producer.send_message(topic="entity-events", message=message)
+            # Send message to sync-events topic
+            await producer.send_message(topic="entity-events", message=message)
 
         return {
             "success": True,
-            "message": f"Connector instance {connector_id} toggled successfully"
+            "message": f"Connector instance {connector_id} {toggle_type} toggled successfully"
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to toggle connector instance {connector_id}: {e}")
+        logger.error(f"Failed to toggle connector instance {connector_id} {toggle_type}: {e}")
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Failed to toggle connector instance: {str(e)}"
+            detail=f"Failed to toggle connector instance {connector_id} {toggle_type}: {str(e)}"
         )
 
 
@@ -4209,3 +4244,64 @@ async def get_connector_schema(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get connector schema: {str(e)}"
         )
+
+@router.get("/api/v1/connectors/agents/active")
+async def get_active_agent_instances(
+    request: Request,
+    scope: Optional[str] = Query("personal", description="personal | team"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=200),
+    search: Optional[str] = Query(None, description="Search by instance name/type/group")
+) -> Dict[str, Any]:
+    """
+    Get all active agent instances for the current user.
+
+    Args:
+        request: FastAPI request object
+        scope: Optional scope filter (personal/team)
+        page: Page number (1-indexed)
+        limit: Number of items per page
+        search: Optional search query
+    Returns:
+        Dictionary with active agent instances
+    """
+    container = request.app.container
+    logger = container.logger()
+    try:
+        logger.info("Getting active agent instances")
+        connector_registry = request.app.state.connector_registry
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Invalid scope. Must be 'personal' or 'team'"
+            )
+        connectors = await connector_registry.get_active_agent_connector_instances(
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+            scope=scope,
+            page=page,
+            limit=limit,
+            search=search
+        )
+
+        return {
+                "success": True,
+                **connectors
+            }
+    except Exception as e:
+        logger.error(f"Error getting active agent instances: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get active agent instances: {str(e)}"
+        )
+

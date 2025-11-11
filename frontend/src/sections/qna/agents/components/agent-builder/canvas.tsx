@@ -35,6 +35,7 @@ import playIcon from '@iconify-icons/mdi/play';
 // Import the enhanced FlowNode component
 import FlowNode from './flow-node';
 import { normalizeDisplayName } from '../../utils/agent';
+import type { NodeTemplate } from '../../types/agent';
  
 interface FlowNodeData extends Record<string, unknown> {
   id: string;
@@ -46,17 +47,6 @@ interface FlowNodeData extends Record<string, unknown> {
   inputs?: string[];
   outputs?: string[];
   isConfigured?: boolean;
-}
-
-interface NodeTemplate {
-  type: string;
-  label: string;
-  description: string;
-  icon: any;
-  defaultConfig: Record<string, any>;
-  inputs: string[];
-  outputs: string[];
-  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'outputs' | 'agent';
 }
 
 interface FlowBuilderCanvasProps {
@@ -75,6 +65,7 @@ interface FlowBuilderCanvasProps {
   sidebarWidth: number;
   onNodeEdit?: (nodeId: string, data: any) => void;
   onNodeDelete?: (nodeId: string) => void;
+  onError?: (error: string) => void;
 }
 
 // Enhanced Controls Component that uses ReactFlow context
@@ -208,6 +199,7 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
   sidebarWidth,
   onNodeEdit,
   onNodeDelete,
+  onError,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -252,6 +244,25 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
 
       if (!template) return;
 
+      // Validate: Only one connector instance per connector type can be added
+      if (template.type.startsWith('connector-group-')) {
+        const connectorAppType = template.defaultConfig?.type;
+        if (connectorAppType) {
+          // Check if a connector instance with the same connector type already exists
+          const existingConnectorNodes = nodes.filter(
+            (n) => n.data.type.startsWith('connector-group-') &&
+            n.data.config?.type === connectorAppType
+          );
+
+          if (existingConnectorNodes.length > 0) {
+            if (onError) {
+              onError(`Only one connector instance per app group (${connectorAppType}) can be added to an agent`);
+            }
+            return;
+          }
+        }
+      }
+
       const position = {
         x: event.clientX - reactFlowBounds.left - 130,
         y: event.clientY - reactFlowBounds.top - 40,
@@ -287,7 +298,7 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
 
       setNodes((nds) => [...nds, newNode]);
     },
-    [setNodes, nodeTemplates]
+    [setNodes, nodeTemplates, nodes, onError]
   );
 
   return (

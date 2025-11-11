@@ -47,6 +47,7 @@ class IndexingStatus(str, Enum):
     MANUAL_SYNC = "MANUAL_SYNC"
     AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
     FAILED = "FAILED"
+    ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
 
 
 def Connector(
@@ -321,6 +322,7 @@ class ConnectorRegistry:
                 'authType': metadata['authType'],
                 'scope': scope,
                 'isActive': False,
+                'isAgentActive': False,
                 'isConfigured': True,
                 'isAuthenticated': False,
                 'createdBy': created_by,
@@ -396,6 +398,7 @@ class ConnectorRegistry:
             updated_document = {
                 **existing_document,
                 'isActive': False,
+                'isAgentActive': False,
                 'updatedAtTimestamp': get_epoch_timestamp_in_ms()
             }
 
@@ -479,6 +482,7 @@ class ConnectorRegistry:
             ),
             'supportsRealtime': connector_config.get('supportsRealtime', False),
             'supportsSync': connector_config.get('supportsSync', False),
+            'supportsAgent': connector_config.get('supportsAgent', False),
             'config': connector_config,
             'connectorScopes': metadata.get('connectorScopes', ['personal'])
         }
@@ -487,6 +491,7 @@ class ConnectorRegistry:
         if instance_data:
             connector_info.update({
                 'isActive': instance_data.get('isActive', False),
+                'isAgentActive': instance_data.get('isAgentActive', False),
                 'isConfigured': instance_data.get('isConfigured', False),
                 'isAuthenticated': instance_data.get('isAuthenticated', False),
                 'createdAtTimestamp': instance_data.get('createdAtTimestamp'),
@@ -763,6 +768,60 @@ class ConnectorRegistry:
         for instance in active_instances:
             instance.pop('config', None)
         return active_instances
+
+    async def get_active_agent_connector_instances(
+        self,
+        user_id: str,
+        org_id: str,
+        is_admin: bool,
+        scope: Optional[str] = None,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get all active agent connector instances (isAgentActive = true) with scope-based filtering.
+
+        Args:
+            user_id: User ID requesting the instances
+            org_id: Organization ID
+            is_admin: Whether the user is an admin
+            scope: Optional scope filter (personal/team)
+            page: Page number (1-indexed)
+            limit: Number of items per page
+            search: Optional search query
+        Returns:
+            Dictionary with active agent connector instances and pagination info
+        """
+        result = await self.get_all_connector_instances(user_id, org_id, is_admin, scope, page, limit * 2, search)
+
+        active_agent_connector_instances = [
+            instance for instance in result["connectors"]
+            if instance.get('isAgentActive', False) and instance.get('isConfigured', False)
+        ]
+
+        # Re-paginate the filtered results
+        total_count = len(active_agent_connector_instances)
+        total_pages = (total_count + limit - 1) // limit
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        has_prev = page > 1
+        has_next = end_idx < total_count
+        return {
+            "connectors": active_agent_connector_instances[start_idx:end_idx],
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "search": search,
+                "totalCount": total_count,
+                "totalPages": total_pages,
+                "hasPrev": has_prev,
+                "hasNext": has_next,
+                "prevPage": page - 1,
+                "nextPage": page + 1
+            }
+        }
+
 
     async def get_inactive_connector_instances(
         self,

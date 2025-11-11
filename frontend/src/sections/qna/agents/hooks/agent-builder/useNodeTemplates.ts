@@ -16,11 +16,13 @@ import {
   normalizeDisplayName,
 } from '../../utils/agent';
 import type { UseAgentBuilderNodeTemplatesReturn, NodeTemplate } from '../../types/agent';
+import { Connector } from 'src/sections/accountdetails/connectors/types/types';
 
 export const useAgentBuilderNodeTemplates = (
   availableTools: any[],
   availableModels: any[],
-  availableKnowledgeBases: any[]
+  availableKnowledgeBases: any[],
+  activeAgentConnectors: Connector[]
 ): UseAgentBuilderNodeTemplatesReturn => {
   // Get connector data from the hook
   const { activeConnectors } = useConnectors();
@@ -34,15 +36,34 @@ export const useAgentBuilderNodeTemplates = (
       type: `app-${connector.name.toLowerCase().replace(/\s+/g, '-')}`,
       label: normalizeDisplayName(connector.name),
       description: `Connect to ${connector.name} data and content`,
-      icon: databaseIcon, // Will be overridden by dynamic icon in sidebar
+      icon: connector.iconPath, // Will be overridden by dynamic icon in sidebar
       defaultConfig: {
         appName: connector.name.toUpperCase(),
         appDisplayName: connector.name,
         searchScope: 'all',
+        iconPath: connector.iconPath,
       },
       inputs: ['query'],
       outputs: ['context'],
       category: 'knowledge' as const,
+    }));
+
+    const connectorGroupNodes = activeAgentConnectors.map(connector => ({
+      type: `connector-group-${connector.name.toLowerCase().replace(/\s+/g, '-')}`,
+      label: normalizeDisplayName(connector.name),
+      description: `Connect to ${connector.name} data and content`,
+      icon: databaseIcon, // Will be overridden by dynamic icon in sidebar
+      defaultConfig: {
+        id: connector._key,
+        name: connector.name,
+        type: connector.type,
+        appGroup: connector.appGroup,
+        authType: connector.authType,
+        iconPath: connector.iconPath,
+      },
+      inputs: ['tools'], // Tools connect to connector instances
+      outputs: ['actions'], // Connector instances connect to agent's actions handle
+      category: 'connectors' as const,
     }));
     
     const templates: NodeTemplate[] = [
@@ -167,6 +188,7 @@ export const useAgentBuilderNodeTemplates = (
 
       // Individual App Memory Nodes - Dynamic from connector data
       ...dynamicAppKnowledgeNodes,
+      ...connectorGroupNodes,
 
       // Knowledge Base Group Node
       {
