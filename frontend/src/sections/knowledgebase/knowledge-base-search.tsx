@@ -22,6 +22,7 @@ import { useConnectors } from '../accountdetails/connectors/context';
 
 import type { Filters } from './types/knowledge-base';
 import type { PipesHub, SearchResult, AggregatedDocument } from './types/search-response';
+import ImageHighlighter from '../qna/chatbot/components/image-highlighter';
 
 // Constants for sidebar widths - must match with the sidebar component
 const SIDEBAR_EXPANDED_WIDTH = 320;
@@ -58,6 +59,7 @@ function getDocumentType(extension: string) {
   if (extension === 'txt') return 'text';
   if (extension === 'md') return 'md';
   if (extension === 'mdx') return 'mdx';
+  if (['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(extension)) return 'image';
   return 'other';
 }
 
@@ -89,6 +91,7 @@ export default function KnowledgeBaseSearch() {
   const [isHtml, setIsHtml] = useState<boolean>(false);
   const [isMarkdown, setIsMarkdown] = useState<boolean>(false);
   const [isTextFile, setIsTextFile] = useState<boolean>(false);
+  const [isImage, setIsImage] = useState<boolean>(false);
   const [fileUrl, setFileUrl] = useState<string>('');
   const [recordCitations, setRecordCitations] = useState<AggregatedDocument | null>(null);
   const [hasSearched, setHasSearched] = useState<boolean>(false);
@@ -107,7 +110,7 @@ export default function KnowledgeBaseSearch() {
   });
 
   // Add a state to track if citation viewer is open
-  const isCitationViewerOpen = isPdf || isExcel || isDocx || isHtml || isTextFile || isMarkdown;
+  const isCitationViewerOpen = isPdf || isExcel || isDocx || isHtml || isTextFile || isMarkdown || isImage;
 
   const handleFilterChange = (newFilters: Filters) => {
     // If a filter operation is already in progress, return
@@ -253,6 +256,7 @@ export default function KnowledgeBaseSearch() {
     setIsHtml(false);
     setIsTextFile(false);
     setIsMarkdown(false);
+    setIsImage(false);
     setFileBuffer(null);
     setRecordCitations(null);
     setFileUrl('');
@@ -544,6 +548,9 @@ export default function KnowledgeBaseSearch() {
           case 'mdx':
             setIsMarkdown(true);
             break;
+          case 'image':
+            setIsImage(true);
+            break;
           default:
             setSnackbar({
               open: true,
@@ -574,6 +581,7 @@ export default function KnowledgeBaseSearch() {
     setIsDocx(false);
     setIsTextFile(false);
     setIsMarkdown(false);
+    setIsImage(false);
     setFileBuffer(null);
     setHighlightedCitation(null);
   };
@@ -669,6 +677,19 @@ export default function KnowledgeBaseSearch() {
       );
     }
 
+    if (isImage && (fileUrl || fileBuffer)) {
+      return (
+        <ImageHighlighter
+          key={`image-viewer-${recordCitations?.recordId || 'new'}`}
+          url={fileUrl}
+          buffer={fileBuffer}
+          citations={recordCitations?.documents || []}
+          highlightCitation={highlightedCitation}
+          onClosePdf={handleCloseViewer}
+        />
+      );
+    }
+
     return null;
   };
 
@@ -733,11 +754,11 @@ export default function KnowledgeBaseSearch() {
           />
         </Box>
         
-        {(isPdf || isExcel || isTextFile || isHtml || isDocx || isMarkdown) && (
+        {(isPdf || isExcel || isTextFile || isHtml || isDocx || isMarkdown || isImage) && (
           <Divider orientation="vertical" flexItem sx={{ borderRightWidth: 3 }} />
         )}
 
-        {(isPdf || isExcel || isTextFile || isHtml || isDocx || isMarkdown) && (
+        {(isPdf || isExcel || isTextFile || isHtml || isDocx || isMarkdown || isImage) && (
           <Box
             id="document-container"
             sx={{

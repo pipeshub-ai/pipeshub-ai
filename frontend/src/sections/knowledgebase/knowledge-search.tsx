@@ -34,7 +34,7 @@ import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scro
 
 import type { SearchResult, KnowledgeSearchProps } from './types/search-response';
 
-const VIEWABLE_EXTENSIONS = ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md', 'mdx'];
+const VIEWABLE_EXTENSIONS = ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md', 'mdx', 'ppt', 'pptx', 'jpg', 'jpeg', 'png', 'webp', 'svg'];
 
 // Helper function to get file icon color based on extension
 export const getFileIconColor = (extension: string): string => {

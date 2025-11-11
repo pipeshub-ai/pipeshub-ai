@@ -33,7 +33,6 @@ import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
 import databaseIcon from '@iconify-icons/mdi/database';
 import infoIcon from '@iconify-icons/mdi/information-outline';
 
-
 import {
   Box,
   Chip,
@@ -1904,7 +1903,7 @@ export default function RecordDetails() {
                   boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
                   overflow: 'hidden',
                 }}
-              >
+              > 
                 <RecordDocumentViewer record={record} />
               </Card>
             </Grid>
@@ -2955,6 +2954,10 @@ function getFileIcon(extension: string): React.ComponentProps<typeof IconifyIcon
     case 'jpeg':
     case 'png':
     case 'gif':
+    case 'bmp':
+    case 'tiff':
+    case 'ico':
+    case 'webp':
       return imageIcon;
     case 'zip':
     case 'rar':
