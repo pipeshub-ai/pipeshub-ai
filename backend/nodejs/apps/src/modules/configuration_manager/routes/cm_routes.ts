@@ -114,7 +114,6 @@ import {
   EntitiesEventProducer,
   SyncEventProducer,
 } from '../services/kafka_events.service';
-import { RateLimiterMiddleware } from '../../../libs/middlewares/rate-limit.middleware';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
@@ -129,7 +128,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     container.get<SyncEventProducer>('SyncEventProducer');
   const configService = container.get<ConfigService>('ConfigService');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  const rateLimiterMiddleware = container.get<RateLimiterMiddleware>('RateLimiterMiddleware');
   // storage config routes
 
   /**
@@ -557,7 +555,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.post(
     '/platform/settings',
     authMiddleware.authenticate,
-    rateLimiterMiddleware.createWriteLimiter(),
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(platformSettingsSchema),
@@ -567,7 +564,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/platform/settings',
     authMiddleware.authenticate,
-    rateLimiterMiddleware.createReadLimiter(),
     userAdminCheck,
     metricsMiddleware(container),
     getPlatformSettings(keyValueStoreService),
@@ -576,7 +572,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/platform/feature-flags/available',
     authMiddleware.authenticate,
-    rateLimiterMiddleware.createReadLimiter(),
     userAdminCheck,
     metricsMiddleware(container),
     getAvailablePlatformFeatureFlags(),

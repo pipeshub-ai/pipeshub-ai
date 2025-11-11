@@ -45,7 +45,6 @@ import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middlewa
 import { getActiveConnectors, getConnectorConfig, getConnectorConfigAndSchema, getConnectorFilterOptions, getConnectorByName, getConnectors, getConnectorSchema, getInactiveConnectors, getOAuthAuthorizationUrl, handleOAuthCallback, saveConnectorFilterOptions, toggleConnector, updateConnectorConfig } from '../controllers/connector.controllers';
 import { z } from 'zod';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
-import { RateLimiterMiddleware } from '../../../libs/middlewares/rate-limit.middleware';
 
 const logger = Logger.getInstance({
   service: 'Connectors Routes',
@@ -103,9 +102,6 @@ export function createConnectorRouter(container: Container) {
   );
   let config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  const rateLimiterMiddleware = container.get<RateLimiterMiddleware>('RateLimiterMiddleware');
-  const readLimiter = rateLimiterMiddleware.createReadLimiter()
-  const writeLimiter = rateLimiterMiddleware.createWriteLimiter()
    // Old api for streaming records 
    router.get(
     '/',
@@ -132,7 +128,6 @@ export function createConnectorRouter(container: Container) {
   router.get(
     '/config/:connectorName',
     authMiddleware.authenticate,
-    readLimiter,
     metricsMiddleware(container),
     userAdminCheck,
     getConnectorConfig(config)
@@ -141,7 +136,6 @@ export function createConnectorRouter(container: Container) {
   router.put(
     '/config/:connectorName',
     authMiddleware.authenticate,
-    writeLimiter,
     metricsMiddleware(container),
     userAdminCheck,
     ValidationMiddleware.validate(updateConnectorConfigSchema),
@@ -151,7 +145,6 @@ export function createConnectorRouter(container: Container) {
   router.get(
     '/schema/:connectorName',
     authMiddleware.authenticate,
-    readLimiter,
     metricsMiddleware(container),
     userAdminCheck,
     getConnectorSchema(config)
@@ -160,7 +153,6 @@ export function createConnectorRouter(container: Container) {
   router.get(
     '/config-schema/:connectorName',
     authMiddleware.authenticate,
-    readLimiter,
     metricsMiddleware(container),
     userAdminCheck,
     getConnectorConfigAndSchema(config)
@@ -169,7 +161,6 @@ export function createConnectorRouter(container: Container) {
   router.post(
     '/toggle/:connectorName',
     authMiddleware.authenticate,
-    writeLimiter,
     metricsMiddleware(container),
     userAdminCheck,
     toggleConnector(config)
@@ -179,7 +170,6 @@ export function createConnectorRouter(container: Container) {
   router.get(
     '/:connectorName',
     authMiddleware.authenticate,
-    readLimiter,
     metricsMiddleware(container),
     userAdminCheck,
     getConnectorByName(config)

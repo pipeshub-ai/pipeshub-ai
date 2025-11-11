@@ -8,7 +8,6 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ConfigService } from '../services/updateConfig.service';
 import { SyncEventProducer } from '../services/kafka_events.service';
-import { RateLimiterMiddleware } from '../../../libs/middlewares/rate-limit.middleware';
 const loggerConfig = {
   service: 'Configuration Manager Service',
 };
@@ -85,12 +84,6 @@ export class ConfigurationManagerContainer {
       container
         .bind<AuthMiddleware>('AuthMiddleware')
         .toConstantValue(authMiddleware);
-      const rateLimiterMiddleware = new RateLimiterMiddleware(
-        container.get('Logger'),
-      );
-      container
-        .bind<RateLimiterMiddleware>('RateLimiterMiddleware')
-        .toConstantValue(rateLimiterMiddleware);
       this.logger.info(
         'Configuration Manager services initialized successfully',
       );
