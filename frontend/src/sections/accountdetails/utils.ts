@@ -115,7 +115,7 @@ export const getUserLogo = async (userId: string): Promise<string | null> => {
 
 export const updateOrg = async (orgId: string, orgData: any) => {
   try {
-    const response = await axios.patch(`${CONFIG.backendUrl}/api/v1/org/`, orgData);
+    const response = await axios.put(`${CONFIG.backendUrl}/api/v1/org/`, orgData);
     return response.data.message;
   } catch (error) {
     throw new Error('Error updating org');

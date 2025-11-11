@@ -39,8 +39,6 @@ type ImageHighlighterProps = {
   onClosePdf: () => void;
 };
 
-const SIMILARITY_THRESHOLD = 0.6;
-
 const ViewerContainer = styled(Box)(({ theme }) => ({
   width: '100%',
   height: '100%',
@@ -341,37 +339,6 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
       setProcessedCitations([]);
     }
   }, [citations, imageDimensions]);
-
-  // Handle highlight citation
-  // useEffect(() => {
-  //   if (!highlightCitation) {
-  //     setHighlightedCitationId(null);
-  //     return;
-  //   }
-
-  //   let highlightId: string | null = null;
-
-  //   if ('citationId' in highlightCitation && highlightCitation.citationId) {
-  //     highlightId = highlightCitation.citationId;
-  //   } else if ('_id' in highlightCitation && highlightCitation._id) {
-  //     highlightId = highlightCitation._id;
-  //   } else if ('id' in highlightCitation && highlightCitation.id) {
-  //     highlightId = highlightCitation.id;
-  //   } else if (highlightCitation.metadata?._id) {
-  //     highlightId = highlightCitation.metadata._id;
-  //   }
-
-  //   if (highlightId) {
-  //     setHighlightedCitationId(highlightId);
-  //     // Scroll to highlight
-  //     setTimeout(() => {
-  //       const highlightElement = document.querySelector(`[data-highlight-id="${highlightId}"]`);
-  //       if (highlightElement) {
-  //         highlightElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  //       }
-  //     }, 300);
-  //   }
-  // }, [highlightCitation]);
 
   // Zoom controls
   const handleZoomIn = useCallback(() => {

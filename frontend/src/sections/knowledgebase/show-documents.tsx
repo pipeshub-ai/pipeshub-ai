@@ -516,10 +516,6 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
       error: null,
     }));
 
-    console.log('record', record);
-    console.log('recordId', record._key);
-    console.log('documentType', getDocumentType(extension, recordTypeForDisplay));
-
     try {
       const recordId = record._key;
 
@@ -639,7 +635,6 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
       }
 
       if (fileDataLoaded) {
-        console.log('fileDataLoaded', fileDataLoaded);
         // Use recordType to determine document type for mail records
         const documentType = getDocumentType(extension, recordTypeForDisplay);
 

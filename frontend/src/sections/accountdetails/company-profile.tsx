@@ -183,10 +183,6 @@ export default function CompanyProfile() {
 
   const onSubmit = async (data: ProfileFormData): Promise<void> => {
     try {
-      console.log('data', data);
-      console.log('isValid', isValid);
-      console.log('isDirty', isDirty);
-      return;
       setSaveChanges(true);
       const orgId = await getOrgIdFromToken();
       const msg = await updateOrg(orgId, data);

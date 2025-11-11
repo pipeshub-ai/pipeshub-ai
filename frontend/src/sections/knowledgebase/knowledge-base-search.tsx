@@ -754,11 +754,11 @@ export default function KnowledgeBaseSearch() {
           />
         </Box>
         
-        {(isPdf || isExcel || isTextFile || isHtml || isDocx || isMarkdown || isImage) && (
+        {isCitationViewerOpen && (
           <Divider orientation="vertical" flexItem sx={{ borderRightWidth: 3 }} />
         )}
 
-        {(isPdf || isExcel || isTextFile || isHtml || isDocx || isMarkdown || isImage) && (
+        {isCitationViewerOpen && (
           <Box
             id="document-container"
             sx={{
