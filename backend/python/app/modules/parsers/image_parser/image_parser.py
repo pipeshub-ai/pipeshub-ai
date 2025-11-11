@@ -6,7 +6,7 @@ from urllib.parse import unquote, urlparse
 
 try:
     from cairosvg import svg2png
-except ImportError:
+except Exception:
     svg2png = None
 import aiohttp
 
