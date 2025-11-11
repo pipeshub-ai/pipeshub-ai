@@ -1,22 +1,39 @@
+import os
 import requests
 from base64 import b64encode
 
-# 🔐 Replace these with your actual credentials from Zoom
-account_id = "AVrSC4mPQT2NpgJk6FKBCA"
-client_id = "k7oqg4fWS4uDYWPNo72R4g"
-client_secret = "8n8Bd8inzl49b5EGk8ulVXwD9EXxAhxt"
 
-# Combine client_id and client_secret into a base64-encoded string
-auth_header = b64encode(f"{client_id}:{client_secret}".encode()).decode()
+def generate_zoom_token():
+    """Generate a Zoom OAuth token securely using environment variables."""
+    account_id = os.getenv("ZOOM_ACCOUNT_ID")
+    client_id = os.getenv("ZOOM_CLIENT_ID")
+    client_secret = os.getenv("ZOOM_CLIENT_SECRET")
 
-# Zoom OAuth URL for Server-to-Server apps
-url = f"https://zoom.us/oauth/token?grant_type=account_credentials&account_id={account_id}"
+    if not all([account_id, client_id, client_secret]):
+        raise ValueError(
+            "Missing one or more environment variables:\n"
+            " - ZOOM_ACCOUNT_ID\n - ZOOM_CLIENT_ID\n - ZOOM_CLIENT_SECRET\n\n"
+            "Please set them before running this script.\n"
+            "Example:\n"
+            "export ZOOM_ACCOUNT_ID='your_account_id'\n"
+            "export ZOOM_CLIENT_ID='your_client_id'\n"
+            "export ZOOM_CLIENT_SECRET='your_client_secret'"
+        )
 
-# Set authorization header
-headers = {"Authorization": f"Basic {auth_header}"}
+    # Prepare Basic Auth header
+    auth_header = b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    url = f"https://zoom.us/oauth/token?grant_type=account_credentials&account_id={account_id}"
+    headers = {"Authorization": f"Basic {auth_header}"}
 
-# Make POST request to get the token
-response = requests.post(url, headers=headers)
+    response = requests.post(url, headers=headers)
 
-# Print the token response
-print(response.json())
+    if response.status_code == 200:
+        print("✅ Token generated successfully:")
+        print(response.json())
+    else:
+        print("❌ Failed to generate token:")
+        print(response.status_code, response.text)
+
+
+if __name__ == "__main__":
+    generate_zoom_token()
