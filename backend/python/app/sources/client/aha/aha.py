@@ -24,6 +24,8 @@ from app.sources.client.http.http_response import (
 )
 from app.sources.client.iclient import IClient  # type: ignore[import-untyped]
 
+HTTP_SERVER_ERROR = 500 # Server Error
+HTTP_CLIENT_ERROR = 400 # HTTP_CLIENT_ERROR = 400 # Bad Request
 
 class AhaRESTClientViaToken(HTTPClient):
     """Aha! REST client via Bearer token authentication.
@@ -34,6 +36,8 @@ class AhaRESTClientViaToken(HTTPClient):
         token_type: The type of token to use for authentication (default: "Bearer")
 
     """
+
+
 
     def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
         super().__init__(token, token_type)
@@ -74,7 +78,7 @@ class AhaRESTClientViaToken(HTTPClient):
             body=None,
 
 
-            
+
         )
 
         response = await self.execute(request)
@@ -92,10 +96,10 @@ class AhaRESTClientViaToken(HTTPClient):
         if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
             msg = "Rate limit exceeded. Please try again later."
             raise RuntimeError(msg)
-        if response.status >= 500:
+        if response.status >= HTTP_SERVER_ERROR:
             msg = f"Server error (status {response.status}). Please try again later."
             raise RuntimeError(msg)
-        if response.status >= 400:
+        if response.status >= HTTP_CLIENT_ERROR:
             response.raise_for_status()
 
         return response
@@ -145,10 +149,10 @@ class AhaRESTClientViaToken(HTTPClient):
         if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
             msg = "Rate limit exceeded. Please try again later."
             raise RuntimeError(msg)
-        if response.status >= 500:
+        if response.status >= HTTP_SERVER_ERROR:
             msg = f"Server error (status {response.status}). Please try again later."
             raise RuntimeError(msg)
-        if response.status >= 400:
+        if response.status >= HTTP_CLIENT_ERROR:
             response.raise_for_status()
 
         return response
@@ -206,6 +210,8 @@ class AhaRESTClientViaApiKey(HTTPClient):
         response = await self.execute(request)
 
         # Handle common error cases
+
+
         if response.status == HttpStatusCode.UNAUTHORIZED.value:
             msg = "Authentication failed. Please check your access token."
             raise ValueError(msg)
@@ -218,10 +224,10 @@ class AhaRESTClientViaApiKey(HTTPClient):
         if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
             msg = "Rate limit exceeded. Please try again later."
             raise RuntimeError(msg)
-        if response.status >= 500:
+        if response.status >= HTTP_SERVER_ERROR:
             msg = f"Server error (status {response.status}). Please try again later."
             raise RuntimeError(msg)
-        if response.status >= 400:
+        if response.status >= HTTP_CLIENT_ERROR:
             response.raise_for_status()
 
         return response
@@ -259,6 +265,7 @@ class AhaRESTClientViaApiKey(HTTPClient):
         response = await self.execute(request)
 
         # Handle common error cases
+
         if response.status == HttpStatusCode.UNAUTHORIZED.value:
             msg = "Authentication failed. Please check your access token."
             raise ValueError(msg)
@@ -271,10 +278,10 @@ class AhaRESTClientViaApiKey(HTTPClient):
         if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
             msg = "Rate limit exceeded. Please try again later."
             raise RuntimeError(msg)
-        if response.status >= 500:
+        if response.status >= HTTP_SERVER_ERROR:
             msg = f"Server error (status {response.status}). Please try again later."
             raise RuntimeError(msg)
-        if response.status >= 400:
+        if response.status >= HTTP_CLIENT_ERROR:
             response.raise_for_status()
 
         return response

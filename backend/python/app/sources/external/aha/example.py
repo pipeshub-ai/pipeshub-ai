@@ -1,11 +1,11 @@
 import asyncio
-import json
 import logging
 import os
+
 from app.sources.client.aha.aha import AhaClient, AhaTokenConfig
 
 
-async def main():
+async def main() -> None:
     # Setup logger
     logger = logging.getLogger("AhaExample")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
@@ -30,15 +30,14 @@ async def main():
         response = await client.get_features()
         features_data = response.json()
 
+        TOP_FEATURES_LIMIT = 10
         features = features_data.get("features", [])
         print(f"\n✅ Found {len(features)} features:\n")
-        for f in features[:10]:  # Show first 10
+        for f in features[:TOP_FEATURES_LIMIT]:  # Show first 10
             print(f"  - {f['name']} ({f['reference_num']})")
-        if len(features) > 10:
-            print(f"  ...and {len(features) - 10} more.\n")
+        if len(features) > TOP_FEATURES_LIMIT:
+            print(f"  ...and {len(features) - TOP_FEATURES_LIMIT} more.\n")
 
-        # Optional: pretty print entire JSON
-        # print(json.dumps(features_data, indent=2))
 
         # =============================
         # Fetch Products
