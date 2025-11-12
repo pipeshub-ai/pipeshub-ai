@@ -356,7 +356,7 @@ def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: Li
             })
 
     # Replace citation numbers in answer text - always use regular brackets for output
-    def replace_with_bracket_style(match):
+    def replace_with_bracket_style(match: re.Match) -> str:
         # Determine which group matched to get the citation number
         if match.group(1):  # Regular brackets [1]
             citation_num = int(match.group(1))
