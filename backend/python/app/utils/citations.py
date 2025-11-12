@@ -69,21 +69,30 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     """
 
     # Extract all citation numbers from the answer text
-    citation_pattern = r'\[R(\d+)-(\d+)\]'
-    matches = re.findall(citation_pattern, answer_text)
-
-    if not matches:
-        return answer_text, []
-
+    # Match both regular square brackets [R1-2] and Chinese brackets 【R1-2】
+    citation_pattern = r'\[R(\d+)-(\d+)\]|【R(\d+)-(\d+)】'
+    matches = re.finditer(citation_pattern, answer_text)
 
     unique_citations = []
     seen = set()
+    bracket_styles = {}  # Track bracket style for each citation
 
     for match in matches:
-        citation_key = f"R{match[0]}-{match[1]}"  # Convert tuple to string format
+        # Check which group matched (groups 1,2 for [...], groups 3,4 for 【...】)
+        if match.group(1):  # Regular brackets [R1-2]
+            citation_key = f"R{match.group(1)}-{match.group(2)}"
+            bracket_style = 'regular'
+        else:  # Chinese brackets 【R1-2】
+            citation_key = f"R{match.group(3)}-{match.group(4)}"
+            bracket_style = 'chinese'
+
         if citation_key not in seen:
             unique_citations.append(citation_key)
+            bracket_styles[citation_key] = bracket_style
             seen.add(citation_key)
+
+    if not unique_citations:
+        return answer_text, []
 
     citation_mapping = {}
     new_citations = []
@@ -184,10 +193,19 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             })
         citation_mapping[old_citation_key] = new_citation_num
 
-    # Replace citation numbers in answer text
+    # Replace citation numbers in answer text - always use regular brackets for output
     def replace_citation(match) -> str:
-        old_key = f"R{match.group(1)}-{match.group(2)}"
-        return f"[{citation_mapping[old_key]}]" if old_key in citation_mapping else ""
+        # Check which group matched to get the citation key
+        if match.group(1):  # Regular brackets [R1-2]
+            old_key = f"R{match.group(1)}-{match.group(2)}"
+        else:  # Chinese brackets 【R1-2】
+            old_key = f"R{match.group(3)}-{match.group(4)}"
+
+        if old_key in citation_mapping:
+            new_num = citation_mapping[old_key]
+            # Always output regular brackets for consistency
+            return f"[{new_num}]"
+        return ""
 
     normalized_answer = re.sub(citation_pattern, replace_citation, answer_text)
     return normalized_answer, new_citations
@@ -291,20 +309,31 @@ def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: Li
     """
     # Extract all citation numbers from the answer text
     # Match both regular square brackets [1] and Chinese brackets 【1】
-    citation_pattern = r'[\[【](\d+)[\]】]'
-    matches = re.findall(citation_pattern, answer_text)
-
-    if not matches:
-        return answer_text, []
+    # Use alternation to ensure proper bracket pairing
+    citation_pattern = r'\[(\d+)\]|【(\d+)】'
+    matches = re.finditer(citation_pattern, answer_text)
 
     # Get unique citation numbers in order of appearance
     unique_citations = []
     seen = set()
+    bracket_styles = {}  # Map citation number to its bracket style
+
     for match in matches:
-        citation_num = int(match)
+        # Check which group matched (group 1 for [...], group 2 for 【...】)
+        if match.group(1):  # Regular brackets [...]
+            citation_num = int(match.group(1))
+            bracket_style = 'regular'
+        else:  # Chinese brackets 【...】
+            citation_num = int(match.group(2))
+            bracket_style = 'chinese'
+
         if citation_num not in seen:
             unique_citations.append(citation_num)
+            bracket_styles[citation_num] = bracket_style
             seen.add(citation_num)
+
+    if not unique_citations:
+        return answer_text, []
 
     # Create mapping from old citation numbers to new sequential numbers
     citation_mapping = {}
@@ -326,7 +355,20 @@ def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: Li
                 "citationType": "vectordb|document",
             })
 
-    # Replace citation numbers in answer text - convert both bracket types to regular brackets
-    normalized_answer = re.sub(citation_pattern, lambda m: f"[{citation_mapping[int(m.group(1))]}]" if int(m.group(1)) in citation_mapping else "", answer_text)
+    # Replace citation numbers in answer text - always use regular brackets for output
+    def replace_with_bracket_style(match: re.Match) -> str:
+        # Determine which group matched to get the citation number
+        if match.group(1):  # Regular brackets [1]
+            citation_num = int(match.group(1))
+        else:  # Chinese brackets 【1】
+            citation_num = int(match.group(2))
+
+        if citation_num in citation_mapping:
+            new_num = citation_mapping[citation_num]
+            # Always output regular brackets for consistency
+            return f"[{new_num}]"
+        return ""
+
+    normalized_answer = re.sub(citation_pattern, replace_with_bracket_style, answer_text)
 
     return normalized_answer, new_citations
