@@ -222,6 +222,10 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 last_child_block_index = sorted_rows_tuple[-1][0]
                 adjacent_chunks[virtual_record_id].append(last_child_block_index+1)
 
+        # Skip creating table_result if no rows were found
+        if not sorted_rows_tuple:
+            continue
+
         table_result = {
             "content":(table_summary,child_results),
             "block_type": GroupType.TABLE.value,
