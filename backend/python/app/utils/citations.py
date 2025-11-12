@@ -62,7 +62,7 @@ def fix_json_string(json_str) -> str:
 
 
 
-def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]],records: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]],records: List[Dict[str, Any]]=[]) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping
