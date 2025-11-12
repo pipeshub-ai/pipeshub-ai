@@ -11738,4 +11738,4 @@ class ServiceNowDataSource:
             raise Exception(f"Failed to download attachment: HTTP {response.status}")
 
         # Return binary content
-        return response.content if hasattr(response, 'content') else response.read()
+        return response.response.content
