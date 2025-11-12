@@ -43,8 +43,8 @@ export function NavVertical({
             src="/logo/logo-blue.svg"
             alt="Logo"
             sx={{
-              width: 60,
-              height: 30,
+              width: 40,
+              height: 40,
             }}
           />
         </Box>
@@ -65,8 +65,8 @@ export function NavVertical({
             src="/logo/logo-blue.svg"
             alt="Logo"
             sx={{
-              width: 60,
-              height: 30,
+              width: 40,
+              height: 40,
             }}
           />
         </Box>
