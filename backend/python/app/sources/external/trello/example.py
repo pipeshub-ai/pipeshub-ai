@@ -4,7 +4,7 @@ from app.sources.client.trello.trello import TrelloClient
 from app.sources.external.trello.trello import TrelloDataSource
 
 
-def main():
+def main() -> None:
     # Read Trello credentials from environment variables
     api_key = os.getenv("TRELLO_API_KEY")
     token = os.getenv("TRELLO_TOKEN")

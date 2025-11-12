@@ -4,11 +4,8 @@ from app.sources.client.trello.trello import TrelloClient
 
 
 class TrelloDataSource:
-    """Datasource wrapper for Trello. Uses TrelloClient underneath.
-    Provides higher-level methods used by PipesHub.
-    """
 
-    def __init__(self, client: TrelloClient):
+    def __init__(self, client: TrelloClient) ->None:
         self.client = client
 
     def list_boards(self) -> list[dict[str, Any]]:
