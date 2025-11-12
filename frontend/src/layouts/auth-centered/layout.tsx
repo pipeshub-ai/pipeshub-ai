@@ -48,8 +48,8 @@ export function AuthCenteredLayout({ sx, children, header }: AuthCenteredLayoutP
                   src="/logo/logo-blue.svg"
                   alt="Logo"
                   sx={{
-                    width: 60,
-                    height: 30,
+                    width: 45,
+                    height: 45,
                   }}
                 />
               </>

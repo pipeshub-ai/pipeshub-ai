@@ -23,7 +23,7 @@ export type SettingsState = {
   contrast: 'default' | 'hight';
   navColor: 'integrate' | 'apparent';
   navLayout: 'vertical' | 'horizontal' | 'mini';
-  primaryColor: 'default' | 'cyan' | 'purple' | 'blue' | 'orange' | 'red';
+  primaryColor: 'default' | 'cyan' | 'purple' | 'blue' | 'orange' | 'red' | 'green';
 };
 
 export type SettingsContextValue = SettingsState & {

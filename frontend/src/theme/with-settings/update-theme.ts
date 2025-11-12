@@ -19,6 +19,7 @@ const PRIMARY_COLORS = {
   blue: PRIMARY_COLOR.blue,
   orange: PRIMARY_COLOR.orange,
   red: PRIMARY_COLOR.red,
+  green: PRIMARY_COLOR.green,
 };
 
 // ----------------------------------------------------------------------

@@ -187,8 +187,8 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                       [theme.breakpoints.up(layoutQuery)]: {
                         display: 'inline-flex',
                       },
-                      width: 60,
-                      height: 30,
+                      width: 40,
+                      height: 40,
                       cursor: 'pointer',
                     }}
                   />
