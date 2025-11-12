@@ -200,7 +200,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         block_group = block_groups[block_group_index]
         table_summary = block_group.get("data",{}).get("table_summary","")
         child_results = []
-        first_child_block_index = None  # Initialize to avoid UnboundLocalError
         for row_index,row_score in sorted_rows_tuple:
             block = blocks[row_index]
             block_type = block.get("type")
@@ -224,7 +223,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 adjacent_chunks[virtual_record_id].append(last_child_block_index+1)
 
         # Skip creating table_result if no rows were found
-        if first_child_block_index is None:
+        if not sorted_rows_tuple:
             continue
 
         table_result = {
