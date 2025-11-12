@@ -7,7 +7,7 @@ with the PipesHub platform.
 from dataclasses import dataclass
 from typing import Any
 
-from app.sources.client.docusign.docusign import DocuSignClient, DocuSignClientError
+from app.sources.client.docusign.docusign import DocuSignClient
 
 
 @dataclass
