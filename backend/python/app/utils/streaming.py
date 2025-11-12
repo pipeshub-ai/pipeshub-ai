@@ -513,9 +513,9 @@ async def stream_llm_response(
         answer_buf: str = ""            # the running "answer" value (no quotes)
         answer_done = False
         ANSWER_KEY_RE = re.compile(r'"answer"\s*:\s*"')
-        # Match both regular and Chinese brackets for citations
-        CITE_BLOCK_RE = re.compile(r'(?:\s*[\[【]\d+[\]】])+')
-        INCOMPLETE_CITE_RE = re.compile(r'[\[【][^\]】]*$')
+        # Match both regular and Chinese brackets for citations (with proper bracket pairing)
+        CITE_BLOCK_RE = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
+        INCOMPLETE_CITE_RE = re.compile(r'(?:\[[^\]]*|【[^】]*)$')
 
         WORD_ITER = re.compile(r'\S+').finditer
         prev_norm_len = 0  # length of the previous normalised answer
@@ -677,9 +677,9 @@ async def stream_llm_response(
         prev_norm_len = 0
         emit_upto = 0
         words_in_chunk = 0
-        # Match both regular and Chinese brackets for citations
-        CITE_BLOCK_RE = re.compile(r'(?:\s*[\[【]R?\d+-?\d+[\]】])+')
-        INCOMPLETE_CITE_RE = re.compile(r'[\[【]R?\d*-?\d*$')
+        # Match both regular and Chinese brackets for citations with R notation (e.g., [R1-2] or 【R1-2】)
+        CITE_BLOCK_RE = re.compile(r'(?:\s*(?:\[R?\d+-?\d+\]|【R?\d+-?\d+】))+')
+        INCOMPLETE_CITE_RE = re.compile(r'(?:\[R?\d*-?\d*|【R?\d*-?\d*)$')
 
         # Fast-path: if the last message is already an AI answer
         try:
@@ -833,9 +833,9 @@ async def handle_json_mode(
     answer_buf: str = ""            # the running "answer" value (no quotes)
     answer_done = False
     ANSWER_KEY_RE = re.compile(r'"answer"\s*:\s*"')
-    # Match both regular and Chinese brackets for citations
-    CITE_BLOCK_RE = re.compile(r'(?:\s*[\[【]\d+[\]】])+')
-    INCOMPLETE_CITE_RE = re.compile(r'[\[【][^\]】]*$')
+    # Match both regular and Chinese brackets for citations (with proper bracket pairing)
+    CITE_BLOCK_RE = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
+    INCOMPLETE_CITE_RE = re.compile(r'(?:\[[^\]]*|【[^】]*)$')
 
     WORD_ITER = re.compile(r'\S+').finditer
     prev_norm_len = 0  # length of the previous normalised answer
@@ -1005,9 +1005,9 @@ async def handle_simple_mode(
         prev_norm_len = 0
         emit_upto = 0
         words_in_chunk = 0
-        # Match both regular and Chinese brackets for citations
-        CITE_BLOCK_RE = re.compile(r'(?:\s*[\[【]\d+[\]】])+')
-        INCOMPLETE_CITE_RE = re.compile(r'[\[【]\d*[\]】]?$')
+        # Match both regular and Chinese brackets for citations (with proper bracket pairing)
+        CITE_BLOCK_RE = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
+        INCOMPLETE_CITE_RE = re.compile(r'(?:\[[^\]]*|【[^】]*)$')
 
         # Fast-path: if the last message is already an AI answer
         try:
