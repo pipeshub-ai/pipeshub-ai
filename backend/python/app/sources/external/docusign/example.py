@@ -70,7 +70,7 @@ def initialize_client() -> tuple[DocuSignDataSource | None, str | None]:
         )
         ds = DocuSignDataSource(client)
         print("✓ DocuSign client initialized successfully")
-        
+
         # Get inbox folder ID for listing envelopes
         folders = ds.list_folders()
         inbox_folder_id = None
@@ -78,7 +78,7 @@ def initialize_client() -> tuple[DocuSignDataSource | None, str | None]:
             if folder.get("type") == "inbox":
                 inbox_folder_id = folder.get("folder_id")
                 break
-        
+
         return ds, inbox_folder_id
     except DocuSignClientError as e:
         print(f"✗ Failed to initialize DocuSign client: {e}")
@@ -90,7 +90,7 @@ def example_list_envelopes(
     folder_id: str | None,
 ) -> list[dict]:
     """Example: List recent envelopes.
-    
+
     Returns:
         List of envelopes
     """
@@ -163,7 +163,7 @@ def example_list_templates(ds: DocuSignDataSource) -> None:
 
         if not template_list:
             print("(No templates found - create some in DocuSign web UI)")
-        
+
         for idx, tmpl in enumerate(template_list[:5], 1):
             print(f"\n{idx}. Template ID: {tmpl.get('template_id')}")
             print(f"   Name: {tmpl.get('name')}")
@@ -253,16 +253,16 @@ def example_fetch_all_envelopes(
     print_section("Example 7: Fetch All Envelopes (Paginated)")
     try:
         # Use a proper date format for from_date
-        from_date = (datetime.now(tz=UTC) - timedelta(days=90)).strftime(
+        (datetime.now(tz=UTC) - timedelta(days=90)).strftime(
             "%Y-%m-%d"
         )
-        
+
         # Use folder_ids to list envelopes
         all_envelopes = []
         if folder_id:
             response = ds.list_envelopes(folder_ids=folder_id, count="100")
             all_envelopes = response.get("envelopes", [])
-        
+
         print(f"✓ Fetched {len(all_envelopes)} envelopes in total")
 
         if all_envelopes:
