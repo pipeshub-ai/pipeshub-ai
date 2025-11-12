@@ -104,7 +104,7 @@ def _stringify_content(content: Union[str, list, dict, None]) -> str:
         # Fallback to stringification for other types
         return str(content)
 
-async def aiter_llm_stream(llm, messages,parts=[]) -> AsyncGenerator[str, None]:
+async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None]:
     """Async iterator for LLM streaming that normalizes content to text.
 
     The LLM provider may return content as a string or a list of content parts
@@ -116,7 +116,8 @@ async def aiter_llm_stream(llm, messages,parts=[]) -> AsyncGenerator[str, None]:
             async for part in llm.astream(messages):
                 if not part:
                     continue
-                parts.append(part)
+                if parts is not None:
+                    parts.append(part)
                 content = getattr(part, "content", None)
                 text = _stringify_content(content)
                 if text:
@@ -125,7 +126,8 @@ async def aiter_llm_stream(llm, messages,parts=[]) -> AsyncGenerator[str, None]:
             # Non-streaming – yield whole blob once
             response = await llm.ainvoke(messages)
             content = getattr(response, "content", response)
-            parts.append(content)
+            if parts is not None:
+                parts.append(content)
             yield _stringify_content(content)
     except Exception as e:
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
@@ -167,114 +169,23 @@ async def execute_tool_calls(
         # with error handling for provider-level tool failures
         try:
             # Measure LLM invocation latency
-            full_json_buf = ""
-            answer_buf = ""
-            answer_done = False
-            ANSWER_KEY_RE = re.compile(r'"answer"\s*:\s*"')
-            # Match both regular and Chinese brackets for citations
-            CITE_BLOCK_RE = re.compile(r'(?:\s*[\[【]\d+[\]】])+')
-            INCOMPLETE_CITE_RE = re.compile(r'[\[【][^\]】]*$')
-            WORD_ITER = re.compile(r'\S+').finditer
-            prev_norm_len = 0  # length of the previous normalised answer
-            emit_upto = 0
-            words_in_chunk = 0
+          
             parts = []
-            async for token in aiter_llm_stream(llm_with_tools, messages,parts):
-                
-                full_json_buf += token
-
-                # Look for the start of the "answer" field
-                if not answer_buf:
-                    match = ANSWER_KEY_RE.search(full_json_buf)
-                    if match:
-                        after_key = full_json_buf[match.end():]
-                        answer_buf += after_key
-
-                elif not answer_done:
-                    answer_buf += token
-
-                # Check if we've reached the end of the answer field
-                if not answer_done:
-                    end_idx = find_unescaped_quote(answer_buf)
-                    if end_idx != -1:
-                        answer_done = True
-                        answer_buf = answer_buf[:end_idx]
-
-                # Stream answer in word-based chunks
-                if answer_buf:
-                    for match in WORD_ITER(answer_buf[emit_upto:]):
-                        words_in_chunk += 1
-                        if words_in_chunk == target_words_per_chunk:
-                            char_end = emit_upto + match.end()
-
-                            # Include any citation blocks that immediately follow
-                            if m := CITE_BLOCK_RE.match(answer_buf[char_end:]):
-                                char_end += m.end()
-
-                            emit_upto = char_end
-                            words_in_chunk = 0
-
-                            current_raw = answer_buf[:emit_upto]
-                            # Skip if we have incomplete citations
-                            if INCOMPLETE_CITE_RE.search(current_raw):
-                                continue
-
-                            normalized, cites = normalize_citations_and_chunks(
-                                current_raw, final_results
-                            )
-
-                            chunk_text = normalized[prev_norm_len:]
-                            prev_norm_len = len(normalized)
-
-                            yield {
-                                "event": "answer_chunk",
-                                "data": {
-                                    "chunk": chunk_text,
-                                    "accumulated": normalized,
-                                    "citations": cites,
-                                },
-                            }
-            if answer_done:
-                try:
-                    parsed = json.loads(escape_ctl(full_json_buf))
-                    final_answer = parsed.get("answer", answer_buf)
-                    normalized, c = normalize_citations_and_chunks(final_answer, final_results)
-                    yield {
-                        "event": "complete",
-                        "data": {
-                            "answer": normalized,
-                            "citations": c,
-                            "reason": parsed.get("reason"),
-                            "confidence": parsed.get("confidence"),
-                        },
-                    }
-                except Exception:
-                    # Fallback if JSON parsing fails
-                    normalized, c = normalize_citations_and_chunks(answer_buf, final_results)
-                    yield {
-                        "event": "complete",
-                        "data": {
-                            "answer": normalized,
-                            "citations": c,
-                            "reason": None,
-                            "confidence": None,
-                        },
-                    }
-
-                logger.info(f"execute_tool_calls: answer done")
-                return
-            else:
-                ai = None
-                for part in parts:
-                    if ai is None:
-                        ai = part
-                    else:
-                        ai += part
-                ai = AIMessage(
-                content=ai.content,
-                tool_calls=getattr(ai, 'tool_calls', []),
-                )
-                logger.debug(f"execute_tool_calls: ai: {ai}")
+            async for event in call_aiter_llm_stream(llm_with_tools, messages,final_results,target_words_per_chunk,parts,with_tools=True):
+                yield event
+                if event.get("event") == "complete":
+                    return
+            
+            ai = None
+            for part in parts:
+                if ai is None:
+                    ai = part
+                else:
+                    ai += part
+            ai = AIMessage(
+            content=ai.content,
+            tool_calls=getattr(ai, 'tool_calls', []),
+            )
         except Exception as e:
             error_str = str(e).lower()
             # Check if this is a tool-related error from the provider (400, tool_use_failed, etc.)
@@ -934,19 +845,7 @@ async def handle_json_mode(
     """
     Handle JSON mode streaming.
     """
-    # Original streaming logic for the final answer
-    full_json_buf: str = ""         # whole JSON as it trickles in
-    answer_buf: str = ""            # the running "answer" value (no quotes)
-    answer_done = False
-    ANSWER_KEY_RE = re.compile(r'"answer"\s*:\s*"')
-    # Match both regular and Chinese brackets for citations (with proper bracket pairing)
-    CITE_BLOCK_RE = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
-    INCOMPLETE_CITE_RE = re.compile(r'(?:\[[^\]]*|【[^】]*)$')
-
-    WORD_ITER = re.compile(r'\S+').finditer
-    prev_norm_len = 0  # length of the previous normalised answer
-    emit_upto = 0
-    words_in_chunk = 0
+   
 
     # Fast-path: if the last message is already an AI answer (e.g., from invalid tool call conversion), stream it directly
     try:
@@ -1010,86 +909,8 @@ async def handle_json_mode(
 
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
-        async for token in aiter_llm_stream(llm, messages):
-            full_json_buf += token
-
-            # Look for the start of the "answer" field
-            if not answer_buf:
-                match = ANSWER_KEY_RE.search(full_json_buf)
-                if match:
-                    after_key = full_json_buf[match.end():]
-                    answer_buf += after_key
-
-            elif not answer_done:
-                answer_buf += token
-
-            # Check if we've reached the end of the answer field
-            if not answer_done:
-                end_idx = find_unescaped_quote(answer_buf)
-                if end_idx != -1:
-                    answer_done = True
-                    answer_buf = answer_buf[:end_idx]
-
-            # Stream answer in word-based chunks
-            if answer_buf:
-                for match in WORD_ITER(answer_buf[emit_upto:]):
-                    words_in_chunk += 1
-                    if words_in_chunk == target_words_per_chunk:
-                        char_end = emit_upto + match.end()
-
-                        # Include any citation blocks that immediately follow
-                        if m := CITE_BLOCK_RE.match(answer_buf[char_end:]):
-                            char_end += m.end()
-
-                        emit_upto = char_end
-                        words_in_chunk = 0
-
-                        current_raw = answer_buf[:emit_upto]
-                        # Skip if we have incomplete citations
-                        if INCOMPLETE_CITE_RE.search(current_raw):
-                            continue
-
-                        normalized, cites = normalize_citations_and_chunks(
-                            current_raw, final_results,records
-                        )
-
-                        chunk_text = normalized[prev_norm_len:]
-                        prev_norm_len = len(normalized)
-
-                        yield {
-                            "event": "answer_chunk",
-                            "data": {
-                                "chunk": chunk_text,
-                                "accumulated": normalized,
-                                "citations": cites,
-                            },
-                        }
-
-        try:
-            parsed = json.loads(escape_ctl(full_json_buf))
-            final_answer = parsed.get("answer", answer_buf)
-            normalized, c = normalize_citations_and_chunks(final_answer, final_results,records)
-            yield {
-                "event": "complete",
-                "data": {
-                    "answer": normalized,
-                    "citations": c,
-                    "reason": parsed.get("reason"),
-                    "confidence": parsed.get("confidence"),
-                },
-            }
-        except Exception:
-            # Fallback if JSON parsing fails
-            normalized, c = normalize_citations_and_chunks(answer_buf, final_results,records)
-            yield {
-                "event": "complete",
-                "data": {
-                    "answer": normalized,
-                    "citations": c,
-                    "reason": None,
-                    "confidence": None,
-                },
-            }
+        async for token in call_aiter_llm_stream(llm, messages,final_results,records,target_words_per_chunk):
+            yield token
     except Exception as exc:
         yield {
             "event": "error",
@@ -1333,3 +1154,161 @@ async def stream_llm_response_with_tools(
 def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
     """Create Server-Sent Event format"""
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+class AnswerParserState:
+    """State container for answer parsing during streaming."""
+    def __init__(self):
+        self.full_json_buf: str = ""
+        self.answer_buf: str = ""
+        self.answer_done: bool = False
+        self.prev_norm_len: int = 0
+        self.emit_upto: int = 0
+        self.words_in_chunk: int = 0
+
+
+def _initialize_answer_parser_regex() -> Tuple[re.Pattern, re.Pattern, re.Pattern, Any]:
+    """Initialize regex patterns for answer parsing."""
+    answer_key_re = re.compile(r'"answer"\s*:\s*"')
+    cite_block_re = re.compile(r'(?:\s*[\[【]\d+[\]】])+')
+    incomplete_cite_re = re.compile(r'[\[【][^\]】]*$')
+    word_iter = re.compile(r'\S+').finditer
+    return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
+
+
+def _extract_answer_from_json(
+    state: AnswerParserState,
+    token: str,
+    answer_key_re: re.Pattern
+) -> None:
+    """Extract and update the answer buffer from JSON tokens."""
+    state.full_json_buf += token
+
+    # Look for the start of the "answer" field
+    if not state.answer_buf:
+        match = answer_key_re.search(state.full_json_buf)
+        if match:
+            after_key = state.full_json_buf[match.end():]
+            state.answer_buf += after_key
+    elif not state.answer_done:
+        state.answer_buf += token
+
+    # Check if we've reached the end of the answer field
+    if not state.answer_done:
+        end_idx = find_unescaped_quote(state.answer_buf)
+        if end_idx != -1:
+            state.answer_done = True
+            state.answer_buf = state.answer_buf[:end_idx]
+
+
+async def _process_and_emit_word_chunks(
+    state: AnswerParserState,
+    target_words_per_chunk: int,
+    cite_block_re: re.Pattern,
+    incomplete_cite_re: re.Pattern,
+    word_iter: Any,
+    final_results: Any,
+    records: List
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Process answer buffer in word-based chunks and emit events."""
+    if not state.answer_buf:
+        return
+
+    for match in word_iter(state.answer_buf[state.emit_upto:]):
+        state.words_in_chunk += 1
+        if state.words_in_chunk == target_words_per_chunk:
+            char_end = state.emit_upto + match.end()
+
+            # Include any citation blocks that immediately follow
+            if m := cite_block_re.match(state.answer_buf[char_end:]):
+                char_end += m.end()
+
+            state.emit_upto = char_end
+            state.words_in_chunk = 0
+
+            current_raw = state.answer_buf[:state.emit_upto]
+            # Skip if we have incomplete citations
+            if incomplete_cite_re.search(current_raw):
+                continue
+
+            normalized, cites = normalize_citations_and_chunks(
+                current_raw, final_results, records
+            )
+
+            chunk_text = normalized[state.prev_norm_len:]
+            state.prev_norm_len = len(normalized)
+
+            yield {
+                "event": "answer_chunk",
+                "data": {
+                    "chunk": chunk_text,
+                    "accumulated": normalized,
+                    "citations": cites,
+                },
+            }
+
+
+async def _emit_final_complete_event(
+    state: AnswerParserState,
+    with_tools: bool,
+    final_results: Any,
+    records: List
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Emit the final complete event with the full answer."""
+    if not (state.answer_done or not with_tools):
+        return
+
+    try:
+        parsed = json.loads(escape_ctl(state.full_json_buf))
+        final_answer = parsed.get("answer", state.answer_buf)
+        normalized, c = normalize_citations_and_chunks(final_answer, final_results, records)
+        yield {
+            "event": "complete",
+            "data": {
+                "answer": normalized,
+                "citations": c,
+                "reason": parsed.get("reason"),
+                "confidence": parsed.get("confidence"),
+            },
+        }
+    except Exception:
+        # Fallback if JSON parsing fails
+        normalized, c = normalize_citations_and_chunks(state.answer_buf, final_results, records)
+        yield {
+            "event": "complete",
+            "data": {
+                "answer": normalized,
+                "citations": c,
+                "reason": None,
+                "confidence": None,
+            },
+        }
+
+
+async def call_aiter_llm_stream(
+    llm, 
+    messages, 
+    final_results, 
+    records=[], 
+    target_words_per_chunk=2, 
+    parts=None, 
+    with_tools=False
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
+    state = AnswerParserState()
+    answer_key_re, cite_block_re, incomplete_cite_re, word_iter = _initialize_answer_parser_regex()
+
+    async for token in aiter_llm_stream(llm, messages, parts):
+        _extract_answer_from_json(state, token, answer_key_re)
+        
+        async for chunk_event in _process_and_emit_word_chunks(
+            state, target_words_per_chunk, cite_block_re, 
+            incomplete_cite_re, word_iter, final_results, records
+        ):
+            yield chunk_event
+
+    async for complete_event in _emit_final_complete_event(
+        state, with_tools, final_results, records
+    ):
+        yield complete_event
+
