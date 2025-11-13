@@ -376,22 +376,56 @@ class DocuSignDataSource:
         self,
         search_text: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch all templates with pagination.
+        """Fetch all templates with pagination."""
+        
+        all_templates: list[dict[str, Any]] = []
+        start_position = 0
+        count = 100  # reliable page size
 
-        This method handles pagination automatically to retrieve all templates.
+        while True:
+            response = self.client.list_templates(
+                count=str(count),
+                start_position=str(start_position),
+                search_text=search_text,
+            )
 
-        Args:
-            search_text: Search text to filter templates
+            templates = response.get("envelope_templates", [])
+            if not templates:
+                break
 
-        Returns:
-            List of all templates
-        """
-        response = self.client.list_templates(
-            count="1000",  # Max allowed
-            search_text=search_text,
-        )
+            all_templates.extend(templates)
 
-        return response.get("envelope_templates", []) or []
+            # Pagination metadata
+            next_start = response.get("next_start_position")
+            end_position = response.get("end_position")
+
+            # If fewer templates returned → last page
+            if len(templates) < count:
+                break
+
+            # Use next_start_position if available
+            if next_start:
+                if str(next_start) == str(start_position):  # avoid loop
+                    break
+                start_position = int(next_start)
+                continue
+
+            # Fallback using end_position
+            if end_position:
+                try:
+                    next_pos = int(end_position) + 1
+                    if next_pos == start_position:
+                        break
+                    start_position = next_pos
+                    continue
+                except ValueError:
+                    pass
+
+            # Last fallback (safest)
+            start_position += count
+
+        return all_templates
+
 
     def fetch_all_users(self) -> list[dict[str, Any]]:
         """Fetch all users with pagination.

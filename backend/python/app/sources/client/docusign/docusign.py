@@ -248,6 +248,7 @@ class DocuSignClient:
     def list_templates(
         self,
         count: str = "100",
+        start_position: str | None = None,   
         folder_ids: str | None = None,
         search_text: str | None = None,
     ) -> dict[str, Any]:
