@@ -145,10 +145,10 @@ async def execute_tool_calls(
     retrieval_service: RetrievalService,
     user_id: str,
     org_id: str,
+    context_length: int,
     target_words_per_chunk: int = 1,
     is_multimodal_llm: Optional[bool] = False,
     max_hops: int = 1,
-
 ) -> AsyncGenerator[Dict[str, Any], tuple[List[Dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -383,7 +383,10 @@ async def execute_tool_calls(
             message_contents.append(message_content)
 
         current_message_tokens, new_tokens = count_tokens(messages,message_contents)
-
+        
+        if context_length:
+            MAX_TOKENS_THRESHOLD = context_length
+        
         logger.debug(
             "execute_tool_calls: token_count | current_messages=%d new_records=%d threshold=%d",
             current_message_tokens,
@@ -1016,10 +1019,12 @@ async def stream_llm_response_with_tools(
     virtual_record_id_to_result,
     blob_store,
     is_multimodal_llm,
+    context_length,
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
     target_words_per_chunk: int = 1,
     mode: Optional[str] = "json",
+    
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1051,7 +1056,7 @@ async def stream_llm_response_with_tools(
         tools_were_called = False
         try:
             logger.info(f"executing tool calls with tools={tools}")
-            async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results,virtual_record_id_to_result, blob_store, all_queries, retrieval_service, user_id, org_id, is_multimodal_llm):
+            async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results,virtual_record_id_to_result, blob_store, all_queries, retrieval_service, user_id, org_id, context_length,is_multimodal_llm):
 
                 if tool_event.get("event") == "tool_execution_complete":
                     # Extract the final messages and tools_executed status

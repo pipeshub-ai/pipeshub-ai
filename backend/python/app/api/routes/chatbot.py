@@ -463,9 +463,13 @@ async def askAIStream(
                     query_info.chatMode
                 )
                 is_multimodal_llm = config.get("isMultimodal")
+                context_length = config.get("contextLength")
 
-                if llm is None:
+                if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+                
+                if context_length is None or context_length <= 0 or context_length == "":
+                    raise ValueError("Context length is not valid. Please provide a valid context length.")
 
                 if config.get("provider").lower() == "ollama":
                     query_info.mode = "simple"
@@ -618,6 +622,7 @@ async def askAIStream(
                     virtual_record_id_to_result,
                     blob_store,
                     is_multimodal_llm,
+                    context_length,
                     tools=tools,
                     tool_runtime_kwargs=tool_runtime_kwargs,
                     target_words_per_chunk=1,
