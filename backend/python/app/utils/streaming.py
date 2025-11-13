@@ -384,8 +384,7 @@ async def execute_tool_calls(
 
         current_message_tokens, new_tokens = count_tokens(messages,message_contents)
         
-        if context_length:
-            MAX_TOKENS_THRESHOLD = context_length
+        MAX_TOKENS_THRESHOLD = context_length
         
         logger.debug(
             "execute_tool_calls: token_count | current_messages=%d new_records=%d threshold=%d",

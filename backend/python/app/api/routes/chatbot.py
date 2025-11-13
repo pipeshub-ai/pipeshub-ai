@@ -468,7 +468,7 @@ async def askAIStream(
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
                 
-                if context_length is None or context_length <= 0 or context_length == "":
+                if not isinstance(context_length, (int)) or context_length <= 0:
                     raise ValueError("Context length is not valid. Please provide a valid context length.")
 
                 if config.get("provider").lower() == "ollama":
