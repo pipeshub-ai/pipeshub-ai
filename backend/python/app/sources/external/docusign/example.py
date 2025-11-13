@@ -244,7 +244,13 @@ def example_folder_operations(ds: DocuSignDataSource) -> None:
             if item_count and item_count > 0:
                 try:
                     items = ds.list_folder_items(folder_id)
-                    print(f"    First item: {items.get('folder_items', [{}])[0].get('subject', 'N/A')}")
+                    folder_items = items.get("folder_items") or []
+
+                    if folder_items:
+                        print(f"    First item: {folder_items[0].get('subject', 'N/A')}")
+                    else:
+                        print("    First item: N/A")
+
                 except DocuSignClientError:
                     pass
 
