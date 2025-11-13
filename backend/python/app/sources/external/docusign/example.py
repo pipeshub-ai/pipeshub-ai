@@ -82,24 +82,29 @@ def example_account_operations(ds: DocuSignDataSource) -> None:
         # Get account information
         account_info = ds.get_account_information()
         print("Account Information:")
-        print(f"  Name: {account_info.get('account_name')}")
-        print(f"  ID: {account_info.get('account_id')}")
-        print(f"  Status: {account_info.get('status')}")
+        print(f"  Name: {account_info.get('account_name', 'N/A')}")
+        print(f"  ID: {account_info.get('account_id', 'N/A')}")
+        print(f"  Status: {account_info.get('status', 'N/A')}")
 
         # Get account settings
         settings = ds.get_account_settings()
-        print(f"\n✓ Retrieved {len(settings.get('account_settings', []))} settings")
+        settings_list = settings.get('account_settings', [])
+        print(f"\n✓ Retrieved {len(settings_list)} account settings")
 
-        # List brands
-        brands = ds.list_brands()
-        brand_list = brands.get("brands", []) or []
-        print(f"✓ Found {len(brand_list)} brands")
+        # List brands (may fail if branding not enabled)
+        try:
+            brands = ds.list_brands()
+            brand_list = brands.get("brands", []) or []
+            print(f"✓ Found {len(brand_list)} brands")
+        except DocuSignClientError as brand_error:
+            if "ACCOUNT_LACKS_PERMISSIONS" in str(brand_error):
+                print("ℹ Branding not enabled for this account (normal for demo accounts)")
+            else:
+                print(f"✗ Error listing brands: {brand_error}")
 
     except DocuSignClientError as e:
         print(f"✗ Error: {e}")
 
-
-from datetime import datetime, timedelta
 
 def example_envelope_operations(
     ds: DocuSignDataSource,
@@ -109,17 +114,8 @@ def example_envelope_operations(
     print_section("Envelope Operations")
 
     try:
-        # DocuSign API rule:
-        # If folder_ids is None, then from_date is REQUIRED.
-        if folder_id:
-            envelopes = ds.list_envelopes(folder_ids=folder_id, count="10")
-        else:
-            # Fallback: use last 30 days to satisfy API requirement
-            from_date = (datetime.utcnow() - timedelta(days=30)).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            )
-            envelopes = ds.list_envelopes(from_date=from_date, count="10")
-
+        # List envelopes
+        envelopes = ds.list_envelopes(folder_ids=folder_id, count="10")
         envelope_list = envelopes.get("envelopes", [])
         print(f"Found {len(envelope_list)} envelopes\n")
 
@@ -128,6 +124,7 @@ def example_envelope_operations(
             print(f"   Status: {env.get('status')}")
             print(f"   Created: {env.get('created_date_time', 'N/A')}\n")
 
+        # Get envelope details if available
         if envelope_list:
             envelope_id = envelope_list[0].get("envelope_id")
             details = ds.get_envelope(envelope_id)
@@ -135,21 +132,22 @@ def example_envelope_operations(
             print(f"  Subject: {details.get('email_subject')}")
             print(f"  Status: {details.get('status')}")
 
+            # List documents
             docs = ds.get_envelope_documents(envelope_id)
             print(f"\n  Documents: {len(docs.get('envelope_documents', []))}")
 
+            # List recipients
             recipients = ds.list_recipients(envelope_id)
             print(f"  Recipients: {len(recipients.get('signers', []))}")
 
+            # Get audit events
             audit = ds.get_envelope_audit_events(envelope_id)
             print(f"  Audit Events: {len(audit.get('audit_events', []))}")
 
         return envelope_list
-
     except DocuSignClientError as e:
         print(f"✗ Error: {e}")
         return []
-
 
 
 def example_template_operations(ds: DocuSignDataSource) -> None:
@@ -238,7 +236,7 @@ def example_folder_operations(ds: DocuSignDataSource) -> None:
         for folder in folder_list:
             name = folder.get("name")
             folder_id = folder.get("folder_id")
-            item_count = int(folder.get("item_count") or 0)
+            item_count = int(folder.get("item_count", 0))
             print(f"  - {name} (ID: {folder_id})")
             print(f"    Items: {item_count}\n")
 
