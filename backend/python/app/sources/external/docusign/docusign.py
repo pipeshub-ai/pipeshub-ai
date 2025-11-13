@@ -12,7 +12,7 @@ from app.sources.client.docusign.docusign import DocuSignClient
 
 @dataclass
 class DocuSignDataSource:
-    """Data source for DocuSign integration.
+    """Comprehensive data source for DocuSign integration.
 
     This class provides methods to fetch data from DocuSign for indexing
     and search purposes in the PipesHub platform.
@@ -22,6 +22,10 @@ class DocuSignDataSource:
     """
 
     client: DocuSignClient
+
+    # ========================================================================
+    # ENVELOPE OPERATIONS
+    # ========================================================================
 
     def list_envelopes(
         self,
@@ -42,9 +46,6 @@ class DocuSignDataSource:
 
         Returns:
             Dictionary containing envelope list
-
-        Raises:
-            DocuSignClientError: If the operation fails
         """
         return self.client.list_envelopes(
             from_date=from_date,
@@ -62,9 +63,6 @@ class DocuSignDataSource:
 
         Returns:
             Dictionary containing envelope details
-
-        Raises:
-            DocuSignClientError: If the operation fails
         """
         return self.client.get_envelope(envelope_id)
 
@@ -76,9 +74,6 @@ class DocuSignDataSource:
 
         Returns:
             Dictionary containing document list
-
-        Raises:
-            DocuSignClientError: If the operation fails
         """
         return self.client.get_envelope_documents(envelope_id)
 
@@ -95,11 +90,34 @@ class DocuSignDataSource:
 
         Returns:
             Document content as bytes
-
-        Raises:
-            DocuSignClientError: If the operation fails
         """
         return self.client.download_document(envelope_id, document_id)
+
+    def list_recipients(self, envelope_id: str) -> dict[str, Any]:
+        """List all recipients of an envelope.
+
+        Args:
+            envelope_id: The envelope ID
+
+        Returns:
+            Dictionary containing recipient list
+        """
+        return self.client.list_recipients(envelope_id)
+
+    def get_envelope_audit_events(self, envelope_id: str) -> dict[str, Any]:
+        """Get audit events for an envelope.
+
+        Args:
+            envelope_id: The envelope ID
+
+        Returns:
+            Dictionary containing audit event list
+        """
+        return self.client.get_envelope_audit_events(envelope_id)
+
+    # ========================================================================
+    # TEMPLATE OPERATIONS
+    # ========================================================================
 
     def list_templates(
         self,
@@ -116,9 +134,6 @@ class DocuSignDataSource:
 
         Returns:
             Dictionary containing template list
-
-        Raises:
-            DocuSignClientError: If the operation fails
         """
         return self.client.list_templates(
             count=count,
@@ -134,22 +149,40 @@ class DocuSignDataSource:
 
         Returns:
             Dictionary containing template details
-
-        Raises:
-            DocuSignClientError: If the operation fails
         """
         return self.client.get_template(template_id)
 
-    def list_folders(self) -> dict[str, Any]:
-        """Retrieve list of folders.
+    # ========================================================================
+    # ACCOUNT OPERATIONS
+    # ========================================================================
+
+    def get_account_information(self) -> dict[str, Any]:
+        """Get account information and settings.
 
         Returns:
-            Dictionary containing folder list
-
-        Raises:
-            DocuSignClientError: If the operation fails
+            Dictionary containing account details
         """
-        return self.client.list_folders()
+        return self.client.get_account_information()
+
+    def list_brands(self) -> dict[str, Any]:
+        """List all brands in the account.
+
+        Returns:
+            Dictionary containing brand list
+        """
+        return self.client.list_brands()
+
+    def get_account_settings(self) -> dict[str, Any]:
+        """Get account settings.
+
+        Returns:
+            Dictionary containing account settings
+        """
+        return self.client.get_account_settings()
+
+    # ========================================================================
+    # USER OPERATIONS
+    # ========================================================================
 
     def list_users(
         self,
@@ -164,9 +197,6 @@ class DocuSignDataSource:
 
         Returns:
             Dictionary containing user list
-
-        Raises:
-            DocuSignClientError: If the operation fails
         """
         return self.client.list_users(count=count, start_position=start_position)
 
@@ -178,11 +208,112 @@ class DocuSignDataSource:
 
         Returns:
             Dictionary containing user details
-
-        Raises:
-            DocuSignClientError: If the operation fails
         """
         return self.client.get_user(user_id)
+
+    # ========================================================================
+    # GROUP OPERATIONS
+    # ========================================================================
+
+    def list_groups(
+        self,
+        count: str = "100",
+        start_position: str = "0",
+    ) -> dict[str, Any]:
+        """List groups in the account.
+
+        Args:
+            count: Maximum number of results
+            start_position: Starting position for pagination
+
+        Returns:
+            Dictionary containing group list
+        """
+        return self.client.list_groups(
+            count=count,
+            start_position=start_position,
+        )
+
+    def get_group(self, group_id: str) -> dict[str, Any]:
+        """Get details of a specific group.
+
+        Args:
+            group_id: The group ID
+
+        Returns:
+            Dictionary containing group details
+        """
+        return self.client.get_group(group_id)
+
+    # ========================================================================
+    # FOLDER OPERATIONS
+    # ========================================================================
+
+    def list_folders(self) -> dict[str, Any]:
+        """Retrieve list of folders.
+
+        Returns:
+            Dictionary containing folder list
+        """
+        return self.client.list_folders()
+
+    def list_folder_items(
+        self,
+        folder_id: str,
+        start_position: str = "0",
+    ) -> dict[str, Any]:
+        """List items in a specific folder.
+
+        Args:
+            folder_id: The folder ID
+            start_position: Starting position for pagination
+
+        Returns:
+            Dictionary containing folder items
+        """
+        return self.client.list_folder_items(folder_id, start_position)
+
+    # ========================================================================
+    # WORKSPACE OPERATIONS
+    # ========================================================================
+
+    def list_workspaces(self) -> dict[str, Any]:
+        """List all workspaces in the account.
+
+        Returns:
+            Dictionary containing workspace list
+        """
+        return self.client.list_workspaces()
+
+    def get_workspace(self, workspace_id: str) -> dict[str, Any]:
+        """Get details of a specific workspace.
+
+        Args:
+            workspace_id: The workspace ID
+
+        Returns:
+            Dictionary containing workspace details
+        """
+        return self.client.get_workspace(workspace_id)
+
+    # ========================================================================
+    # BULK ENVELOPE OPERATIONS
+    # ========================================================================
+
+    def get_bulk_envelope_status(self, batch_id: str) -> dict[str, Any]:
+        """Get status of a bulk envelope batch.
+
+        Args:
+            batch_id: The batch ID
+
+        Returns:
+            Dictionary containing batch status
+        """
+        return self.client.get_bulk_envelope_status(batch_id)
+
+    # ========================================================================
+    # BATCH OPERATIONS
+    # ========================================================================
 
     def fetch_all_envelopes(
         self,
@@ -199,9 +330,6 @@ class DocuSignDataSource:
 
         Returns:
             List of all envelopes
-
-        Raises:
-            DocuSignClientError: If the operation fails
         """
         all_envelopes: list[dict[str, Any]] = []
         count = 100
@@ -239,9 +367,6 @@ class DocuSignDataSource:
 
         Returns:
             List of all templates
-
-        Raises:
-            DocuSignClientError: If the operation fails
         """
         response = self.client.list_templates(
             count="1000",  # Max allowed
@@ -249,3 +374,63 @@ class DocuSignDataSource:
         )
 
         return response.get("envelope_templates", []) or []
+
+    def fetch_all_users(self) -> list[dict[str, Any]]:
+        """Fetch all users with pagination.
+
+        Returns:
+            List of all users
+        """
+        all_users: list[dict[str, Any]] = []
+        start_position = 0
+        count = 100
+
+        while True:
+            response = self.client.list_users(
+                count=str(count),
+                start_position=str(start_position),
+            )
+
+            users = response.get("users", [])
+            if not users:
+                break
+
+            all_users.extend(users)
+
+            end_position = response.get("end_position")
+            if not end_position or len(users) < count:
+                break
+
+            start_position += count
+
+        return all_users
+
+    def fetch_all_groups(self) -> list[dict[str, Any]]:
+        """Fetch all groups with pagination.
+
+        Returns:
+            List of all groups
+        """
+        all_groups: list[dict[str, Any]] = []
+        start_position = 0
+        count = 100
+
+        while True:
+            response = self.client.list_groups(
+                count=str(count),
+                start_position=str(start_position),
+            )
+
+            groups = response.get("groups", [])
+            if not groups:
+                break
+
+            all_groups.extend(groups)
+
+            end_position = response.get("end_position")
+            if not end_position or len(groups) < count:
+                break
+
+            start_position += count
+
+        return all_groups

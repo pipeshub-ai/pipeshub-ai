@@ -1,20 +1,17 @@
-"""Example usage of DocuSign integration with PipesHub.
+"""Comprehensive example usage of DocuSign integration with PipesHub.
 
-This script demonstrates how to initialize the DocuSign client and
-data source, and perform various operations like listing envelopes,
-templates, and downloading documents.
+This script demonstrates all available DocuSign APIs including envelopes,
+templates, accounts, users, groups, folders, and workspaces.
 
 Environment Variables Required:
-    DOCUSIGN_ACCESS_TOKEN: OAuth access token for authentication
-    DOCUSIGN_BASE_URI: Base URI for DocuSign API
+    DOCUSIGN_ACCESS_TOKEN: OAuth access token
+    DOCUSIGN_BASE_URI: Base URI (e.g., https://demo.docusign.net)
     DOCUSIGN_ACCOUNT_ID: Your DocuSign account ID
 """
 
-# ruff: noqa: T201 (print statements are OK in example files)
+# ruff: noqa: T201
 
 import os
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from app.sources.client.docusign.docusign import (
     DocuSignClient,
@@ -25,17 +22,13 @@ from app.sources.external.docusign.docusign import DocuSignDataSource
 
 def print_section(title: str) -> None:
     """Print a formatted section header."""
-    print(f"\n{'=' * 60}")
+    print(f"\n{'=' * 70}")
     print(f"  {title}")
-    print(f"{'=' * 60}\n")
+    print(f"{'=' * 70}\n")
 
 
 def check_environment() -> bool:
-    """Check if required environment variables are set.
-
-    Returns:
-        True if all required variables are set, False otherwise
-    """
+    """Check if required environment variables are set."""
     required_vars = [
         "DOCUSIGN_ACCESS_TOKEN",
         "DOCUSIGN_BASE_URI",
@@ -48,7 +41,7 @@ def check_environment() -> bool:
             "Error: Missing required environment variables: "
             f"{', '.join(missing_vars)}"
         )
-        print("\nPlease set the following environment variables:")
+        print("\nPlease set:")
         print("  export DOCUSIGN_ACCESS_TOKEN=your_token")
         print("  export DOCUSIGN_BASE_URI=https://demo.docusign.net")
         print("  export DOCUSIGN_ACCOUNT_ID=your_account_id")
@@ -57,11 +50,7 @@ def check_environment() -> bool:
 
 
 def initialize_client() -> tuple[DocuSignDataSource | None, str | None]:
-    """Initialize DocuSign client and data source.
-
-    Returns:
-        Tuple of (DocuSignDataSource instance, inbox_folder_id) or (None, None)
-    """
+    """Initialize DocuSign client and get inbox folder ID."""
     try:
         client = DocuSignClient(
             access_token=os.environ["DOCUSIGN_ACCESS_TOKEN"],
@@ -71,7 +60,7 @@ def initialize_client() -> tuple[DocuSignDataSource | None, str | None]:
         ds = DocuSignDataSource(client)
         print("✓ DocuSign client initialized successfully")
 
-        # Get inbox folder ID for listing envelopes
+        # Get inbox folder ID
         folders = ds.list_folders()
         inbox_folder_id = None
         for folder in folders.get("folders", []):
@@ -81,208 +70,237 @@ def initialize_client() -> tuple[DocuSignDataSource | None, str | None]:
 
         return ds, inbox_folder_id
     except DocuSignClientError as e:
-        print(f"✗ Failed to initialize DocuSign client: {e}")
+        print(f"✗ Failed to initialize: {e}")
         return None, None
 
 
-def example_list_envelopes(
+def example_account_operations(ds: DocuSignDataSource) -> None:
+    """Demonstrate account operations."""
+    print_section("Account Operations")
+
+    try:
+        # Get account information
+        account_info = ds.get_account_information()
+        print("Account Information:")
+        print(f"  Name: {account_info.get('account_name')}")
+        print(f"  ID: {account_info.get('account_id')}")
+        print(f"  Status: {account_info.get('status')}")
+
+        # Get account settings
+        settings = ds.get_account_settings()
+        print(f"\n✓ Retrieved {len(settings.get('account_settings', []))} settings")
+
+        # List brands
+        brands = ds.list_brands()
+        brand_list = brands.get("brands", []) or []
+        print(f"✓ Found {len(brand_list)} brands")
+
+    except DocuSignClientError as e:
+        print(f"✗ Error: {e}")
+
+
+from datetime import datetime, timedelta
+
+def example_envelope_operations(
     ds: DocuSignDataSource,
     folder_id: str | None,
 ) -> list[dict]:
-    """Example: List recent envelopes.
+    """Demonstrate envelope operations."""
+    print_section("Envelope Operations")
 
-    Returns:
-        List of envelopes
-    """
-    print_section("Example 1: List Recent Envelopes")
     try:
-        # Use folder_ids parameter to avoid from_date requirement
-        envelopes = ds.list_envelopes(
-            folder_ids=folder_id if folder_id else None,
-            count="10",
-        )
+        # DocuSign API rule:
+        # If folder_ids is None, then from_date is REQUIRED.
+        if folder_id:
+            envelopes = ds.list_envelopes(folder_ids=folder_id, count="10")
+        else:
+            # Fallback: use last 30 days to satisfy API requirement
+            from_date = (datetime.utcnow() - timedelta(days=30)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            envelopes = ds.list_envelopes(from_date=from_date, count="10")
 
         envelope_list = envelopes.get("envelopes", [])
-        print(f"Found {len(envelope_list)} envelopes")
+        print(f"Found {len(envelope_list)} envelopes\n")
 
-        for idx, env in enumerate(envelope_list[:5], 1):
-            print(f"\n{idx}. Envelope ID: {env.get('envelope_id')}")
+        for idx, env in enumerate(envelope_list[:3], 1):
+            print(f"{idx}. {env.get('email_subject', 'N/A')}")
             print(f"   Status: {env.get('status')}")
-            print(f"   Subject: {env.get('email_subject', 'N/A')}")
-            print(f"   Created: {env.get('created_date_time', 'N/A')}")
+            print(f"   Created: {env.get('created_date_time', 'N/A')}\n")
+
+        if envelope_list:
+            envelope_id = envelope_list[0].get("envelope_id")
+            details = ds.get_envelope(envelope_id)
+            print(f"Envelope Details for {envelope_id}:")
+            print(f"  Subject: {details.get('email_subject')}")
+            print(f"  Status: {details.get('status')}")
+
+            docs = ds.get_envelope_documents(envelope_id)
+            print(f"\n  Documents: {len(docs.get('envelope_documents', []))}")
+
+            recipients = ds.list_recipients(envelope_id)
+            print(f"  Recipients: {len(recipients.get('signers', []))}")
+
+            audit = ds.get_envelope_audit_events(envelope_id)
+            print(f"  Audit Events: {len(audit.get('audit_events', []))}")
 
         return envelope_list
+
     except DocuSignClientError as e:
-        print(f"✗ Error listing envelopes: {e}")
+        print(f"✗ Error: {e}")
         return []
 
 
-def example_get_envelope_details(
-    ds: DocuSignDataSource,
-    envelope_list: list[dict],
-) -> None:
-    """Example: Get envelope details."""
-    print_section("Example 2: Get Envelope Details")
-    try:
-        if envelope_list:
-            envelope_id = envelope_list[0].get("envelope_id")
-            print(f"Getting details for envelope: {envelope_id}")
 
-            envelope_details = ds.get_envelope(envelope_id)
-            print("\nEnvelope Details:")
-            print(
-                f"  Subject: {envelope_details.get('email_subject', 'N/A')}"
-            )
-            print(f"  Status: {envelope_details.get('status')}")
-            sender_name = (
-                envelope_details.get("sender", {}).get("user_name", "N/A")
-            )
-            print(f"  Sender: {sender_name}")
-            print(f"  Created: {envelope_details.get('created_date_time')}")
+def example_template_operations(ds: DocuSignDataSource) -> None:
+    """Demonstrate template operations."""
+    print_section("Template Operations")
 
-            print("\n  Documents:")
-            docs = ds.get_envelope_documents(envelope_id)
-            for doc in docs.get("envelope_documents", []):
-                doc_name = doc.get("name")
-                doc_id = doc.get("document_id")
-                print(f"    - {doc_name} (ID: {doc_id})")
-        else:
-            print("No envelopes found to display details")
-
-    except DocuSignClientError as e:
-        print(f"✗ Error getting envelope details: {e}")
-
-
-def example_list_templates(ds: DocuSignDataSource) -> None:
-    """Example: List templates."""
-    print_section("Example 3: List Templates")
     try:
         templates = ds.list_templates(count="10")
         template_list = templates.get("envelope_templates", []) or []
-        print(f"Found {len(template_list)} templates")
+        print(f"Found {len(template_list)} templates\n")
 
-        if not template_list:
-            print("(No templates found - create some in DocuSign web UI)")
+        for idx, tmpl in enumerate(template_list[:3], 1):
+            print(f"{idx}. {tmpl.get('name')}")
+            print(f"   Description: {tmpl.get('description', 'N/A')}\n")
 
-        for idx, tmpl in enumerate(template_list[:5], 1):
-            print(f"\n{idx}. Template ID: {tmpl.get('template_id')}")
-            print(f"   Name: {tmpl.get('name')}")
-            print(f"   Description: {tmpl.get('description', 'N/A')}")
-            print(f"   Created: {tmpl.get('created', 'N/A')}")
-
-    except DocuSignClientError as e:
-        print(f"✗ Error listing templates: {e}")
-
-
-def example_list_folders(ds: DocuSignDataSource) -> None:
-    """Example: List folders."""
-    print_section("Example 4: List Folders")
-    try:
-        folders = ds.list_folders()
-        folder_list = folders.get("folders", []) or []
-        print(f"Found {len(folder_list)} folders")
-
-        for folder in folder_list:
-            folder_name = folder.get("name")
-            folder_id = folder.get("folder_id")
-            print(f"\n  - {folder_name} (ID: {folder_id})")
-            print(f"    Type: {folder.get('type')}")
-            if folder.get("item_count") is not None:
-                print(f"    Items: {folder.get('item_count')}")
+        # Get template details if available
+        if template_list:
+            template_id = template_list[0].get("template_id")
+            details = ds.get_template(template_id)
+            print(f"Template Details for {template_id}:")
+            print(f"  Name: {details.get('name')}")
 
     except DocuSignClientError as e:
-        print(f"✗ Error listing folders: {e}")
+        print(f"✗ Error: {e}")
 
 
-def example_list_users(ds: DocuSignDataSource) -> None:
-    """Example: List users."""
-    print_section("Example 5: List Users")
+def example_user_operations(ds: DocuSignDataSource) -> None:
+    """Demonstrate user operations."""
+    print_section("User Operations")
+
     try:
         users = ds.list_users(count="10")
         user_list = users.get("users", []) or []
-        print(f"Found {len(user_list)} users")
+        print(f"Found {len(user_list)} users\n")
 
         for idx, user in enumerate(user_list[:5], 1):
-            print(f"\n{idx}. User ID: {user.get('user_id')}")
-            print(f"   Name: {user.get('user_name')}")
+            print(f"{idx}. {user.get('user_name')}")
             print(f"   Email: {user.get('email')}")
-            print(f"   Status: {user.get('user_status')}")
+            print(f"   Status: {user.get('user_status')}\n")
+
+        # Get user details if available
+        if user_list:
+            user_id = user_list[0].get("user_id")
+            details = ds.get_user(user_id)
+            print(f"User Details for {user_id}:")
+            print(f"  Name: {details.get('user_name')}")
+            print(f"  Email: {details.get('email')}")
 
     except DocuSignClientError as e:
-        print(f"✗ Error listing users: {e}")
+        print(f"✗ Error: {e}")
 
 
-def example_download_document(
-    ds: DocuSignDataSource,
-    envelope_list: list[dict],
-) -> None:
-    """Example: Download a document."""
-    print_section("Example 6: Download Document")
+def example_group_operations(ds: DocuSignDataSource) -> None:
+    """Demonstrate group operations."""
+    print_section("Group Operations")
+
     try:
-        if envelope_list:
-            envelope_id = envelope_list[0].get("envelope_id")
-            docs = ds.get_envelope_documents(envelope_id)
-            doc_list = docs.get("envelope_documents", [])
+        groups = ds.list_groups(count="10")
+        group_list = groups.get("groups", []) or []
+        print(f"Found {len(group_list)} groups\n")
 
-            if doc_list:
-                doc = doc_list[0]
-                doc_id = doc.get("document_id")
-                doc_name = doc.get("name", "document")
+        for idx, group in enumerate(group_list[:3], 1):
+            print(f"{idx}. {group.get('group_name')}")
+            print(f"   Type: {group.get('group_type', 'N/A')}\n")
 
-                print(f"Downloading: {doc_name}")
-                content = ds.download_document(envelope_id, doc_id)
-
-                output_path = Path(f"docusign_{doc_name}")
-                output_path.write_bytes(content)
-                print(f"✓ Document saved to: {output_path}")
-                print(f"  Size: {len(content)} bytes")
-            else:
-                print("No documents found in envelope")
-        else:
-            print("No envelopes found to download documents from")
+        # Get group details if available
+        if group_list:
+            group_id = group_list[0].get("group_id")
+            details = ds.get_group(group_id)
+            print(f"Group Details for {group_id}:")
+            print(f"  Name: {details.get('group_name')}")
 
     except DocuSignClientError as e:
-        print(f"✗ Error downloading document: {e}")
+        print(f"✗ Error: {e}")
 
 
-def example_fetch_all_envelopes(
-    ds: DocuSignDataSource,
-    folder_id: str | None,
-) -> None:
-    """Example: Fetch all envelopes with pagination."""
-    print_section("Example 7: Fetch All Envelopes (Paginated)")
+def example_folder_operations(ds: DocuSignDataSource) -> None:
+    """Demonstrate folder operations."""
+    print_section("Folder Operations")
+
     try:
-        # Use a proper date format for from_date
-        (datetime.now(tz=UTC) - timedelta(days=90)).strftime(
-            "%Y-%m-%d"
-        )
+        folders = ds.list_folders()
+        folder_list = folders.get("folders", []) or []
+        print(f"Found {len(folder_list)} folders\n")
 
-        # Use folder_ids to list envelopes
-        all_envelopes = []
-        if folder_id:
-            response = ds.list_envelopes(folder_ids=folder_id, count="100")
-            all_envelopes = response.get("envelopes", [])
+        for folder in folder_list:
+            name = folder.get("name")
+            folder_id = folder.get("folder_id")
+            item_count = int(folder.get("item_count") or 0)
+            print(f"  - {name} (ID: {folder_id})")
+            print(f"    Items: {item_count}\n")
 
-        print(f"✓ Fetched {len(all_envelopes)} envelopes in total")
-
-        if all_envelopes:
-            status_count: dict[str, int] = {}
-            for env in all_envelopes:
-                status = env.get("status", "unknown")
-                status_count[status] = status_count.get(status, 0) + 1
-
-            print("\nStatus Breakdown:")
-            for status, count in sorted(status_count.items()):
-                print(f"  {status}: {count}")
-        else:
-            print("(No envelopes in the past 90 days)")
+            # List items in folder if it has items
+            if item_count and item_count > 0:
+                try:
+                    items = ds.list_folder_items(folder_id)
+                    print(f"    First item: {items.get('folder_items', [{}])[0].get('subject', 'N/A')}")
+                except DocuSignClientError:
+                    pass
 
     except DocuSignClientError as e:
-        print(f"✗ Error fetching all envelopes: {e}")
+        print(f"✗ Error: {e}")
+
+
+def example_workspace_operations(ds: DocuSignDataSource) -> None:
+    """Demonstrate workspace operations."""
+    print_section("Workspace Operations")
+
+    try:
+        workspaces = ds.list_workspaces()
+        workspace_list = workspaces.get("workspaces", []) or []
+        print(f"Found {len(workspace_list)} workspaces\n")
+
+        for idx, workspace in enumerate(workspace_list[:3], 1):
+            print(f"{idx}. {workspace.get('workspace_name')}")
+            print(f"   ID: {workspace.get('workspace_id')}\n")
+
+        # Get workspace details if available
+        if workspace_list:
+            workspace_id = workspace_list[0].get("workspace_id")
+            details = ds.get_workspace(workspace_id)
+            print(f"Workspace Details for {workspace_id}:")
+            print(f"  Name: {details.get('workspace_name')}")
+
+    except DocuSignClientError as e:
+        print(f"✗ Error: {e}")
+
+
+def example_batch_operations(ds: DocuSignDataSource) -> None:
+    """Demonstrate batch operations with pagination."""
+    print_section("Batch Operations (Pagination)")
+
+    try:
+        # Fetch all users
+        all_users = ds.fetch_all_users()
+        print(f"✓ Fetched {len(all_users)} users total")
+
+        # Fetch all templates
+        all_templates = ds.fetch_all_templates()
+        print(f"✓ Fetched {len(all_templates)} templates total")
+
+        # Fetch all groups
+        all_groups = ds.fetch_all_groups()
+        print(f"✓ Fetched {len(all_groups)} groups total")
+
+    except DocuSignClientError as e:
+        print(f"✗ Error: {e}")
 
 
 def main() -> None:
-    """Run example DocuSign operations."""
+    """Run comprehensive DocuSign API demonstrations."""
     if not check_environment():
         return
 
@@ -290,19 +308,20 @@ def main() -> None:
     if not ds:
         return
 
-    # Run all examples - pass envelope_list between examples
-    envelope_list = example_list_envelopes(ds, folder_id)
-    example_get_envelope_details(ds, envelope_list)
-    example_list_templates(ds)
-    example_list_folders(ds)
-    example_list_users(ds)
-    example_download_document(ds, envelope_list)
-    example_fetch_all_envelopes(ds, folder_id)
+    # Run all examples
+    example_account_operations(ds)
+    example_envelope_operations(ds, folder_id)
+    example_template_operations(ds)
+    example_user_operations(ds)
+    example_group_operations(ds)
+    example_folder_operations(ds)
+    example_workspace_operations(ds)
+    example_batch_operations(ds)
 
-    print_section("Examples Complete")
-    print("✓ All examples executed successfully!")
-    print("\nNote: Some examples may show '0 results' if your account")
-    print("doesn't have templates or recent envelopes. This is normal.")
+    print_section("All Examples Complete")
+    print("✓ Successfully demonstrated all DocuSign APIs!")
+    print("\nNote: Some operations may show '0 results' if your")
+    print("account doesn't have that data. This is normal.")
 
 
 if __name__ == "__main__":
