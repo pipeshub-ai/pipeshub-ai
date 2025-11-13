@@ -171,10 +171,11 @@ async def execute_tool_calls(
             # Measure LLM invocation latency
           
             parts = []
-            async for event in call_aiter_llm_stream(llm_with_tools, messages,final_results,target_words_per_chunk,parts,with_tools=True):
-                yield event
+            async for event in call_aiter_llm_stream(llm_with_tools, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk, parts=parts):
                 if event.get("event") == "complete":
+                    yield event
                     return
+                yield event
             
             ai = None
             for part in parts:
@@ -182,45 +183,15 @@ async def execute_tool_calls(
                     ai = part
                 else:
                     ai += part
+            
             ai = AIMessage(
             content=ai.content,
             tool_calls=getattr(ai, 'tool_calls', []),
             )
         except Exception as e:
-            error_str = str(e).lower()
-            # Check if this is a tool-related error from the provider (400, tool_use_failed, etc.)
-            if any(keyword in error_str for keyword in ['tool_use_failed', 'tool use failed', 'failed to call a function', 'invalid tool', 'function call failed']):
-                logger.warning(
-                    "execute_tool_calls: provider-level tool failure detected: %s. Applying reflection.",
-                    str(e)
-                )
-
-                # Add reflection message to guide the LLM away from using tools incorrectly
-                valid_tool_names = [t.name for t in tools]
-                reflection_content = (
-                    f"Error: The AI provider rejected the function call. This usually means:\n"
-                    f"1. Invalid arguments were provided to the tool\n"
-                    f"2. A non-existent tool was called\n"
-                    f"3. The function call format was incorrect\n\n"
-                    f"Available tools: {', '.join(valid_tool_names)}\n\n"
-                    f"Please provide your final answer directly as a JSON object with this structure:\n"
-                    f'{{"answer": "your answer here", "reason": "reasoning", "confidence": "High/Medium/Low", '
-                    f'"answerMatchType": "Derived From Blocks/Exact Match/etc", "blockNumbers": [list of block numbers]}}.\n\n'
-                    f"Do NOT attempt to call any tools. Provide your answer based on the blocks already provided in the context."
-                )
-
-                # Add a human message with the reflection (treating it as system guidance)
-                # messages.append(HumanMessage(content=reflection_content))
-
-                logger.info("execute_tool_calls: added reflection for provider tool failure, retrying without tools")
-
-                # Continue loop to get a direct answer
-                hops += 1
-                continue
-            else:
-                # Non-tool-related error, re-raise
-                logger.error("execute_tool_calls: non-tool error during LLM invocation: %s", str(e))
-                raise
+            logger.debug("Error in llm call with tools: %s", str(e))
+            break
+            
 
         # Check if there are tool calls
         if not (isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None)):
@@ -1176,86 +1147,74 @@ def _initialize_answer_parser_regex() -> Tuple[re.Pattern, re.Pattern, re.Patter
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
 
 
-def _extract_answer_from_json(
-    state: AnswerParserState,
-    token: str,
-    answer_key_re: re.Pattern
-) -> None:
-    """Extract and update the answer buffer from JSON tokens."""
-    state.full_json_buf += token
-
-    # Look for the start of the "answer" field
-    if not state.answer_buf:
-        match = answer_key_re.search(state.full_json_buf)
-        if match:
-            after_key = state.full_json_buf[match.end():]
-            state.answer_buf += after_key
-    elif not state.answer_done:
-        state.answer_buf += token
-
-    # Check if we've reached the end of the answer field
-    if not state.answer_done:
-        end_idx = find_unescaped_quote(state.answer_buf)
-        if end_idx != -1:
-            state.answer_done = True
-            state.answer_buf = state.answer_buf[:end_idx]
-
-
-async def _process_and_emit_word_chunks(
-    state: AnswerParserState,
-    target_words_per_chunk: int,
-    cite_block_re: re.Pattern,
-    incomplete_cite_re: re.Pattern,
-    word_iter: Any,
-    final_results: Any,
-    records: List
+async def call_aiter_llm_stream(
+    llm, 
+    messages, 
+    final_results, 
+    records=[], 
+    target_words_per_chunk=1, 
+    parts=None, 
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    """Process answer buffer in word-based chunks and emit events."""
-    if not state.answer_buf:
-        return
+    """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
+    state = AnswerParserState()
+    answer_key_re, cite_block_re, incomplete_cite_re, word_iter = _initialize_answer_parser_regex()
 
-    for match in word_iter(state.answer_buf[state.emit_upto:]):
-        state.words_in_chunk += 1
-        if state.words_in_chunk == target_words_per_chunk:
-            char_end = state.emit_upto + match.end()
+    async for token in aiter_llm_stream(llm, messages, parts):
+        state.full_json_buf += token
 
-            # Include any citation blocks that immediately follow
-            if m := cite_block_re.match(state.answer_buf[char_end:]):
-                char_end += m.end()
+        # Look for the start of the "answer" field
+        if not state.answer_buf:
+            match = answer_key_re.search(state.full_json_buf)
+            if match:
+                after_key = state.full_json_buf[match.end():]
+                state.answer_buf += after_key
+        elif not state.answer_done:
+            state.answer_buf += token
 
-            state.emit_upto = char_end
-            state.words_in_chunk = 0
-
-            current_raw = state.answer_buf[:state.emit_upto]
-            # Skip if we have incomplete citations
-            if incomplete_cite_re.search(current_raw):
-                continue
-
-            normalized, cites = normalize_citations_and_chunks(
-                current_raw, final_results, records
-            )
-
-            chunk_text = normalized[state.prev_norm_len:]
-            state.prev_norm_len = len(normalized)
-
-            yield {
-                "event": "answer_chunk",
-                "data": {
-                    "chunk": chunk_text,
-                    "accumulated": normalized,
-                    "citations": cites,
-                },
-            }
+        # Check if we've reached the end of the answer field
+        if not state.answer_done:
+            end_idx = find_unescaped_quote(state.answer_buf)
+            if end_idx != -1:
+                state.answer_done = True
+                state.answer_buf = state.answer_buf[:end_idx]
 
 
-async def _emit_final_complete_event(
-    state: AnswerParserState,
-    with_tools: bool,
-    final_results: Any,
-    records: List
-) -> AsyncGenerator[Dict[str, Any], None]:
-    """Emit the final complete event with the full answer."""
-    if not (state.answer_done or not with_tools):
+        # Stream answer in word-based chunks
+        if state.answer_buf:
+            for match in word_iter(state.answer_buf[state.emit_upto:]):
+                state.words_in_chunk += 1
+                if state.words_in_chunk == target_words_per_chunk:
+                    char_end = state.emit_upto + match.end()
+
+                    # Include any citation blocks that immediately follow
+                    if m := cite_block_re.match(state.answer_buf[char_end:]):
+                        char_end += m.end()
+
+                    state.emit_upto = char_end
+                    state.words_in_chunk = 0
+
+                    current_raw = state.answer_buf[:state.emit_upto]
+                    # Skip if we have incomplete citations
+                    if incomplete_cite_re.search(current_raw):
+                        continue
+
+                    normalized, cites = normalize_citations_and_chunks(
+                        current_raw, final_results,records
+                    )
+
+                    chunk_text = normalized[state.prev_norm_len:]
+                    state.prev_norm_len = len(normalized)
+
+                    yield {
+                        "event": "answer_chunk",
+                        "data": {
+                            "chunk": chunk_text,
+                            "accumulated": normalized,
+                            "citations": cites,
+                        },
+                    }
+    
+    if not (state.answer_buf):
         return
 
     try:
@@ -1283,32 +1242,4 @@ async def _emit_final_complete_event(
                 "confidence": None,
             },
         }
-
-
-async def call_aiter_llm_stream(
-    llm, 
-    messages, 
-    final_results, 
-    records=[], 
-    target_words_per_chunk=2, 
-    parts=None, 
-    with_tools=False
-) -> AsyncGenerator[Dict[str, Any], None]:
-    """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
-    state = AnswerParserState()
-    answer_key_re, cite_block_re, incomplete_cite_re, word_iter = _initialize_answer_parser_regex()
-
-    async for token in aiter_llm_stream(llm, messages, parts):
-        _extract_answer_from_json(state, token, answer_key_re)
         
-        async for chunk_event in _process_and_emit_word_chunks(
-            state, target_words_per_chunk, cite_block_re, 
-            incomplete_cite_re, word_iter, final_results, records
-        ):
-            yield chunk_event
-
-    async for complete_event in _emit_final_complete_event(
-        state, with_tools, final_results, records
-    ):
-        yield complete_event
-

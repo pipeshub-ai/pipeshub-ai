@@ -620,7 +620,6 @@ class RetrievalService:
                 if any(col.name == self.collection_name for col in collections.collections) # type: ignore
                 else None
             )
-            self.logger.info(f"Collection info: {collection_info}")
             if not collection_info or collection_info.points_count == 0: # type: ignore
                 raise VectorDBEmptyError("Vector DB is empty or collection not found")
 
