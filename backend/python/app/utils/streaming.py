@@ -2,11 +2,9 @@ import asyncio
 import json
 import logging
 import re
-import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 import aiohttp
-from app.utils.latency import measure_latency
 from fastapi import HTTPException
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -155,7 +153,7 @@ async def execute_tool_calls(
     Execute tool calls if present in the LLM response.
     Yields tool events and returns updated messages and whether tools were executed.
     """
-    
+
     if not tools:
         raise ValueError("Tools are required")
 
@@ -169,21 +167,21 @@ async def execute_tool_calls(
         # with error handling for provider-level tool failures
         try:
             # Measure LLM invocation latency
-          
+
             parts = []
             async for event in call_aiter_llm_stream(llm_with_tools, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk, parts=parts):
                 if event.get("event") == "complete":
                     yield event
                     return
                 yield event
-            
+
             ai = None
             for part in parts:
                 if ai is None:
                     ai = part
                 else:
                     ai += part
-            
+
             ai = AIMessage(
             content=ai.content,
             tool_calls=getattr(ai, 'tool_calls', []),
@@ -191,7 +189,7 @@ async def execute_tool_calls(
         except Exception as e:
             logger.debug("Error in llm call with tools: %s", str(e))
             break
-            
+
 
         # Check if there are tool calls
         if not (isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None)):
@@ -377,7 +375,7 @@ async def execute_tool_calls(
 
         # First, add the AI message with tool calls to messages
         messages.append(ai)
-        
+
         message_contents = []
 
         for record in records:
@@ -816,7 +814,7 @@ async def handle_json_mode(
     """
     Handle JSON mode streaming.
     """
-   
+
 
     # Fast-path: if the last message is already an AI answer (e.g., from invalid tool call conversion), stream it directly
     try:
@@ -1129,7 +1127,7 @@ def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
 
 class AnswerParserState:
     """State container for answer parsing during streaming."""
-    def __init__(self):
+    def __init__(self) -> None:
         self.full_json_buf: str = ""
         self.answer_buf: str = ""
         self.answer_done: bool = False
@@ -1148,12 +1146,12 @@ def _initialize_answer_parser_regex() -> Tuple[re.Pattern, re.Pattern, re.Patter
 
 
 async def call_aiter_llm_stream(
-    llm, 
-    messages, 
-    final_results, 
-    records=[], 
-    target_words_per_chunk=1, 
-    parts=None, 
+    llm,
+    messages,
+    final_results,
+    records=[],
+    target_words_per_chunk=1,
+    parts=None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
     state = AnswerParserState()
@@ -1213,7 +1211,7 @@ async def call_aiter_llm_stream(
                             "citations": cites,
                         },
                     }
-    
+
     if not (state.answer_buf):
         return
 
@@ -1242,4 +1240,4 @@ async def call_aiter_llm_stream(
                 "confidence": None,
             },
         }
-        
+
