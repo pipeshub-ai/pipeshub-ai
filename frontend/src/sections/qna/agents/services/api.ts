@@ -369,39 +369,38 @@ class AgentApiService {
     }
 
     // Transform connector instances to ensure proper format
-    if (transformed.connectorInstances && Array.isArray(transformed.connectorInstances)) {
-      // Validate: Only one connector instance per connector type can be added
-      const appTypeMap = new Map<string, ConnectorInstance>();
-      const duplicateAppTypes: string[] = [];
+    if (transformed.connectors && Array.isArray(transformed.connectors)) {
+      // Validate: No duplicate connector instances with same id and category
+      const connectorKeyMap = new Map<string, ConnectorInstance>();
+      const duplicates: string[] = [];
 
-      transformed.connectorInstances
+      transformed.connectors
         .filter((instance) => instance && typeof instance === 'object' && instance.id && instance.name && instance.type)
         .forEach((instance) => {
-          const appType = instance.type;
-          if (appType) {
-            if (appTypeMap.has(appType)) {
-              if (!duplicateAppTypes.includes(appType)) {
-                duplicateAppTypes.push(appType);
-              }
-            } else {
-              appTypeMap.set(appType, instance);
+          const connectorKey = `${instance.id}:${instance.category || 'action'}`;
+          if (connectorKeyMap.has(connectorKey)) {
+            if (!duplicates.includes(connectorKey)) {
+              duplicates.push(connectorKey);
             }
+          } else {
+            connectorKeyMap.set(connectorKey, instance);
           }
         });
 
-      if (duplicateAppTypes.length > 0) {
+      if (duplicates.length > 0) {
         throw new Error(
-          `Only one connector instance per app group can be added. Duplicate app groups found: ${duplicateAppTypes.join(', ')}`
+          `Duplicate connector instances found. Each connector ID can only appear once per category. Duplicates: ${duplicates.join(', ')}`
         );
       }
 
-      transformed.connectorInstances = transformed.connectorInstances
+      transformed.connectors = transformed.connectors
         .filter((instance) => instance && typeof instance === 'object' && instance.id && instance.name && instance.type)
         .map((instance) => ({
           id: instance.id,
           name: instance.name,
           type: instance.type,
-          scope: instance.scope || 'personal', // Default to personal if not specified
+          scope: instance.scope || 'personal',
+          category: instance.category || 'action',
         }));
     }
 
@@ -418,20 +417,18 @@ class AgentApiService {
       transformed.models = [] as { provider: string; modelName: string, isReasoning: boolean }[];
     }
 
-    if (transformed.apps && Array.isArray(transformed.apps) && transformed.apps.length === 0) {
-      transformed.apps = [] as string[];
-    }
+
 
     if (transformed.kb && Array.isArray(transformed.kb) && transformed.kb.length === 0) {
       transformed.kb = [] as string[];
     }
 
     if (
-      transformed.connectorInstances &&
-      Array.isArray(transformed.connectorInstances) &&
-      transformed.connectorInstances.length === 0
+      transformed.connectors &&
+      Array.isArray(transformed.connectors) &&
+      transformed.connectors.length === 0
     ) {
-      transformed.connectorInstances = [];
+      transformed.connectors = [];
     }
 
     if (

@@ -388,6 +388,7 @@ class EvernoteClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "EvernoteClient":
         """Build EvernoteClient using configuration service
         Args:
@@ -398,7 +399,7 @@ class EvernoteClient(IClient):
         """
         try:
             # Get Evernote configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
 
             if not config:
                 raise ValueError("Failed to get Evernote connector configuration")
@@ -423,12 +424,15 @@ class EvernoteClient(IClient):
     @staticmethod
     async def _get_connector_config(
         logger: logging.Logger,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Fetch connector config from etcd for Evernote."""
         try:
-            config = await config_service.get_config("/services/connectors/evernote/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get Evernote connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get Evernote connector config: {e}")
-            raise
+            raise ValueError(f"Failed to get Evernote connector configuration for instance {connector_instance_id}")

@@ -146,13 +146,16 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
         ).toUpperCase();
         const scheduledCfg = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
 
-        setLoading(true);
         const successResponse = await ConnectorApiService.toggleConnectorInstance(connectorId, type);
 
         if (successResponse) {
-          setConnector((prev) => (prev ? { ...prev, isActive: enabled } : null));
+          if (type === 'sync') {
+            setConnector((prev) => (prev ? { ...prev, isActive: enabled } : null));
+          } else if (type === 'agent') {
+            setConnector((prev) => (prev ? { ...prev, isAgentActive: enabled } : null));
+          }
           const action = enabled ? 'enabled' : 'disabled';
-          setSuccessMessage(`${connector.name} ${action} successfully`);
+          setSuccessMessage(`${connector.name} ${type} ${action} successfully`);
           setSuccess(true);
           setTimeout(() => setSuccess(false), 4000);
 
@@ -197,8 +200,6 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
       } catch (err) {
         console.error('Error toggling connector:', err);
         setError(`Failed to ${enabled ? 'enable' : 'disable'} connector`);
-      } finally {
-        setLoading(false);
       }
     },
     [connector, connectorId, connectorConfig, setSuccess, setSuccessMessage, setError]

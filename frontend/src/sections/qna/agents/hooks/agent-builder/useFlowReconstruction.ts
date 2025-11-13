@@ -85,7 +85,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
       const counts = {
         llm: agent.models?.length || (models.length > 0 ? 1 : 0),
         tools: agent.tools?.length || 0,
-        knowledge: (agent.kb?.length || 0) + (agent.apps?.length || 0),
+        knowledge: (agent.kb?.length || 0) + (agent.connectors?.filter(ci => ci.category === 'knowledge').length || 0),
       };
 
       // Smart positioning system with visual balance
@@ -252,38 +252,45 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
       }
 
       // App Knowledge nodes
-      if (agent.apps && agent.apps.length > 0) {
-        agent.apps.forEach((appType) => {
-          const normalizedAppName = appType.toLowerCase().replace(/[^a-zA-Z0-9]/g, '-').replace(/\s+/g, '-');
-          const appKnowledgeNode: Node<NodeData> = {
-            id: `app-${(nodeCounter += 1)}`,
-            type: 'flowNode',
-            position: calculateOptimalPosition(
-              'preprocessing',
-              'knowledge',
-              (knowledgeIndex += 1),
-              counts.knowledge
-            ),
-            data: {
-              id: `app-${nodeCounter - 1}`,
-              type: `app-${normalizedAppName}`,
-              label: normalizeDisplayName(`${appType}`),
-              description: `Access ${normalizeAppName(appType)} knowledge and context`,
-              icon: getAppKnowledgeIcon(appType),
-              config: {
-                appName: appType,
-                appDisplayName: normalizeAppName(appType),
-                similarity: 0.8,
-              },
-              inputs: ['query'],
-              outputs: ['context'],
-              isConfigured: true,
+      // Handle knowledge connector instances (category: 'knowledge')
+      const knowledgeConnectorInstances = agent.connectors?.filter(ci => ci.category === 'knowledge') || [];
+      
+      // Process connectors with category='knowledge'
+      knowledgeConnectorInstances.forEach((connectorInstance: ConnectorInstance) => {
+        const normalizedAppName = connectorInstance.type.toLowerCase().replace(/[^a-zA-Z0-9]/g, '-').replace(/\s+/g, '-');
+        const appKnowledgeNode: Node<NodeData> = {
+          id: `app-${(nodeCounter += 1)}`,
+          type: 'flowNode',
+          position: calculateOptimalPosition(
+            'preprocessing',
+            'knowledge',
+            (knowledgeIndex += 1),
+            counts.knowledge
+          ),
+          data: {
+            id: `app-${nodeCounter - 1}`,
+            type: `app-${normalizedAppName}`,
+            label: normalizeDisplayName(connectorInstance.name || connectorInstance.type),
+            description: `Access ${connectorInstance.name || connectorInstance.type} knowledge and context`,
+            icon: getAppKnowledgeIcon(connectorInstance.type),
+            config: {
+              connectorInstanceId: connectorInstance.id,
+              appName: connectorInstance.type,
+              appDisplayName: connectorInstance.name || connectorInstance.type,
+              connectorType: connectorInstance.type,
+              scope: connectorInstance.scope,
+              iconPath: `/assets/icons/connectors/${connectorInstance.type.replace(" ", "").toLowerCase()}.svg`,
+              similarity: 0.8,
             },
-          };
-          nodes.push(appKnowledgeNode);
-          knowledgeNodes.push(appKnowledgeNode);
-        });
-      }
+            inputs: ['query'],
+            outputs: ['context'],
+            isConfigured: true,
+          },
+        };
+        nodes.push(appKnowledgeNode);
+        knowledgeNodes.push(appKnowledgeNode);
+      });
+      
 
       // 3. Create LLM nodes with intelligent positioning
       const llmNodes: Node<NodeData>[] = [];
@@ -359,54 +366,32 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         llmNodes.push(llmNode);
       }
 
-      // 4. Create Connector Instance nodes
-      const connectorInstanceNodes: Node<NodeData>[] = [];
-      const connectorInstanceMap: Map<string, Node<NodeData>> = new Map();
+      // 4. Create Individual Tool nodes from agent.tools (the actual saved tools)
+      const individualToolNodes: Node<NodeData>[] = [];
+      const toolGroupNodes: Node<NodeData>[] = [];
       
-      if (agent.connectorInstances && Array.isArray(agent.connectorInstances)) {
-        const connectorInstances = agent.connectorInstances;
-        connectorInstances.forEach((connectorInstance: ConnectorInstance, index: number) => {
-          const connectorNode: Node<NodeData> = {
-            id: `connector-${(nodeCounter += 1)}`,
-            type: 'flowNode',
-            position: calculateOptimalPosition('processing', 'tools', index, connectorInstances.length),
-            data: {
-              id: `connector-${nodeCounter - 1}`,
-              type: `connector-group-${connectorInstance.type?.toLowerCase().replace(/\s+/g, '-') || connectorInstance.name?.toLowerCase().replace(/\s+/g, '-') || 'connector'}`,
-              label: normalizeDisplayName(connectorInstance.name || connectorInstance.type),
-              description: `Connector instance for ${connectorInstance.name || connectorInstance.type}`,
-              icon: databaseIcon,
-              config: {
-                id: connectorInstance.id,
-                name: connectorInstance.name || connectorInstance.type,
-                type: connectorInstance.type,
-                scope: connectorInstance.scope || 'personal',
-                iconPath: '/assets/icons/connectors/default.svg', // Will be updated from connector metadata
-              },
-              inputs: ['query'],
-              outputs: ['tools'],
-              isConfigured: true,
-            },
-          };
-          nodes.push(connectorNode);
-          connectorInstanceNodes.push(connectorNode);
-          connectorInstanceMap.set(connectorInstance.id, connectorNode);
-        });
-      }
-
-      // 5. Create Tool nodes with enhanced spacing
-      const toolNodes: Node<NodeData>[] = [];
       if (agent.tools && agent.tools.length > 0) {
+        // Agent has specific tools saved - create individual tool nodes
         agent.tools.forEach((toolName, index) => {
           const matchingTool = tools.find(
             (t) => t.full_name === toolName || t.tool_name === toolName || t.tool_id === toolName
           );
 
           if (matchingTool) {
+            // Find the connector instance for this tool
+            const connectorInstance = agent.connectors?.find(
+              (ci) => ci.type?.toUpperCase() === matchingTool.app_name?.toUpperCase() ||
+                     ci.type?.toLowerCase() === matchingTool.app_name?.toLowerCase()
+            );
+
+            // Construct iconPath from connector type
+            const connectorType = connectorInstance?.type || matchingTool.app_name;
+            const iconPath = `/assets/icons/connectors/${connectorType.replace(" ", "").toLowerCase()}.svg`;
+
             const toolNode: Node<NodeData> = {
               id: `tool-${(nodeCounter += 1)}`,
               type: 'flowNode',
-              position: calculateOptimalPosition('processing', 'tools', index + connectorInstanceNodes.length, counts.tools + connectorInstanceNodes.length),
+              position: calculateOptimalPosition('processing', 'tools', index, agent.tools.length),
               data: {
                 id: `tool-${nodeCounter - 1}`,
                 type: `tool-${matchingTool.tool_id}`,
@@ -418,6 +403,12 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
                   fullName: matchingTool.full_name,
                   appName: matchingTool.app_name,
                   parameters: matchingTool.parameters || [],
+                  // Associate with connector instance
+                  connectorInstanceId: connectorInstance?.id,
+                  connectorType: connectorInstance?.type || matchingTool.app_name,
+                  connectorName: connectorInstance?.name || connectorInstance?.type,
+                  scope: connectorInstance?.scope || 'personal',
+                  iconPath, // Add connector icon for visual distinction
                 },
                 inputs: ['input'],
                 outputs: ['output'],
@@ -425,8 +416,57 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
               },
             };
             nodes.push(toolNode);
-            toolNodes.push(toolNode);
+            individualToolNodes.push(toolNode);
           }
+        });
+      } else if (agent.connectors && Array.isArray(agent.connectors)) {
+        // No specific tools saved, fallback to creating tool-group nodes from connector instances with category='action'
+        const actionConnectorInstances = agent.connectors.filter(ci => ci.category === 'action');
+        actionConnectorInstances.forEach((connectorInstance: ConnectorInstance, index: number) => {
+          // Find all tools that belong to this connector type
+          const connectorTools = tools.filter((t) => 
+            t.app_name?.toUpperCase() === connectorInstance.type?.toUpperCase() ||
+            t.app_name?.toLowerCase() === connectorInstance.type?.toLowerCase()
+          );
+          
+          // Construct iconPath from connector type
+          const groupIconPath = `/assets/icons/connectors/${connectorInstance.type.replace(" ", "").toLowerCase()}.svg`;
+          
+          // Create a tool-group node with all the connector's tools
+          const toolGroupNode: Node<NodeData> = {
+            id: `tool-group-${(nodeCounter += 1)}`,
+            type: 'flowNode',
+            position: calculateOptimalPosition('processing', 'tools', index, actionConnectorInstances.length),
+            data: {
+              id: `tool-group-${nodeCounter - 1}`,
+              type: `tool-group-${connectorInstance.type?.toLowerCase().replace(/\s+/g, '-') || connectorInstance.name?.toLowerCase().replace(/\s+/g, '-') || 'tools'}`,
+              label: normalizeDisplayName(connectorInstance.name || connectorInstance.type),
+              description: `${connectorInstance.type} with ${connectorTools.length} tools`,
+              icon: getAppIcon(connectorInstance.type || connectorInstance.name),
+              config: {
+                connectorInstanceId: connectorInstance.id,
+                connectorType: connectorInstance.type,
+                connectorName: connectorInstance.name || connectorInstance.type,
+                appName: connectorInstance.type,
+                appDisplayName: connectorInstance.name || connectorInstance.type,
+                scope: connectorInstance.scope,
+                iconPath: groupIconPath, // Add connector icon
+                tools: connectorTools.map(t => ({
+                  toolId: t.tool_id,
+                  fullName: t.full_name,
+                  toolName: t.tool_name,
+                  appName: t.app_name,
+                  description: t.description
+                })),
+                selectedTools: connectorTools.map(t => t.tool_id), // All tools selected by default
+              },
+              inputs: ['input'],
+              outputs: ['output'],
+              isConfigured: true,
+            },
+          };
+          nodes.push(toolGroupNode);
+          toolGroupNodes.push(toolGroupNode);
         });
       }
 
@@ -530,80 +570,44 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         });
       });
 
-      // Tool → Connector Instance → Agent connections - New flow structure
-      // Flow: Tool (source) → Connector Instance (target) → Agent actions handle (target)
-      if (connectorInstanceNodes.length > 0 && toolNodes.length > 0) {
-        // Group tools by app name to match with connector instances
-        const toolsByApp = new Map<string, Node<NodeData>[]>();
-        toolNodes.forEach((toolNode) => {
-          const appName = toolNode.data.config?.appName || '';
-          if (!toolsByApp.has(appName)) {
-            toolsByApp.set(appName, []);
-          }
-          toolsByApp.get(appName)!.push(toolNode);
+      // Individual Tools → Agent connections (if individual tools exist)
+      individualToolNodes.forEach((toolNode) => {
+        edges.push({
+          id: `e-tool-agent-${(edgeCounter += 1)}`,
+          source: toolNode.id,
+          target: 'agent-core-1',
+          sourceHandle: 'output',
+          targetHandle: 'actions',
+          type: 'smoothstep',
+          style: {
+            stroke: theme.palette.warning.main,
+            strokeWidth: 2,
+            strokeDasharray: '0',
+          },
+          animated: false,
         });
+      });
 
-        // Connect tools to matching connector instances
-        // Flow: Tool (source) → Connector Instance (target)
-        connectorInstanceNodes.forEach((connectorNode) => {
-          const connectorType = connectorNode.data.config?.type || connectorNode.data.config?.name || '';
-          const matchingTools = toolsByApp.get(connectorType.toUpperCase()) || 
-                               toolsByApp.get(connectorType) || 
-                               [];
-
-          matchingTools.forEach((toolNode) => {
-            edges.push({
-              id: `e-tool-connector-${(edgeCounter += 1)}`,
-              source: toolNode.id,
-              target: connectorNode.id,
-              sourceHandle: 'output',
-              targetHandle: 'tools',
-              type: 'smoothstep',
-              style: {
-                stroke: theme.palette.warning.main,
-                strokeWidth: 2,
-                strokeDasharray: '0',
-              },
-              animated: false,
-            });
-          });
-
-          // Connect connector instance to agent's actions handle
-          // Flow: Connector Instance (source) → Agent actions handle (target)
-          edges.push({
-            id: `e-connector-agent-${(edgeCounter += 1)}`,
-            source: connectorNode.id,
-            target: 'agent-core-1',
-            sourceHandle: 'actions',
-            targetHandle: 'actions',
-            type: 'smoothstep',
-            style: {
-              stroke: theme.palette.warning.main,
-              strokeWidth: 2,
-              strokeDasharray: '0',
-            },
-            animated: false,
-          });
+      // Tool Group → Agent connections (fallback if no individual tools)
+      // Tools can now connect directly to agent's actions handle
+      // No need for intermediate connector instance nodes
+      // Flow: Tool Group (source) → Agent actions handle (target)
+      toolGroupNodes.forEach((toolGroupNode) => {
+        edges.push({
+          id: `e-toolgroup-agent-${(edgeCounter += 1)}`,
+          source: toolGroupNode.id,
+          target: 'agent-core-1',
+          sourceHandle: 'output',
+          targetHandle: 'actions',
+          type: 'smoothstep',
+          style: {
+            stroke: theme.palette.warning.main,
+            strokeWidth: 2,
+            strokeDasharray: '0',
+          },
+          animated: false,
         });
-      } else {
-        // Fallback: If no connector instances, connect tools directly to agent (legacy support)
-        toolNodes.forEach((toolNode) => {
-          edges.push({
-            id: `e-tool-agent-${(edgeCounter += 1)}`,
-            source: toolNode.id,
-            target: 'agent-core-1',
-            sourceHandle: 'output',
-            targetHandle: 'actions',
-            type: 'smoothstep',
-            style: {
-              stroke: theme.palette.warning.main,
-              strokeWidth: 2,
-              strokeDasharray: '0',
-            },
-            animated: false,
-          });
-        });
-      }
+      });
 
       // Agent to Output - Final flow
       edges.push({

@@ -198,6 +198,7 @@ class MSGraphClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         mode: GraphMode = GraphMode.APP,
+        connector_instance_id: Optional[str] = None,
     ) -> 'MSGraphClient':
         """
         Build MSGraphClient using configuration service
@@ -211,7 +212,7 @@ class MSGraphClient(IClient):
         """
         try:
             # Get Microsoft Graph configuration from the configuration service
-            config = await cls._get_connector_config(service_name.replace(" ", "").lower(), logger, config_service)
+            config = await cls._get_connector_config(service_name.replace(" ", "").lower(), logger, config_service, connector_instance_id)
 
             if not config:
                 raise ValueError("Failed to get Microsoft Graph connector configuration")
@@ -258,11 +259,13 @@ class MSGraphClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(service_name: str, logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(service_name: str, logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for Microsoft Graph."""
         try:
-            config = await config_service.get_config(f"/services/connectors/{service_name}/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get Microsoft Graph connector configuration for instance {service_name} {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get Microsoft Graph connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get Microsoft Graph connector configuration for instance {service_name} {connector_instance_id}")

@@ -253,7 +253,7 @@ class RegistryToolWrapper(BaseTool):
                         tool_state["connector_instance_id"] = connector_instance_id
 
                     # Pass chat state into factory for auth/impersonation decisions
-                    client = factory.create_client_sync(config_service, logger, tool_state)
+                    client = factory.create_client_sync(config_service, logger, tool_state, connector_instance_id)
                     return action_class(client)
 
             raise ValueError("Not able to get the client from factory")

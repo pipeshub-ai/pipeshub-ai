@@ -171,7 +171,13 @@ record_schema = {
             "extractionStatus": {
                 "type": "string",
                 "enum": [
-                    status.value for status in ProgressStatus
+                    "NOT_STARTED",
+                    "IN_PROGRESS",
+                    "PAUSED",
+                    "FAILED",
+                    "COMPLETED",
+                    "FILE_TYPE_NOT_SUPPORTED",
+                    "AUTO_INDEX_OFF"
                 ],
             },
             "isLatestVersion": {"type": "boolean", "default": True},
@@ -182,6 +188,7 @@ record_schema = {
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
+            "isShared": {"type": ["boolean", "null"], "default": False},
         },
         "required": [
             "recordName",
@@ -465,25 +472,21 @@ agent_schema = {
                 },
                 "default": [],
             },
-            "apps": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-            },
             "kb": {
                 "type": "array",
                 "items": {"type": "string"},
                 "default": [],
             },
-            "connectorInstances": {
+            "connectors": {
                 "type": "array",
                 "items": {"type": "object", "properties": {
                     "id": {"type": "string"},
                     "name": {"type": "string"},
+                    "category": {"type": "string", "enum": ["knowledge", "action"]},
                     "scope": {"type": "string", "enum": [scope.value for scope in ConnectorScopes]},
                     "type": {"type": "string"},
                     },
-                    "required": ["id", "name", "scope", "type"],
+                    "required": ["id", "name", "category", "scope", "type"],
                     "additionalProperties": True,
                 },
                 "default": [],

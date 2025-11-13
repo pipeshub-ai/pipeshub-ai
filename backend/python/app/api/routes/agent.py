@@ -562,26 +562,44 @@ async def create_agent(request: Request) -> JSONResponse:
                     detail="At least one reasoning model must be present in the models array. Please add a reasoning model to your agent configuration."
                 )
 
-        # Validate connector instances: Only one connector instance per appGroup can be added
-        connector_instances = body_dict.get("connectorInstances", [])
-        if connector_instances and isinstance(connector_instances, list):
-            app_type_map = {}
-            duplicate_app_types = []
+        # Validate connectors: Ensure category field is present and valid, and no duplicates
+        connectors = body_dict.get("connectors", [])
+        if connectors and isinstance(connectors, list):
+            connector_keys = set()  # Track id:category combinations
+            duplicates = []
 
-            for instance in connector_instances:
+            for instance in connectors:
                 if isinstance(instance, dict):
-                    app_type = instance.get("type")
-                    if app_type:
-                        if app_type in app_type_map:
-                            if app_type not in duplicate_app_types:
-                                duplicate_app_types.append(app_type)
-                        else:
-                            app_type_map[app_type] = instance
+                    # Validate required fields
+                    if not instance.get("id"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Connector instance must have an 'id' field"
+                        )
+                    if not instance.get("type"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Connector instance must have a 'type' field"
+                        )
+                    # Validate category field
+                    category = instance.get("category")
+                    if category not in ["knowledge", "action"]:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Connector instance category must be 'knowledge' or 'action', got: {category}"
+                        )
 
-            if duplicate_app_types:
+                    # Check for duplicate id:category combinations
+                    connector_key = f"{instance.get('id')}:{category}"
+                    if connector_key in connector_keys:
+                        duplicates.append(connector_key)
+                    else:
+                        connector_keys.add(connector_key)
+
+            if duplicates:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Only one connector instance per app group can be added. Duplicate app groups found: {', '.join(duplicate_app_types)}"
+                    detail=f"Duplicate connector instances found. Each connector ID can only appear once per category. Duplicates: {', '.join(duplicates)}"
                 )
 
         agent = {
@@ -592,9 +610,8 @@ async def create_agent(request: Request) -> JSONResponse:
             "systemPrompt": body_dict.get("systemPrompt"),
             "tools": body_dict.get("tools"),
             "models": body_dict.get("models"),
-            "apps": body_dict.get("apps"),
             "kb": body_dict.get("kb"),
-            "connectorInstances": connector_instances,
+            "connectors": connectors,  # Unified array with category field
             "vectorDBs": body_dict.get("vectorDBs"),
             "tags": body_dict.get("tags"),
             "orgId": user_info.get("orgId"),
@@ -732,26 +749,44 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent_with_permission.get("can_edit", False):
             raise HTTPException(status_code=403, detail="Only the owner can edit this agent")
 
-        # Validate connector instances: Only one connector instance per appGroup can be added
-        connector_instances = body_dict.get("connectorInstances", [])
-        if connector_instances and isinstance(connector_instances, list):
-            app_group_map = {}
-            duplicate_app_groups = []
+        # Validate connectors: Ensure category field is present and valid, and no duplicates
+        connectors = body_dict.get("connectors", [])
+        if connectors and isinstance(connectors, list):
+            connector_keys = set()  # Track id:category combinations
+            duplicates = []
 
-            for instance in connector_instances:
+            for instance in connectors:
                 if isinstance(instance, dict):
-                    app_group = instance.get("appGroup")
-                    if app_group:
-                        if app_group in app_group_map:
-                            if app_group not in duplicate_app_groups:
-                                duplicate_app_groups.append(app_group)
-                        else:
-                            app_group_map[app_group] = instance
+                    # Validate required fields
+                    if not instance.get("id"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Connector instance must have an 'id' field"
+                        )
+                    if not instance.get("type"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Connector instance must have a 'type' field"
+                        )
+                    # Validate category field
+                    category = instance.get("category")
+                    if category not in ["knowledge", "action"]:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Connector instance category must be 'knowledge' or 'action', got: {category}"
+                        )
 
-            if duplicate_app_groups:
+                    # Check for duplicate id:category combinations
+                    connector_key = f"{instance.get('id')}:{category}"
+                    if connector_key in connector_keys:
+                        duplicates.append(connector_key)
+                    else:
+                        connector_keys.add(connector_key)
+
+            if duplicates:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Only one connector instance per app group can be added. Duplicate app groups found: {', '.join(duplicate_app_groups)}"
+                    detail=f"Duplicate connector instances found. Each connector ID can only appear once per category. Duplicates: {', '.join(duplicates)}"
                 )
 
         # Update the agent
@@ -1029,11 +1064,24 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         else:
             # If no filters, create filters from agent defaults
             filters = {
-                "apps": agent.get("apps"),
-                "kb": agent.get("kb"),
-                "vectorDBs": agent.get("vectorDBs"),
-                "connectorInstances": agent.get("connectorInstances", [])
+                "apps": [],
+                "kb": agent.get("kb", []),
+                "vectorDBs": agent.get("vectorDBs", []),
+                "connectors": agent.get("connectors", [])
             }
+
+        # Extract connector instance IDs by category for filtering
+        # Knowledge connector instances (category='knowledge') go to apps filter
+        knowledge_connector_ids = []
+        if agent.get("connectors"):
+            knowledge_connector_ids = [
+                ci.get("id") for ci in agent.get("connectors", [])
+                if ci.get("category") == "knowledge" and ci.get("id")
+            ]
+
+        # Set apps filter with connector instance IDs (for knowledge filtering)
+        if knowledge_connector_ids:
+            filters["apps"] = knowledge_connector_ids
 
         # Override individual filter values if they exist in chat query
         if chat_query.filters is not None:
@@ -1044,8 +1092,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             if chat_query.filters.get("vectorDBs") is not None:
                 filters["vectorDBs"] = chat_query.filters.get("vectorDBs")
 
-        if agent.get("connectorInstances"):
-            filters["connectorInstances"] = agent.get("connectorInstances")
+        # Store all connectors for reference (with category)
+        if agent.get("connectors"):
+            filters["connectors"] = agent.get("connectors")
 
         # Override tools if provided in chat query
         tools = chat_query.tools if chat_query.tools is not None else agent.get("tools")
@@ -1147,11 +1196,24 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         else:
             # If no filters, create filters from agent defaults
             filters = {
-                "apps": agent.get("apps"),
-                "kb": agent.get("kb"),
-                "vectorDBs": agent.get("vectorDBs"),
-                "connectorInstances": agent.get("connectorInstances", [])
+                "apps": [],
+                "kb": agent.get("kb", []),
+                "vectorDBs": agent.get("vectorDBs", []),
+                "connectors": agent.get("connectors", [])
             }
+
+        # Extract connector instance IDs by category for filtering
+        # Knowledge connector instances (category='knowledge') go to apps filter
+        knowledge_connector_ids = []
+        if agent.get("connectors"):
+            knowledge_connector_ids = [
+                ci.get("id") for ci in agent.get("connectors", [])
+                if ci.get("category") == "knowledge" and ci.get("id")
+            ]
+
+        # Set apps filter with connector instance IDs (for knowledge filtering)
+        if knowledge_connector_ids:
+            filters["apps"] = knowledge_connector_ids
 
         # Override individual filter values if they exist in chat query
         if chat_query.filters is not None:
@@ -1162,8 +1224,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             if chat_query.filters.get("vectorDBs") is not None:
                 filters["vectorDBs"] = chat_query.filters.get("vectorDBs")
 
-        if agent.get("connectorInstances"):
-            filters["connectorInstances"] = agent.get("connectorInstances")
+        # Store all connectors for reference (with category)
+        if agent.get("connectors"):
+            filters["connectors"] = agent.get("connectors")
 
         # Override tools if provided in chat query
         if chat_query.tools is not None:

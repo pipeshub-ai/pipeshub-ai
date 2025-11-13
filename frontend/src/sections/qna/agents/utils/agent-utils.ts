@@ -87,9 +87,8 @@ export const getInitialAgentFormData = (): AgentFormData => ({
   systemPrompt: '',
   tools: [],
   models: [],
-  apps: [],
   kb: [],
-  connectorInstances: [],
+  connectors: [],
   vectorDBs: [],
   tags: [],
 });

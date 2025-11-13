@@ -291,6 +291,8 @@ const ConnectorRegistryCard = ({ connector, scope = 'personal' }: ConnectorRegis
             appCategories: connector.appCategories || [],
             isActive: false,
             isConfigured: false,
+            isAgentActive: false,
+            supportsAgent: !!connector.supportsAgent,
             supportsRealtime: !!connector.supportsRealtime,
             scope,
             supportsSync: !!connector.supportsSync,

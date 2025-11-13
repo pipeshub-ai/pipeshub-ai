@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, ConnectorScopes
 from app.connectors.services.base_arango_service import BaseArangoService
 
 
@@ -244,7 +244,11 @@ class ConnectorMigrationService:
             "authType": legacy_app.get("authType"),
             "isActive": legacy_app.get("isActive", False),
             "isConfigured": legacy_app.get("isConfigured", False),
+            "isAgentActive": legacy_app.get("isAgentActive", False),
+            "createdBy": None,
+            "updatedBy": None,
             "isAuthenticated": legacy_app.get("isAuthenticated", False),
+            "scope": legacy_app.get("scope", ConnectorScopes.TEAM.value),
             "createdAtTimestamp": legacy_app.get("createdAtTimestamp"),
             "updatedAtTimestamp": legacy_app.get("updatedAtTimestamp"),
         }

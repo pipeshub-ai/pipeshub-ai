@@ -33,12 +33,14 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   const theme = useTheme();
   const SIDEBAR_WIDTH = 280;
 
-  // Data loading hook
+  // Data loading hook - ALL data fetched once
   const {
     availableTools,
     availableModels,
     availableKnowledgeBases,
     activeAgentConnectors,
+    activeConnectors,
+    connectorRegistry,
     loading,
     loadedAgent,
     error,
@@ -76,12 +78,13 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
 
-  // Node templates hook
+  // Node templates hook - receives data instead of fetching
   const { nodeTemplates } = useAgentBuilderNodeTemplates(
     availableTools,
     availableModels,
     availableKnowledgeBases,
-    activeAgentConnectors
+    activeAgentConnectors,
+    activeConnectors
   );
 
   // Flow reconstruction hook
@@ -322,49 +325,42 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
       const sourceNode = nodes.find((n) => n.id === connection.source);
       const targetNode = nodes.find((n) => n.id === connection.target);
 
-      // Validate connection rules
+      // Validate connection rules (NEW FLOW)
       if (sourceNode && targetNode) {
         const sourceType = sourceNode.data.type;
         const targetType = targetNode.data.type;
 
-        // Tools should connect to connector instances, not agent
-        if (sourceType.startsWith('tool-') && targetType === 'agent-core') {
-          setError('Tools must be connected to connector instances, not directly to the agent');
-          return;
-        }
-
-        // Tools should only connect to connector instances
-        if (sourceType.startsWith('tool-') && !targetType.startsWith('connector-group-')) {
-          setError('Tools must be connected to connector instances');
-          return;
-        }
-
-        // Connector instances should connect to agent's actions handle, not tools
-        if (sourceType.startsWith('connector-group-') && targetType === 'agent-core') {
+        // Tool-groups can now connect directly to agent's actions handle
+        if (sourceType.startsWith('tool-group-') && targetType === 'agent-core') {
           if (connection.targetHandle !== 'actions') {
-            setError('Connector instances must be connected to the agent\'s actions handle');
+            setError('Tool groups must be connected to the agent\'s actions handle');
             return;
           }
+        }
 
-          // Validate: Only one connector instance per connector type can be added
-          const connectorAppType = sourceNode.data.config?.type;
-          if (connectorAppType) {
-            const existingConnectorNodes = nodes.filter(
-              (n) => n.data.type.startsWith('connector-group-') &&
-              n.data.config?.type === connectorAppType &&
-              n.id !== sourceNode.id
-            );
-
-            if (existingConnectorNodes.length > 0) {
-              setError(`Only one connector instance per app group (${connectorAppType}) can be added to an agent`);
-              return;
-            }
+        // Individual tools can also connect directly to agent's actions handle
+        if (sourceType.startsWith('tool-') && !sourceType.startsWith('tool-group-') && targetType === 'agent-core') {
+          if (connection.targetHandle !== 'actions') {
+            setError('Tools must be connected to the agent\'s actions handle');
+            return;
+          }
+          
+          // Validate that the tool has a connector instance associated
+          if (!sourceNode.data.config?.connectorInstanceId && !sourceNode.data.config?.connectorType && !sourceNode.data.config?.scope) {
+            setError('This tool needs to be configured with a connector instance first');
+            return;
           }
         }
 
-        // Connector instances should only connect to agent's actions handle
-        if (sourceType.startsWith('connector-group-') && targetType !== 'agent-core') {
-          setError('Connector instances must be connected to the agent\'s actions handle');
+        // Tool-groups should only connect to agent
+        if (sourceType.startsWith('tool-group-') && targetType !== 'agent-core') {
+          setError('Tool groups must be connected to the agent');
+          return;
+        }
+
+        // Individual tools should only connect to agent
+        if (sourceType.startsWith('tool-') && !sourceType.startsWith('tool-group-') && targetType !== 'agent-core') {
+          setError('Tools must be connected to the agent');
           return;
         }
       }
@@ -384,14 +380,15 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     [setEdges, theme, nodes, setError]
   );
 
-  // Handle edge selection and deletion
+  // Handle edge selection and deletion (one-click delete)
   const onEdgeClick = useCallback(
     (event: React.MouseEvent, edge: any) => {
       event.preventDefault();
-      setEdgeToDelete(edge);
-      setEdgeDeleteDialogOpen(true);
+      event.stopPropagation();
+      // Delete edge immediately without dialog
+      setEdges((eds) => eds.filter((e) => e.id !== edge.id));
     },
-    [setEdgeToDelete, setEdgeDeleteDialogOpen]
+    [setEdges]
   );
 
   // Delete edge
@@ -556,6 +553,9 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         sidebarWidth={SIDEBAR_WIDTH}
         nodeTemplates={nodeTemplates}
         loading={loading}
+        activeAgentConnectors={activeAgentConnectors}
+        activeConnectors={activeConnectors}
+        connectorRegistry={connectorRegistry}
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
@@ -581,7 +581,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
           setNodeToDelete(nodeId);
           setDeleteDialogOpen(true);
         }}
-        onError={(error: string) => setError(error)}
+        onError={(errorMsg: string) => setError(errorMsg)}
       />
 
       {/* Notifications */}

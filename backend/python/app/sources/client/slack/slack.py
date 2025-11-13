@@ -179,7 +179,7 @@ class SlackClient(IClient):
             config = await cls._get_connector_config(logger, config_service, connector_instance_id)
 
             if not config:
-                raise ValueError("Failed to get Slack connector configuration")
+                    raise ValueError("Failed to get Slack connector configuration")
 
             # Extract configuration values
             auth_type = config.get("authType", "botToken")  # token, username_password, api_key

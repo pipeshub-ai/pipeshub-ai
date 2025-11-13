@@ -10,6 +10,9 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   sidebarWidth,
   nodeTemplates,
   loading,
+  activeAgentConnectors,
+  activeConnectors,
+  connectorRegistry,
   nodes,
   edges,
   onNodesChange,
@@ -37,6 +40,9 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
       nodeTemplates={nodeTemplates}
       loading={loading}
       sidebarWidth={sidebarWidth}
+      activeAgentConnectors={activeAgentConnectors}
+      activeConnectors={activeConnectors}
+      connectorRegistry={connectorRegistry}
     />
 
     <AgentBuilderCanvas

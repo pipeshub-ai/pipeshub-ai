@@ -236,7 +236,7 @@ interface Connector {
   supportsRealtime: boolean;
   supportsSync: boolean;
   supportsAgent: boolean;
-  scope?: 'personal' | 'team';
+  scope: 'personal' | 'team';
   createdBy?: string;
   updatedBy?: string;
   createdAtTimestamp: number;

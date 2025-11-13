@@ -35,9 +35,8 @@ export interface Agent {
     modelName: string;
     isReasoning: boolean;
   }[];
-  apps: string[];
   kb: string[];
-  connectorInstances?: ConnectorInstance[];
+  connectors: ConnectorInstance[]; // Unified array with category field
   vectorDBs: string[];
   tags: string[];
   templateId?: string;
@@ -113,7 +112,8 @@ export interface ConnectorInstance {
   id: string;
   name: string;
   type: string;
-  scope?: string;
+  scope: 'personal' | 'team';
+  category: 'knowledge' | 'action'; // Purpose: knowledge (apps) or action (tools)
 }
 
 export interface AgentFormData {
@@ -127,9 +127,8 @@ export interface AgentFormData {
     modelName: string;
     isReasoning: boolean;
   }[];
-  apps: string[];
   kb: string[];
-  connectorInstances?: ConnectorInstance[];
+  connectors: ConnectorInstance[]; // Unified array with category field
   vectorDBs: string[];
   tags: string[];
   templateId?: string;

@@ -2162,7 +2162,7 @@ async def _get_settings_base_path(arango_service: BaseArangoService) -> str:
 @router.get("/api/v1/connectors/registry")
 async def get_connector_registry(
     request: Request,
-    scope: Optional[str] = Query("personal", description="personal | team"),
+    scope: Optional[str] = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
     search: Optional[str] = Query(None, description="Search by name/group/description"),
@@ -2218,7 +2218,7 @@ async def get_connector_registry(
 @router.get("/api/v1/connectors/")
 async def get_connector_instances(
     request: Request,
-    scope: Optional[str] = Query("personal", description="personal | team"),
+    scope: Optional[str] = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
     search: Optional[str] = Query(None, description="Search by instance name/type/group"),
@@ -2350,7 +2350,7 @@ async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
 @router.get("/api/v1/connectors/configured")
 async def get_configured_connector_instances(
     request: Request,
-    scope: Optional[str] = Query("personal", description="personal | team"),
+    scope: Optional[str] = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
     search: Optional[str] = Query(None, description="Search by instance name/type/group"),
@@ -4248,7 +4248,7 @@ async def get_connector_schema(
 @router.get("/api/v1/connectors/agents/active")
 async def get_active_agent_instances(
     request: Request,
-    scope: Optional[str] = Query("personal", description="personal | team"),
+    scope: Optional[str] = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
     search: Optional[str] = Query(None, description="Search by instance name/type/group")

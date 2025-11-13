@@ -7,7 +7,7 @@ import emailIcon from '@iconify-icons/mdi/email';
 import apiIcon from '@iconify-icons/mdi/api';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
 import replyIcon from '@iconify-icons/mdi/reply';
-import { useConnectors } from '../../../../accountdetails/connectors/context';
+import type { Connector } from 'src/sections/accountdetails/connectors/types/types';
 import {
   groupToolsByApp,
   getAppDisplayName,
@@ -16,16 +16,15 @@ import {
   normalizeDisplayName,
 } from '../../utils/agent';
 import type { UseAgentBuilderNodeTemplatesReturn, NodeTemplate } from '../../types/agent';
-import { Connector } from 'src/sections/accountdetails/connectors/types/types';
 
 export const useAgentBuilderNodeTemplates = (
   availableTools: any[],
   availableModels: any[],
   availableKnowledgeBases: any[],
-  activeAgentConnectors: Connector[]
+  activeAgentConnectors: Connector[],
+  activeConnectors: Connector[]
 ): UseAgentBuilderNodeTemplatesReturn => {
-  // Get connector data from the hook
-  const { activeConnectors } = useConnectors();
+  // activeConnectors is now passed as a parameter to avoid redundant API calls
   
   const nodeTemplates: NodeTemplate[] = useMemo(() => {
     const groupedTools = groupToolsByApp(availableTools);
@@ -39,19 +38,23 @@ export const useAgentBuilderNodeTemplates = (
       icon: connector.iconPath, // Will be overridden by dynamic icon in sidebar
       defaultConfig: {
         appName: connector.name.toUpperCase(),
+        type: connector.type,
         appDisplayName: connector.name,
-        searchScope: 'all',
+        searchScope: connector.scope,
         iconPath: connector.iconPath,
+        scope: connector.scope,
       },
       inputs: ['query'],
       outputs: ['context'],
       category: 'knowledge' as const,
     }));
 
+    // Create connector instance nodes for both Knowledge and Tools sections
+    // Each connector instance will be shown in both sections with appropriate categorization
     const connectorGroupNodes = activeAgentConnectors.map(connector => ({
-      type: `connector-group-${connector.name.toLowerCase().replace(/\s+/g, '-')}`,
+      type: `connector-group-${connector._key}`,
       label: normalizeDisplayName(connector.name),
-      description: `Connect to ${connector.name} data and content`,
+      description: `${connector.type} connector instance - Use in Tools or Knowledge`,
       icon: databaseIcon, // Will be overridden by dynamic icon in sidebar
       defaultConfig: {
         id: connector._key,
@@ -60,9 +63,10 @@ export const useAgentBuilderNodeTemplates = (
         appGroup: connector.appGroup,
         authType: connector.authType,
         iconPath: connector.iconPath,
+        scope: connector.scope,
       },
-      inputs: ['tools'], // Tools connect to connector instances
-      outputs: ['actions'], // Connector instances connect to agent's actions handle
+      inputs: ['query', 'tools'], // Can be used for both Knowledge and Tools
+      outputs: ['context', 'actions'], // Outputs depend on usage
       category: 'connectors' as const,
     }));
     
@@ -175,11 +179,14 @@ export const useAgentBuilderNodeTemplates = (
         icon: apiIcon,
         defaultConfig: {
           apps: allConnectors.map(connector => ({
+            id: connector._key, // Connector instance ID
             name: connector.name,
-            type: connector.name.toUpperCase(),
+            type: connector.type,
             displayName: connector.name,
+            scope: connector.scope,
+            iconPath: connector.iconPath,
           })),
-          selectedApps: allConnectors.slice(0, 3).map(connector => connector.name.toUpperCase()), // Default to first 3 apps
+          selectedApps: allConnectors.slice(0, 3).map(connector => connector._key), // Default to first 3 apps - use connector instance IDs
         },
         inputs: ['query'],
         outputs: ['context'],
@@ -234,7 +241,7 @@ export const useAgentBuilderNodeTemplates = (
     ];
 
     return templates;
-  }, [availableTools, availableModels, availableKnowledgeBases, activeConnectors]);
+  }, [availableTools, availableModels, availableKnowledgeBases, activeConnectors, activeAgentConnectors]);
 
   return { nodeTemplates };
 };

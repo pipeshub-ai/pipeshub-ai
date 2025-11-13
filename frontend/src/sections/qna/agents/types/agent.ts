@@ -54,6 +54,9 @@ export interface AgentBuilderCanvasWrapperProps {
   sidebarWidth: number;
   nodeTemplates: NodeTemplate[];
   loading: boolean;
+  activeAgentConnectors: Connector[];
+  activeConnectors: Connector[];
+  connectorRegistry: any[];
   nodes: any[];
   edges: any[];
   onNodesChange: (changes: any) => void;
@@ -100,6 +103,8 @@ export interface UseAgentBuilderDataReturn {
   availableModels: any[];
   availableKnowledgeBases: any[];
   activeAgentConnectors: Connector[];
+  activeConnectors: Connector[];
+  connectorRegistry: any[];
   loading: boolean;
   loadedAgent: Agent | null;
   error: string | null;

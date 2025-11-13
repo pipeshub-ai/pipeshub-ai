@@ -2,6 +2,8 @@
 Google client factory for creating Google service clients.
 """
 
+from typing import Optional
+
 from app.agents.tools.factories.base import ClientFactory
 from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.google.google import GoogleClient
@@ -27,7 +29,7 @@ class GoogleClientFactory(ClientFactory):
         self.service_name = service_name
         self.version = version
 
-    async def create_client(self, config_service, logger, state: ChatState | None = None) -> GoogleClient:
+    async def create_client(self, config_service, logger, state: ChatState | None = None, connector_instance_id: Optional[str] = None) -> GoogleClient:
         """
         Create Google client instance.
 
@@ -56,6 +58,7 @@ class GoogleClientFactory(ClientFactory):
             is_individual=is_individual,
             version=self.version,
             user_email=user_email,
+            connector_instance_id=connector_instance_id
         )
         logger.info(f"Created Google client for service {self.service_name} with user email {user_email}")
 

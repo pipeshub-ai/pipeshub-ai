@@ -42,12 +42,33 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
         ? isConfigured
         : isAuthenticated
       : isConfigured;
+
+  const canEnableAgent = isAgentActive
+    ? true
+    : isOauth
+      ? hideAuthenticate
+        ? isConfigured
+        : isAuthenticated
+      : isConfigured;
   const enableBlocked = !isActive && !canEnable;
+  const enableAgentBlocked = !isAgentActive && !canEnableAgent;
   const supportsSync = connector.supportsSync || false;
   const supportsAgent = connector.supportsAgent || false;
 
   const getTooltipMessage = () => {
     if (!isActive && !canEnable) {
+      if (isOauth) {
+        return hideAuthenticate
+          ? `${connector.name} needs to be configured before it can be enabled`
+          : `Authenticate ${connector.name} before enabling`;
+      }
+      return `${connector.name} needs to be configured before it can be enabled`;
+    }
+    return '';
+  };
+
+  const getAgentTooltipMessage = () => {
+    if (!isAgentActive && !canEnableAgent) {
       if (isOauth) {
         return hideAuthenticate
           ? `${connector.name} needs to be configured before it can be enabled`
@@ -235,6 +256,7 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
             >
               <div>
                 <Switch
+                  key='sync-switch'
                   checked={isActive}
                   onChange={(e) => {
                     const next = e.target.checked;
@@ -299,23 +321,24 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
             </Box>
 
             <Tooltip
-              title={getTooltipMessage()}
+              title={getAgentTooltipMessage()}
               placement="top"
               arrow
-              disableHoverListener={!enableBlocked}
+              disableHoverListener={!enableAgentBlocked}
             >
               <div>
                 <Switch
+                key='agent-switch'
                   checked={isAgentActive}
                   onChange={(e) => {
                     const next = e.target.checked;
-                    if (next && !canEnable) {
+                    if (next && !canEnableAgent) {
                       // Block enabling if prerequisites not met
                       return;
                     }
                     onToggle(next, 'agent');
                   }}
-                  disabled={!isAgentActive && !canEnable}
+                  disabled={!isAgentActive && !canEnableAgent}
                   color="primary"
                   size="medium"
                   sx={{

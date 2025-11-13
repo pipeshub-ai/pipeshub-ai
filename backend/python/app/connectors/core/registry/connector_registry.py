@@ -517,6 +517,7 @@ class ConnectorRegistry:
             FOR doc IN @@collection
                 FILTER doc._id != null
                 FILTER (doc.scope == @scope OR doc.createdBy == @user_id)
+                RETURN doc
             """
             bind_vars = {
                 "@collection": self._collection_name,

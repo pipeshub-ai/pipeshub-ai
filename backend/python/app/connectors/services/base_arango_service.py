@@ -1023,7 +1023,7 @@ class BaseArangoService:
             permission_filter = build_permission_filter(True)
             folder_filter = '''
                 LET targetDoc = FIRST(
-                    FOR v IN 1..1 OUTBOUND record._id isOfType
+                    FOR v IN 1..1 OUTBOUND record._id @@is_of_type
                         LIMIT 1
                         RETURN v
                 )
@@ -1515,8 +1515,12 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
+            // Calculate counts from arrays
+            LET kbCount = LENGTH(kbRecords)
+            LET connectorCount = LENGTH(connectorRecords)
+
             // Combine all keys and count unique ones
-            LET allNewPermissionKeys = UNION_DISTINCT(connectorKeysNewPermission, groupConnectorKeysNewPermission, orgAccessKeys, recordGroupConnectorRecordsCount, inheritedRecordGroupConnectorRecordsCount)
+            LET allNewPermissionKeys = UNION_DISTINCT(connectorKeysNewPermission, groupConnectorRecordsNewPermission, orgAccessKeys, recordGroupConnectorRecordsCount, inheritedRecordGroupConnectorRecordsCount)
             LET uniqueNewPermissionCount = LENGTH(UNIQUE(allNewPermissionKeys))
 
             RETURN kbCount + connectorCount + uniqueNewPermissionCount
@@ -1628,7 +1632,7 @@ class BaseArangoService:
                             FILTER record.origin == "CONNECTOR"
 
                             LET targetDoc = FIRST(
-                                FOR v IN 1..1 OUTBOUND record._id isOfType
+                                FOR v IN 1..1 OUTBOUND record._id @@is_of_type
                                     LIMIT 1
                                     RETURN v
                             )
@@ -1818,6 +1822,7 @@ class BaseArangoService:
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
             }
@@ -1830,6 +1835,7 @@ class BaseArangoService:
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
             }

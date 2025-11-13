@@ -175,7 +175,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
     filters = chat_query.get("filters", {})
     apps = filters.get("apps", None)
     kb = filters.get("kb", None)
-    connector_instances = filters.get("connectorInstances", None)  # List of dicts with id, type, name
+    connector_instances = filters.get("connectors", None)  # List of dicts with id, type, name
 
     logger.debug(f"apps: {apps}")
     logger.debug(f"kb: {kb}")
