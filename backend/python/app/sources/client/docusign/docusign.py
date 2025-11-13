@@ -435,7 +435,7 @@ class DocuSignClient:
             raise DocuSignClientError(msg) from e
 
     def get_group(self, group_id: str) -> dict[str, Any]:
-        """Get details of a specific group.
+        """Get details of a specific group using the direct REST endpoint.
 
         Args:
             group_id: The group ID
@@ -447,14 +447,28 @@ class DocuSignClient:
             DocuSignClientError: If the API call fails
         """
         try:
-            response = self.groups.list_groups(self.account_id)
-            groups = response.to_dict().get("groups", []) or []
-            for grp in groups:
-                if grp.get("group_id") == group_id:
-                    return grp
-            raise DocuSignClientError(f"Group {group_id} not found.")
+            # Direct REST endpoint (faster and avoids listing all groups)
+            path = f"/v2.1/accounts/{self.account_id}/groups/{group_id}"
+
+            # Call the API manually because SDK lacks get_group()
+            data, status, headers = self.client.call_api(
+                resource_path=path,
+                method="GET",
+                response_type="object",
+            )
+
+            # Convert SDK model → dict if needed
+            if hasattr(data, "to_dict"):
+                return data.to_dict()
+            if isinstance(data, dict):
+                return data
+
+            # Fallback (rare)
+            return dict(data)
+
         except ApiException as e:
-            raise DocuSignClientError(f"Failed to get group {group_id}: {e}") from e
+            msg = f"Failed to get group {group_id}: {e}"
+            raise DocuSignClientError(msg) from e
 
     # ========================================================================
     # FOLDER OPERATIONS
