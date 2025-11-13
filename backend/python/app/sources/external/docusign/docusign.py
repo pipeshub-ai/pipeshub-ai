@@ -323,22 +323,18 @@ class DocuSignDataSource:
         """Fetch all envelopes with pagination.
 
         This method handles pagination automatically to retrieve all envelopes.
-
-        Args:
-            from_date: Start date for filtering (ISO 8601 format)
-            status: Filter by envelope status
-
-        Returns:
-            List of all envelopes
+        Uses start_position and count to page through results.
         """
         all_envelopes: list[dict[str, Any]] = []
-        count = 100
+        count = 100  # page size
+        start_position = 0
 
         while True:
             response = self.client.list_envelopes(
                 from_date=from_date,
                 status=status,
                 count=str(count),
+                start_position=str(start_position),
             )
 
             envelopes = response.get("envelopes", [])
@@ -347,12 +343,34 @@ class DocuSignDataSource:
 
             all_envelopes.extend(envelopes)
 
-            # Check if there are more results
-            result_set_size = response.get("result_set_size")
-            if not result_set_size or len(envelopes) < count:
+            # If fewer envelopes returned than page size, we've reached the last page.
+            if len(envelopes) < count:
                 break
 
+            # Attempt to read next_start_position or end_position from response metadata when available.
+            # Fallback: increment start_position by count to avoid infinite loop.
+            next_start = None
+            if "next_start_position" in response:
+                next_start = response.get("next_start_position")
+            elif "end_position" in response:
+                # Some responses provide end_position — compute next as end_position + 1
+                try:
+                    end_pos = int(response.get("end_position") or 0)
+                    next_start = str(end_pos + 1)
+                except (TypeError, ValueError):
+                    next_start = None
+
+            if next_start:
+                # If server returned the same position or an invalid one, break to avoid infinite loop
+                if str(next_start) == str(start_position):
+                    break
+                start_position = int(next_start)
+            else:
+                # safe fallback: increment by page size
+                start_position += count
+
         return all_envelopes
+
 
     def fetch_all_templates(
         self,

@@ -91,6 +91,7 @@ class DocuSignClient:
         status: str | None = None,
         folder_ids: str | None = None,
         count: str = "100",
+        start_position: str | None = None,
     ) -> dict[str, Any]:
         """List envelopes with optional filters.
 
