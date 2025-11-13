@@ -193,7 +193,6 @@ async def execute_tool_calls(
 
         # Check if there are tool calls
         if not (isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None)):
-            # No more tool calls - don't add the AI message, let the streaming function handle it
             logger.debug("execute_tool_calls: no tool_calls returned; exiting tool loop without adding AI message (will be streamed)")
             messages.append(ai)
             break
@@ -1139,7 +1138,7 @@ class AnswerParserState:
 def _initialize_answer_parser_regex() -> Tuple[re.Pattern, re.Pattern, re.Pattern, Any]:
     """Initialize regex patterns for answer parsing."""
     answer_key_re = re.compile(r'"answer"\s*:\s*"')
-    cite_block_re = re.compile(r'(?:\s*[\[【]\d+[\]】])+')
+    cite_block_re = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
     incomplete_cite_re = re.compile(r'[\[【][^\]】]*$')
     word_iter = re.compile(r'\S+').finditer
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
