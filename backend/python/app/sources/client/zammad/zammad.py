@@ -13,13 +13,21 @@ from app.sources.client.iclient import IClient
 class ZammadResponse(BaseModel):
     """Standardized Zammad API response wrapper"""
     success: bool
-    data: Optional[Union[Dict[str, Any], List[Any]]] = None
+    data: Optional[Union[Dict[str, Any], List[Any], bytes]] = None
     error: Optional[str] = None
     message: Optional[str] = None
 
+    class Config:
+        arbitrary_types_allowed = True  # Allow bytes type
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
-        return self.model_dump()
+        result = self.model_dump()
+        # Convert bytes to base64 for JSON serialization
+        if isinstance(result.get('data'), bytes):
+            import base64
+            result['data'] = base64.b64encode(result['data']).decode('ascii')
+        return result
 
     def to_json(self) -> str:
         """Convert to JSON string"""

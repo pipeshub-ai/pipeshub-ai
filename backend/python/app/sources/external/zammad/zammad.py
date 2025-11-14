@@ -1,8 +1,11 @@
+import logging
 from typing import Dict, List, Optional
 from urllib.parse import urlencode
 
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.zammad.zammad import ZammadClient, ZammadResponse
+
+logger = logging.getLogger(__name__)
 
 SUCCESS_CODE_IS_LESS_THAN = 400
 
@@ -8447,4 +8450,59 @@ class ZammadDataSource:
                 success=False,
                 error=str(e),
                 message="export_tickets failed: " + str(e)
+            )
+
+    async def download_attachment(self, attachment_id: int) -> ZammadResponse:
+        """Download attachment content by ID
+
+        Args:
+            attachment_id: int (required) - The attachment ID
+
+        Returns:
+            ZammadResponse with binary content in data field
+        """
+        url = f"{self.base_url}/api/v1/attachments/{attachment_id}"
+
+        try:
+            request = HTTPRequest(
+                url=url,
+                method="GET",
+                headers={}  # Don't set Content-Type for downloads, let server determine response type
+            )
+            response = await self.http_client.execute(request)
+
+            status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+            
+            if not status_ok:
+                logger.warning(f"Attachment download failed with status {response.status}: {url}")
+                return ZammadResponse(
+                    success=False,
+                    data=None,
+                    message=f"download_attachment failed with status {response.status}"
+                )
+            
+            # Get binary content
+            data = response.bytes()
+            
+            if not data or len(data) == 0:
+                logger.warning(f"Attachment {attachment_id} returned empty content")
+                return ZammadResponse(
+                    success=False,
+                    data=None,
+                    message=f"download_attachment returned empty content for attachment {attachment_id}"
+                )
+
+            logger.debug(f"Successfully downloaded attachment {attachment_id}, size: {len(data)} bytes")
+            return ZammadResponse(
+                success=True,
+                data=data,  # Binary content (raw bytes)
+                message="download_attachment succeeded"
+            )
+            
+        except Exception as e:
+            logger.error(f"Exception downloading attachment {attachment_id}: {e}")
+            return ZammadResponse(
+                success=False,
+                error=str(e),
+                message="download_attachment failed: " + str(e)
             )
