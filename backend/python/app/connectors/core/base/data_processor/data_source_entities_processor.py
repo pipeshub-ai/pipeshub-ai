@@ -5,7 +5,6 @@ from typing import List, Optional, Tuple
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
-    Connectors,
     MimeTypes,
     OriginTypes,
 )
@@ -80,7 +79,7 @@ class DataSourceEntitiesProcessor:
 
     async def _handle_parent_record(self, record: Record, tx_store: TransactionStore) -> None:
         if record.parent_external_record_id:
-            parent_record = await tx_store.get_record_by_external_id(connector_name=record.connector_name,
+            parent_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                      external_id=record.parent_external_record_id)
 
             if parent_record is None and record.parent_record_type is RecordType.FILE and record.record_type is RecordType.FILE:
@@ -110,7 +109,7 @@ class DataSourceEntitiesProcessor:
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
-        record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
+        record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
 
         if record_group is None:
@@ -120,6 +119,7 @@ class DataSourceEntitiesProcessor:
                 name=record.external_record_group_id,
                 group_type=record.record_group_type,
                 connector_name=record.connector_name,
+                connector_id=record.connector_id,
             )
             await tx_store.batch_upsert_record_groups([record_group])
             # Todo: Create a edge between the record group and the App
@@ -160,7 +160,7 @@ class DataSourceEntitiesProcessor:
 
                         # If user doesn't exist (external user), create them as inactive
                         if not user and permission.email:
-                            user = await self._create_external_user(permission.email, record.connector_name, tx_store)
+                            user = await self._create_external_user(permission.email, record.connector_id, tx_store)
 
                     if user:
                         from_collection = f"{CollectionNames.USERS.value}/{user.id}"
@@ -170,8 +170,8 @@ class DataSourceEntitiesProcessor:
                     if permission.external_id:
                         # Look up group by external_id
                         user_group = await tx_store.get_user_group_by_external_id(
-                            external_id=permission.external_id,
-                            connector_name=record.connector_name
+                            connector_id=record.connector_id,
+                            external_id=permission.external_id
                         )
 
                     if user_group:
@@ -203,13 +203,13 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
-    async def _create_external_user(self, email: str, connector_name: str, tx_store) -> AppUser:
+    async def _create_external_user(self, email: str, connector_id: str, tx_store) -> AppUser:
         """Create an external user record."""
         external_source_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email))
 
         # Create external user record
         external_user = AppUser(
-            app_name=connector_name,
+            connector_id=connector_id,
             source_user_id=external_source_id,
             email=email,
             full_name=email.split('@')[0],
@@ -246,14 +246,14 @@ class DataSourceEntitiesProcessor:
                     await self._handle_record_permissions(record, permissions, tx_store)
                 # if record comes with inherit permissions true create inherit permissions edge else check if inherit permissions edge exists and delete it
                 if record.inherit_permissions:
-                    record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
+                    record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
 
                     if record_group:
                         await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
 
                 if not record.inherit_permissions:
-                    record_group = await tx_store.get_record_group_by_external_id(connector_name=record.connector_name,
+                    record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
                     if record_group:
                         to_key = f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}"
@@ -269,7 +269,7 @@ class DataSourceEntitiesProcessor:
             raise
 
     async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:
-        existing_record = await tx_store.get_record_by_external_id(connector_name=record.connector_name,
+        existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
         if existing_record is None:
@@ -351,7 +351,7 @@ class DataSourceEntitiesProcessor:
 
                     self.logger.info(f"Processing record group: {record_group.name}")
                     existing_record_group = await tx_store.get_record_group_by_external_id(
-                        connector_name=record_group.connector_name,
+                        connector_id=record_group.connector_id,
                         external_id=record_group.external_group_id
                     )
 
@@ -383,7 +383,7 @@ class DataSourceEntitiesProcessor:
                     # 3. Handle User and Group Permissions (from the passed 'permissions' list)
                     if record_group.parent_external_group_id:
                         parent_record_group = await tx_store.get_record_group_by_external_id(
-                            connector_name=record_group.connector_name,
+                            connector_id=record_group.connector_id,
                             external_id=record_group.parent_external_group_id
                         )
 
@@ -442,7 +442,7 @@ class DataSourceEntitiesProcessor:
                             user_group = None
                             if permission.external_id:
                                 user_group = await tx_store.get_user_group_by_external_id(
-                                    connector_name=record_group.connector_name,
+                                    connector_id=record_group.connector_id,
                                     external_id=permission.external_id
                                 )
 
@@ -472,12 +472,12 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
             raise e
 
-    async def update_record_group_name(self, folder_id: str, new_name: str, old_name: str = None, connector_name: str = None) -> None:
+    async def update_record_group_name(self, folder_id: str, new_name: str, old_name: str = None, connector_id: str = None) -> None:
         """Update the name of an existing record group in the database."""
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 existing_group = await tx_store.get_record_group_by_external_id(
-                    connector_name=connector_name,
+                    connector_id=connector_id,
                     external_id=folder_id
                 )
 
@@ -526,7 +526,7 @@ class DataSourceEntitiesProcessor:
 
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(
-                        connector_name=user_group.app_name,
+                        connector_id=user_group.connector_id,
                         external_id=user_group.source_user_group_id
                     )
 
@@ -595,9 +595,9 @@ class DataSourceEntitiesProcessor:
 
             return [User.from_arango_user(user) for user in users if user is not None]
 
-    async def get_all_app_users(self, app_name: Connectors) -> List[AppUser]:
+    async def get_all_app_users(self, connector_id: str) -> List[AppUser]:
         async with self.data_store_provider.transaction() as tx_store:
-            app_users = await tx_store.get_app_users(self.org_id, app_name)
+            app_users = await tx_store.get_app_users(self.org_id, connector_id)
 
             return [AppUser.from_arango_user(app_user) for app_user in app_users if app_user is not None]
 
@@ -605,7 +605,7 @@ class DataSourceEntitiesProcessor:
         self,
         external_group_id: str,
         user_email: str,
-        connector_name: str
+        connector_id: str
     ) -> bool:
 
         try:
@@ -621,7 +621,7 @@ class DataSourceEntitiesProcessor:
 
                 # 2. Look up the user group by external ID
                 user_group = await tx_store.get_user_group_by_external_id(
-                    connector_name=connector_name,
+                    connector_id=connector_id,
                     external_id=external_group_id
                 )
                 if not user_group:
@@ -667,7 +667,7 @@ class DataSourceEntitiesProcessor:
         external_group_id: str,
         user_email: str,
         permission_type: PermissionType,
-        connector_name: str
+        connector_id: str
     ) -> bool:
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -682,7 +682,7 @@ class DataSourceEntitiesProcessor:
 
                 # 2. Look up the user group by external ID
                 user_group = await tx_store.get_user_group_by_external_id(
-                    connector_name=connector_name,
+                    connector_id=connector_id,
                     external_id=external_group_id
                 )
                 if not user_group:
@@ -734,14 +734,14 @@ class DataSourceEntitiesProcessor:
     async def on_user_group_deleted(
         self,
         external_group_id: str,
-        connector_name: str
+        connector_id: str
     ) -> bool:
         """
         Delete a user group and all its associated edges from the database.
 
         Args:
             external_group_id: The external ID of the group from the source system
-            connector_name: The name of the connector (e.g., 'DROPBOX')
+            connector_id: The ID of the connector (e.g., 'DROPBOX')
 
         Returns:
             bool: True if the group was successfully deleted, False otherwise
@@ -750,7 +750,7 @@ class DataSourceEntitiesProcessor:
             async with self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the user group by external ID
                 user_group = await tx_store.get_user_group_by_external_id(
-                    connector_name=connector_name,
+                    connector_id=connector_id,
                     external_id=external_group_id
                 )
 
@@ -785,14 +785,14 @@ class DataSourceEntitiesProcessor:
     async def on_record_group_deleted(
         self,
         external_group_id: str,
-        connector_name: str
+        connector_id: str
     ) -> bool:
         """
         Delete a record group and all its associated edges from the database.
 
         Args:
             external_group_id: The external ID of the group from the source system.
-            connector_name: The name of the connector (e.g., 'DROPBOX').
+            connector_id: The ID of the connector (e.g., 'DROPBOX').
 
         Returns:
             bool: True if the group was successfully deleted, False otherwise.
@@ -801,7 +801,7 @@ class DataSourceEntitiesProcessor:
             async with self.data_store_provider.transaction() as tx_store:
                 # 1. Find the record group by its external ID
                 record_group = await tx_store.get_record_group_by_external_id(
-                    connector_name=connector_name,
+                    connector_id=connector_id,
                     external_id=external_group_id
                 )
 

@@ -662,7 +662,7 @@ class UserGroup(BaseModel):
 
 
 class AppUser(BaseModel):
-    app_name: Connectors = Field(description="Name of the app")
+    connector_id: str = Field(description="Unique identifier for the connector")
     id: str = Field(description="Unique identifier for the user", default_factory=lambda: str(uuid4()))
     source_user_id: str = Field(description="Unique identifier for the user in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
@@ -697,12 +697,13 @@ class AppUser(BaseModel):
             is_active=data.get("isActive", False),
             full_name=data.get("fullName", None),
             source_user_id=data.get("sourceUserId", ""),
-            app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value)),
+            connector_id=data.get("connectorId", ""),
         )
 
 class AppUserGroup(BaseModel):
     id: str = Field(description="Unique identifier for the user group", default_factory=lambda: str(uuid4()))
     app_name: Connectors = Field(description="Name of the app")
+    connector_id: str = Field(description="Unique identifier for the connector")
     source_user_group_id: str = Field(description="Unique identifier for the user group in the source system")
     name: str = Field(description="Name of the user group")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user group creation")
@@ -722,6 +723,7 @@ class AppUserGroup(BaseModel):
             "appName": self.app_name.value,
             "externalGroupId": self.source_user_group_id,
             "connectorName": self.app_name.value,
+            "connectorId": self.connector_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -737,6 +739,7 @@ class AppUserGroup(BaseModel):
             name=arango_doc["name"],
             source_user_group_id=arango_doc["externalGroupId"],
             app_name=Connectors(arango_doc["connectorName"]),
+            connector_id=arango_doc.get("connectorId", None),
             created_at=arango_doc["createdAtTimestamp"],
             updated_at=arango_doc["updatedAtTimestamp"],
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),

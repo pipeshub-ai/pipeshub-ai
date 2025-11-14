@@ -3,7 +3,6 @@
 # pylint: disable=E1101, W0718
 import asyncio
 import datetime
-import hashlib
 import json
 import unicodedata
 import uuid
@@ -2112,17 +2111,17 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Delete a record by external ID
         """
         try:
-            self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
+            self.logger.info(f"🗂️ Deleting record {external_id} from {connector_id}")
 
             # Get record
-            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
+            record = await self.get_record_by_external_id(connector_id, external_id, transaction=transaction)
             if not record:
-                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
                 return
 
             # Delete record using the record's internal ID and user_id
@@ -2130,41 +2129,41 @@ class BaseArangoService:
 
             # Check if deletion was successful
             if deletion_result.get("success"):
-                self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+                self.logger.info(f"✅ Record {external_id} deleted from {connector_id}")
             else:
                 error_reason = deletion_result.get("reason", "Unknown error")
                 self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
                 raise Exception(f"Deletion failed: {error_reason}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_id}: {str(e)}")
             raise
 
-    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
+    async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Remove a user's access to a record (for inbox-based deletions)
         This removes the user's permissions and belongsTo edges without deleting the record itself
         """
         try:
-            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_name} for user {user_id}")
+            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_id} for user {user_id}")
 
             # Get record
-            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
+            record = await self.get_record_by_external_id(connector_id, external_id, transaction=transaction)
             if not record:
-                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
                 return
 
             # Remove user's access instead of deleting the entire record
             result = await self._remove_user_access_from_record(record.id, user_id)
 
             if result.get("success"):
-                self.logger.info(f"✅ User access removed: {external_id} from {connector_name}")
+                self.logger.info(f"✅ User access removed: {external_id} from {connector_id}")
             else:
                 self.logger.error(f"❌ Failed to remove user access: {result.get('reason', 'Unknown error')}")
                 raise Exception(f"Failed to remove user access: {result.get('reason', 'Unknown error')}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
             raise
 
     async def _remove_user_access_from_record(self, record_id: str, user_id: str) -> Dict:
@@ -3935,7 +3934,7 @@ class BaseArangoService:
 
     async def get_record_by_conversation_index(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         conversation_index: str,
         thread_id: str,
         org_id: str,
@@ -3946,7 +3945,7 @@ class BaseArangoService:
         Get mail record by conversation_index and thread_id for a specific user
 
         Args:
-            connector_name: Connector name
+            connector_id: Connector ID
             conversation_index: The conversation index to look up
             thread_id: The thread ID to match
             org_id: The organization ID
@@ -3961,7 +3960,7 @@ class BaseArangoService:
             # Query that joins records, mails, and permissions to find mail by owner
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.connectorName == @connector_name
+                FILTER record.connectorId == @connector_id
                     AND record.orgId == @org_id
                 FOR mail IN {CollectionNames.MAILS.value}
                     FILTER mail._key == record._key
@@ -3984,7 +3983,7 @@ class BaseArangoService:
                 bind_vars={
                     "conversation_index": conversation_index,
                     "thread_id": thread_id,
-                    "connector_name": connector_name.value,
+                    "connector_id": connector_id,
                     "org_id": org_id,
                     "user_id": user_id,
                 },
@@ -4096,12 +4095,13 @@ class BaseArangoService:
             return None
 
     async def get_record_by_external_id(
-        self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None
+        self, connector_id: str, external_id: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Record]:
         """
         Get internal file key using the external file ID
 
         Args:
+            connector_id: Connector ID
             external_file_id (str): External file ID to look up
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
@@ -4110,35 +4110,35 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external file ID %s %s", connector_name, external_id
+                "🚀 Retrieving internal key for external file ID %s %s", connector_id, external_id
             )
 
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.externalRecordId == @external_id AND record.connectorName == @connector_name
+                FILTER record.externalRecordId == @external_id AND record.connectorId == @connector_id
                 RETURN record
             """
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"external_id": external_id, "connector_name": connector_name.value}
+                query, bind_vars={"external_id": external_id, "connector_id": connector_id}
             )
             result = next(cursor, None)
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for external file ID %s %s", connector_name, external_id
+                    "✅ Successfully retrieved internal key for external file ID %s %s", connector_id, external_id
                 )
                 return Record.from_arango_base_record(result)
             else:
                 self.logger.warning(
-                    "⚠️ No internal key found for external file ID %s %s", connector_name, external_id
+                    "⚠️ No internal key found for external file ID %s %s", connector_id, external_id
                 )
                 return None
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve internal key for external file ID %s %s: %s", connector_name, external_id, str(e)
+                "❌ Failed to retrieve internal key for external file ID %s %s: %s", connector_id, external_id, str(e)
             )
             return None
 
@@ -4189,41 +4189,41 @@ class BaseArangoService:
             )
             return None
 
-    async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[RecordGroup]:
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[RecordGroup]:
         """
         Get internal record group key using the external record group ID
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external record group ID %s %s", connector_name, external_id
+                "🚀 Retrieving internal key for external record group ID %s %s", connector_id, external_id
             )
             query = f"""
             FOR record_group IN {CollectionNames.RECORD_GROUPS.value}
-                FILTER record_group.externalGroupId == @external_id AND record_group.connectorName == @connector_name
+                FILTER record_group.externalGroupId == @external_id AND record_group.connectorId == @connector_id
                 RETURN record_group
             """
             db = transaction if transaction else self.db
-            cursor = db.aql.execute(query, bind_vars={"external_id": external_id, "connector_name": connector_name.value})
+            cursor = db.aql.execute(query, bind_vars={"external_id": external_id, "connector_id": connector_id})
             result = next(cursor, None)
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for external record group ID %s %s", connector_name, external_id
+                    "✅ Successfully retrieved internal key for external record group ID %s %s", connector_id, external_id
                 )
                 return RecordGroup.from_arango_base_record_group(result)
             else:
                 self.logger.warning(
-                    "⚠️ No internal key found for external record group ID %s %s", connector_name, external_id
+                    "⚠️ No internal key found for external record group ID %s %s", connector_id, external_id
                 )
                 return None
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve internal key for external record group ID %s %s: %s", connector_name, external_id, str(e)
+                "❌ Failed to retrieve internal key for external record group ID %s %s: %s", connector_id, external_id, str(e)
             )
             return None
 
     async def get_user_group_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> Optional[AppUserGroup]:
@@ -4232,13 +4232,13 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving user group for external ID %s %s", connector_name, external_id
+                "🚀 Retrieving user group for external ID %s %s", connector_id, external_id
             )
 
             # Query the GROUPS collection using the schema fields
             query = f"""
             FOR group IN {CollectionNames.GROUPS.value}
-                FILTER group.externalGroupId == @external_id AND group.connectorName == @connector_name
+                FILTER group.externalGroupId == @external_id AND group.connectorId == @connector_id
                 LIMIT 1
                 RETURN group
             """
@@ -4247,7 +4247,7 @@ class BaseArangoService:
 
 
             cursor = db.aql.execute(query,
-                bind_vars={"external_id": external_id, "connector_name": connector_name.value}
+                bind_vars={"external_id": external_id, "connector_id": connector_id}
             )
 
             result = next(cursor, None)
@@ -4255,98 +4255,18 @@ class BaseArangoService:
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved user group for external ID %s %s", connector_name, external_id
+                    "✅ Successfully retrieved user group for external ID %s %s", connector_id, external_id
                 )
                 return AppUserGroup.from_arango_base_user_group(result)
             else:
                 self.logger.warning(
-                    "⚠️ No user group found for external ID %s %s", connector_name, external_id
+                    "⚠️ No user group found for external ID %s %s", connector_id, external_id
                 )
                 return None
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve user group for external ID %s %s: %s", connector_name, external_id, str(e)
+                "❌ Failed to retrieve user group for external ID %s %s: %s", connector_id, external_id, str(e)
             )
-            return None
-
-    async def get_or_create_app_by_name(
-        self,
-        app_name: str,
-        app_group: str,
-        auth_type: Optional[str] = None,
-        app_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Get an existing app by name or create it if it doesn't exist.
-
-        Args:
-            app_name: Name of the application
-            app_group: Group the app belongs to (e.g., "Google Workspace")
-            auth_type: Authentication type (e.g., "oauth", "api_token")
-            app_type: Optional type override (defaults to uppercased app_name)
-
-        Returns:
-            App document if successful
-        """
-        try:
-            # First try to get existing app
-            existing_app = await self.get_app_by_name(app_name)
-            if existing_app:
-                return existing_app
-
-            # If not found, create new app
-            orgs = await self.get_all_documents(CollectionNames.ORGS.value)
-
-            if not orgs or not isinstance(orgs, list):
-                self.logger.warning(f"No organizations found in DB; skipping app creation for {app_name}")
-                return None
-
-            org_id = orgs[0].get("_key")
-            if not org_id:
-                self.logger.warning(f"First organization document missing _key; skipping app creation for {app_name}")
-                return None
-
-            # Generate consistent app group ID
-            app_group_id = hashlib.sha256(app_group.encode()).hexdigest()
-
-            # Create app document
-            doc = {
-                '_key': f"{org_id}_{app_name.replace(' ', '_').upper()}",
-                'name': app_name,
-                'type': app_type or app_name.upper().replace(' ', '_'),
-                'appGroup': app_group,
-                'appGroupId': app_group_id,
-                'authType': auth_type or 'oauth',
-                'isActive': False,
-                'isConfigured': False,
-                'createdAtTimestamp': get_epoch_timestamp_in_ms(),
-                'updatedAtTimestamp': get_epoch_timestamp_in_ms()
-            }
-
-            # Insert app document
-            app_doc = await self.batch_upsert_nodes([doc], CollectionNames.APPS.value)
-            if not app_doc:
-                raise Exception(f"Failed to create app {app_name} in database")
-
-            # Create org-app edge
-            edge_data = {
-                "_from": f"{CollectionNames.ORGS.value}/{org_id}",
-                "_to": f"{CollectionNames.APPS.value}/{doc['_key']}",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-
-            edge_doc = await self.batch_create_edges(
-                [edge_data],
-                CollectionNames.ORG_APP_RELATION.value,
-            )
-            if not edge_doc:
-                raise Exception(f"Failed to create edge for {app_name} in database")
-
-            self.logger.info(f"Created database entry for {app_name}")
-            return app_doc
-
-        except Exception as e:
-            self.logger.error(f"Error in get_or_create_app_by_name for {app_name}: {e}")
             return None
 
     async def get_user_by_email(self, email: str, transaction: Optional[TransactionDatabase] = None) -> Optional[User]:
@@ -4384,7 +4304,7 @@ class BaseArangoService:
     async def get_app_user_by_email(
         self,
         email: str,
-        app_name: Connectors,
+        connector_id: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> Optional[AppUser]:
         """
@@ -4392,14 +4312,14 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving user for email %s and app %s", email, app_name
+                "🚀 Retrieving user for email %s and app %s", email, connector_id
             )
 
             query = """
                 // First find the app
                 LET app = FIRST(
                     FOR a IN @@apps
-                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        FILTER a._key == @connector_id
                         RETURN a
                 )
 
@@ -4427,7 +4347,7 @@ class BaseArangoService:
             db = transaction if transaction else self.db
             cursor = db.aql.execute(query, bind_vars={
                 "email": email,
-                "app_name": app_name.value,
+                "connector_id": connector_id,
                 "@apps": CollectionNames.APPS.value,
                 "@users": CollectionNames.USERS.value,
                 "@user_app_relation": CollectionNames.USER_APP_RELATION.value
@@ -4435,13 +4355,14 @@ class BaseArangoService:
 
             result = next(cursor, None)
             if result:
-                self.logger.info("✅ Successfully retrieved user for email %s and app %s", email, app_name)
+                self.logger.info("✅ Successfully retrieved user for email %s and app %s", email, connector_id)
+                result["connectorId"] = connector_id
                 return AppUser.from_arango_user(result)
             else:
-                self.logger.warning("⚠️ No user found for email %s and app %s", email, app_name)
+                self.logger.warning("⚠️ No user found for email %s and app %s", email, connector_id)
                 return None
         except Exception as e:
-            self.logger.error("❌ Failed to retrieve user for email %s and app %s: %s", email, app_name, str(e))
+            self.logger.error("❌ Failed to retrieve user for email %s and app %s: %s", email, connector_id, str(e))
             return None
 
     async def get_user_by_source_id(
@@ -4536,26 +4457,26 @@ class BaseArangoService:
             self.logger.error("❌ Failed to fetch users: %s", str(e))
             return []
 
-    async def get_app_users(self, org_id, app_name: Connectors) -> List[Dict]:
+    async def get_app_users(self, org_id, connector_id: str) -> List[Dict]:
         """
         Fetch all users from the database who belong to the organization
         and are connected to the specified app via userAppRelation edge.
 
         Args:
             org_id (str): Organization ID
-            app_name (Connectors): App connector name
+            connector_id (str): App connector ID
 
         Returns:
             List[Dict]: List of user documents with their details and sourceUserId
         """
         try:
-            self.logger.info(f"🚀 Fetching users connected to {app_name.value} app")
+            self.logger.info(f"🚀 Fetching users connected to {connector_id} app")
 
             query = """
                 // First find the app
                 LET app = FIRST(
                     FOR a IN @@apps
-                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        FILTER a._key == @connector_id
                         RETURN a
                 )
 
@@ -4582,7 +4503,7 @@ class BaseArangoService:
 
             cursor = self.db.aql.execute(query, bind_vars={
                 "org_id": org_id,
-                "app_name": app_name.value,
+                "connector_id": connector_id,
                 "@apps": CollectionNames.APPS.value,
                 "@user_app_relation": CollectionNames.USER_APP_RELATION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value
@@ -4590,16 +4511,16 @@ class BaseArangoService:
 
             user_data_list  = list(cursor)
             users = [AppUser.from_arango_user(user_data) for user_data in user_data_list]
-            self.logger.info(f"✅ Successfully fetched {len(users)} users for {app_name.value}")
+            self.logger.info(f"✅ Successfully fetched {len(users)} users for {connector_id}")
             return users
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch users for {app_name.value}: {str(e)}")
+            self.logger.error(f"❌ Failed to fetch users for {connector_id}: {str(e)}")
             return []
 
     async def get_user_groups(
         self,
-        app_name: Connectors,
+        connector_id: str,
         org_id: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> List[AppUserGroup]:
@@ -4607,7 +4528,7 @@ class BaseArangoService:
         Get all user groups for a specific connector and organization.
 
         Args:
-            app_name: Connector name
+            connector_id: Connector ID
             org_id: Organization ID
             transaction: Optional transaction database context
 
@@ -4616,12 +4537,12 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving user groups for connector %s and org %s", app_name.value, org_id
+                "🚀 Retrieving user groups for connector %s and org %s", connector_id, org_id
             )
 
             query = f"""
             FOR group IN {CollectionNames.GROUPS.value}
-                FILTER group.connectorName == @connector_name
+                FILTER group.connectorId == @connector_id
                     AND group.orgId == @org_id
                 RETURN group
             """
@@ -4631,7 +4552,7 @@ class BaseArangoService:
             cursor = db.aql.execute(
                 query,
                 bind_vars={
-                    "connector_name": app_name.value,
+                    "connector_id": connector_id,
                     "org_id": org_id
                 }
             )
@@ -4639,13 +4560,13 @@ class BaseArangoService:
             groups = [AppUserGroup.from_arango_base_user_group(group_data) for group_data in cursor]
 
             self.logger.info(
-                "✅ Successfully retrieved %d user groups for connector %s", len(groups), app_name.value
+                "✅ Successfully retrieved %d user groups for connector %s", len(groups), connector_id
             )
             return groups
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve user groups for connector %s: %s", app_name.value, str(e)
+                "❌ Failed to retrieve user groups for connector %s: %s", connector_id, str(e)
             )
             return []
 
