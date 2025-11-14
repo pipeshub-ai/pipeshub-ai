@@ -57,21 +57,21 @@ class TokenRefreshService:
             active_connectors = [conn for conn in connectors if conn.get('isActive', False)]
 
             for connector in active_connectors:
-                connector_name = connector['name']
                 auth_type = connector.get('authType', '')
+                connector_id = connector.get('_key')
+                connector_type = connector.get('type', '')
                 # Only refresh OAuth tokens
                 if auth_type in ['OAUTH', 'OAUTH_ADMIN_CONSENT']:
-                    await self._refresh_connector_token(connector_name)
+                    await self._refresh_connector_token(connector_id, connector_type)
 
         except Exception as e:
             self.logger.error(f"❌ Error refreshing tokens: {e}")
 
-    async def _refresh_connector_token(self, connector_name: str) -> None:
+    async def _refresh_connector_token(self, connector_id: str, connector_type: str) -> None:
         """Refresh token for a specific connector"""
 
         try:
-            filtered_app_name = connector_name.replace(" ", "").lower()
-            config_key = f"/services/connectors/{filtered_app_name}/config"
+            config_key = f"/services/connectors/{connector_id}/config"
             config = await self.key_value_store.get_key(config_key)
 
             if not config or not config.get('credentials'):
@@ -85,7 +85,7 @@ class TokenRefreshService:
 
 
             # Create OAuth config
-            oauth_config = get_oauth_config(connector_name, auth_config)
+            oauth_config = get_oauth_config(connector_type, auth_config)
 
             # Create OAuth provider
             from app.connectors.core.base.token_service.oauth_service import (
@@ -94,7 +94,7 @@ class TokenRefreshService:
             oauth_provider = OAuthProvider(
                 config=oauth_config,
                 key_value_store=self.key_value_store,
-                credentials_path=f"/services/connectors/{filtered_app_name}/config"
+                credentials_path=f"/services/connectors/{connector_id}/config"
             )
 
             # Create token from stored credentials
@@ -103,7 +103,7 @@ class TokenRefreshService:
             # If token not expired, ensure a scheduled refresh is set and return
             if not token.is_expired:
                 try:
-                    await self.schedule_token_refresh(connector_name, token)
+                    await self.schedule_token_refresh(connector_id, connector_type, token)
                 finally:
                     await oauth_provider.close()
                 return
@@ -118,13 +118,13 @@ class TokenRefreshService:
             config['credentials'] = new_token.to_dict()
             await self.key_value_store.create_key(config_key, config)
 
-            self.logger.info(f"Refreshed token for connector {connector_name}")
+            self.logger.info(f"Refreshed token for connector {connector_id}")
 
             # Schedule next refresh for the new token
-            await self.schedule_token_refresh(connector_name, new_token)
+            await self.schedule_token_refresh(connector_id, connector_type, new_token)
 
         except Exception as e:
-            self.logger.error(f"❌ Error refreshing token for {connector_name}: {e}")
+            self.logger.error(f"❌ Error refreshing token for {connector_id}: {e}")
 
     async def _periodic_refresh_check(self) -> None:
         """Periodically check and refresh tokens"""
@@ -137,14 +137,14 @@ class TokenRefreshService:
             except Exception as e:
                 self.logger.error(f"❌ Error in periodic refresh check: {e}")
 
-    async def refresh_connector_token(self, connector_name: str) -> None:
+    async def refresh_connector_token(self, connector_id: str, connector_type: str) -> None:
         """Manually refresh token for a specific connector"""
-        await self._refresh_connector_token(connector_name)
+        await self._refresh_connector_token(connector_id, connector_type)
 
-    async def schedule_token_refresh(self, connector_name: str, token: OAuthToken) -> None:
+    async def schedule_token_refresh(self,connector_id: str, connector_type: str, token: OAuthToken) -> None:
         """Schedule token refresh for a specific connector"""
 
-        self.logger.info("Scheduling token refresh for connector %s", connector_name)
+        self.logger.info("Scheduling token refresh for connector %s", connector_id)
         if not token.expires_in:
             return
 
@@ -155,17 +155,15 @@ class TokenRefreshService:
 
         if delay > 0:
             # Cancel existing task if any
-            if connector_name in self._refresh_tasks:
-                self._refresh_tasks[connector_name].cancel()
+            if connector_id in self._refresh_tasks:
+                self._refresh_tasks[connector_id].cancel()
 
             # Schedule new refresh
-            self._refresh_tasks[connector_name] = asyncio.create_task(
-                self._delayed_refresh(connector_name, delay)
+            self._refresh_tasks[connector_id] = asyncio.create_task(
+                self._delayed_refresh(connector_id, connector_type, delay)
             )
 
-        self.logger.info("Scheduled token refresh for connector %s", connector_name)
-
-    async def _delayed_refresh(self, connector_name: str, delay: float) -> None:
+    async def _delayed_refresh(self,connector_id: str, connector_type: str, delay: float) -> None:
         """Delayed token refresh"""
         await asyncio.sleep(delay)
-        await self._refresh_connector_token(connector_name)
+        await self._refresh_connector_token(connector_id, connector_type)

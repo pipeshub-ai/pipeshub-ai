@@ -21,7 +21,8 @@ class ClientFactory(ABC):
         self,
         config_service: object,
         logger: Optional[object],
-        state: Optional[ChatState] = None
+        state: Optional[ChatState] = None,
+        connector_instance_id: Optional[str] = None
     ) -> object:
         """Create and return a client instance asynchronously.
         Args:
@@ -36,7 +37,8 @@ class ClientFactory(ABC):
         self,
         config_service: object,
         logger: Optional[object],
-        state: Optional[ChatState] = None
+        state: Optional[ChatState] = None,
+        connector_instance_id: Optional[str] = None
     ) -> object:
         """Synchronous wrapper for client creation.
 
@@ -53,17 +55,18 @@ class ClientFactory(ABC):
             asyncio.get_running_loop()
 
             # We're in an async context, use thread pool to run async code
-            return self._run_in_thread_pool(config_service, logger, state)
+            return self._run_in_thread_pool(config_service, logger, state, connector_instance_id)
 
         except RuntimeError:
             # No running loop, we can use asyncio.run directly
-            return asyncio.run(self.create_client(config_service, logger, state))
+            return asyncio.run(self.create_client(config_service, logger, state, connector_instance_id))
 
     def _run_in_thread_pool(
         self,
         config_service: object,
         logger: Optional[object],
-        state: Optional[ChatState] = None
+        state: Optional[ChatState] = None,
+        connector_instance_id: Optional[str] = None
     ) -> object:
         """Run async client creation in a thread pool.
 
@@ -77,6 +80,6 @@ class ClientFactory(ABC):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(
                 asyncio.run,
-                self.create_client(config_service, logger, state)
+                self.create_client(config_service, logger, state, connector_instance_id)
             )
             return future.result()

@@ -667,62 +667,64 @@ class ServiceNowClient(IClient):
         cls,
         logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "ServiceNowClient":
         """Build ServiceNowClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+            connector_instance_id: Optional connector instance ID to get specific instance config
         Returns:
             ServiceNowClient instance
         """
         try:
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
             if not config:
-                raise ValueError("Failed to get ServiceNow connector configuration")
+                raise ValueError(f"Failed to get ServiceNow connector configuration for instance {connector_instance_id}")
             auth_type = config.get("authType", "USERNAME_PASSWORD")  # USERNAME_PASSWORD or TOKEN or API_KEY or OAUTH_CLIENT_CREDENTIALS or OAUTH_AUTHORIZATION_CODE or OAUTH_ROPC
-            auth_config = config.get("auth", {})
+            auth_config = config.get("auth", {}) or {}
             if auth_type == "USERNAME_PASSWORD":
                 client = ServiceNowRESTClientViaUsernamePassword(
-                    instance_url=auth_config.get("instanceUrl"),
-                    username=auth_config.get("username"),
-                    password=auth_config.get("password")
+                    instance_url=auth_config.get("instanceUrl", ""),
+                    username=auth_config.get("username", ""),
+                    password=auth_config.get("password", "")
                 )
             elif auth_type == "TOKEN":
                 client = ServiceNowRESTClientViaToken(
-                    instance_url=auth_config.get("instanceUrl"),
-                    token=auth_config.get("token")
+                    instance_url=auth_config.get("instanceUrl", ""),
+                    token=auth_config.get("token", "")
                 )
             elif auth_type == "API_KEY":
                 client = ServiceNowRESTClientViaAPIKey(
-                    instance_url=auth_config.get("instanceUrl"),
-                    api_key=auth_config.get("apiKey"),
+                    instance_url=auth_config.get("instanceUrl", ""),
+                    api_key=auth_config.get("apiKey", ""),
                     header_name=auth_config.get("headerName", "x-sn-apikey")
                 )
             elif auth_type == "OAUTH_CLIENT_CREDENTIALS":
                 credentials_config = auth_config.get("credentials", {})
                 client = ServiceNowRESTClientViaOAuthClientCredentials(
-                    instance_url=auth_config.get("instanceUrl"),
-                    client_id=auth_config.get("clientId"),
-                    client_secret=auth_config.get("clientSecret"),
+                    instance_url=auth_config.get("instanceUrl", ""),
+                    client_id=auth_config.get("clientId", ""),
+                    client_secret=auth_config.get("clientSecret", ""),
                     access_token=credentials_config.get("access_token")
                 )
             elif auth_type == "OAUTH_AUTHORIZATION_CODE":
                 credentials_config = auth_config.get("credentials", {})
                 client = ServiceNowRESTClientViaOAuthAuthorizationCode(
-                    instance_url=auth_config.get("instanceUrl"),
-                    client_id=auth_config.get("clientId"),
-                    client_secret=auth_config.get("clientSecret"),
-                    redirect_uri=auth_config.get("redirectUri"),
+                    instance_url=auth_config.get("instanceUrl", ""),
+                    client_id=auth_config.get("clientId", ""),
+                    client_secret=auth_config.get("clientSecret", ""),
+                    redirect_uri=auth_config.get("redirectUri", ""),
                     access_token=credentials_config.get("access_token")
                 )
             elif auth_type == "OAUTH_ROPC":
                 credentials_config = auth_config.get("credentials", {})
                 client = ServiceNowRESTClientViaOAuthROPC(
-                    instance_url=auth_config.get("instanceUrl"),
-                    client_id=auth_config.get("clientId"),
-                    client_secret=auth_config.get("clientSecret"),
-                    username=auth_config.get("username"),
-                    password=auth_config.get("password"),
+                    instance_url=auth_config.get("instanceUrl", ""),
+                    client_id=auth_config.get("clientId", ""),
+                    client_secret=auth_config.get("clientSecret", ""),
+                    username=auth_config.get("username", ""),
+                    password=auth_config.get("password", ""),
                     access_token=credentials_config.get("access_token")
                 )
             else:
@@ -733,11 +735,13 @@ class ServiceNowClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for ServiceNow."""
         try:
-            config = await config_service.get_config("/services/connectors/servicenow/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get ServiceNow connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get ServiceNow connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get ServiceNow connector configuration for instance {connector_instance_id}")

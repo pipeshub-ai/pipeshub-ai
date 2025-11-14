@@ -18,6 +18,7 @@ class GmailDriveInterface:
         config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         google_token_handler,
+        connector_id: str = None,
         drive_service=None,
         credentials=None,
         admin_service=None,
@@ -29,6 +30,7 @@ class GmailDriveInterface:
         self.google_token_handler = google_token_handler
         self.credentials = credentials
         self.admin_service = admin_service
+        self.connector_id = connector_id
 
     @exponential_backoff()
     async def get_drive_file(
@@ -58,13 +60,13 @@ class GmailDriveInterface:
                 # Create admin service if not provided
 
                 self.drive_service = self.admin_service
-                if not await self.drive_service.connect_admin(org_id):
+                if not await self.drive_service.connect_admin(org_id, self.connector_id):
                     self.logger.error("❌ Failed to connect to Drive Admin service")
                     return None
 
                 # Get user-specific service
                 user_service = await self.drive_service.create_drive_user_service(
-                    user_email
+                    user_email, self.connector_id
                 )
                 if not user_service:
                     self.logger.error(
@@ -86,11 +88,12 @@ class GmailDriveInterface:
                         config_service=self.config_service,
                         rate_limiter=self.rate_limiter,
                         google_token_handler=self.google_token_handler,
+                        connector_id=self.connector_id,
                         credentials=self.credentials,
                     )
 
                     if not await self.drive_service.connect_individual_user(
-                        org_id, user_id
+                        org_id, user_id, self.connector_id
                     ):
                         self.logger.error("❌ Failed to connect to Drive User service")
                         return None

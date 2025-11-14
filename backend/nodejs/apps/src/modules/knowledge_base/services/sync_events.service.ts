@@ -7,12 +7,13 @@ import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
 export interface Event {
   eventType: string;
   timestamp: number;
-  payload: ReindexAllRecordEvent;
+  payload: ConnectorSyncEvent;
 }
 
-export interface ReindexAllRecordEvent {
+export interface ConnectorSyncEvent {
   orgId: string;
   connector: string;
+  connectorId: string;
   origin: string;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;
@@ -22,6 +23,7 @@ export interface ReindexAllRecordEvent {
 export interface BaseSyncEvent {
   orgId: string;
   connector: string;
+  connectorId: string;
   origin: string;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;

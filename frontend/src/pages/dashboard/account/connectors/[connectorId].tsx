@@ -15,12 +15,12 @@ const metadata = { title: `Connector Management` };
 
 // Generic connector management page
 export default function Page() {
-  const { connectorName } = useParams<{ connectorName: string }>();
+  const { connectorId } = useParams<{ connectorId: string }>();
     
   return (
     <>
       <Helmet>
-        <title> {metadata.title} - {connectorName}</title>
+        <title> {metadata.title} - {connectorId}</title>
       </Helmet>
       <Box sx={{ display: 'flex', flexGrow: 1, overflow: 'hidden', zIndex: 0 }}>
         <Sidebar />

@@ -30,6 +30,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.sources.bookstack.common.apps import BookStackApp
@@ -70,6 +71,7 @@ class RecordUpdate:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync content from your BookStack instance")\
     .with_categories(["Knowledge Management"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/bookstack.svg")\
         .add_documentation_link(DocumentationLink(

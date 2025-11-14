@@ -230,6 +230,7 @@ class ProgressStatus(Enum):
     FAILED = "FAILED"
     FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
     AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
+    ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
 
 class RecordTypes(Enum):
     FILE = "FILE"
@@ -263,3 +264,8 @@ class AccountType(Enum):
     ENTERPRISE = "enterprise"
     BUSINESS = "business"
     ADMIN = "admin"
+
+class ConnectorScopes(Enum):
+    PERSONAL = "personal"
+    TEAM = "team"
+
