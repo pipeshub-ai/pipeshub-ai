@@ -1181,13 +1181,13 @@ async def call_aiter_llm_stream(
         if state.answer_buf:
             # Process words from current emit position
             words_to_process = list(word_iter(state.answer_buf[state.emit_upto:]))
-            
+
             if words_to_process:
                 # Process words until we reach the threshold
                 for match in words_to_process:
                     # Increment word counter
                     state.words_in_chunk += 1
-                    
+
                     # Check if we've reached the threshold
                     if state.words_in_chunk >= target_words_per_chunk:
                         char_end = state.emit_upto + match.end()
@@ -1256,4 +1256,3 @@ async def call_aiter_llm_stream(
                 "confidence": None,
             },
         }
-
