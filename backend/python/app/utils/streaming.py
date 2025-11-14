@@ -1149,7 +1149,7 @@ async def call_aiter_llm_stream(
     llm,
     messages,
     final_results,
-    records=[],
+    records=None,
     target_words_per_chunk=1,
     parts=None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
