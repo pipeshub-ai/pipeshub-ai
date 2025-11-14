@@ -30,7 +30,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     DocumentationLink,
 )
-from app.connectors.sources.zammad.apps import ZammadApp
+from app.connectors.sources.zammad.common.apps import ZammadApp
 from app.models.entities import (
     AppUser,
     AppUserGroup,
