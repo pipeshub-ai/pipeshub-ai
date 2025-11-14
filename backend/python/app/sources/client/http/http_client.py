@@ -45,15 +45,15 @@ class HTTPClient(IClient):
         """
         url = f"{request.url.format(**request.path_params)}"
         client = await self._ensure_client()
-
         # Merge client headers with request headers (request headers take precedence)
         merged_headers = {**self.headers, **request.headers}
         request_kwargs = {
-            "params": request.query_params,
             "headers": merged_headers,
             **kwargs
         }
-
+        # Only add params if there are any (don't override URL-embedded params with empty dict)
+        if request.query_params:
+            request_kwargs["params"] = request.query_params
         if isinstance(request.body, dict):
             # Check if Content-Type indicates form data
             content_type = request.headers.get("Content-Type", "").lower()
