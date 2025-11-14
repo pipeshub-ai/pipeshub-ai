@@ -109,13 +109,14 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
     (e.g., [{"type": "text", "text": "..."}, {"type": "image_url", ...}]).
     We extract and concatenate only textual parts for streaming.
     """
+    if parts is None:
+        parts = []
     try:
         if hasattr(llm, "astream"):
             async for part in llm.astream(messages):
                 if not part:
                     continue
-                if parts is not None:
-                    parts.append(part)
+                parts.append(part)
                 content = getattr(part, "content", None)
                 text = _stringify_content(content)
                 if text:
@@ -144,7 +145,7 @@ async def execute_tool_calls(
     retrieval_service: RetrievalService,
     user_id: str,
     org_id: str,
-    target_words_per_chunk: int = 2,
+    target_words_per_chunk: int = 1,
     is_multimodal_llm: Optional[bool] = False,
     max_hops: int = 1,
 
@@ -483,7 +484,7 @@ async def stream_llm_response(
     messages,
     final_results,
     logger,
-    target_words_per_chunk: int = 2,
+    target_words_per_chunk: int = 1,
     mode: Optional[str] = "json",
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
@@ -808,7 +809,7 @@ async def handle_json_mode(
     final_results: List[Dict[str, Any]],
     records: List[Dict[str, Any]],
     logger: logging.Logger,
-    target_words_per_chunk: int = 2,
+    target_words_per_chunk: int = 1,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Handle JSON mode streaming.
@@ -891,7 +892,7 @@ async def handle_simple_mode(
     final_results: List[Dict[str, Any]],
     records: List[Dict[str, Any]],
     logger: logging.Logger,
-    target_words_per_chunk: int = 2,
+    target_words_per_chunk: int = 1,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     # Simple mode: stream content directly without JSON parsing
         logger.debug("stream_llm_response_with_tools: simple mode - streaming raw content")
@@ -1017,7 +1018,7 @@ async def stream_llm_response_with_tools(
     is_multimodal_llm,
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
-    target_words_per_chunk: int = 2,
+    target_words_per_chunk: int = 1,
     mode: Optional[str] = "json",
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
@@ -1178,38 +1179,54 @@ async def call_aiter_llm_stream(
 
         # Stream answer in word-based chunks
         if state.answer_buf:
-            for match in word_iter(state.answer_buf[state.emit_upto:]):
-                state.words_in_chunk += 1
-                if state.words_in_chunk == target_words_per_chunk:
-                    char_end = state.emit_upto + match.end()
+            # Process words from current emit position
+            words_to_process = list(word_iter(state.answer_buf[state.emit_upto:]))
+            
+            if words_to_process:
+                # Process words until we reach the threshold
+                for match in words_to_process:
+                    # Increment word counter
+                    state.words_in_chunk += 1
+                    
+                    # Check if we've reached the threshold
+                    if state.words_in_chunk >= target_words_per_chunk:
+                        char_end = state.emit_upto + match.end()
 
-                    # Include any citation blocks that immediately follow
-                    if m := cite_block_re.match(state.answer_buf[char_end:]):
-                        char_end += m.end()
+                        # Include any citation blocks that immediately follow
+                        if m := cite_block_re.match(state.answer_buf[char_end:]):
+                            char_end += m.end()
 
-                    state.emit_upto = char_end
-                    state.words_in_chunk = 0
+                        current_raw = state.answer_buf[:char_end]
+                        # Skip if we have incomplete citations
+                        incomplete_match = incomplete_cite_re.search(current_raw)
+                        if incomplete_match:
+                            # Don't update emit_upto or reset counter if we skip due to incomplete citations
+                            # This allows the next token to complete the citation
+                            # Reset words_in_chunk to threshold - 1 so we'll check again on next token
+                            state.words_in_chunk = target_words_per_chunk - 1
+                            break  # Break out of word iteration, wait for more tokens
 
-                    current_raw = state.answer_buf[:state.emit_upto]
-                    # Skip if we have incomplete citations
-                    if incomplete_cite_re.search(current_raw):
-                        continue
+                        # Only update emit_upto and reset counter if we're actually yielding
+                        state.emit_upto = char_end
+                        state.words_in_chunk = 0
 
-                    normalized, cites = normalize_citations_and_chunks(
-                        current_raw, final_results,records
-                    )
+                        normalized, cites = normalize_citations_and_chunks(
+                            current_raw, final_results,records
+                        )
 
-                    chunk_text = normalized[state.prev_norm_len:]
-                    state.prev_norm_len = len(normalized)
+                        chunk_text = normalized[state.prev_norm_len:]
+                        state.prev_norm_len = len(normalized)
 
-                    yield {
-                        "event": "answer_chunk",
-                        "data": {
-                            "chunk": chunk_text,
-                            "accumulated": normalized,
-                            "citations": cites,
-                        },
-                    }
+                        yield {
+                            "event": "answer_chunk",
+                            "data": {
+                                "chunk": chunk_text,
+                                "accumulated": normalized,
+                                "citations": cites,
+                            },
+                        }
+                        # Break after yielding to avoid re-processing the same words on next token
+                        break
 
     if not (state.answer_buf):
         return
