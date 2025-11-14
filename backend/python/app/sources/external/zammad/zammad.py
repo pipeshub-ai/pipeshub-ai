@@ -8472,7 +8472,7 @@ class ZammadDataSource:
             response = await self.http_client.execute(request)
 
             status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
-            
+
             if not status_ok:
                 logger.warning(f"Attachment download failed with status {response.status}: {url}")
                 return ZammadResponse(
@@ -8480,10 +8480,10 @@ class ZammadDataSource:
                     data=None,
                     message=f"download_attachment failed with status {response.status}"
                 )
-            
+
             # Get binary content
             data = response.bytes()
-            
+
             if not data or len(data) == 0:
                 logger.warning(f"Attachment {attachment_id} returned empty content")
                 return ZammadResponse(
@@ -8498,7 +8498,7 @@ class ZammadDataSource:
                 data=data,  # Binary content (raw bytes)
                 message="download_attachment succeeded"
             )
-            
+
         except Exception as e:
             logger.error(f"Exception downloading attachment {attachment_id}: {e}")
             return ZammadResponse(

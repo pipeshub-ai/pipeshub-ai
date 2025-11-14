@@ -36,8 +36,6 @@ from app.connectors.sources.servicenow.servicenow.connector import (
 )
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
-from app.services.featureflag.config.config import CONFIG
-from app.services.featureflag.featureflag import FeatureFlagService
 
 
 class ConnectorFactory:

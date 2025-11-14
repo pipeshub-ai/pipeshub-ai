@@ -3,10 +3,10 @@ import base64
 import re
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
-from fastapi.responses import StreamingResponse  
+from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -50,6 +50,14 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 THRESHOLD_PAGINATION_LIMIT: int = 100
 HTTP_ERROR_STATUS_CODE: int = 400
+
+# Zammad role IDs
+ZAMMAD_ROLE_ADMIN: int = 1
+ZAMMAD_ROLE_AGENT: int = 2
+ZAMMAD_ROLE_CUSTOMER: int = 3
+
+# File size conversion constants
+BYTES_PER_KB: int = 1024
 
 @ConnectorBuilder("Zammad")\
     .in_group("Support & Helpdesk")\
@@ -113,7 +121,7 @@ class ZammadConnector(BaseConnector):
         self.buffer_minutes: int = 5
 
     def _init_sync_points(self) -> None:
-        
+
         org_id = self.data_entities_processor.org_id
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -542,7 +550,7 @@ class ZammadConnector(BaseConnector):
         """
         Get ALL role keys for a user (users can have multiple roles).
         """
-        
+
         role_ids: List[int] = user.get("role_ids", [])
 
         if not role_ids:
@@ -560,46 +568,46 @@ class ZammadConnector(BaseConnector):
                     role_keys.append(role_key)
                 else:
                     self.logger.warning(f"Role ID {role_id} not found or inactive for user {user.get('id')}")
-            
+
             if role_keys:
                 return role_keys
 
         # Fallback to hardcoded mapping if roles_data is not available
         self.logger.warning(f"Using fallback role mapping for user {user.get('id')} with role_ids: {role_ids}")
         for role_id in role_ids:
-            if role_id == 1:
+            if role_id == ZAMMAD_ROLE_ADMIN:
                 role_keys.append("zammad_admin")
-            elif role_id == 2:
+            elif role_id == ZAMMAD_ROLE_AGENT:
                 role_keys.append("zammad_agent")
-            elif role_id == 3:
+            elif role_id == ZAMMAD_ROLE_CUSTOMER:
                 role_keys.append("zammad_customer")
             else:
                 role_keys.append(f"zammad_role_{role_id}")
-        
+
         return role_keys if role_keys else ["zammad_customer"]
 
-    def _parse_datetime_to_timestamp(self, datetime_value: Any) -> int:
+    def _parse_datetime_to_timestamp(self, datetime_value: Optional[Union[str, datetime, int, float]]) -> int:
         """
         Parse datetime value (string or datetime object) to epoch timestamp in milliseconds.
         """
         if not datetime_value:
             return get_epoch_timestamp_in_ms()
-            
+
         try:
             if isinstance(datetime_value, datetime):
                 return int(datetime_value.timestamp() * 1000)
-            
+
             if isinstance(datetime_value, str):
                 dt = self._parse_datetime_string(datetime_value)
                 if dt:
                     return int(dt.timestamp() * 1000)
-                
+
             if isinstance(datetime_value, (int, float)):
                 return int(datetime_value)
-                
+
         except Exception as e:
             self.logger.warning(f"Failed to parse datetime '{datetime_value}': {e}")
-            
+
         return get_epoch_timestamp_in_ms()
 
     def _parse_datetime_string(self, datetime_str: Optional[str]) -> Optional[datetime]:
@@ -612,7 +620,7 @@ class ZammadConnector(BaseConnector):
 
         if isinstance(datetime_str, datetime):
             return datetime_str
-            
+
         try:
             if ' ' in datetime_str and 'T' not in datetime_str:
                 dt_str = datetime_str.replace(' ', 'T')
@@ -742,9 +750,6 @@ class ZammadConnector(BaseConnector):
         internal_at = answer.get("internal_at")
         archived_at = answer.get("archived_at")
 
-        is_archived = bool(archived_at)
-        is_public = bool(published_at)
-        is_internal = bool(internal_at) and not is_public
         is_draft = not published_at and not internal_at and not archived_at
 
         category_id = str(answer.get("category_id"))
@@ -781,7 +786,7 @@ class ZammadConnector(BaseConnector):
             records_with_permissions: List[Tuple[TicketRecord, List[Permission]]] = []
             attachment_records_with_permissions: List[Tuple[FileRecord, List[Permission]]] = []
             all_attachment_relation_edges: List[Dict[str, Any]] = []
-            
+
 
             for ticket in self.tickets_data:
                 external_ticket_id: str = str(ticket.get("id"))
@@ -821,7 +826,7 @@ class ZammadConnector(BaseConnector):
                     external_record_id=external_ticket_id,
                     connector_name=Connectors.ZAMMAD,
                     origin=OriginTypes.CONNECTOR,
-                    mime_type=MimeTypes.HTML.value, 
+                    mime_type=MimeTypes.HTML.value,
                     weburl=f"{self.base_url}/#ticket/zoom/{external_ticket_id}" if self.base_url else None,
                     created_at=created_at,
                     updated_at=updated_at,
@@ -892,7 +897,7 @@ class ZammadConnector(BaseConnector):
                 (record, perms) for record, perms in records_with_permissions
                 if record.version == 0  # version 0 means it's a new record
             ]
-            
+
             updated_records = [
                 record for record, perms in records_with_permissions
                 if record.version > 0  # version > 0 means it's an updated record
@@ -901,13 +906,13 @@ class ZammadConnector(BaseConnector):
             if new_records_with_permissions:
                 await self.data_entities_processor.on_new_records(new_records_with_permissions)
                 self.logger.info(f"Dispatched {len(new_records_with_permissions)} NEW ticket records")
-            
+
             if updated_records:
                 async with self.data_store_provider.transaction() as tx_store_update:
                     ticket_records_to_update = [record for record in updated_records if isinstance(record, TicketRecord)]
                     if ticket_records_to_update:
                         await tx_store_update.batch_upsert_records(ticket_records_to_update)
-                
+
                 for record in updated_records:
                     await self.data_entities_processor.on_record_content_update(record)
                 self.logger.info(f"Dispatched {len(updated_records)} UPDATED ticket records")
@@ -1069,13 +1074,13 @@ class ZammadConnector(BaseConnector):
 
             # Fetch entities with incremental filtering
             await self._fetch_entities_incremental()
-            
+
             # Build nodes and edges with incremental data
             await self._build_nodes_and_edges_incremental()
-            
+
             # Update sync points after successful sync
             await self._update_sync_points()
-            
+
             self.logger.info("Zammad incremental sync completed successfully")
 
         except Exception as e:
@@ -1184,7 +1189,7 @@ class ZammadConnector(BaseConnector):
                         )
                     except Exception as sync_error:
                         self.logger.error(f"Failed to update users sync point: {sync_error}", exc_info=True)
-            
+
             if self.tickets_data and len(self.tickets_data) > 0:
                 latest_ticket = max(self.tickets_data, key=lambda t: t.get("updated_at") or t.get("created_at") or datetime.min.replace(tzinfo=timezone.utc))
                 latest_timestamp = latest_ticket.get("updated_at") if latest_ticket.get("updated_at") else latest_ticket.get("created_at")
@@ -1278,7 +1283,7 @@ class ZammadConnector(BaseConnector):
                         )
                     except Exception as sync_error:
                         self.logger.error(f"Failed to create users sync point: {sync_error}", exc_info=True)
-            
+
             if self.tickets_data and len(self.tickets_data) > 0:
                 latest_ticket = max(self.tickets_data, key=lambda t: t.get("updated_at") or t.get("created_at") or datetime.min.replace(tzinfo=timezone.utc))
                 latest_timestamp = latest_ticket.get("updated_at") if latest_ticket.get("updated_at") else latest_ticket.get("created_at")
@@ -1487,13 +1492,13 @@ class ZammadConnector(BaseConnector):
         Fetch users modified after last_sync_time.
         """
         try:
-            
+
             # Parse the last_sync_time for comparison
             last_sync_dt = datetime.fromisoformat(last_sync_time.replace('Z', '+00:00'))
-            
+
             # Fetch all users (Zammad doesn't support incremental user API)
             response: ZammadResponse = await self.zammad_datasource.list_users()
-            
+
             if not response.success or not response.data:
                 self.logger.info("No users found")
                 self.users_data = []
@@ -1501,7 +1506,7 @@ class ZammadConnector(BaseConnector):
 
             all_users: List[Dict[str, Any]] = []
             data_list: List[Dict[str, Any]] = response.data if isinstance(response.data, list) else []
-            
+
             for user_data in data_list:
                 try:
                     user: Dict[str, Any] = user_data
@@ -1517,7 +1522,7 @@ class ZammadConnector(BaseConnector):
                     user_updated_dt = self._parse_datetime_string(user.get("updated_at"))
                     if user_updated_dt and user_updated_dt > last_sync_dt:
                         filtered_users.append(user)
-            
+
             self.users_data = filtered_users
 
         except Exception as e:
@@ -1526,23 +1531,23 @@ class ZammadConnector(BaseConnector):
 
     async def _fetch_tickets_incremental(self, last_sync_time: str) -> None:
         """
-        Fetch tickets modified after last_sync_time. 
+        Fetch tickets modified after last_sync_time.
         """
         try:
-            
+
             # Parse the last_sync_time for comparison
             last_sync_dt = datetime.fromisoformat(last_sync_time.replace('Z', '+00:00'))
-            
+
             # Fetch all tickets (Zammad search doesn't filter properly by timestamp)
             response: ZammadResponse = await self.zammad_datasource.list_tickets(expand="true")
-            
+
             if not response.success or not response.data:
                 self.tickets_data = []
                 return
 
             all_tickets: List[Dict[str, Any]] = []
             data_list: List[Dict[str, Any]] = response.data if isinstance(response.data, list) else []
-            
+
             for ticket_data in data_list:
                 try:
                     ticket: Dict[str, Any] = ticket_data
@@ -1558,7 +1563,7 @@ class ZammadConnector(BaseConnector):
                     ticket_updated_dt = self._parse_datetime_string(ticket.get("updated_at"))
                     if ticket_updated_dt and ticket_updated_dt > last_sync_dt:
                         filtered_tickets.append(ticket)
-            
+
             self.tickets_data = filtered_tickets
 
         except Exception as e:
@@ -1572,14 +1577,13 @@ class ZammadConnector(BaseConnector):
             answers_last_sync: ISO format timestamp for answers (e.g., "2024-01-15T10:30:00Z")
         """
         try:
-            
+
             categories_sync_dt = datetime.fromisoformat(categories_last_sync.replace('Z', '+00:00')) if categories_last_sync else None
             answers_sync_dt = datetime.fromisoformat(answers_last_sync.replace('Z', '+00:00')) if answers_last_sync else None
-            
+
             await self._fetch_knowledge_base()
-            
+
             if categories_sync_dt and self.kb_categories_data:
-                original_count = len(self.kb_categories_data)
                 filtered_categories: List[Dict[str, Any]] = []
 
                 for category in self.kb_categories_data:
@@ -1597,17 +1601,14 @@ class ZammadConnector(BaseConnector):
                         self.logger.warning(f"Category {cat_id} has no updated_at timestamp")
 
                 self.kb_categories_data = filtered_categories
-            
+
             # Filter answers client-side if we have a sync point
             if answers_sync_dt and self.kb_answers_data:
-                original_count = len(self.kb_answers_data)
                 filtered_answers: List[Dict[str, Any]] = []
 
                 for answer in self.kb_answers_data:
                     ans_id = answer.get("id")
-                    ans_title = answer.get("title", "Untitled")
                     ans_updated = answer.get("updated_at")
-                    ans_category = answer.get("category_id")
 
                     if ans_updated:
                         ans_updated_dt = self._parse_datetime_string(ans_updated)
@@ -1680,7 +1681,7 @@ class ZammadConnector(BaseConnector):
                     "answer_ids": cat.get("answer_ids", []),
                     "child_ids": cat.get("child_ids", []),
                     "permission_ids": cat.get("permission_ids", []),
-                    "permissions_effective": cat.get("permissions_effective", []),  
+                    "permissions_effective": cat.get("permissions_effective", []),
                     "created_at": self._parse_datetime_string(cat.get("created_at")) if cat.get("created_at") else None,
                     "updated_at": self._parse_datetime_string(cat.get("updated_at")) if cat.get("updated_at") else None
                 }
@@ -1702,7 +1703,7 @@ class ZammadConnector(BaseConnector):
                     "id": ans.get("id"),
                     "category_id": ans.get("category_id"),
                     "title": title,
-                    "attachment_ids": attachment_ids, 
+                    "attachment_ids": attachment_ids,
                     "created_at": self._parse_datetime_string(ans.get("created_at")) if ans.get("created_at") else None,
                     "updated_at": self._parse_datetime_string(ans.get("updated_at")) if ans.get("updated_at") else None
                 }
@@ -1819,7 +1820,6 @@ class ZammadConnector(BaseConnector):
     ) -> List[Tuple[FileRecord, Record]]:
         """
         Create FileRecord and Record for each attachment of a KB answer.
-        
         """
         attachment_records: List[Tuple[FileRecord, Record]] = []
 
@@ -1877,14 +1877,14 @@ class ZammadConnector(BaseConnector):
                 )
 
                 record = Record(
-                    id=file_record_key, 
+                    id=file_record_key,
                     org_id=org_id,
                     record_name=filename,
                     record_type=RecordType.FILE,
-                    external_record_id=str(attachment_id), 
+                    external_record_id=str(attachment_id),
                     connector_name=Connectors.ZAMMAD,
                     origin=OriginTypes.CONNECTOR,
-                    version=0, 
+                    version=0,
                     created_at=created_at,
                     updated_at=updated_at,
                     source_created_at=created_at,
@@ -1945,11 +1945,11 @@ class ZammadConnector(BaseConnector):
                         org_id=org_id,
                         record_name=filename,
                         record_type=RecordType.FILE,
-                        external_record_id=str(attachment_id), 
-                        external_record_group_id="",  
+                        external_record_id=str(attachment_id),
+                        external_record_group_id="",
                         connector_name=Connectors.ZAMMAD,
                         origin=OriginTypes.CONNECTOR,
-                        version=0,  
+                        version=0,
                         created_at=created_at,
                         updated_at=updated_at,
                         source_created_at=created_at,
@@ -1967,10 +1967,10 @@ class ZammadConnector(BaseConnector):
                         org_id=org_id,
                         record_name=filename,
                         record_type=RecordType.FILE,
-                        external_record_id=str(attachment_id), 
+                        external_record_id=str(attachment_id),
                         connector_name=Connectors.ZAMMAD,
                         origin=OriginTypes.CONNECTOR,
-                        version=0,  
+                        version=0,
                         created_at=created_at,
                         updated_at=updated_at,
                         source_created_at=created_at,
@@ -2002,7 +2002,7 @@ class ZammadConnector(BaseConnector):
             records_with_permissions: List[Tuple[WebpageRecord, List[Permission]]] = []
 
             attachment_records_with_permissions: List[Tuple[FileRecord, List[Permission]]] = []
-            all_attachment_relation_edges: List[Dict[str, Any]] = []  
+            all_attachment_relation_edges: List[Dict[str, Any]] = []
 
             # Use a single transaction for all KB answer processing (like tickets)
             async with self.data_store_provider.transaction() as tx_store:
@@ -2091,7 +2091,7 @@ class ZammadConnector(BaseConnector):
 
                             attachment_relation_edge: Dict[str, Any] = {
                                 "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                                "_to": f"{CollectionNames.RECORDS.value}/{file_record.id}", 
+                                "_to": f"{CollectionNames.RECORDS.value}/{file_record.id}",
                                 "relationType": RecordRelations.ATTACHMENT.value,
                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                                 "updatedAtTimestamp": get_epoch_timestamp_in_ms()
@@ -2101,29 +2101,29 @@ class ZammadConnector(BaseConnector):
 
             new_records_with_permissions = [
                 (record, perms) for record, perms in records_with_permissions
-                if record.version == 0 
+                if record.version == 0
             ]
-            
+
             updated_records = [
                 record for record, perms in records_with_permissions
-                if record.version > 0  
+                if record.version > 0
             ]
 
             if new_records_with_permissions:
                 await self.data_entities_processor.on_new_records(new_records_with_permissions)
-            
+
             if updated_records:
                 async with self.data_store_provider.transaction() as tx_store_update:
                     webpage_records_to_update = [record for record in updated_records if isinstance(record, WebpageRecord)]
                     if webpage_records_to_update:
                         await tx_store_update.batch_upsert_records(webpage_records_to_update)
-                
+
                 for record in updated_records:
                     await self.data_entities_processor.on_record_content_update(record)
 
             if attachment_records_with_permissions:
                 await self.data_entities_processor.on_new_records(attachment_records_with_permissions)
-            
+
             async with self.data_store_provider.transaction() as tx_store_2:
                 if all_attachment_relation_edges:
                     await tx_store_2.batch_create_edges(
@@ -2170,36 +2170,31 @@ class ZammadConnector(BaseConnector):
             content_parts.append("<div class='ticket-articles'>")
             for article in articles:
                 content_parts.append("<div class='article'>")
-                
+
                 from_name = article.get('from', 'Unknown')
                 content_parts.append(f"<p><strong>From:</strong> {from_name}</p>")
-                
+
                 body = article.get('body', '')
                 if body:
                     content_parts.append(f"<div class='article-body'>{body}</div>")
-                
+
                 # Add attachments if present - embed actual content
                 attachments = article.get('attachments', [])
                 if attachments:
                     content_parts.append("<div class='article-attachments'>")
                     content_parts.append("<p><strong>Attachments:</strong></p>")
-                    
+
                     for attachment in attachments:
                         attachment_id = attachment.get('id', '')
                         filename = attachment.get('filename', 'Unknown file')
-                        size = attachment.get('size', 0)
                         mime_type = attachment.get('preferences', {}).get('Content-Type', 'application/octet-stream')
-                        
-                        # Format size in KB/MB
-                        size_kb = int(size) / 1024 if size else 0
-                        size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb/1024:.1f} MB"
-                        
-                        content_parts.append(f"<div class='attachment' style='margin: 10px 0; padding: 10px; border: 1px solid #ddd;'>")
-                        
+
+                        content_parts.append("<div class='attachment' style='margin: 10px 0; padding: 10px; border: 1px solid #ddd;'>")
+
                         try:
                             # Download attachment content
                             attachment_response: ZammadResponse = await self.zammad_datasource.download_attachment(int(attachment_id))
-                            
+
                             if attachment_response.success and attachment_response.data:
                                 # Handle different file types
                                 if mime_type.startswith('image/'):
@@ -2207,28 +2202,28 @@ class ZammadConnector(BaseConnector):
                                     import base64
                                     b64_data = base64.b64encode(attachment_response.data).decode('ascii')
                                     content_parts.append(f"<img src='data:{mime_type};base64,{b64_data}' style='max-width: 100%; height: auto;' alt='{filename}' />")
-                                    
+
                                 elif mime_type == 'application/pdf':
                                     # Embed PDF using iframe with base64
                                     import base64
                                     b64_data = base64.b64encode(attachment_response.data).decode('ascii')
                                     content_parts.append(f"<iframe src='data:application/pdf;base64,{b64_data}' style='width: 100%; height: 600px; border: 1px solid #ccc;' title='{filename}'></iframe>")
-                                    
+
                                 else:
                                     # For other files, provide download info
                                     content_parts.append(f"<p>File type: {mime_type}</p>")
                                     content_parts.append(f"<p><em>Download available through API (ID: {attachment_id})</em></p>")
                             else:
-                                content_parts.append(f"<p><em>Failed to load attachment content</em></p>")
-                                
+                                content_parts.append("<p><em>Failed to load attachment content</em></p>")
+
                         except Exception as e:
                             self.logger.error(f"Error embedding attachment {attachment_id}: {e}")
                             content_parts.append(f"<p><em>Error loading attachment: {str(e)}</em></p>")
-                        
+
                         content_parts.append("</div>")
-                    
+
                     content_parts.append("</div>")
-                
+
                 content_parts.append("</div>")
                 content_parts.append("<hr/>")
             content_parts.append("</div>")
@@ -2267,14 +2262,14 @@ class ZammadConnector(BaseConnector):
         return "\n".join(content_parts)
 
     def _absolutize_html_urls(self, html: str) -> str:
-        """Convert relative URLs in HTML to absolute using base_url"""        
+        """Convert relative URLs in HTML to absolute using base_url"""
         if not html or not self.base_url:
             return html
 
         def _prefix_root(match: re.Match) -> str:
             attr = match.group('attr')
             quote = match.group('q')
-            url = match.group('url') 
+            url = match.group('url')
             return f"{attr}={quote}{self.base_url}{url}{quote}"
 
         before = html
@@ -2308,7 +2303,7 @@ class ZammadConnector(BaseConnector):
             return html
 
         max_images_to_inline = 10
-        max_bytes_per_image = 2 * 1024 * 1024 
+        max_bytes_per_image = 2 * 1024 * 1024
         allowed_content_types = {
             "image/png",
             "image/jpeg",
