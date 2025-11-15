@@ -1,4 +1,5 @@
 import asyncio
+import os
 from logging import Logger
 from typing import Any, Dict, Tuple
 
@@ -19,8 +20,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 router = APIRouter()
 
 SPARSE_IDF = False
-
-import os
 
 def _load_test_image() -> str:
     """Loads the base64 encoded test image from a file."""
