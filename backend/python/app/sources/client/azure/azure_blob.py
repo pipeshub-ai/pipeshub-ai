@@ -447,11 +447,12 @@ class AzureBlobClient(IClient):
         cls,
         logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "AzureBlobClient": # type: ignore
         """Build AzureBlobClient using configuration service and graphdb service"""
         try:
             # Get Azure Blob Storage configuration from config service
-            config_data = await cls._get_connector_config(config_service, "azure")
+            config_data = await cls._get_connector_config(config_service, connector_instance_id)
 
             # Extract configuration parameters
             auth_type = config_data.get("authType", "CONNECTION_STRING")
@@ -498,11 +499,13 @@ class AzureBlobClient(IClient):
             raise AzureBlobConfigurationError(f"Failed to build Azure Blob Storage client: {str(e)}")
 
     @staticmethod
-    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> Dict[str, Any]:
+    async def _get_connector_config(config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Get connector configuration from config service"""
         try:
-            config_path = f"/services/connectors/{connector_name}/config"
+            config_path = f"/services/connectors/{connector_instance_id}/config"
             config_data = await config_service.get_config(config_path)
+            if not config_data:
+                raise ValueError(f"Failed to get Azure Blob Storage connector configuration for instance {connector_instance_id}")
             return config_data
         except Exception as e:
-            raise AzureBlobConfigurationError(f"Failed to get {connector_name} configuration: {str(e)}")
+            raise AzureBlobConfigurationError(f"Failed to get {connector_instance_id} configuration: {str(e)}")

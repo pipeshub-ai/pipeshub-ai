@@ -35,6 +35,7 @@ from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -93,6 +94,7 @@ ORGANIZATIONAL_ENTITIES = {
     .with_auth_type("OAUTH")\
     .with_description("Sync knowledge base articles, categories, and permissions from ServiceNow")\
     .with_categories(["Knowledge Management"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/servicenow.svg")
         .with_realtime_support(False)
@@ -100,7 +102,14 @@ ORGANIZATIONAL_ENTITIES = {
             DocumentationLink(
                 "ServiceNow OAuth Setup",
                 "https://docs.servicenow.com/bundle/latest/page/administer/security/concept/c_OAuthApplications.html",
-                "setup"
+                "Setup"
+            )
+        )
+        .add_documentation_link(
+            DocumentationLink(
+                "Pipeshub Documentation",
+                "https://docs.pipeshub.com/connectors/servicenow/servicenow",
+                "Pipeshub"
             )
         )
         .with_redirect_uri("connectors/oauth/callback/ServiceNow", True)

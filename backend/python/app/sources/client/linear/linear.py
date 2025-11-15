@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 from pydantic import BaseModel, Field  #type: ignore
 
@@ -112,6 +112,7 @@ class LinearClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "LinearClient":
         """Build LinearClient using configuration service
         Args:
@@ -122,7 +123,7 @@ class LinearClient(IClient):
         """
         try:
             # Get Linear configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
 
             if not config:
                 raise ValueError("Failed to get Linear connector configuration")
@@ -153,12 +154,14 @@ class LinearClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for Linear."""
         try:
-            config = await config_service.get_config("/services/connectors/linear/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get Linear connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get Linear connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get Linear connector configuration for instance {connector_instance_id}")
 

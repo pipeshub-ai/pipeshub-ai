@@ -32,7 +32,7 @@ import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { configPaths } from '../../configuration_manager/paths/paths';
 import { storageTypes } from '../../configuration_manager/constants/constants';
 import {
-  ReindexAllRecordEvent,
+  ConnectorSyncEvent,
   SyncEventProducer,
   Event as SyncEvent,
   BaseSyncEvent,
@@ -2738,23 +2738,23 @@ export class RecordRelationService {
     };
   }
 
-  async reindexAllRecords(reindexPayload: any): Promise<any> {
+  async reindexFailedRecords(reindexPayload: any): Promise<any> {
     try {
-      const reindexAllRecordEventPayload =
-        await this.createReindexAllRecordEventPayload(reindexPayload);
+      const reindexFailedRecordEventPayload =
+        await this.createReindexFailedRecordEventPayload(reindexPayload);
 
       const event: SyncEvent = {
-        eventType: 'reindexAllRecord',
+        eventType: 'reindexFailed',
         timestamp: Date.now(),
-        payload: reindexAllRecordEventPayload,
+        payload: reindexFailedRecordEventPayload,
       };
 
       await this.syncEventProducer.publishEvent(event);
-      logger.info(`Published reindex all record for app ${reindexPayload.app}`);
+      logger.info(`Published reindex failed record for app ${reindexPayload.app}`);
 
       return { success: true };
     } catch (eventError: any) {
-      logger.error('Failed to publish reindex record event', {
+      logger.error('Failed to publish reindex failed record event', {
         error: eventError,
       });
       // Don't throw the error to avoid affecting the main operation
@@ -2762,13 +2762,14 @@ export class RecordRelationService {
     }
   }
 
-  async createReindexAllRecordEventPayload(
+  async createReindexFailedRecordEventPayload(
     reindexPayload: any,
-  ): Promise<ReindexAllRecordEvent> {
+  ): Promise<ConnectorSyncEvent> {
     return {
       orgId: reindexPayload.orgId,
       origin: reindexPayload.origin,
       connector: reindexPayload.app,
+      connectorId: reindexPayload.connectorId,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),
@@ -2810,6 +2811,7 @@ export class RecordRelationService {
       orgId: resyncConnectorEventPayload.orgId,
       origin: resyncConnectorEventPayload.origin,
       connector: connectorName,
+      connectorId: resyncConnectorEventPayload.connectorId,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),

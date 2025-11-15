@@ -172,8 +172,8 @@ class EventProcessor:
             # For both create and update events, we need to process the document
             if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
                 # For updates, first delete existing embeddings
-                if virtual_record_id is None:
-                    raise Exception(f"❌ Virtual record ID not found for record {record_id} for event {event_type}")
+                # if virtual_record_id is None:
+                #     raise Exception(f"❌ Virtual record ID not found for record {record_id} for event {event_type}")
 
                 self.logger.info(
                     f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}"""

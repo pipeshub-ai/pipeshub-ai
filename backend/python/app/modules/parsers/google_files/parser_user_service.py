@@ -26,6 +26,7 @@ class ParserUserService:
         config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         google_token_handler,
+        connector_id: str,
         credentials=None,
     ) -> None:
         try:
@@ -34,6 +35,7 @@ class ParserUserService:
             self.rate_limiter = rate_limiter
             self.google_token_handler = google_token_handler
             self.google_limiter = self.rate_limiter.google_limiter
+            self.connector_id = connector_id
             self.credentials = credentials
 
             # Services for different Google Workspace apps
@@ -53,15 +55,17 @@ class ParserUserService:
             )
 
     @token_refresh
-    async def connect_individual_user(self, org_id: str, user_id: str, app_name: str) -> bool:
+    async def connect_individual_user(self, org_id: str, user_id: str, connector_id: str = None) -> bool:
         """Connect using Oauth2 credentials for individual user"""
         try:
             self.org_id = org_id
+            if connector_id:
+                self.connector_id = connector_id
             self.user_id = user_id
 
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
-                    org_id, user_id, app_name=app_name
+                    self.connector_id
                 )
                 if not creds_data:
                     raise GoogleAuthError(
@@ -145,7 +149,7 @@ class ParserUserService:
                 details={"org_id": org_id, "user_id": user_id, "error": str(e)},
             )
 
-    async def _check_and_refresh_token(self, app_name: str) -> None:
+    async def _check_and_refresh_token(self) -> None:
         """Check token expiry and refresh if needed"""
         self.logger.info("Checking token expiry and refreshing if needed")
 
@@ -165,10 +169,10 @@ class ParserUserService:
 
         if time_until_refresh.total_seconds() <= 0:
             # Parser uses Docs/Sheets/Slides; use Drive connector tokens for content access
-            await self.google_token_handler.refresh_token(self.org_id, self.user_id, app_name=app_name)
+            await self.google_token_handler.refresh_token(self.connector_id)
 
             creds_data = await self.google_token_handler.get_individual_token(
-                self.org_id, self.user_id, app_name=app_name
+                self.connector_id
             )
 
             creds = google.oauth2.credentials.Credentials(

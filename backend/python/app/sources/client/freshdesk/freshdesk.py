@@ -183,6 +183,7 @@ class FreshDeskClient(IClient):
         cls,
         logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "FreshDeskClient":
         """Build FreshDeskClient using configuration service
 
@@ -195,7 +196,7 @@ class FreshDeskClient(IClient):
         Raises:
             NotImplementedError: This method needs to be implemented
         """
-        config = await cls._get_connector_config(logger, config_service)
+        config = await cls._get_connector_config(logger, config_service, connector_instance_id)
         if not config:
             raise ValueError("Failed to get FreshDesk connector configuration")
         auth_type = config.get("authType", "API_KEY")  # API_KEY or OAUTH
@@ -211,11 +212,13 @@ class FreshDeskClient(IClient):
         return cls(client)
 
     @staticmethod
-    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for FreshDesk."""
         try:
-            config = await config_service.get_config("/services/connectors/freshdesk/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get FreshDesk connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get FreshDesk connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get FreshDesk connector configuration for instance {connector_instance_id}")

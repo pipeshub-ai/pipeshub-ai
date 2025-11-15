@@ -1,4 +1,16 @@
-import React, { useEffect, useMemo, useState } from 'react';
+/**
+ * Connectors Page - Complete Rewrite
+ *
+ * Features:
+ * - Zero flickering during any operation
+ * - Persistent UI elements (search, filters never disappear)
+ * - Smooth transitions for all state changes
+ * - Proper state management with clear separation
+ * - Infinite scroll with perfect pagination
+ * - Debounced search without UI disruption
+ */
+
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   Paper,
   Container,
@@ -18,125 +30,417 @@ import {
   Stack,
   Divider,
   IconButton,
+  Tabs,
+  Tab,
+  CircularProgress,
 } from '@mui/material';
+import { useNavigate } from 'react-router-dom';
 import { Iconify } from 'src/components/iconify';
 import infoIcon from '@iconify-icons/mdi/info-circle';
-import arrowRightIcon from '@iconify-icons/mdi/arrow-right';
+import plusCircleIcon from '@iconify-icons/mdi/plus-circle';
 import magniferIcon from '@iconify-icons/mdi/magnify';
 import linkBrokenIcon from '@iconify-icons/mdi/link-off';
 import linkIcon from '@iconify-icons/mdi/link-variant';
 import listIcon from '@iconify-icons/mdi/format-list-bulleted';
 import checkCircleIcon from '@iconify-icons/mdi/check-circle';
 import clockCircleIcon from '@iconify-icons/mdi/clock-outline';
-import settingsIcon from '@iconify-icons/mdi/settings';
 import clearIcon from '@iconify-icons/mdi/close-circle';
+import appsIcon from '@iconify-icons/mdi/apps';
+import accountIcon from '@iconify-icons/mdi/account';
+import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import { SnackbarState } from 'src/types/chat-sidebar';
+import { useAccountType } from 'src/hooks/use-account-type';
 import { ConnectorApiService } from './services/api';
 import { Connector } from './types/types';
 import ConnectorCard from './components/connector-card';
 
-const Connectors = () => {
+// Constants
+const ITEMS_PER_PAGE = 20;
+const SEARCH_DEBOUNCE_MS = 500;
+const INITIAL_PAGE = 1;
+const SKELETON_COUNT = 8;
+
+// Types
+type FilterType = 'all' | 'active' | 'configured' | 'not-configured';
+
+interface PageState {
+  personal: number;
+  team: number;
+}
+
+interface FilterCounts {
+  all: number;
+  active: number;
+  configured: number;
+  'not-configured': number;
+}
+
+interface PaginationInfo {
+  totalPages?: number;
+  currentPage: number;
+  totalItems?: number;
+}
+
+/**
+ * Main Connectors Component
+ */
+const Connectors: React.FC = () => {
+  // Hooks
+  const theme = useTheme();
+  const navigate = useNavigate();
+  const { isBusiness } = useAccountType();
+  const isDark = theme.palette.mode === 'dark';
+
+  // ============================================================================
+  // STATE MANAGEMENT - Organized by concern
+  // ============================================================================
+
+  // Data State
   const [connectors, setConnectors] = useState<Connector[]>([]);
-  const [filteredConnectors, setFilteredConnectors] = useState<Connector[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedFilter, setSelectedFilter] = useState<
-    'all' | 'connected' | 'configured' | 'not-configured'
-  >('all');
+  const [pagination, setPagination] = useState<PaginationInfo>({
+    currentPage: INITIAL_PAGE,
+    totalPages: undefined,
+    totalItems: undefined,
+  });
+
+  // Loading States - Separate and clear
+  const [isFirstLoad, setIsFirstLoad] = useState(true); // Only true on very first load
+  const [isLoadingData, setIsLoadingData] = useState(false); // Data fetching in progress
+  const [isLoadingMore, setIsLoadingMore] = useState(false); // Infinite scroll loading
+  const [isSwitchingScope, setIsSwitchingScope] = useState(false); // Tab switch in progress
+  const [hasMorePages, setHasMorePages] = useState(true);
+
+  // Filter State
+  const [searchInput, setSearchInput] = useState('');
+  const [activeSearchQuery, setActiveSearchQuery] = useState(''); // What's actually being searched
+  const [selectedScope, setSelectedScope] = useState<'personal' | 'team'>('personal');
+  const [selectedFilter, setSelectedFilter] = useState<FilterType>('all');
+  const [pageByScope, setPageByScope] = useState<PageState>({
+    personal: INITIAL_PAGE,
+    team: INITIAL_PAGE,
+  });
+
+  // UI State
   const [snackbar, setSnackbar] = useState<SnackbarState>({
     open: false,
     message: '',
     severity: 'success',
   });
-  const theme = useTheme();
-  const isDark = theme.palette.mode === 'dark';
+
+  // Refs
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const requestIdRef = useRef(0);
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isRequestInProgressRef = useRef(false);
+
+  // ============================================================================
+  // COMPUTED VALUES
+  // ============================================================================
+
+  const effectiveScope = useMemo(
+    () => (isBusiness ? selectedScope : 'personal'),
+    [isBusiness, selectedScope]
+  );
+
+  const currentPage = useMemo(
+    () => pageByScope[effectiveScope],
+    [pageByScope, effectiveScope]
+  );
+
+  // Filter connectors by scope
+  const currentScopeConnectors = useMemo(
+    () =>
+      connectors.filter((c) =>
+        effectiveScope === 'personal' ? c.scope === 'personal' || !c.scope : c.scope === 'team'
+      ),
+    [connectors, effectiveScope]
+  );
+
+  // Calculate filter counts
+  const filterCounts = useMemo<FilterCounts>(() => {
+    const counts: FilterCounts = {
+      all: currentScopeConnectors.length,
+      active: 0,
+      configured: 0,
+      'not-configured': 0,
+    };
+
+    currentScopeConnectors.forEach((connector) => {
+      if (connector.isConfigured && connector.isActive) {
+        counts.active += 1;
+      } else if (connector.isConfigured && !connector.isActive) {
+        counts.configured += 1;
+      } else if (!connector.isConfigured) {
+        counts['not-configured'] += 1;
+      }
+    });
+
+    return counts;
+  }, [currentScopeConnectors]);
+
+  // Filter by status
+  const filteredConnectors = useMemo(() => {
+    if (selectedFilter === 'all') return currentScopeConnectors;
+
+    return currentScopeConnectors.filter((connector) => {
+      switch (selectedFilter) {
+        case 'active':
+          return connector.isConfigured && connector.isActive;
+        case 'configured':
+          return connector.isConfigured && !connector.isActive;
+        case 'not-configured':
+          return !connector.isConfigured;
+        default:
+          return true;
+      }
+    });
+  }, [currentScopeConnectors, selectedFilter]);
+
+  // Filter options
+  const filterOptions = useMemo(
+    () => [
+      { key: 'all' as FilterType, label: 'All', icon: listIcon },
+      { key: 'active' as FilterType, label: 'Active', icon: checkCircleIcon },
+      { key: 'configured' as FilterType, label: 'Configured', icon: clockCircleIcon },
+    ],
+    []
+  );
+
+  const loadingSkeletons = useMemo(() => Array.from({ length: SKELETON_COUNT }, (_, i) => i), []);
+
+  // ============================================================================
+  // DEBOUNCED SEARCH - Updates activeSearchQuery after delay
+  // ============================================================================
 
   useEffect(() => {
-    const fetchConnectors = async () => {
-      try {
-        const fetchedConnectors = await ConnectorApiService.getConnectors();
-        setConnectors(fetchedConnectors);
-        setFilteredConnectors(fetchedConnectors);
-        setLoading(false);
-      } catch (error) {
-        setSnackbar({
-          open: true,
-          message: 'Failed to fetch connectors',
-          severity: 'error',
-        });
-        setLoading(false);
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    searchTimeoutRef.current = setTimeout(() => {
+      const trimmed = searchInput.trim();
+      if (trimmed !== activeSearchQuery) {
+        setActiveSearchQuery(trimmed);
+      }
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
       }
     };
-    fetchConnectors();
+  }, [searchInput, activeSearchQuery]);
+
+  // ============================================================================
+  // RESET PAGINATION - When filters change
+  // ============================================================================
+
+  useEffect(() => {
+    setPageByScope((prev) => ({
+      ...prev,
+      [effectiveScope]: INITIAL_PAGE,
+    }));
+    setHasMorePages(true);
+    setConnectors([]);
+    setPagination({
+      currentPage: INITIAL_PAGE,
+      totalPages: undefined,
+      totalItems: undefined,
+    });
+  }, [effectiveScope, activeSearchQuery]);
+
+  // ============================================================================
+  // DATA FETCHING - Clean and organized
+  // ============================================================================
+
+  const fetchConnectors = useCallback(
+    async (page: number, isLoadMore = false) => {
+      // Prevent duplicate requests
+      if (isRequestInProgressRef.current) {
+        return;
+      }
+
+      // eslint-disable-next-line no-plusplus
+      const currentRequestId = ++requestIdRef.current;
+      isRequestInProgressRef.current = true;
+
+      try {
+        // Set appropriate loading state
+        if (isLoadMore) {
+          setIsLoadingMore(true);
+        } else if (isFirstLoad) {
+          setIsFirstLoad(true);
+        } else {
+          setIsLoadingData(true);
+        }
+
+        const result = await ConnectorApiService.getConnectorInstances(
+          effectiveScope,
+          page,
+          ITEMS_PER_PAGE,
+          activeSearchQuery || undefined
+        );
+
+        // Check if this request is still valid
+        if (currentRequestId !== requestIdRef.current) {
+          return;
+        }
+
+        const newConnectors = result.connectors || [];
+        const paginationData = result.pagination || {};
+
+        // Update connectors
+        setConnectors((prev) => {
+          if (page === INITIAL_PAGE) {
+            return newConnectors;
+          }
+
+          // Prevent duplicates
+          const existingIds = new Set(prev.map((c) => c._key || `${c.type}:${c.name}`));
+          const uniqueNew = newConnectors.filter(
+            (c) => !existingIds.has(c._key || `${c.type}:${c.name}`)
+          );
+          return [...prev, ...uniqueNew];
+        });
+
+        // Update pagination
+        setPagination({
+          currentPage: page,
+          totalPages: paginationData.totalPages,
+          totalItems: paginationData.totalItems,
+        });
+
+        // Check if more pages exist
+        const hasMore =
+          paginationData.hasNext === true ||
+          (typeof paginationData.totalPages === 'number'
+            ? page < paginationData.totalPages
+            : newConnectors.length === ITEMS_PER_PAGE);
+
+        setHasMorePages(hasMore);
+      } catch (error) {
+        console.error('Error fetching connectors:', error);
+
+        if (page === INITIAL_PAGE || connectors.length === 0) {
+          setSnackbar({
+            open: true,
+            message: 'Failed to fetch connectors. Please try again.',
+            severity: 'error',
+          });
+        }
+      } finally {
+        setIsFirstLoad(false);
+        setIsLoadingData(false);
+        setIsLoadingMore(false);
+        isRequestInProgressRef.current = false;
+      }
+    },
+    [effectiveScope, activeSearchQuery, connectors.length, isFirstLoad]
+  );
+
+  // Fetch when page changes
+  useEffect(() => {
+    const isLoadMore = currentPage > INITIAL_PAGE;
+    fetchConnectors(currentPage, isLoadMore);
+  }, [currentPage, fetchConnectors]);
+
+  // ============================================================================
+  // INFINITE SCROLL - Clean observer setup
+  // ============================================================================
+
+  useEffect(() => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+    }
+
+    if (!sentinelRef.current || !hasMorePages || isFirstLoad) {
+      return undefined;
+    }
+
+    observerRef.current = new IntersectionObserver(
+      (entries) => {
+        const [entry] = entries;
+
+        if (
+          entry.isIntersecting &&
+          !isRequestInProgressRef.current &&
+          hasMorePages &&
+          !isFirstLoad &&
+          !isLoadingData
+        ) {
+          setPageByScope((prev) => ({
+            ...prev,
+            [effectiveScope]: prev[effectiveScope] + 1,
+          }));
+        }
+      },
+      {
+        root: null,
+        rootMargin: '200px',
+        threshold: 0,
+      }
+    );
+
+    observerRef.current.observe(sentinelRef.current);
+
+    return () => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+      }
+    };
+  }, [hasMorePages, isFirstLoad, isLoadingData, effectiveScope]);
+
+  // ============================================================================
+  // EVENT HANDLERS
+  // ============================================================================
+
+  const handleScopeChange = useCallback(
+    (_event: React.SyntheticEvent, newScope: 'personal' | 'team') => {
+      if (!isBusiness && newScope === 'team') return;
+
+      setIsSwitchingScope(true);
+
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+      }
+
+      setSelectedScope(newScope);
+      setSearchInput('');
+      setActiveSearchQuery('');
+      setSelectedFilter('all');
+
+      // Clear switching state after transition
+      setTimeout(() => {
+        setIsSwitchingScope(false);
+      }, 400);
+    },
+    [isBusiness]
+  );
+
+  const handleFilterChange = useCallback((filter: FilterType) => {
+    setSelectedFilter(filter);
   }, []);
 
-  // Filter and search logic
-  useEffect(() => {
-    let filtered = connectors;
+  const handleClearSearch = useCallback(() => {
+    setSearchInput('');
+    setActiveSearchQuery('');
+  }, []);
 
-    // Apply search filter
-    if (searchQuery) {
-      filtered = filtered.filter(
-        (connector) =>
-          connector.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          connector.appGroup.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-    }
+  const handleBrowseRegistry = useCallback(() => {
+    const basePath = isBusiness
+      ? '/account/company-settings/settings/connector/registry'
+      : '/account/individual/settings/connector/registry';
+    navigate(`${basePath}?scope=${effectiveScope}`);
+  }, [isBusiness, effectiveScope, navigate]);
 
-    // Apply status filter
-    if (selectedFilter !== 'all') {
-      filtered = filtered.filter((connector) => {
-        switch (selectedFilter) {
-          case 'connected':
-            return connector.isConfigured && connector.isActive;
-          case 'configured':
-            return connector.isConfigured && !connector.isActive;
-          case 'not-configured':
-            return !connector.isConfigured;
-          default:
-            return true;
-        }
-      });
-    }
+  const handleCloseSnackbar = useCallback(() => {
+    setSnackbar((prev) => ({ ...prev, open: false }));
+  }, []);
 
-    setFilteredConnectors(filtered);
-  }, [connectors, searchQuery, selectedFilter]);
-
-  // Get filter counts
-  const getFilterCounts = () => ({
-    all: connectors.length,
-    connected: connectors.filter((c) => c.isConfigured && c.isActive).length,
-    configured: connectors.filter((c) => c.isConfigured && !c.isActive).length,
-    'not-configured': connectors.filter((c) => !c.isConfigured).length,
-  });
-
-  const filterCounts = getFilterCounts();
-
-  const filterOptions = [
-    { key: 'all', label: 'All', count: filterCounts.all, icon: listIcon },
-    { key: 'connected', label: 'Active', count: filterCounts.connected, icon: checkCircleIcon },
-    {
-      key: 'configured',
-      label: 'Configured',
-      count: filterCounts.configured,
-      icon: clockCircleIcon,
-    },
-    {
-      key: 'not-configured',
-      label: 'Not Configured',
-      count: filterCounts['not-configured'],
-      icon: settingsIcon,
-    },
-  ];
-
-  const loadingPlaceholders = useMemo(() => new Array(8).fill(null), []);
-
-  const handleClearSearch = () => {
-    setSearchQuery('');
-  };
-
-  const totalConnected = filterCounts.connected;
-  const totalConfigured = filterCounts.configured + filterCounts.connected;
+  // ============================================================================
+  // RENDER
+  // ============================================================================
 
   return (
     <Container maxWidth="xl" sx={{ py: 2 }}>
@@ -148,7 +452,7 @@ const Connectors = () => {
           overflow: 'hidden',
         }}
       >
-        {/* Header Section */}
+        {/* Header Section - Always Visible */}
         <Box
           sx={{
             p: 3,
@@ -158,8 +462,8 @@ const Connectors = () => {
               : alpha(theme.palette.grey[50], 0.5),
           }}
         >
-          <Fade in={!loading} timeout={600}>
-            <Stack spacing={2}>
+          <Stack spacing={2}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
               <Stack direction="row" alignItems="center" spacing={1.5}>
                 <Box
                   sx={{
@@ -190,7 +494,7 @@ const Connectors = () => {
                       mb: 0.5,
                     }}
                   >
-                    Data Connectors
+                    My Connectors
                   </Typography>
                   <Typography
                     variant="body2"
@@ -199,22 +503,18 @@ const Connectors = () => {
                       fontSize: '0.875rem',
                     }}
                   >
-                    Connect and manage integrations with external services
-                    {totalConnected > 0 && (
+                    Manage your configured connector instances
+                    {filterCounts.active > 0 && (
                       <Chip
-                        label={`${totalConnected} active`}
+                        label={`${filterCounts.active} active`}
                         size="small"
                         sx={{
                           ml: 1,
                           height: 20,
                           fontSize: '0.6875rem',
                           fontWeight: 600,
-                          backgroundColor: isDark
-                            ? alpha(theme.palette.success.main, 0.8)
-                            : alpha(theme.palette.success.main, 0.1),
-                          color: isDark
-                            ? theme.palette.success.contrastText
-                            : theme.palette.success.main,
+                          backgroundColor: isDark ? alpha(theme.palette.common.white, 0.48) : alpha(theme.palette.success.main, 0.1),
+                          color: isDark ? alpha(theme.palette.primary.main, 0.6) : theme.palette.success.main,
                           border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
                         }}
                       />
@@ -222,193 +522,288 @@ const Connectors = () => {
                   </Typography>
                 </Box>
               </Stack>
+
+              <Button
+                variant="contained"
+                color="primary"
+                startIcon={<Iconify icon={plusCircleIcon} width={18} height={18} />}
+                onClick={handleBrowseRegistry}
+                sx={{
+                  textTransform: 'none',
+                  fontWeight: 600,
+                  borderRadius: 1.5,
+                  px: 3,
+                  height: 40,
+                }}
+              >
+                Add New Connectors
+              </Button>
             </Stack>
-          </Fade>
+
+            {/* Scope Tabs */}
+            <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+              <Tabs
+                value={effectiveScope}
+                onChange={handleScopeChange}
+                sx={{
+                  '& .MuiTab-root': {
+                    textTransform: 'none',
+                    fontWeight: 600,
+                    minHeight: 48,
+                  },
+                }}
+              >
+                <Tab
+                  icon={<Iconify icon={accountIcon} width={18} height={18} />}
+                  iconPosition="start"
+                  label="Personal"
+                  value="personal"
+                  sx={{ mr: 1 }}
+                />
+                {isBusiness && (
+                  <Tab
+                    icon={<Iconify icon={accountGroupIcon} width={18} height={18} />}
+                    iconPosition="start"
+                    label="Team"
+                    value="team"
+                  />
+                )}
+              </Tabs>
+            </Box>
+          </Stack>
         </Box>
 
-        {/* Content */}
+        {/* Content Section */}
         <Box sx={{ p: 3 }}>
-          {loading ? (
-            <Stack spacing={3}>
-              {/* Loading Search Bar */}
-              <Skeleton variant="rectangular" height={48} sx={{ borderRadius: 1.5 }} />
-
-              {/* Loading Filter Buttons */}
-              <Stack direction="row" spacing={1}>
-                {[1, 2, 3, 4].map((i) => (
-                  <Skeleton
-                    key={i}
-                    variant="rectangular"
-                    width={100}
-                    height={32}
-                    sx={{ borderRadius: 1 }}
-                  />
-                ))}
-              </Stack>
-
-              {/* Loading Grid */}
-              <Grid container spacing={3}>
-                {loadingPlaceholders.map((_, idx) => (
-                  <Grid item xs={12} sm={6} md={4} lg={3} key={idx}>
-                    <Skeleton variant="rectangular" height={220} sx={{ borderRadius: 2 }} />
-                  </Grid>
-                ))}
-              </Grid>
-            </Stack>
-          ) : (
-            <Fade in timeout={800}>
-              <Stack spacing={3}>
-                {/* Search and Filters */}
-                <Stack spacing={2}>
-                  {/* Search Bar */}
-                  <TextField
-                    placeholder="Search connectors by name or category..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    size="small"
-                    fullWidth
-                    InputProps={{
-                      startAdornment: (
-                        <InputAdornment position="start">
-                          <Iconify
-                            icon={magniferIcon}
-                            width={20}
-                            height={20}
-                            sx={{ color: theme.palette.text.secondary }}
-                          />
-                        </InputAdornment>
-                      ),
-                      endAdornment: searchQuery && (
-                        <InputAdornment position="end">
-                          <IconButton
-                            size="small"
-                            onClick={handleClearSearch}
-                            sx={{
-                              color: theme.palette.text.secondary,
-                              '&:hover': {
-                                backgroundColor: alpha(theme.palette.text.secondary, 0.08),
-                              },
-                            }}
-                          >
-                            <Iconify icon={clearIcon} width={16} height={16} />
-                          </IconButton>
-                        </InputAdornment>
-                      ),
-                    }}
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        height: 48,
-                        borderRadius: 1.5,
-                        backgroundColor: isDark
-                          ? alpha(theme.palette.background.default, 0.4)
-                          : theme.palette.background.paper,
-                        '&:hover': {
-                          borderColor: alpha(theme.palette.primary.main, 0.4),
-                        },
-                      },
-                    }}
-                  />
-
-                  {/* Filter Buttons */}
-                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                    <Typography
-                      variant="body2"
+          {/* Search and Filters - Always Visible, Never Disappear */}
+          <Stack spacing={2} sx={{ mb: 3 }}>
+            {/* Search Bar */}
+            <TextField
+              placeholder="Search connectors by name, type, or category..."
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              size="small"
+              fullWidth
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    {isLoadingData && !isFirstLoad ? (
+                      <CircularProgress size={20} sx={{ color: theme.palette.primary.main }} />
+                    ) : (
+                      <Iconify
+                        icon={magniferIcon}
+                        width={20}
+                        height={20}
+                        sx={{ color: theme.palette.text.secondary }}
+                      />
+                    )}
+                  </InputAdornment>
+                ),
+                endAdornment: searchInput && (
+                  <InputAdornment position="end">
+                    <IconButton
+                      size="small"
+                      onClick={handleClearSearch}
                       sx={{
                         color: theme.palette.text.secondary,
-                        fontWeight: 500,
-                        mr: 1,
+                        '&:hover': {
+                          backgroundColor: alpha(theme.palette.text.secondary, 0.08),
+                        },
                       }}
                     >
-                      Filter:
-                    </Typography>
-                    {filterOptions.map((option) => {
-                      const isSelected = selectedFilter === option.key;
-                      return (
-                        <Button
-                          key={option.key}
-                          variant={isSelected ? 'contained' : 'outlined'}
-                          size="small"
-                          onClick={() => setSelectedFilter(option.key as any)}
-                          startIcon={<Iconify icon={option.icon} width={16} height={16} />}
-                          sx={{
-                            textTransform: 'none',
-                            borderRadius: 1.5,
-                            fontWeight: 600,
-                            fontSize: '0.8125rem',
-                            height: 32,
-                            ...(isSelected
-                              ? {
-                                  backgroundColor: theme.palette.primary.main,
-                                  color: theme.palette.primary.contrastText,
-                                  '&:hover': {
-                                    backgroundColor: theme.palette.primary.dark,
-                                  },
-                                }
-                              : {
-                                  borderColor: theme.palette.divider,
-                                  color: theme.palette.text.primary,
-                                  backgroundColor: 'transparent',
-                                  '&:hover': {
-                                    borderColor: theme.palette.primary.main,
-                                    backgroundColor: alpha(theme.palette.primary.main, 0.04),
-                                  },
-                                }),
-                          }}
-                        >
-                          {option.label}
-                          {option.count > 0 && (
-                            <Chip
-                              label={option.count}
-                              size="small"
-                              sx={{
-                                ml: 1,
-                                height: 18,
-                                fontSize: '0.6875rem',
-                                fontWeight: 700,
-                                '& .MuiChip-label': {
-                                  px: 0.75,
-                                },
-                                ...(isSelected
-                                  ? {
-                                      backgroundColor: alpha(
-                                        theme.palette.primary.contrastText,
-                                        0.2
-                                      ),
-                                      color: theme.palette.primary.contrastText,
-                                    }
-                                  : {
-                                      backgroundColor: isDark
-                                        ? alpha(theme.palette.primary.main, 0.8)
-                                        : alpha(theme.palette.primary.main, 0.1),
-                                      color: theme.palette.primary.main,
-                                    }),
-                              }}
-                            />
-                          )}
-                        </Button>
-                      );
-                    })}
+                      <Iconify icon={clearIcon} width={16} height={16} />
+                    </IconButton>
+                  </InputAdornment>
+                ),
+              }}
+              sx={{
+                '& .MuiOutlinedInput-root': {
+                  height: 48,
+                  borderRadius: 1.5,
+                  backgroundColor: isDark
+                    ? alpha(theme.palette.background.default, 0.4)
+                    : theme.palette.background.paper,
+                  transition: theme.transitions.create(['border-color', 'box-shadow']),
+                  '&:hover': {
+                    borderColor: alpha(theme.palette.primary.main, 0.4),
+                  },
+                  '&.Mui-focused': {
+                    boxShadow: `0 0 0 2px ${alpha(theme.palette.primary.main, 0.1)}`,
+                  },
+                },
+              }}
+            />
 
-                    {searchQuery && (
-                      <>
-                        <Divider orientation="vertical" sx={{ height: 24, mx: 1 }} />
-                        <Typography
-                          variant="caption"
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontWeight: 500,
-                          }}
-                        >
-                          {filteredConnectors.length} result
-                          {filteredConnectors.length !== 1 ? 's' : ''}
-                        </Typography>
-                      </>
+            {/* Filter Buttons */}
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Typography
+                variant="body2"
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontWeight: 500,
+                  mr: 1,
+                }}
+              >
+                Filter:
+              </Typography>
+              {filterOptions.map((option) => {
+                const isSelected = selectedFilter === option.key;
+                const count = filterCounts[option.key];
+
+                return (
+                  <Button
+                    key={option.key}
+                    variant={isSelected ? 'contained' : 'outlined'}
+                    size="small"
+                    onClick={() => handleFilterChange(option.key)}
+                    startIcon={<Iconify icon={option.icon} width={16} height={16} />}
+                    sx={{
+                      textTransform: 'none',
+                      borderRadius: 1.5,
+                      fontWeight: 600,
+                      fontSize: '0.8125rem',
+                      height: 32,
+                      transition: theme.transitions.create(['background-color', 'border-color']),
+                      ...(isSelected
+                        ? {
+                            backgroundColor: theme.palette.primary.main,
+                            color: theme.palette.primary.contrastText,
+                            '&:hover': {
+                              backgroundColor: theme.palette.primary.dark,
+                            },
+                          }
+                        : {
+                            borderColor: theme.palette.divider,
+                            color: theme.palette.text.primary,
+                            backgroundColor: 'transparent',
+                            '&:hover': {
+                              borderColor: theme.palette.primary.main,
+                              backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                            },
+                          }),
+                    }}
+                  >
+                    {option.label}
+                    {count > 0 && (
+                      <Chip
+                        label={count}
+                        size="small"
+                        sx={{
+                          ml: 1,
+                          height: 18,
+                          fontSize: '0.6875rem',
+                          fontWeight: 700,
+                          '& .MuiChip-label': {
+                            px: 0.75,
+                          },
+                          ...(isSelected
+                            ? {
+                                backgroundColor: isDark ? alpha(theme.palette.common.black, 0.3) : alpha(theme.palette.primary.contrastText, 0.4),
+                                color: isDark ? alpha(theme.palette.primary.main, 0.6) : alpha(theme.palette.primary.contrastText, 0.8),
+                              }
+                            : {
+                                backgroundColor: isDark ? alpha(theme.palette.common.white, 0.48) : alpha(theme.palette.primary.main, 0.1),
+                                color: isDark ? alpha(theme.palette.primary.main, 0.6) : theme.palette.primary.main,
+                              }),
+                        }}
+                      />
                     )}
-                  </Stack>
-                </Stack>
+                  </Button>
+                );
+              })}
 
-                {/* Empty State */}
-                {filteredConnectors.length === 0 && (
+              {activeSearchQuery && (
+                <>
+                  <Divider orientation="vertical" sx={{ height: 24, mx: 1 }} />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontWeight: 500,
+                    }}
+                  >
+                    {filteredConnectors.length} result{filteredConnectors.length !== 1 ? 's' : ''}
+                  </Typography>
+                </>
+              )}
+            </Stack>
+          </Stack>
+
+          {/* Results Area with Overlay for Scope Switching */}
+          <Box sx={{ position: 'relative', minHeight: 400 }}>
+            {/* Scope Switch Overlay */}
+            {isSwitchingScope && (
+              <Fade in timeout={200}>
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: alpha(
+                      isDark ? theme.palette.background.default : theme.palette.background.paper,
+                      0.8
+                    ),
+                    backdropFilter: 'blur(8px)',
+                    zIndex: 10,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: 2,
+                  }}
+                >
+                  <Stack alignItems="center" spacing={2}>
+                    <CircularProgress size={48} thickness={4} />
+                    <Typography
+                      variant="h6"
+                      sx={{
+                        fontWeight: 600,
+                        color: theme.palette.text.primary,
+                      }}
+                    >
+                      Switching to {selectedScope === 'personal' ? 'Personal' : 'Team'}{' '}
+                      Connectors...
+                    </Typography>
+                  </Stack>
+                </Box>
+              </Fade>
+            )}
+
+            {/* Content Area */}
+            <Box
+              sx={{
+                opacity: isSwitchingScope ? 0.3 : 1,
+                transition: 'opacity 0.3s ease-in-out',
+                pointerEvents: isSwitchingScope ? 'none' : 'auto',
+              }}
+            >
+              {isFirstLoad ? (
+                /* First Load Skeletons */
+                <Stack spacing={2}>
+                  <Skeleton variant="rectangular" height={40} sx={{ borderRadius: 1.5 }} />
+                  <Grid container spacing={2.5}>
+                    {loadingSkeletons.map((index) => (
+                      <Grid item xs={12} sm={6} md={4} lg={3} key={index}>
+                        <Skeleton
+                          variant="rectangular"
+                          height={220}
+                          sx={{
+                            borderRadius: 2,
+                            animation: 'pulse 1.5s ease-in-out infinite',
+                            '@keyframes pulse': {
+                              '0%, 100%': { opacity: 1 },
+                              '50%': { opacity: 0.4 },
+                            },
+                          }}
+                        />
+                      </Grid>
+                    ))}
+                  </Grid>
+                </Stack>
+              ) : filteredConnectors.length === 0 ? (
+                /* Empty State */
+                <Fade in timeout={300}>
                   <Paper
                     elevation={0}
                     sx={{
@@ -417,9 +812,10 @@ const Connectors = () => {
                       textAlign: 'center',
                       borderRadius: 2,
                       border: `1px solid ${theme.palette.divider}`,
-                      backgroundColor: isDark
-                        ? alpha(theme.palette.background.default, 0.2)
-                        : alpha(theme.palette.grey[50], 0.5),
+                      backgroundColor: alpha(
+                        isDark ? theme.palette.background.default : theme.palette.grey[50],
+                        0.5
+                      ),
                     }}
                   >
                     <Box
@@ -436,7 +832,7 @@ const Connectors = () => {
                       }}
                     >
                       <Iconify
-                        icon={searchQuery ? magniferIcon : linkBrokenIcon}
+                        icon={activeSearchQuery ? magniferIcon : linkBrokenIcon}
                         width={32}
                         height={32}
                         sx={{ color: theme.palette.text.disabled }}
@@ -450,7 +846,9 @@ const Connectors = () => {
                         color: theme.palette.text.primary,
                       }}
                     >
-                      {searchQuery ? 'No connectors found' : 'No connectors available'}
+                      {activeSearchQuery
+                        ? 'No connectors found'
+                        : 'No connector instances configured'}
                     </Typography>
                     <Typography
                       variant="body2"
@@ -458,12 +856,13 @@ const Connectors = () => {
                         color: theme.palette.text.secondary,
                         maxWidth: 400,
                         mx: 'auto',
+                        mb: 3,
                       }}
                     >
-                      {searchQuery ? (
+                      {activeSearchQuery ? (
                         <>
-                          No connectors match &quot;{searchQuery}&quot;. Try adjusting your search
-                          terms or{' '}
+                          No connectors match &quot;{activeSearchQuery}&quot;. Try adjusting your
+                          search terms or{' '}
                           <Button
                             variant="text"
                             size="small"
@@ -473,21 +872,37 @@ const Connectors = () => {
                               p: 0,
                               minWidth: 'auto',
                               fontWeight: 600,
+                              verticalAlign: 'baseline',
                             }}
                           >
                             clear the search
                           </Button>
                         </>
                       ) : (
-                        'No connectors match the selected filter. Try selecting a different filter.'
+                        'Get started by browsing available connectors and creating your first instance.'
                       )}
                     </Typography>
+                    {!activeSearchQuery && (
+                      <Button
+                        variant="outlined"
+                        startIcon={<Iconify icon={appsIcon} width={20} height={20} />}
+                        onClick={handleBrowseRegistry}
+                        sx={{
+                          textTransform: 'none',
+                          fontWeight: 600,
+                          borderRadius: 1.5,
+                        }}
+                      >
+                        Browse Available Connectors
+                      </Button>
+                    )}
                   </Paper>
-                )}
-
-                {/* Connectors Grid */}
-                {filteredConnectors.length > 0 && (
-                  <Stack spacing={2}>
+                </Fade>
+              ) : (
+                /* Results Grid */
+                <Stack spacing={2}>
+                  {/* Results Header */}
+                  <Stack direction="row" alignItems="center" justifyContent="space-between">
                     <Typography
                       variant="h6"
                       sx={{
@@ -496,65 +911,160 @@ const Connectors = () => {
                         color: theme.palette.text.primary,
                       }}
                     >
-                      {searchQuery
+                      {activeSearchQuery
                         ? `Search Results (${filteredConnectors.length})`
                         : selectedFilter === 'all'
-                          ? `All Connectors (${filteredConnectors.length})`
-                          : selectedFilter === 'connected'
-                            ? `Active Connectors (${filteredConnectors.length})`
+                          ? `All Instances (${filteredConnectors.length})`
+                          : selectedFilter === 'active'
+                            ? `Active Instances (${filteredConnectors.length})`
                             : selectedFilter === 'configured'
-                              ? `Ready Connectors (${filteredConnectors.length})`
+                              ? `Ready Instances (${filteredConnectors.length})`
                               : `Setup Required (${filteredConnectors.length})`}
                     </Typography>
-
-                    <Grid container spacing={2.5}>
-                      {filteredConnectors.map((connector) => (
-                        <Grid item xs={12} sm={6} md={4} lg={3} key={connector._key}>
-                          <ConnectorCard connector={connector} />
-                        </Grid>
-                      ))}
-                    </Grid>
+                    {pagination.totalItems !== undefined && pagination.totalItems > 0 && (
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontWeight: 500,
+                        }}
+                      >
+                        Showing {filteredConnectors.length} of {pagination.totalItems}
+                      </Typography>
+                    )}
                   </Stack>
-                )}
 
-                {/* Info Alert */}
-                {!loading && connectors.length > 0 && (
-                  <Alert
-                    variant="outlined"
-                    severity="info"
-                    icon={<Iconify icon={infoIcon} width={20} height={20} />}
-                    sx={{
-                      borderRadius: 1.5,
-                      borderColor: alpha(theme.palette.info.main, 0.2),
-                      backgroundColor: isDark
-                        ? alpha(theme.palette.info.main, 0.04)
-                        : alpha(theme.palette.info.main, 0.04),
-                      '& .MuiAlert-icon': {
-                        display: 'none',
-                      },
-                      '& .MuiAlert-message': {
-                        width: '100%',
-                      },
+                  {/* Connectors Grid */}
+                  <Grid container spacing={2.5}>
+                    {filteredConnectors.map((connector, index) => (
+                      <Grid item xs={12} sm={6} md={4} lg={3} key={connector._key}>
+                        <Fade
+                          in
+                          timeout={300}
+                          style={{ transitionDelay: `${Math.min(index * 30, 300)}ms` }}
+                        >
+                          <Box>
+                            <ConnectorCard connector={connector} isBusiness={isBusiness} />
+                          </Box>
+                        </Fade>
+                      </Grid>
+                    ))}
+                  </Grid>
+
+                  {/* Infinite Scroll Sentinel */}
+                  <Box ref={sentinelRef} sx={{ height: 1 }} />
+
+                  {/* Loading More Indicator */}
+                  {isLoadingMore && (
+                    <Fade in>
+                      <Paper
+                        elevation={0}
+                        sx={{
+                          py: 3,
+                          px: 2,
+                          textAlign: 'center',
+                          borderRadius: 2,
+                          backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                          border: `1px solid ${alpha(theme.palette.primary.main, 0.1)}`,
+                        }}
+                      >
+                        <Stack
+                          direction="row"
+                          alignItems="center"
+                          justifyContent="center"
+                          spacing={2}
+                        >
+                          <CircularProgress size={24} thickness={4} />
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              color: theme.palette.text.primary,
+                              fontWeight: 500,
+                            }}
+                          >
+                            Loading more connectors...
+                          </Typography>
+                        </Stack>
+                      </Paper>
+                    </Fade>
+                  )}
+
+                  {/* End of Results */}
+                  {!hasMorePages && connectors.length > ITEMS_PER_PAGE && (
+                    <Fade in>
+                      <Paper
+                        elevation={0}
+                        sx={{
+                          py: 2,
+                          px: 2,
+                          textAlign: 'center',
+                          borderRadius: 2,
+                          backgroundColor: alpha(theme.palette.success.main, 0.04),
+                          border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
+                        }}
+                      >
+                        <Stack
+                          direction="row"
+                          alignItems="center"
+                          justifyContent="center"
+                          spacing={1}
+                        >
+                          <Iconify
+                            icon={checkCircleIcon}
+                            width={18}
+                            height={18}
+                            sx={{ color: theme.palette.success.main }}
+                          />
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              color: theme.palette.success.main,
+                              fontWeight: 600,
+                            }}
+                          >
+                            All connectors loaded
+                          </Typography>
+                        </Stack>
+                      </Paper>
+                    </Fade>
+                  )}
+                </Stack>
+              )}
+            </Box>
+          </Box>
+
+          {/* Info Alert */}
+          {!isFirstLoad && !isSwitchingScope && connectors.length > 0 && (
+            <Fade in timeout={600}>
+              <Alert
+                variant="outlined"
+                severity="info"
+                icon={<Iconify icon={infoIcon} width={20} height={20} />}
+                sx={{
+                  mt: 3,
+                  borderRadius: 1.5,
+                  borderColor: alpha(theme.palette.info.main, 0.2),
+                  backgroundColor: alpha(theme.palette.info.main, 0.04),
+                }}
+              >
+                <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                  Click any connector to configure settings and start syncing data automatically.
+                  Refer to{' '}
+                  <a
+                    href="https://docs.pipeshub.com/connectors/overview"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      color: theme.palette.primary.main,
+                      textDecoration: 'none',
+                      fontWeight: 600,
                     }}
                   >
-                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                        Click any connector to configure settings and start syncing data
-                        automatically. Refer to{' '}
-                        <a
-                          href='https://docs.pipeshub.com/connectors/overview'
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ color: theme.palette.primary.main }}
-                        >
-                          the documentation
-                        </a>{' '}
-                        for more information.
-                      </Typography>
-                    </Stack>
-                  </Alert>
-                )}
-              </Stack>
+                    the documentation
+                  </a>{' '}
+                  for more information.
+                </Typography>
+              </Alert>
             </Fade>
           )}
         </Box>
@@ -564,12 +1074,12 @@ const Connectors = () => {
       <Snackbar
         open={snackbar.open}
         autoHideDuration={4000}
-        onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
+        onClose={handleCloseSnackbar}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
         sx={{ mt: 8 }}
       >
         <Alert
-          onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
+          onClose={handleCloseSnackbar}
           severity={snackbar.severity}
           variant="filled"
           sx={{

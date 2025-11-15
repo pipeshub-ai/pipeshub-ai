@@ -2,6 +2,7 @@ from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
     FilterField,
 )
@@ -12,6 +13,7 @@ from app.connectors.core.registry.connector_builder import (
     .with_auth_type("OAUTH")\
     .with_description("Sync files and folders from Google Drive")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/drive.svg")
         .with_realtime_support(True)
@@ -48,6 +50,8 @@ from app.connectors.core.registry.connector_builder import (
         .add_filter_field(CommonFields.file_types_filter(), "static")
         .add_filter_field(CommonFields.folders_filter(),
                           "https://www.googleapis.com/drive/v3/files?q=mimeType='application/vnd.google-apps.folder'&fields=files(id,name,parents)")
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class GoogleDriveConnector:
@@ -67,6 +71,7 @@ class GoogleDriveConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync emails and messages from Gmail")\
     .with_categories(["Email"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/gmail.svg")
         .with_realtime_support(True)
@@ -101,6 +106,8 @@ class GoogleDriveConnector:
             display_name="Gmail Labels",
             description="Select Gmail labels to sync messages from"
         ), "https://gmail.googleapis.com/gmail/v1/users/me/labels")
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class GmailConnector:
@@ -120,6 +127,7 @@ class GmailConnector:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync messages and channels from Slack")\
     .with_categories(["Messaging"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/slack.svg")
         .add_documentation_link(DocumentationLink(
@@ -146,6 +154,8 @@ class GmailConnector:
         .with_scheduled_config(True, 60)
         .add_filter_field(CommonFields.channels_filter(),
                           "https://slack.com/api/conversations.list")
+        .with_sync_support(False)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class SlackConnector:
@@ -165,6 +175,7 @@ class SlackConnector:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync messages and channels from Notion")\
     .with_categories(["Messaging"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/notion.svg")
         .add_documentation_link(DocumentationLink(
@@ -189,6 +200,8 @@ class SlackConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class  NotionConnector:
@@ -209,6 +222,7 @@ class  NotionConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Calendar")\
     .with_categories(["Calendar"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/calendar.svg")
         .with_realtime_support(True)
@@ -237,6 +251,8 @@ class  NotionConnector:
         .with_webhook_config(True, ["event.created", "event.modified", "event.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class CalendarConnector:
@@ -256,6 +272,7 @@ class CalendarConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Meet")\
     .with_categories(["Meet"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/meet.svg")
         .with_realtime_support(True)
@@ -286,6 +303,8 @@ class CalendarConnector:
         .with_webhook_config(True, ["space.created", "space.modified", "space.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class MeetConnector:
@@ -305,6 +324,7 @@ class MeetConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Docs")\
     .with_categories(["Docs"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/docs.svg")
         .with_realtime_support(True)
@@ -335,6 +355,8 @@ class MeetConnector:
         .with_webhook_config(True, ["document.created", "document.modified", "document.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class DocsConnector:
@@ -354,6 +376,7 @@ class DocsConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Sheets")\
     .with_categories(["Sheets"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/sheets.svg")
         .with_realtime_support(True)
@@ -381,6 +404,8 @@ class DocsConnector:
         .with_webhook_config(True, ["sheet.created", "sheet.modified", "sheet.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class SheetsConnector:
@@ -399,6 +424,7 @@ class SheetsConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Forms")\
     .with_categories(["Forms"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/forms.svg")
         .with_realtime_support(True)
@@ -430,6 +456,8 @@ class SheetsConnector:
         .with_webhook_config(True, ["form.created", "form.modified", "form.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class FormsConnector:
@@ -448,6 +476,7 @@ class FormsConnector:
     .with_auth_type("OAUTH")\
     .with_description("Sync calendar events from Google Sheets")\
     .with_categories(["Slides"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/slides.svg")
         .with_realtime_support(True)
@@ -477,6 +506,8 @@ class FormsConnector:
         .with_webhook_config(True, ["slide.created", "slide.modified", "slide.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class SlidesConnector:
@@ -496,6 +527,7 @@ class SlidesConnector:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync messages, tables and views from Airtable")\
     .with_categories(["Database"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/airtable.svg")
         .add_documentation_link(DocumentationLink(
@@ -520,6 +552,8 @@ class SlidesConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class AirtableConnector:
@@ -539,6 +573,7 @@ class AirtableConnector:
     .with_auth_type("ACCOUNT_KEY")\
     .with_description("Sync files and folders from Azure Blob Storage")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/azureblob.svg")
         .add_documentation_link(DocumentationLink(
@@ -595,6 +630,8 @@ class AirtableConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class AzureBlobConnector:
@@ -609,70 +646,12 @@ class AzureBlobConnector:
         return True
 
 
-@ConnectorBuilder("BookStack")\
-    .in_group("BookStack")\
-    .with_auth_type("BEARER_TOKEN")\
-    .with_description("Sync books and pages from BookStack")\
-    .with_categories(["Documentation"])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/bookstack.svg")
-        .add_documentation_link(DocumentationLink(
-            "BookStack API Token Setup",
-            "https://bookstack.org/docs/admin/authentication/",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/bookstack/bookstack',
-            'pipeshub'
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(AuthField(
-            name="tokenId",
-            display_name="Token ID",
-            placeholder="Enter your Token ID",
-            description="The Token ID from BookStack instance",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .add_auth_field(AuthField(
-            name="tokenSecret",
-            display_name="Token Secret",
-            placeholder="Enter your Token Secret",
-            description="The Token Secret from BookStack instance",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="baseURL",
-            display_name="Base URL",
-            placeholder="https://bookstack.example.com",
-            description="The Base URL from BookStack instance",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-    )\
-    .build_decorator()
-class BookStackConnector:
-    """BookStack connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "BookStack"
-
-    def connect(self) -> bool:
-        """Connect to BookStack"""
-        print(f"Connecting to {self.name}")
-        return True
-
-
 @ConnectorBuilder("Linear")\
     .in_group("Linear")\
     .with_auth_type("API_TOKEN")\
     .with_description("Sync issues and projects from Linear")\
     .with_categories(["Issue Tracking"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/linear.svg")
         .add_documentation_link(DocumentationLink(
@@ -716,6 +695,7 @@ class LinearConnector:
     .with_auth_type("ACCESS_KEY")\
     .with_description("Sync files and folders from S3")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/s3.svg")
         .add_documentation_link(DocumentationLink(
@@ -765,6 +745,8 @@ class LinearConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class S3Connector:
@@ -779,69 +761,12 @@ class S3Connector:
         return True
 
 
-@ConnectorBuilder("ServiceNow")\
-    .in_group("ServiceNow")\
-    .with_auth_type("USERNAME_PASSWORD")\
-    .with_description("Sync issues and projects from ServiceNow")\
-    .with_categories(["Issue Tracking"])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/servicenow.svg")
-        .add_documentation_link(DocumentationLink(
-            "ServiceNow Username Password Setup",
-            "https://docs.servicenow.com/bundle/rome-it-service-management/page/product/integration/reference/r_ITSMIntegrationAPI.html",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/servicenow/servicenow',
-            'pipeshub'
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(AuthField(
-            name="username",
-            display_name="Username",
-            placeholder="Enter your Username",
-            description="The Username from ServiceNow instance",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .add_auth_field(AuthField(
-            name="password",
-            display_name="Password",
-            placeholder="Enter your Password",
-            description="The Password from ServiceNow instance",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="instanceUrl",
-            display_name="Instance URL",
-            placeholder="Enter your Instance URL",
-            description="The Instance URL from ServiceNow instance",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-    )\
-    .build_decorator()
-class ServiceNowConnector:
-    """ServiceNow connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "ServiceNow"
-
-    def connect(self) -> bool:
-        """Connect to ServiceNow"""
-        print(f"Connecting to {self.name}")
-        return True
-
 @ConnectorBuilder("Zendesk")\
     .in_group("Zendesk")\
     .with_auth_type("API_TOKEN")\
     .with_description("Sync tickets and users from Zendesk")\
     .with_categories(["Issue Tracking"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/zendesk.svg")
         .add_documentation_link(DocumentationLink(
@@ -882,6 +807,8 @@ class ServiceNowConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class ZendeskConnector:

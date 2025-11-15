@@ -15,20 +15,23 @@ def token_refresh(func: Callable) -> Callable:
     @wraps(func)
     async def wrapper(self, *args, **kwargs) -> None:
         try:
+            # Defensive: if a gmail/drive client exists attribute-wise but service is None, try to initialize
+            try:
+                if getattr(self, "service", None) is None and getattr(self, "credentials", None) is not None:
+                    from googleapiclient.discovery import build
+                    api = getattr(self, "API_NAME", None) or getattr(self, "api_name", None) or "gmail"
+                    version = getattr(self, "API_VERSION", None) or getattr(self, "api_version", None) or "v1"
+                    self.service = build(api, version, credentials=self.credentials, cache_discovery=False)
+            except Exception:
+                # proceed to refresh path below if needed
+                pass
+
             # Skip token refresh for delegated credentials
             has_is_delegated = hasattr(self, "is_delegated")
             if has_is_delegated:
                 is_delegated_true = self.is_delegated
                 if not is_delegated_true:
-                    # Check if the method signature requires app_name parameter
-                    import inspect
-                    sig = inspect.signature(self._check_and_refresh_token)
-                    if 'app_name' in sig.parameters:
-                        # Try to get app_name from kwargs or use default
-                        app_name = kwargs.get('app_name', 'drive')
-                        await self._check_and_refresh_token(app_name)
-                    else:
-                        await self._check_and_refresh_token()
+                    await self._check_and_refresh_token()
             return await func(self, *args, **kwargs)
         except Exception as e:
             raise GoogleAuthError(

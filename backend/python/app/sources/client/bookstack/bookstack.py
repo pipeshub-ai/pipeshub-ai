@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel  # type: ignore
@@ -153,7 +154,9 @@ class BookStackClient(IClient):
     @classmethod
     async def build_from_services(
         cls,
+        logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "BookStackClient":
         """Build BookStackClient using configuration service
         Args:
@@ -161,13 +164,13 @@ class BookStackClient(IClient):
         Returns:
             BookStackClient instance
         """
-        config = await cls._get_connector_config(config_service, "bookstack")
+        config = await cls._get_connector_config(logger, config_service, connector_instance_id)
         if not config:
             raise ValueError("BookStack configuration not found")
 
         auth_type = config.get("authType", "BEARER_TOKEN")
         auth_config = config.get("auth", {})
-        if auth_type == "BEARER_TOKEN":
+        if auth_type == "API_TOKEN":
             token_id = auth_config.get("tokenId")
             token_secret = auth_config.get("tokenSecret")
             base_url = auth_config.get("baseURL")
@@ -181,11 +184,14 @@ class BookStackClient(IClient):
             raise ValueError(f"Unsupported auth type: {auth_type}")
 
     @staticmethod
-    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Get connector configuration from config service"""
         try:
-            config_path = f"/services/connectors/{connector_name}/config"
+            config_path = f"/services/connectors/{connector_instance_id}/config"
             config_data = await config_service.get_config(config_path)
+            if not config_data:
+                raise ValueError(f"Failed to get BookStack connector configuration for instance {connector_instance_id}")
             return config_data
         except Exception as e:
-            raise ValueError(f"Failed to get {connector_name} configuration: {str(e)}")
+            logger.error(f"Failed to get {connector_instance_id} configuration: {str(e)}")
+            raise ValueError(f"Failed to get {connector_instance_id} configuration: {str(e)}")
