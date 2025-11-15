@@ -14,6 +14,7 @@ import {
   ForbiddenError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -39,25 +40,36 @@ const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
  * @returns Appropriate HTTP error
  */
 const handleBackendError = (error: any, operation: string): Error => {
-  if (error.response) {
-    const { status, data } = error.response;
+  if (error) {
+    if (
+      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
+      (typeof error?.message === 'string' &&
+        error.message.includes('fetch failed'))
+    ) {
+      return new ServiceUnavailableError(
+        CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
+        error,
+      );
+    }
+    
+    const { statusCode, data, message } = error;
     const errorDetail =
-      data?.detail || data?.reason || data?.message || 'Unknown error';
+      data?.detail || data?.reason || data?.message || message || 'Unknown error';
 
     logger.error(`Backend error during ${operation}`, {
-      status,
+      statusCode,
       errorDetail,
       fullResponse: data,
     });
 
     if (errorDetail === 'ECONNREFUSED') {
-      return new InternalServerError(
+      throw new ServiceUnavailableError(
         CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
         error,
       );
     }
 
-    switch (status) {
+    switch (statusCode) {
       case 400:
         return new BadRequestError(errorDetail);
       case 401:
@@ -115,25 +127,23 @@ const executeConnectorCommand = async (
  *
  * @param connectorResponse - Response from connector service
  * @param res - Express response object
- * @param notFoundMessage - Message for 404 errors
+ * @param operation - Description of the operation that failed
  * @param failureMessage - Message for other failures
  */
 const handleConnectorResponse = (
   connectorResponse: any,
   res: Response,
-  notFoundMessage: string,
+  operation: string,
   failureMessage: string,
 ) => {
   if (connectorResponse && connectorResponse.statusCode !== 200) {
-    throw new BadRequestError(failureMessage);
+    throw handleBackendError(connectorResponse, operation);
   }
-
-  const responseData = connectorResponse.data;
-  if (!responseData) {
-    throw new NotFoundError(notFoundMessage);
+  const connectorsData = connectorResponse.data;
+  if (!connectorsData) {
+    throw new NotFoundError(`${operation} failed: ${failureMessage}`);
   }
-
-  res.status(200).json(responseData);
+  res.status(200).json(connectorsData);
 };
 
 const isUserAdmin = async (req: AuthenticatedUserRequest): Promise<boolean> => {

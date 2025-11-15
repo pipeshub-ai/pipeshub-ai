@@ -646,68 +646,6 @@ class AzureBlobConnector:
         return True
 
 
-@ConnectorBuilder("BookStack")\
-    .in_group("BookStack")\
-    .with_auth_type("BEARER_TOKEN")\
-    .with_description("Sync books and pages from BookStack")\
-    .with_categories(["Documentation"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/bookstack.svg")
-        .add_documentation_link(DocumentationLink(
-            "BookStack API Token Setup",
-            "https://bookstack.org/docs/admin/authentication/",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/bookstack/bookstack',
-            'pipeshub'
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(AuthField(
-            name="tokenId",
-            display_name="Token ID",
-            placeholder="Enter your Token ID",
-            description="The Token ID from BookStack instance",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .add_auth_field(AuthField(
-            name="tokenSecret",
-            display_name="Token Secret",
-            placeholder="Enter your Token Secret",
-            description="The Token Secret from BookStack instance",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="baseURL",
-            display_name="Base URL",
-            placeholder="https://bookstack.example.com",
-            description="The Base URL from BookStack instance",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-        .with_sync_support(True)
-        .with_agent_support(True)
-    )\
-    .build_decorator()
-class BookStackConnector:
-    """BookStack connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "BookStack"
-
-    def connect(self) -> bool:
-        """Connect to BookStack"""
-        print(f"Connecting to {self.name}")
-        return True
-
-
 @ConnectorBuilder("Linear")\
     .in_group("Linear")\
     .with_auth_type("API_TOKEN")\
@@ -822,67 +760,6 @@ class S3Connector:
         print(f"Connecting to {self.name}")
         return True
 
-
-@ConnectorBuilder("ServiceNow")\
-    .in_group("ServiceNow")\
-    .with_auth_type("USERNAME_PASSWORD")\
-    .with_description("Sync issues and projects from ServiceNow")\
-    .with_categories(["Issue Tracking"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/servicenow.svg")
-        .add_documentation_link(DocumentationLink(
-            "ServiceNow Username Password Setup",
-            "https://docs.servicenow.com/bundle/rome-it-service-management/page/product/integration/reference/r_ITSMIntegrationAPI.html",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/servicenow/servicenow',
-            'pipeshub'
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(AuthField(
-            name="username",
-            display_name="Username",
-            placeholder="Enter your Username",
-            description="The Username from ServiceNow instance",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .add_auth_field(AuthField(
-            name="password",
-            display_name="Password",
-            placeholder="Enter your Password",
-            description="The Password from ServiceNow instance",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="instanceUrl",
-            display_name="Instance URL",
-            placeholder="Enter your Instance URL",
-            description="The Instance URL from ServiceNow instance",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-        .with_sync_support(True)
-        .with_agent_support(True)
-    )\
-    .build_decorator()
-class ServiceNowConnector:
-    """ServiceNow connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "ServiceNow"
-
-    def connect(self) -> bool:
-        """Connect to ServiceNow"""
-        print(f"Connecting to {self.name}")
-        return True
 
 @ConnectorBuilder("Zendesk")\
     .in_group("Zendesk")\

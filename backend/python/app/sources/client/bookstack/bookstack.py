@@ -170,7 +170,7 @@ class BookStackClient(IClient):
 
         auth_type = config.get("authType", "BEARER_TOKEN")
         auth_config = config.get("auth", {})
-        if auth_type == "BEARER_TOKEN":
+        if auth_type == "API_TOKEN":
             token_id = auth_config.get("tokenId")
             token_secret = auth_config.get("tokenSecret")
             base_url = auth_config.get("baseURL")

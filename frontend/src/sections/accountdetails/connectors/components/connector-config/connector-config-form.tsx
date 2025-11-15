@@ -396,6 +396,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           ) : (
             <Button
               variant="contained"
+              color="primary"
               onClick={handleSave}
               disabled={saving}
               startIcon={

@@ -2202,6 +2202,7 @@ async def get_connector_registry(
     try:
         # Validate scope
         if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            logger.error(f"Invalid scope: {scope}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Invalid scope. Must be 'personal' or 'team'"
@@ -2216,6 +2217,7 @@ async def get_connector_registry(
         )
 
         if not result:
+            logger.error("No connectors found in registry")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="No connectors found in registry"
@@ -2264,6 +2266,7 @@ async def get_connector_instances(
     try:
         logger.info("Getting connector instances")
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -2271,6 +2274,7 @@ async def get_connector_instances(
 
         # Validate scope
         if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            logger.error(f"Invalid scope: {scope}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Invalid scope. Must be 'personal' or 'team'"
@@ -2320,6 +2324,7 @@ async def get_active_connector_instances(request: Request) -> Dict[str, Any]:
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -2361,6 +2366,7 @@ async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -2409,12 +2415,14 @@ async def get_configured_connector_instances(
     try:
         logger.info("Getting configured connector instances")
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
             )
 
         if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            logger.error(f"Invalid scope: {scope}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Invalid scope. Must be 'personal' or 'team'"
@@ -2493,12 +2501,14 @@ async def create_connector_instance(
         scope = (body.get("scope") or "personal").lower()
 
         if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            logger.error(f"Invalid scope: {scope}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Invalid scope. Must be 'personal' or 'team'"
             )
 
         if not connector_type or not instance_name:
+            logger.error(f"connector_type and instance_name are required: {connector_type} {instance_name}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="connector_type and instance_name are required"
@@ -2507,14 +2517,16 @@ async def create_connector_instance(
         # Verify connector type exists in registry
         metadata = await connector_registry.get_connector_metadata(connector_type)
         if not metadata:
+            logger.error(f"Connector type '{connector_type}' not found in registry")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector type '{connector_type}' not found in registry"
             )
 
         # Check if connector supports requested scope
-        supported_scopes = metadata.get("connectorScopes", [ConnectorScope.PERSONAL])
+        supported_scopes = metadata.get("scope", [ConnectorScope.PERSONAL])
         if scope not in supported_scopes:
+            logger.error(f"Connector '{connector_type}' does not support scope '{scope}'")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Connector '{connector_type}' does not support scope '{scope}'"
@@ -2523,6 +2535,7 @@ async def create_connector_instance(
         # Validate team scope creation permission
         if scope == ConnectorScope.TEAM.value:
             if not is_admin:
+                logger.error("Only administrators can create team connectors")
                 raise HTTPException(
                     status_code=HttpStatusCode.FORBIDDEN.value,
                     detail="Only administrators can create team connectors"
@@ -2539,6 +2552,7 @@ async def create_connector_instance(
         )
 
         if not instance:
+            logger.error("Failed to create connector instance")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail="Failed to create connector instance"
@@ -2548,6 +2562,7 @@ async def create_connector_instance(
 
         # Store initial configuration in etcd if provided
         if config:
+            logger.info(f"Storing initial config for instance {connector_id}")
             config_service = container.config_service()
             config_path = _get_config_path_for_instance(connector_id)
 
@@ -2643,6 +2658,7 @@ async def get_connector_instance(
 
     try:
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -2656,6 +2672,7 @@ async def get_connector_instance(
         )
 
         if not connector:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector instance {connector_id} not found or access denied"
@@ -2704,6 +2721,7 @@ async def get_connector_instance_config(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -2716,6 +2734,7 @@ async def get_connector_instance_config(
             is_admin=is_admin
         )
         if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector instance {connector_id} not found or access denied"
@@ -2811,6 +2830,7 @@ async def update_connector_instance_config(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -2826,22 +2846,26 @@ async def update_connector_instance_config(
             is_admin=is_admin
         )
         if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector instance {connector_id} not found or access denied"
             )
 
         if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can update team connectors")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only administrators can update team connectors"
             )
         if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can update this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can update this connector"
             )
         if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can update this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator can update this connector"
@@ -2911,6 +2935,7 @@ async def update_connector_instance_config(
             is_admin=is_admin
         )
         if not updated_instance:
+            logger.error(f"Failed to update {instance.get('name')} connector instance")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=f"Failed to update {instance.get('name')} connector instance"
@@ -2959,6 +2984,7 @@ async def delete_connector_instance(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -2971,21 +2997,25 @@ async def delete_connector_instance(
             is_admin=is_admin
         )
         if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector instance {connector_id} not found or access denied"
             )
         if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can delete team connectors")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only administrators can delete team connectors"
             )
         if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can delete this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can delete this connector"
             )
         if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can delete this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator can delete this connector"
@@ -3054,6 +3084,7 @@ async def update_connector_instance_name(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -3062,6 +3093,7 @@ async def update_connector_instance_name(
         instance_name = (body or {}).get("instanceName", "")
 
         if not instance_name or not instance_name.strip():
+            logger.error("instanceName is required")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="instanceName is required"
@@ -3074,22 +3106,26 @@ async def update_connector_instance_name(
             is_admin=is_admin
         )
         if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector instance {connector_id} not found or access denied"
             )
 
         if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can update team connectors")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only administrators can update team connectors"
             )
         if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can update this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can update this connector"
             )
         if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can update this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator can update this connector"
@@ -3107,6 +3143,7 @@ async def update_connector_instance_name(
             is_admin=is_admin
         )
         if not updated:
+            logger.error(f"Failed to update {instance.get('name')} connector instance name")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=f"Failed to update {instance.get('name')} connector instance name"
@@ -3167,6 +3204,7 @@ async def get_oauth_authorization_url(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -3179,22 +3217,26 @@ async def get_oauth_authorization_url(
             is_admin=is_admin
         )
         if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector instance {connector_id} not found or access denied"
             )
 
         if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can get OAuth authorization URL for team connectors")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only administrators can get OAuth authorization URL for team connectors"
             )
         if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can get OAuth authorization URL for this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can get OAuth authorization URL for this connector"
             )
         if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can get OAuth authorization URL for this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator can get OAuth authorization URL for this connector"
@@ -3203,6 +3245,7 @@ async def get_oauth_authorization_url(
         # Verify OAuth support
         auth_type = (instance.get("authType") or "").upper()
         if auth_type not in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
+            logger.error("Connector instance does not support OAuth")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Connector instance does not support OAuth"
@@ -3214,6 +3257,7 @@ async def get_oauth_authorization_url(
         config = await config_service.get_config(config_path)
 
         if not config or not config.get("auth"):
+            logger.error("OAuth configuration not found. Please configure first.")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="OAuth configuration not found. Please configure first."
@@ -3370,6 +3414,7 @@ async def handle_oauth_callback(
     org_id = request.state.user.get("orgId")
     is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
     if not user_id or not org_id:
+        logger.error(f"User not authenticated: {user_id} {org_id}")
         raise HTTPException(
             status_code=HttpStatusCode.UNAUTHORIZED.value,
             detail="User not authenticated"
@@ -3406,16 +3451,19 @@ async def handle_oauth_callback(
             }
 
         if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can handle OAuth callback for team connectors")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only administrators can handle OAuth callback for team connectors"
             )
         if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can handle OAuth callback for this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can handle OAuth callback for this connector"
             )
         if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can handle OAuth callback for this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator can handle OAuth callback for this connector"
@@ -3841,6 +3889,7 @@ async def get_connector_instance_filters(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -3852,22 +3901,26 @@ async def get_connector_instance_filters(
             is_admin=is_admin
         )
         if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector instance {connector_id} not found or access denied"
             )
 
         if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can get filter options for team connectors")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only administrators can get filter options for team connectors"
             )
         if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can get filter options for this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can get filter options for this connector"
             )
         if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can get filter options for this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator can get filter options for this connector"
@@ -3877,6 +3930,7 @@ async def get_connector_instance_filters(
         # Get connector metadata
         connector_config = await connector_registry.get_connector_metadata(connector_type)
         if not connector_config:
+            logger.error(f"Connector type {connector_type} not found")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector type {connector_type} not found"
@@ -3892,6 +3946,7 @@ async def get_connector_instance_filters(
 
         if auth_type == "OAUTH":
             if not config or not config.get("credentials"):
+                logger.error("OAuth credentials not found. Please authenticate first.")
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail="OAuth credentials not found. Please authenticate first."
@@ -3900,6 +3955,7 @@ async def get_connector_instance_filters(
 
         elif auth_type in ["OAUTH_ADMIN_CONSENT", "API_TOKEN", "USERNAME_PASSWORD"]:
             if not config or not config.get("auth"):
+                logger.error("Configuration not found. Please configure first.")
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail="Configuration not found. Please configure first."
@@ -3907,6 +3963,7 @@ async def get_connector_instance_filters(
             token_or_credentials = config.get("auth", {})
 
         else:
+            logger.error(f"Unsupported authentication type: {auth_type}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Unsupported authentication type: {auth_type}"
@@ -3964,6 +4021,7 @@ async def save_connector_instance_filters(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -3972,6 +4030,7 @@ async def save_connector_instance_filters(
         filter_selections = body.get("filters", {})
 
         if not filter_selections:
+            logger.error("No filter selections provided")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="No filter selections provided"
@@ -3984,22 +4043,26 @@ async def save_connector_instance_filters(
             is_admin=is_admin
         )
         if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector instance {connector_id} not found or access denied"
             )
 
         if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can save filter options for team connectors")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only administrators can save filter options for team connectors"
             )
         if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can save filter options for this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can save filter options for this connector"
             )
         if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can save filter options for this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator can save filter options for this connector"
@@ -4010,10 +4073,12 @@ async def save_connector_instance_filters(
         config = await config_service.get_config(config_path)
 
         if not config:
+            logger.error("Configuration not found. Please configure first.")
             config = {}
 
         # Update filters
         if "filters" not in config:
+            logger.error("Filters not found. Please configure first.")
             config["filters"] = {}
 
         config["filters"]["values"] = filter_selections
@@ -4077,6 +4142,7 @@ async def toggle_connector_instance(
         body = await request.json()
         toggle_type = body.get("type")
         if not toggle_type or toggle_type not in ["sync", "agent"]:
+            logger.error(f"Toggle type is required and must be 'sync' or 'agent'. Got {toggle_type}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Toggle type is required and must be 'sync' or 'agent'. Got {toggle_type}"
@@ -4091,6 +4157,7 @@ async def toggle_connector_instance(
             CollectionNames.ORGS.value
         )
         if not org:
+            logger.error("Organization not found")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="Organization not found"
@@ -4099,6 +4166,7 @@ async def toggle_connector_instance(
         user_id = user_info["userId"]
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
@@ -4111,21 +4179,25 @@ async def toggle_connector_instance(
             is_admin=is_admin
         )
         if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector instance {connector_id} not found or access denied"
             )
         if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can toggle team connectors")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only administrators can toggle team connectors"
             )
         if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can toggle this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can toggle this connector"
             )
         if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can toggle this connector")
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator can toggle this connector"
@@ -4163,6 +4235,7 @@ async def toggle_connector_instance(
                         auth_creds.get("client_id") and
                         auth_creds.get("adminEmail")
                     ):
+                        logger.error("Connector cannot be enabled until OAuth authentication is completed")
                         raise HTTPException(
                             status_code=HttpStatusCode.BAD_REQUEST.value,
                             detail="Connector cannot be enabled until OAuth authentication is completed"
@@ -4170,12 +4243,14 @@ async def toggle_connector_instance(
                 else:
                     creds = (config or {}).get("credentials") if config else None
                     if not creds or not creds.get("access_token"):
+                        logger.error("Connector cannot be enabled until OAuth authentication is completed")
                         raise HTTPException(
                             status_code=HttpStatusCode.BAD_REQUEST.value,
                             detail="Connector cannot be enabled until OAuth authentication is completed"
                         )
             else:
                 if not instance.get("isConfigured", False):
+                    logger.error("Connector must be configured before enabling")
                     raise HTTPException(
                         status_code=HttpStatusCode.BAD_REQUEST.value,
                         detail="Connector must be configured before enabling"
@@ -4184,12 +4259,14 @@ async def toggle_connector_instance(
         if toggle_type == "agent" and not current_agent_status:
             # Check if connector supports agent functionality
             if not instance.get("supportsAgent", False):
+                logger.error("This connector does not support agent functionality")
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail="This connector does not support agent functionality"
                 )
 
             if not instance.get("isConfigured", False):
+                logger.error("Connector must be configured before enabling")
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail="Connector must be configured before enabling"
@@ -4211,6 +4288,7 @@ async def toggle_connector_instance(
             is_admin=is_admin
         )
         if not success:
+            logger.error(f"Failed to update {instance.get('name')} connector instance status")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Failed to update {instance.get('name')} connector instance status"
@@ -4241,6 +4319,7 @@ async def toggle_connector_instance(
             }
 
             # Send message to sync-events topic
+            logger.info(f"Sending message to sync-events topic: {message}")
             await producer.send_message(topic="entity-events", message=message)
 
         return {
@@ -4287,6 +4366,7 @@ async def get_connector_schema(
     try:
         metadata = await connector_registry.get_connector_metadata(connector_type)
         if not metadata:
+            logger.error(f"Connector type {connector_type} not found")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector type {connector_type} not found"
@@ -4337,12 +4417,14 @@ async def get_active_agent_instances(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
             )
 
         if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            logger.error("Invalid scope. Must be 'personal' or 'team'")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Invalid scope. Must be 'personal' or 'team'"
