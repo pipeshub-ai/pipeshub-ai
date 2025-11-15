@@ -1,4 +1,5 @@
 import asyncio
+import os
 from logging import Logger
 from typing import Any, Dict, Tuple
 
@@ -19,7 +20,16 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 router = APIRouter()
 
 SPARSE_IDF = False
-TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+def _load_test_image() -> str:
+    """Loads the base64 encoded test image from a file."""
+    # Path is relative to this file. Adjust if you place the asset elsewhere.
+    file_path = os.path.join(os.path.dirname(__file__), '..', '..', 'assets', 'test_image.b64')
+    with open(file_path, 'r') as f:
+        return f.read().strip()
+
+# Then, you can define your constant like this:
+TEST_IMAGE = _load_test_image()
 
 
 @router.post("/llm-health-check")
