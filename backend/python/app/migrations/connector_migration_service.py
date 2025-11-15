@@ -8,16 +8,20 @@ Migration Steps:
 1. Read all existing connector apps from the database
 2. Create new app instances with UUID keys
 3. Migrate organizational relationships to new instances
-4. Backfill connectorId on associated records
-5. Copy etcd configurations to new instance paths
-6. Clean up legacy documents and relationships
+4. Migrate user-app relationships to new instances
+5. Backfill connectorId on associated records
+6. Backfill connectorId on record groups
+7. Backfill connectorId on app user groups
+8. Backfill connectorId on roles
+9. Copy etcd configurations to new instance paths
+10. Clean up legacy documents and relationships
 
 The migration is idempotent and can be safely re-run.
 All operations within a single app migration are atomic via transactions.
 """
 
 import asyncio
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
@@ -36,10 +40,18 @@ class ConnectorMigrationService:
 
     This service handles the complete migration process including:
     - Creating new UUID-based connector instances
-    - Migrating organizational relationships
+    - Migrating organizational relationships (org-app edges)
+    - Migrating user-app relationships (user-app edges)
     - Backfilling connector IDs on records
+    - Backfilling connector IDs on record groups
+    - Backfilling connector IDs on app user groups
+    - Backfilling connector IDs on roles
     - Copying etcd configurations
     - Cleaning up legacy data
+
+    Note: Roles (AppRole) are migrated to support connectorId for
+    consistency with other entities, even though they primarily reference
+    connectors by connectorName.
 
     All database operations for a single connector are wrapped in transactions
     for atomicity and safety.
@@ -127,6 +139,20 @@ class ConnectorMigrationService:
             self.logger.error(error_msg)
             raise ConnectorMigrationError(error_msg) from e
 
+    def _get_connector_info(self, legacy_app: Dict) -> Tuple[str, str]:
+        """
+        Extract connector name and key from legacy app document.
+
+        Args:
+            legacy_app: Legacy app document
+
+        Returns:
+            tuple: (connector_name, legacy_key)
+        """
+        legacy_key = legacy_app.get("_key", "")
+        connector_name = legacy_app.get("type") or legacy_app.get("name", "Unknown")
+        return connector_name, legacy_key
+
     async def _migrate_single_app_with_transaction(
         self,
         legacy_app: Dict
@@ -142,8 +168,7 @@ class ConnectorMigrationService:
         Returns:
             Dict: Result with success status and details
         """
-        legacy_key = legacy_app.get("_key")
-        legacy_type = legacy_app.get("type") or legacy_app.get("name", "Unknown")
+        connector_name, legacy_key = self._get_connector_info(legacy_app)
 
         # Start transaction with all collections we'll modify
         transaction = None
@@ -154,10 +179,13 @@ class ConnectorMigrationService:
                     CollectionNames.ORG_APP_RELATION.value,
                     CollectionNames.USER_APP_RELATION.value,
                     CollectionNames.RECORDS.value,
+                    CollectionNames.RECORD_GROUPS.value,
+                    CollectionNames.GROUPS.value,
+                    CollectionNames.ROLES.value,
                 ]
             )
 
-            self.logger.info(f"🔄 Transaction started for app: {legacy_type} ({legacy_key})")
+            self.logger.info(f"🔄 Transaction started for app: {connector_name} ({legacy_key})")
 
             # Step 1: Create new UUID-based instance
             new_app = await self._create_new_app_instance(legacy_app, transaction)
@@ -165,25 +193,45 @@ class ConnectorMigrationService:
             # Step 2: Migrate organizational relationships
             await self._fix_org_edges(legacy_app, new_app, transaction)
 
-            # Step 3: Backfill connector IDs on records
+            # Step 3: Migrate user-app relationships
+            updated_user_edges = await self._fix_user_app_edges(
+                legacy_app, new_app, transaction
+            )
+
+            # Step 4: Backfill connector IDs on records
             updated_records = await self._backfill_record_connector_ids(
                 legacy_app, new_app, transaction
             )
 
-            # Step 4: Delete legacy app and edges
+            # Step 5: Backfill connector IDs on record groups
+            updated_record_groups = await self._backfill_record_group_connector_ids(
+                legacy_app, new_app, transaction
+            )
+
+            # Step 6: Backfill connector IDs on app user groups
+            updated_user_groups = await self._backfill_user_group_connector_ids(
+                legacy_app, new_app, transaction
+            )
+
+            # Step 7: Backfill connector IDs on roles
+            updated_roles = await self._backfill_role_connector_ids(
+                legacy_app, new_app, transaction
+            )
+
+            # Step 8: Delete legacy app and edges
             await self._delete_legacy_app_and_edges(legacy_app, transaction)
 
-            # Step 5: Commit transaction
-            self.logger.info(f"💾 Committing transaction for {legacy_type}...")
+            # Step 9: Commit transaction
+            self.logger.info(f"💾 Committing transaction for {connector_name}...")
             await asyncio.to_thread(lambda: transaction.commit_transaction())
-            self.logger.info(f"✅ Transaction committed for {legacy_type}")
+            self.logger.info(f"✅ Transaction committed for {connector_name}")
 
-            # Step 6: Copy etcd config (outside transaction - non-critical)
+            # Step 10: Copy etcd config (outside transaction - non-critical)
             try:
                 await self._copy_etcd_config(legacy_app, new_app)
             except Exception as config_error:
                 self.logger.warning(
-                    f"Config copy failed for {legacy_type} (non-fatal): {config_error}"
+                    f"Config copy failed for {connector_name} (non-fatal): {config_error}"
                 )
 
             return {
@@ -191,27 +239,31 @@ class ConnectorMigrationService:
                 "legacy_key": legacy_key,
                 "new_key": new_app["_key"],
                 "updated_records": updated_records,
-                "connector_type": legacy_type
+                "updated_record_groups": updated_record_groups,
+                "updated_user_groups": updated_user_groups,
+                "updated_roles": updated_roles,
+                "updated_user_edges": updated_user_edges,
+                "connector_type": connector_name
             }
 
         except Exception as e:
             # Rollback transaction on any error
             if transaction:
                 try:
-                    self.logger.warning(f"🔄 Rolling back transaction for {legacy_type}...")
+                    self.logger.warning(f"🔄 Rolling back transaction for {connector_name}...")
                     await asyncio.to_thread(lambda: transaction.abort_transaction())
-                    self.logger.info(f"✅ Transaction rolled back for {legacy_type}")
+                    self.logger.info(f"✅ Transaction rolled back for {connector_name}")
                 except Exception as rollback_error:
                     self.logger.error(
-                        f"❌ Transaction rollback failed for {legacy_type}: {rollback_error}"
+                        f"❌ Transaction rollback failed for {connector_name}: {rollback_error}"
                     )
 
-            error_msg = f"Migration failed for {legacy_type} ({legacy_key}): {str(e)}"
+            error_msg = f"Migration failed for {connector_name} ({legacy_key}): {str(e)}"
             self.logger.error(error_msg)
             return {
                 "success": False,
                 "legacy_key": legacy_key,
-                "connector_type": legacy_type,
+                "connector_type": connector_name,
                 "error": str(e)
             }
 
@@ -239,7 +291,7 @@ class ConnectorMigrationService:
         new_app = {
             "_key": new_key,
             "name": legacy_app.get("name"),
-            "type": legacy_app.get("name"),
+            "type": legacy_app.get("type") or legacy_app.get("name"),
             "appGroup": legacy_app.get("appGroup"),
             "authType": legacy_app.get("authType"),
             "isActive": legacy_app.get("isActive", False),
@@ -333,28 +385,38 @@ class ConnectorMigrationService:
                 "Manual cleanup may be required."
             )
 
-    async def _fix_org_edges(
+    async def _migrate_app_edges(
         self,
+        edge_collection: str,
         legacy_app: Dict,
         new_app: Dict,
-        transaction
-    ) -> None:
+        transaction,
+        edge_type: str,
+        is_non_fatal: bool = False
+    ) -> int:
         """
-        Migrate organizational relationships from legacy app to new app instance.
+        Generic helper to migrate edges from legacy app to new app instance.
 
-        Creates new edges connecting organizations to the new app instance,
-        preserving all edge attributes from the legacy relationships.
+        Creates new edges pointing to the new app and immediately deletes old edges
+        to prevent duplicates. Preserves all edge attributes.
 
         Args:
+            edge_collection: Name of the edge collection
             legacy_app: Legacy app document
             new_app: New app document with UUID key
             transaction: Active ArangoDB transaction
+            edge_type: Human-readable edge type for logging
+            is_non_fatal: If True, return 0 on errors instead of raising
+
+        Returns:
+            int: Number of edges migrated
         """
         old_id = f"{CollectionNames.APPS.value}/{legacy_app['_key']}"
+        new_id = f"{CollectionNames.APPS.value}/{new_app['_key']}"
 
-        # Find all organizational relationships to the legacy app
+        # Find all edges pointing to the legacy app
         query = f"""
-            FOR edge IN {CollectionNames.ORG_APP_RELATION.value}
+            FOR edge IN {edge_collection}
               FILTER edge._to == @old_id
               RETURN edge
         """
@@ -364,16 +426,20 @@ class ConnectorMigrationService:
                 transaction.aql.execute(query, bind_vars={"old_id": old_id})
             )
         except Exception as e:
-            self.logger.error(
-                f"Failed to query org-app edges for {legacy_app.get('_key')}: {e}"
-            )
-            raise ConnectorMigrationError("Failed to query organizational edges") from e
+            if is_non_fatal:
+                self.logger.debug(
+                    f"Could not query {edge_type} edges for {legacy_app.get('_key')}: {e}"
+                )
+                return 0
+            else:
+                self.logger.error(
+                    f"Failed to query {edge_type} edges for {legacy_app.get('_key')}: {e}"
+                )
+                raise ConnectorMigrationError(f"Failed to query {edge_type} edges") from e
 
         if not edges:
-            self.logger.debug(
-                f"No organizational edges found for {legacy_app.get('_key')}"
-            )
-            return
+            self.logger.debug(f"No {edge_type} edges found for {legacy_app.get('_key')}")
+            return 0
 
         # Create new edges pointing to the new app instance
         new_edges = []
@@ -386,67 +452,112 @@ class ConnectorMigrationService:
             }
             new_edges.append({
                 "_from": edge["_from"],
-                "_to": f"{CollectionNames.APPS.value}/{new_app['_key']}",
+                "_to": new_id,
                 **edge_data,
             })
 
         try:
+            # Create new edges
             await self.arango.batch_create_edges(
                 new_edges,
-                collection=CollectionNames.ORG_APP_RELATION.value,
+                collection=edge_collection,
                 transaction=transaction
             )
             self.logger.info(
-                f"Created {len(new_edges)} org-app edges to new app instance "
-                f"{new_app['_key']}"
+                f"Created {len(new_edges)} {edge_type} edges to new app instance {new_app['_key']}"
             )
-        except Exception as e:
-            error_msg = (
-                f"Failed to create {len(new_edges)} org-app edges for "
-                f"{new_app['_key']}: {e}"
-            )
-            self.logger.error(error_msg)
-            raise ConnectorMigrationError(error_msg) from e
 
-    async def _backfill_record_connector_ids(
+            # Immediately delete old edges to prevent duplicates
+            delete_query = f"""
+                FOR edge IN {edge_collection}
+                  FILTER edge._to == @old_id
+                  REMOVE edge IN {edge_collection}
+            """
+            transaction.aql.execute(delete_query, bind_vars={"old_id": old_id})
+            self.logger.info(f"Deleted {len(edges)} old {edge_type} edges pointing to legacy app")
+
+            return len(new_edges)
+        except Exception as e:
+            error_msg = f"Failed to migrate {edge_type} edges for {new_app['_key']}: {e}"
+            if is_non_fatal:
+                self.logger.warning(error_msg)
+                return 0
+            else:
+                self.logger.error(error_msg)
+                raise ConnectorMigrationError(error_msg) from e
+
+    async def _fix_org_edges(
+        self,
+        legacy_app: Dict,
+        new_app: Dict,
+        transaction
+    ) -> None:
+        """Migrate organizational relationships from legacy app to new app instance."""
+        await self._migrate_app_edges(
+            CollectionNames.ORG_APP_RELATION.value,
+            legacy_app,
+            new_app,
+            transaction,
+            "org-app",
+            is_non_fatal=False
+        )
+
+    async def _fix_user_app_edges(
         self,
         legacy_app: Dict,
         new_app: Dict,
         transaction
     ) -> int:
-        """
-        Update records to reference the new connector instance ID.
+        """Migrate user-app relationships from legacy app to new app instance."""
+        return await self._migrate_app_edges(
+            CollectionNames.USER_APP_RELATION.value,
+            legacy_app,
+            new_app,
+            transaction,
+            "user-app",
+            is_non_fatal=True  # Collection might not exist in some deployments
+        )
 
-        Finds all records associated with the legacy connector (by name/type)
-        that don't have a connectorId set, and updates them to reference
-        the new UUID-based connector instance.
+    async def _backfill_connector_ids(
+        self,
+        collection_name: str,
+        connector_name: str,
+        legacy_key: str,
+        new_connector_id: str,
+        transaction,
+        entity_type: str,
+        is_non_fatal: bool = False
+    ) -> int:
+        """
+        Generic helper to backfill connectorId on entities in a collection.
+
+        Only updates entities where connectorId is null, empty, or equals legacy_key.
+        This prevents overwriting valid UUID-based connectorIds from other instances.
 
         Args:
-            legacy_app: Legacy app document
-            new_app: New app document with UUID key
+            collection_name: Name of the collection to update
+            connector_name: Connector name/type to filter by
+            legacy_key: Legacy app key to identify entities to migrate
+            new_connector_id: New UUID-based connector instance ID
             transaction: Active ArangoDB transaction
+            entity_type: Human-readable entity type for logging
+            is_non_fatal: If True, log warnings instead of raising errors
 
         Returns:
-            int: Number of records updated
-
-        Raises:
-            ConnectorMigrationError: If backfill operation fails
+            int: Number of entities updated
         """
-        connector_name = legacy_app.get("type") or legacy_app.get("name")
-        if not connector_name:
-            self.logger.warning(
-                f"Legacy app {legacy_app.get('_key')} has no type or name, "
-                "skipping record backfill"
-            )
-            return 0
-
         update_query = f"""
             LET updated = (
-              FOR r IN {CollectionNames.RECORDS.value}
-                FILTER r.connectorName == @connector_name
-                  AND (r.connectorId == null OR r.connectorId == '')
-                UPDATE r WITH {{ connectorId: @connector_id }}
-                  IN {CollectionNames.RECORDS.value}
+              FOR doc IN {collection_name}
+                FILTER doc.connectorName == @connector_name
+                  AND (
+                    doc.connectorId == null
+                    OR doc.connectorId == ''
+                    OR doc.connectorId == @legacy_key
+                  )
+                UPDATE doc WITH {{ connectorId: @connector_id }}
+                  IN {collection_name}
+                  OPTIONS {{ keepNull: false, mergeObjects: true }}
                 RETURN NEW
             )
             RETURN LENGTH(updated)
@@ -457,25 +568,127 @@ class ConnectorMigrationService:
                 update_query,
                 bind_vars={
                     "connector_name": connector_name,
-                    "connector_id": new_app["_key"],
+                    "connector_id": new_connector_id,
+                    "legacy_key": legacy_key,
                 },
             )
-            # Avoid materializing full cursor to prevent 'cursor count not enabled'
             updated_count = next(cursor, 0) if cursor is not None else 0
 
             if updated_count > 0:
                 self.logger.info(
-                    f"Backfilled connectorId on {updated_count} records for {connector_name}"
+                    f"Backfilled connectorId on {updated_count} {entity_type} for {connector_name}"
                 )
 
             return int(updated_count or 0)
         except Exception as e:
             error_msg = (
-                f"Failed to backfill connectorId for connector "
+                f"Failed to backfill connectorId for {entity_type} of connector "
                 f"{connector_name}: {e}"
             )
-            self.logger.error(error_msg)
-            raise ConnectorMigrationError(error_msg) from e
+            if is_non_fatal:
+                self.logger.warning(f"{error_msg} (non-fatal)")
+                return 0
+            else:
+                self.logger.error(error_msg)
+                raise ConnectorMigrationError(error_msg) from e
+
+    async def _backfill_record_connector_ids(
+        self,
+        legacy_app: Dict,
+        new_app: Dict,
+        transaction
+    ) -> int:
+        """Update records to reference the new connector instance ID."""
+        connector_name, legacy_key = self._get_connector_info(legacy_app)
+        if not connector_name or connector_name == "Unknown":
+            self.logger.warning(
+                f"Legacy app {legacy_key} has no type or name, skipping record backfill"
+            )
+            return 0
+
+        return await self._backfill_connector_ids(
+            CollectionNames.RECORDS.value,
+            connector_name,
+            legacy_key,
+            new_app["_key"],
+            transaction,
+            "records"
+        )
+
+    async def _backfill_record_group_connector_ids(
+        self,
+        legacy_app: Dict,
+        new_app: Dict,
+        transaction
+    ) -> int:
+        """Update record groups to reference the new connector instance ID."""
+        connector_name, legacy_key = self._get_connector_info(legacy_app)
+        if not connector_name or connector_name == "Unknown":
+            self.logger.warning(
+                f"Legacy app {legacy_key} has no type or name, skipping record group backfill"
+            )
+            return 0
+
+        return await self._backfill_connector_ids(
+            CollectionNames.RECORD_GROUPS.value,
+            connector_name,
+            legacy_key,
+            new_app["_key"],
+            transaction,
+            "record groups"
+        )
+
+    async def _backfill_user_group_connector_ids(
+        self,
+        legacy_app: Dict,
+        new_app: Dict,
+        transaction
+    ) -> int:
+        """Update app user groups to reference the new connector instance ID."""
+        connector_name, legacy_key = self._get_connector_info(legacy_app)
+        if not connector_name or connector_name == "Unknown":
+            self.logger.warning(
+                f"Legacy app {legacy_key} has no type or name, skipping user group backfill"
+            )
+            return 0
+
+        return await self._backfill_connector_ids(
+            CollectionNames.GROUPS.value,
+            connector_name,
+            legacy_key,
+            new_app["_key"],
+            transaction,
+            "user groups"
+        )
+
+    async def _backfill_role_connector_ids(
+        self,
+        legacy_app: Dict,
+        new_app: Dict,
+        transaction
+    ) -> int:
+        """
+        Update roles to reference the new connector instance ID.
+
+        Note: Roles may not have connectorId in the schema yet, but we backfill
+        it for future compatibility and consistency with other entities.
+        """
+        connector_name, legacy_key = self._get_connector_info(legacy_app)
+        if not connector_name or connector_name == "Unknown":
+            self.logger.warning(
+                f"Legacy app {legacy_key} has no type or name, skipping role backfill"
+            )
+            return 0
+
+        return await self._backfill_connector_ids(
+            CollectionNames.ROLES.value,
+            connector_name,
+            legacy_key,
+            new_app["_key"],
+            transaction,
+            "roles",
+            is_non_fatal=True  # Non-fatal if schema doesn't support it yet
+        )
 
     async def _delete_legacy_app_and_edges(
         self,
@@ -483,10 +696,10 @@ class ConnectorMigrationService:
         transaction
     ) -> None:
         """
-        Remove legacy app document and all associated edges.
+        Remove legacy app document and any remaining associated edges.
 
-        Cleans up the legacy connector instance and all relationships to avoid
-        dangling references. Targets org-app and user-app relationship collections.
+        Note: Edges are already deleted during migration steps, but this serves
+        as a safety cleanup. The edge deletion here is idempotent.
 
         Args:
             legacy_app: Legacy app document to delete
@@ -494,39 +707,25 @@ class ConnectorMigrationService:
         """
         old_id = f"{CollectionNames.APPS.value}/{legacy_app['_key']}"
 
-        # Delete organizational edges (bidirectional safety check)
-        try:
-            delete_org_edges_query = f"""
-                FOR edge IN {CollectionNames.ORG_APP_RELATION.value}
-                  FILTER edge._to == @old_id OR edge._from == @old_id
-                  REMOVE edge IN {CollectionNames.ORG_APP_RELATION.value}
-            """
-            transaction.aql.execute(
-                delete_org_edges_query, bind_vars={"old_id": old_id}
-            )
-            self.logger.debug(f"Deleted org-app edges for {legacy_app['_key']}")
-        except Exception as e:
-            self.logger.warning(
-                f"Failed to delete org-app edges for {legacy_app['_key']}: {e}"
-            )
-            # Don't raise - continue with deletion
+        # Safety cleanup: Delete any remaining edges (idempotent operation)
+        # Edges should already be deleted, but this ensures complete cleanup
+        edge_collections = [
+            (CollectionNames.ORG_APP_RELATION.value, "org-app"),
+            (CollectionNames.USER_APP_RELATION.value, "user-app"),
+        ]
 
-        # Delete user-app edges if collection exists
-        try:
-            delete_user_edges_query = f"""
-                FOR edge IN {CollectionNames.USER_APP_RELATION.value}
-                  FILTER edge._to == @old_id OR edge._from == @old_id
-                  REMOVE edge IN {CollectionNames.USER_APP_RELATION.value}
-            """
-            transaction.aql.execute(
-                delete_user_edges_query, bind_vars={"old_id": old_id}
-            )
-            self.logger.debug(f"Deleted user-app edges for {legacy_app['_key']}")
-        except Exception as e:
-            # Non-fatal: collection might not exist in this deployment
-            self.logger.debug(
-                f"Could not delete user-app edges for {legacy_app['_key']}: {e}"
-            )
+        for collection, edge_type in edge_collections:
+            try:
+                delete_query = f"""
+                    FOR edge IN {collection}
+                      FILTER edge._to == @old_id OR edge._from == @old_id
+                      REMOVE edge IN {collection}
+                """
+                transaction.aql.execute(delete_query, bind_vars={"old_id": old_id})
+                self.logger.debug(f"Cleaned up any remaining {edge_type} edges for {legacy_app['_key']}")
+            except Exception as e:
+                # Non-fatal: edges may already be deleted or collection might not exist
+                self.logger.debug(f"Could not clean up {edge_type} edges for {legacy_app['_key']}: {e}")
 
         # Delete the legacy app document
         try:
@@ -538,7 +737,7 @@ class ConnectorMigrationService:
             )
             self.logger.info(
                 f"Deleted legacy app '{legacy_app['_key']}' "
-                f"({legacy_app.get('type')}) and its edges"
+                f"({legacy_app.get('type') or legacy_app.get('name', 'Unknown')})"
             )
         except Exception as e:
             error_msg = f"Failed to delete legacy app {legacy_app['_key']}: {e}"
@@ -589,11 +788,10 @@ class ConnectorMigrationService:
 
         # Process each legacy app with its own transaction
         for idx, legacy_app in enumerate(apps, 1):
-            legacy_key = legacy_app.get("_key")
-            legacy_type = legacy_app.get("type") or legacy_app.get("name", "Unknown")
+            connector_name, legacy_key = self._get_connector_info(legacy_app)
 
             self.logger.info(
-                f"\n[{idx}/{len(apps)}] Migrating: {legacy_type} ({legacy_key})"
+                f"\n[{idx}/{len(apps)}] Migrating: {connector_name} ({legacy_key})"
             )
 
             # Migrate single app with transaction
@@ -601,20 +799,32 @@ class ConnectorMigrationService:
 
             if result["success"]:
                 success_count += 1
-                updated_records = result.get("updated_records", 0)
-                self.logger.info(
-                    f"  ✓ Successfully migrated {legacy_type}"
-                )
-                if updated_records > 0:
+                # Log summary of updates (only if there were any)
+                updates = []
+                if result.get("updated_records", 0) > 0:
+                    updates.append(f"{result['updated_records']} records")
+                if result.get("updated_record_groups", 0) > 0:
+                    updates.append(f"{result['updated_record_groups']} record groups")
+                if result.get("updated_user_groups", 0) > 0:
+                    updates.append(f"{result['updated_user_groups']} user groups")
+                if result.get("updated_roles", 0) > 0:
+                    updates.append(f"{result['updated_roles']} roles")
+                if result.get("updated_user_edges", 0) > 0:
+                    updates.append(f"{result['updated_user_edges']} user-app edges")
+
+                if updates:
                     self.logger.info(
-                        f"  ✓ Backfilled connectorId on {updated_records} records"
+                        f"  ✓ Successfully migrated {connector_name}: "
+                        f"updated {', '.join(updates)}"
                     )
+                else:
+                    self.logger.info(f"  ✓ Successfully migrated {connector_name} (no entities to update)")
             else:
                 error_count += 1
                 error_msg = result.get("error", "Unknown error")
                 self.logger.error(f"  ✗ {error_msg}")
                 errors.append({
-                    "app": legacy_type,
+                    "app": connector_name,
                     "key": legacy_key,
                     "error": error_msg
                 })
