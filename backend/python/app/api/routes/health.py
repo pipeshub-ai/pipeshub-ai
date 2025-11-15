@@ -20,7 +20,17 @@ router = APIRouter()
 
 SPARSE_IDF = False
 
-TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAG4AAABuCAIAAABJObGsAAACcklEQVR4nO3cP07jQBhAcbyi2HJv4NNYlHQ+gY/lC3i6lCin8Q0o6bzFSIFM/GcmfhFy9H4dUaQvefrYANqZ6vNrehHhz2+/gOdhSowpMabEvCZf//tbPW7Yz4+45xvkVmLSrYymrmPHVH0/+3g3wYP6amFQB//M1/fpsruVGFNiTIkxJcaUGFNiTIkxJcaUGFNiTIkxJcaUGFNiTIkxJcaUGFNiTIkxJcaUGFNiTIkxJcaUGFNiTIkxJcaUGFNiTIkxJcaUGFNiTIkxJcaUGFNiTIkxJcaUmCo5Wv98Rw8943g86Vbqbm4lxpQYU2K8pQAb5FZiFm4poC8PqBYuD5joywOqm8sDom6ibymovKXgYUyJMSXGlBhTYkyJMSXGlBhTYkyJMSXGlBhTYkyJMSXGlBhTYkyJMSXGlBhTYkyJMSXGlBhTYkyJMSXGlBhTYkyJMSXGlJj5/6q6KYTm55dteyZezNygJlwNOrcPGtSEq0HntnhQccoYsa7r2wfZoDFiOqgJL3TQGDEZFB8sClr2DR5CU9d1MjW+jrquk1XdIzRhbdD1qu7RhLVByaquK0gZO648gaoZO24MImrGjuuD8mvmptzseJm9s+Zmx+9B+2pudrwMyqzpJzgmK2XmSkZ7FjNzJb8H3buYmSt5GZSzmG4lxpSY+Z8rk8Nfw1D8Dbt0fCx92vXhr6EZigctHB9LJIe/mqF40O3xsYRbicm9peDjlPvv9DiOb+/3/zZy3EFuJSY35dt7O47j5tN2bsqhBxVs5ebs/W/v0IOKb3T5OM38HSW+IOTtHXfQnZfjxPEX7Hs76CDvGcL4CY4xJeY/R4frgprQnxEAAAAASUVORK5CYII="
+import os
+
+def _load_test_image() -> str:
+    """Loads the base64 encoded test image from a file."""
+    # Path is relative to this file. Adjust if you place the asset elsewhere.
+    file_path = os.path.join(os.path.dirname(__file__), '..', '..', 'assets', 'test_image.b64')
+    with open(file_path, 'r') as f:
+        return f.read().strip()
+
+# Then, you can define your constant like this:
+TEST_IMAGE = _load_test_image()
 
 
 @router.post("/llm-health-check")
