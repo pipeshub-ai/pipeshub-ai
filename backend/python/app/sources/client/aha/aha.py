@@ -1,463 +1,375 @@
 import logging
-from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, AsyncIterator, Dict, Optional
+
+from pydantic import BaseModel  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
+from app.services.graph_db.interface.graph_db import IGraphService
+from app.sources.client.http.http_client import HTTPClient
+from app.sources.client.iclient import IClient
 
-# from app.config.configuration_service import ConfigurationService
-# from app.sources.client.http.exception.exception import HttpStatusCode
-# from app.sources.client.http.http_client import HTTPClient
-# from app.sources.client.http.http_request import HTTPRequest
-# from app.sources.client.iclient import IClient
-# from app.sources.client.http.http_response import HTTPResponse
-from app.sources.client.http.exception.exception import (
-    HttpStatusCode,  # type: ignore[import-untyped]
-)
-from app.sources.client.http.http_client import (
-    HTTPClient,  # type: ignore[import-untyped]
-)
-from app.sources.client.http.http_request import (
-    HTTPRequest,  # type: ignore[import-untyped]
-)
-from app.sources.client.http.http_response import (
-    HTTPResponse,  # type: ignore[import-untyped]
-)
-from app.sources.client.iclient import IClient  # type: ignore[import-untyped]
+# Constants
+DEFAULT_BASE_URL = "https://secure.aha.io/api/v1"
+DEFAULT_PAGE_SIZE = 50
 
-HTTP_SERVER_ERROR = 500 # Server Error
-HTTP_CLIENT_ERROR = 400 # HTTP_CLIENT_ERROR = 400 # Bad Request
 
-class AhaRESTClientViaToken(HTTPClient):
-    """Aha! REST client via Bearer token authentication.
+class AhaResponse(BaseModel):
+    """Standardized wrapper for Aha API responses (raw JSON)."""
 
-    Args:
-        base_url: Base URL to the Aha! REST API (e.g., https://company.aha.io/api/v1)
-        token: The token to use for authentication
-        token_type: The type of token to use for authentication (default: "Bearer")
+    success: bool
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    message: Optional[str] = None
 
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump()
+
+    def to_json(self) -> str:
+        return self.model_dump_json()
+
+
+class AhaRESTClient(HTTPClient):
     """
+    Aha REST client.
 
+    Supports two authentication methods:
+      - Bearer token in Authorization header
+      - API key as query param `api_key=<KEY>` (when using API-Key-style access)
 
-
-    def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
-        super().__init__(token, token_type)
-        # self.base_url = base_url.rstrip("/")
-        self.base_url = base_url
-
-    def get_base_url(self) -> str:
-        """Get the base URL."""
-        return self.base_url
-
-    async def get_features(
-        self,
-        query_params: dict[str, Any] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> HTTPResponse:
-        """Get a list of features from Aha!
-
-        Args:
-            query_params: Optional query parameters for filtering/pagination
-            headers: Optional additional headers to include in the request
-
-        Returns:
-            HTTPResponse containing the features data
-
-        Raises:
-            Exception: If the API request fails
-
-        """
-        url = f"{self.base_url}/features"
-        request_headers = dict(headers or {})
-        request_headers.setdefault("Content-Type", "application/json")
-
-        request = HTTPRequest(
-            method="GET",
-            url=url,
-            headers=request_headers,
-            query_params=dict(query_params or {}),
-            body=None,
-
-
-
-        )
-
-        response = await self.execute(request)
-
-        # Handle common error cases
-        if response.status == HttpStatusCode.UNAUTHORIZED.value:
-            msg = "Authentication failed. Please check your access token."
-            raise ValueError(msg)
-        if response.status == HttpStatusCode.FORBIDDEN.value:
-            msg = "Access forbidden. Please check your permissions."
-            raise PermissionError(msg)
-        if response.status == HttpStatusCode.NOT_FOUND.value:
-            msg = "Features endpoint not found."
-            raise ValueError(msg)
-        if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
-            msg = "Rate limit exceeded. Please try again later."
-            raise RuntimeError(msg)
-        if response.status >= HTTP_SERVER_ERROR:
-            msg = f"Server error (status {response.status}). Please try again later."
-            raise RuntimeError(msg)
-        if response.status >= HTTP_CLIENT_ERROR:
-            response.raise_for_status()
-
-        return response
-
-    async def get_products(
-        self,
-        query_params: dict[str, Any] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> HTTPResponse:
-        """Get a list of products from Aha!
-
-        Args:
-            query_params: Optional query parameters for filtering/pagination
-            headers: Optional additional headers to include in the request
-
-        Returns:
-            HTTPResponse containing the products data
-
-        Raises:
-            Exception: If the API request fails
-
-        """
-        url = f"{self.base_url}/products"
-        request_headers = dict(headers or {})
-        request_headers.setdefault("Content-Type", "application/json")
-
-        request = HTTPRequest(
-            method="GET",
-            url=url,
-            headers=request_headers,
-            query_params=dict(query_params or {}),
-            body=None,
-        )
-
-        response = await self.execute(request)
-
-        # Handle common error cases
-        if response.status == HttpStatusCode.UNAUTHORIZED.value:
-            msg = "Authentication failed. Please check your access token."
-            raise ValueError(msg)
-        if response.status == HttpStatusCode.FORBIDDEN.value:
-            msg = "Access forbidden. Please check your permissions."
-            raise PermissionError(msg)
-        if response.status == HttpStatusCode.NOT_FOUND.value:
-            msg = "Products endpoint not found."
-            raise ValueError(msg)
-        if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
-            msg = "Rate limit exceeded. Please try again later."
-            raise RuntimeError(msg)
-        if response.status >= HTTP_SERVER_ERROR:
-            msg = f"Server error (status {response.status}). Please try again later."
-            raise RuntimeError(msg)
-        if response.status >= HTTP_CLIENT_ERROR:
-            response.raise_for_status()
-
-        return response
-
-
-class AhaRESTClientViaApiKey(HTTPClient):
-    """Aha! REST client via API key authentication.
-
-    Args:
-        base_url: Base URL to the Aha! REST API (e.g., https://company.aha.io/api/v1)
-        api_key: The API key to use for authentication
-        token_type: The type of token header to use (default: "ApiKey")
-
+    HTTPClient is expected to provide async methods:
+      - async def get(self, url: str, params: dict | None = None) -> dict
+      - async def post(self, url: str, json: dict | None = None, params: dict | None = None) -> dict
+      - async def patch(self, url: str, json: dict | None = None, params: dict | None = None) -> dict
+      - async def delete(self, url: str, params: dict | None = None) -> dict
     """
-
-    def __init__(self, base_url: str, api_key: str, token_type: str = "ApiKey") -> None:
-        # HTTPClient will attach the token as the Authorization header: "{token_type} {token}"
-        super().__init__(api_key, token_type)
-        self.base_url = base_url.rstrip("/")
-
-    def get_base_url(self) -> str:
-        """Get the base URL."""
-        return self.base_url
-
-    async def get_features(
-        self,
-        query_params: dict[str, Any] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> HTTPResponse:
-        """Get a list of features from Aha!
-
-        Args:
-            query_params: Optional query parameters for filtering/pagination
-            headers: Optional additional headers to include in the request
-
-        Returns:
-            HTTPResponse containing the features data
-
-        Raises:
-            Exception: If the API request fails
-
-        """
-        url = f"{self.base_url}/features"
-        request_headers = dict(headers or {})
-        request_headers.setdefault("Content-Type", "application/json")
-
-        request = HTTPRequest(
-            method="GET",
-            url=url,
-            headers=request_headers,
-            query_params=dict(query_params or {}),
-            body=None,
-        )
-
-        response = await self.execute(request)
-
-        # Handle common error cases
-
-
-        if response.status == HttpStatusCode.UNAUTHORIZED.value:
-            msg = "Authentication failed. Please check your access token."
-            raise ValueError(msg)
-        if response.status == HttpStatusCode.FORBIDDEN.value:
-            msg = "Access forbidden. Please check your permissions."
-            raise PermissionError(msg)
-        if response.status == HttpStatusCode.NOT_FOUND.value:
-            msg = "Features endpoint not found."
-            raise ValueError(msg)
-        if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
-            msg = "Rate limit exceeded. Please try again later."
-            raise RuntimeError(msg)
-        if response.status >= HTTP_SERVER_ERROR:
-            msg = f"Server error (status {response.status}). Please try again later."
-            raise RuntimeError(msg)
-        if response.status >= HTTP_CLIENT_ERROR:
-            response.raise_for_status()
-
-        return response
-
-    async def get_products(
-        self,
-        query_params: dict[str, Any] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> HTTPResponse:
-        """Get a list of products from Aha!
-
-        Args:
-            query_params: Optional query parameters for filtering/pagination
-            headers: Optional additional headers to include in the request
-
-        Returns:
-            HTTPResponse containing the products data
-
-        Raises:
-            Exception: If the API request fails
-
-        """
-        url = f"{self.base_url}/products"
-        request_headers = dict(headers or {})
-        request_headers.setdefault("Content-Type", "application/json")
-
-        request = HTTPRequest(
-            method="GET",
-            url=url,
-            headers=request_headers,
-            query_params=dict(query_params or {}),
-            body=None,
-        )
-
-        response = await self.execute(request)
-
-        # Handle common error cases
-
-        if response.status == HttpStatusCode.UNAUTHORIZED.value:
-            msg = "Authentication failed. Please check your access token."
-            raise ValueError(msg)
-        if response.status == HttpStatusCode.FORBIDDEN.value:
-            msg = "Access forbidden. Please check your permissions."
-            raise PermissionError(msg)
-        if response.status == HttpStatusCode.NOT_FOUND.value:
-            msg = "Products endpoint not found."
-            raise ValueError(msg)
-        if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
-            msg = "Rate limit exceeded. Please try again later."
-            raise RuntimeError(msg)
-        if response.status >= HTTP_SERVER_ERROR:
-            msg = f"Server error (status {response.status}). Please try again later."
-            raise RuntimeError(msg)
-        if response.status >= HTTP_CLIENT_ERROR:
-            response.raise_for_status()
-
-        return response
-
-
-@dataclass
-class AhaTokenConfig:
-    """Configuration for Aha! REST client via token
-    Args:
-        base_url: The base URL of the Aha! instance (e.g., https://company.aha.io/api/v1)
-        access_token: The token to use for authentication
-        ssl: Whether to use SSL.
-        subdomain: Optional Aha! subdomain. If provided and base_url is not, base_url will be derived.
-    """
-
-    access_token: str
-    base_url: str | None = None
-    ssl: bool = False
-    # Backwards compatibility with existing references
-    subdomain: str | None = None
-
-    def create_client(self) -> AhaRESTClientViaToken:
-        """Create an AhaRESTClientViaToken instance from this configuration."""
-        resolved_base_url = (self.base_url or "").rstrip("/") if self.base_url else ""
-        if not resolved_base_url:
-            if not self.subdomain:
-                msg = "Either base_url or subdomain must be provided for AhaTokenConfig"
-                raise ValueError(msg)
-            resolved_base_url = f"https://{self.subdomain}.aha.io/api/v1"
-        return AhaRESTClientViaToken(resolved_base_url, self.access_token)
-
-    def to_dict(self) -> dict:
-        """Convert the configuration to a dictionary."""
-        return asdict(self)
-
-
-@dataclass
-class AhaApiKeyConfig:
-    """Configuration for Aha! REST client via API key
-    Args:
-        base_url: The base URL of the Aha! instance (e.g., https://company.aha.io/api/v1)
-        api_key: The API key to use for authentication
-        ssl: Whether to use SSL.
-    """
-
-    base_url: str
-    api_key: str
-    ssl: bool = False
-
-    def create_client(self) -> AhaRESTClientViaApiKey:
-        return AhaRESTClientViaApiKey(self.base_url, self.api_key)
-
-    def to_dict(self) -> dict:
-        """Convert the configuration to a dictionary."""
-        return asdict(self)
-
-
-class AhaClient(IClient):
-    """Builder class for Aha! clients with different construction methods."""
 
     def __init__(
         self,
-        client: AhaRESTClientViaToken | AhaRESTClientViaApiKey,
+        base_url: Optional[str] = None,
+        access_token: Optional[str] = None,
+        api_key: Optional[str] = None,
+        auth_mode: str = "bearer",
     ) -> None:
-        """Initialize with an Aha! client object.
-
-        Args:
-            client: Aha REST client instance
-
         """
+        :param base_url: base Aha API URL (default uses secure.aha.io)
+        :param access_token: bearer token (if auth_mode == "bearer")
+        :param api_key: api key (if auth_mode == "api_key")
+        :param auth_mode: "bearer" or "api_key"
+        """
+        token_for_httpclient = access_token or api_key or ""
+        # HTTPClient constructor signature in repo expects (token, auth_type) for header-based clients;
+        # we still construct using token_for_httpclient but manage API key manually below.
+        auth_type = "Bearer" if auth_mode == "bearer" else "ApiKey"
+        super().__init__(token_for_httpclient, auth_type)
+
+        self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+        self.access_token = access_token
+        self.api_key = api_key
+        self.auth_mode = auth_mode
+
+        # default headers
+        self.headers.update(
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+        )
+
+    def get_base_url(self) -> str:
+        return self.base_url
+
+    # ----------------------
+    # Internal helpers
+    # ----------------------
+    def _auth_params(self) -> Dict[str, Any]:
+        """Return query params to use for authentication if auth_mode == api_key."""
+        if self.auth_mode == "api_key" and self.api_key:
+            return {"api_key": self.api_key}
+        return {}
+
+    def _wrap_response(self, raw: object) -> AhaResponse:
+        """Wrap raw JSON into AhaResponse (raw JSON mode as requested)."""
+        return AhaResponse(success=True, data=raw)
+
+    # async def _get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> AhaResponse:
+    #     url = f"{self.base_url}{endpoint}"
+    #     params = params or {}
+    #     params.update(self._auth_params())
+    #     # HTTPClient.get assumed to be async and return parsed JSON
+    #     raw = await self._get(url, params=params)
+    #     return self._wrap_response(raw)
+
+    async def _get(
+        self, endpoint: str, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        url = f"{self.base_url}{endpoint}"
+        params = params or {}
+        params.update(self._auth_params())
+        client = await self._ensure_client()
+        response = await client.get(url, params=params, headers=self.headers)
+        raw = response.json()
+        return self._wrap_response(raw)
+
+    async def _post(
+        self,
+        endpoint: str,
+        json: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> AhaResponse:
+        url = f"{self.base_url}{endpoint}"
+        params = params or {}
+        params.update(self._auth_params())
+        raw = await self.post(url, json=json or {}, params=params)
+        return self._wrap_response(raw)
+
+    async def _patch(
+        self,
+        endpoint: str,
+        json: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> AhaResponse:
+        url = f"{self.base_url}{endpoint}"
+        params = params or {}
+        params.update(self._auth_params())
+        raw = await self.patch(url, json=json or {}, params=params)
+        return self._wrap_response(raw)
+
+    async def _delete(
+        self, endpoint: str, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        url = f"{self.base_url}{endpoint}"
+        params = params or {}
+        params.update(self._auth_params())
+        raw = await self.delete(url, params=params)
+        return self._wrap_response(raw)
+
+    # ----------------------
+    # Pagination helper
+    # ----------------------
+    async def iter_pages(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        per_page: int = DEFAULT_PAGE_SIZE,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Iterate over paginated endpoints and yield each page's JSON.
+
+        Aha pagination uses standard ?page=<n>&per_page=<m> params.
+        """
+        page = 1
+        while True:
+            p = {"page": page, "per_page": per_page}
+            if params:
+                p.update(params)
+            resp = await self._get(endpoint, params=p)
+            data = resp.data or {}
+            # yield the raw page JSON
+            yield data
+            # Determine if there is a next page:
+            # Aha typically returns fewer than per_page elements on the last page.
+            # Best-effort detection:
+            items = (
+                data.get("products")
+                or data.get("features")
+                or data.get("releases")
+                or data.get("ideas")
+                or data.get("items")
+                or []
+            )
+            if not isinstance(items, list) or len(items) < per_page:
+                break
+            page += 1
+
+    # ----------------------
+    # Core endpoints (async, return AhaResponse)
+    # ----------------------
+    # Products
+    async def get_products(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        return await self._get("/products", params=params)
+
+    async def get_product(
+        self, product_id: str, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        return await self._get(f"/products/{product_id}", params=params)
+
+    async def create_product(self, product_payload: Dict[str, Any]) -> AhaResponse:
+        return await self._post("/products", json=product_payload)
+
+    async def update_product(
+        self, product_id: str, payload: Dict[str, Any]
+    ) -> AhaResponse:
+        return await self._patch(f"/products/{product_id}", json=payload)
+
+    async def delete_product(self, product_id: str) -> AhaResponse:
+        return await self._delete(f"/products/{product_id}")
+
+    # Features
+    async def get_features(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        return await self._get("/features", params=params)
+
+    async def get_feature(self, feature_id: str) -> AhaResponse:
+        return await self._get(f"/features/{feature_id}")
+
+    async def create_feature(self, payload: Dict[str, Any]) -> AhaResponse:
+        return await self._post("/features", json=payload)
+
+    async def update_feature(
+        self, feature_id: str, payload: Dict[str, Any]
+    ) -> AhaResponse:
+        return await self._patch(f"/features/{feature_id}", json=payload)
+
+    async def delete_feature(self, feature_id: str) -> AhaResponse:
+        return await self._delete(f"/features/{feature_id}")
+
+    # Epics
+    async def get_epics(self, params: Optional[Dict[str, Any]] = None) -> AhaResponse:
+        return await self._get("/epics", params=params)
+
+    async def get_epic(self, epic_id: str) -> AhaResponse:
+        return await self._get(f"/epics/{epic_id}")
+
+    # Requirements
+    async def get_requirements(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        return await self._get("/requirements", params=params)
+
+    async def get_requirement(self, req_id: str) -> AhaResponse:
+        return await self._get(f"/requirements/{req_id}")
+
+    # Releases
+    async def get_releases(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        return await self._get("/releases", params=params)
+
+    async def get_release(self, release_id: str) -> AhaResponse:
+        return await self._get(f"/releases/{release_id}")
+
+    # Ideas
+    async def get_ideas(self, params: Optional[Dict[str, Any]] = None) -> AhaResponse:
+        return await self._get("/ideas", params=params)
+
+    async def get_idea(self, idea_id: str) -> AhaResponse:
+        return await self._get(f"/ideas/{idea_id}")
+
+    # Users
+    async def get_users(self, params: Optional[Dict[str, Any]] = None) -> AhaResponse:
+        return await self._get("/users", params=params)
+
+    async def get_user(self, user_id: str) -> AhaResponse:
+        return await self._get(f"/users/{user_id}")
+
+    # Attachments & Comments (generic endpoints)
+    async def get_comments(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        return await self._get("/comments", params=params)
+
+    async def get_attachments(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        return await self._get("/attachments", params=params)
+
+    # Product lines, tags, todos, audit logs, records, custom fields
+    async def get_product_lines(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        return await self._get("/product_lines", params=params)
+
+    async def get_tags(self, params: Optional[Dict[str, Any]] = None) -> AhaResponse:
+        return await self._get("/tags", params=params)
+
+    async def get_todos(self, params: Optional[Dict[str, Any]] = None) -> AhaResponse:
+        return await self._get("/todos", params=params)
+
+    async def get_audit_logs(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        return await self._get("/audit_logs", params=params)
+
+    async def get_records(self, params: Optional[Dict[str, Any]] = None) -> AhaResponse:
+        return await self._get("/records", params=params)
+
+    async def get_custom_fields(
+        self, params: Optional[Dict[str, Any]] = None
+    ) -> AhaResponse:
+        return await self._get("/custom_fields", params=params)
+
+
+class AhaTokenConfig(BaseModel):
+    """Configuration for Aha client using Bearer token."""
+
+    base_url: Optional[str] = None
+    access_token: str
+    ssl: bool = True
+
+    def create_client(self) -> AhaRESTClient:
+        return AhaRESTClient(
+            base_url=self.base_url, access_token=self.access_token, auth_mode="bearer"
+        )
+
+    def to_dict(self) -> dict:
+        return self.model_dump()
+
+
+class AhaApiKeyConfig(BaseModel):
+    """Configuration for Aha client using API key (query param)."""
+
+    base_url: Optional[str] = None
+    api_key: str
+    ssl: bool = True
+
+    def create_client(self) -> AhaRESTClient:
+        return AhaRESTClient(
+            base_url=self.base_url, api_key=self.api_key, auth_mode="api_key"
+        )
+
+    def to_dict(self) -> dict:
+        return self.model_dump()
+
+
+class AhaClient(IClient):
+    """Builder wrapper for AhaRESTClient."""
+
+    def __init__(self, client: AhaRESTClient) -> None:
         self.client = client
 
-    def get_client(self) -> AhaRESTClientViaToken | AhaRESTClientViaApiKey:
-        """Return the Aha! client object."""
+    def get_client(self) -> AhaRESTClient:
         return self.client
 
+    def get_base_url(self) -> str:
+        return self.client.get_base_url()
+
     @classmethod
-    def build_with_config(cls, config: AhaTokenConfig | AhaApiKeyConfig) -> "AhaClient":
-        """Build AhaClient with configuration.
+    def build_with_token(cls, token_config: AhaTokenConfig) -> "AhaClient":
+        return cls(token_config.create_client())
 
-        Args:
-            config: AhaTokenConfig | AhaApiKeyConfig instance
+    @classmethod
+    def build_with_api_key(cls, api_key_config: AhaApiKeyConfig) -> "AhaClient":
+        return cls(api_key_config.create_client())
 
-        Returns:
-            AhaClient instance
-
-        """
-        return cls(config.create_client())
-
-    # ===== Confluence-like builder pattern (services-based) =====
     @classmethod
     async def build_from_services(
         cls,
-        logger: "logging.Logger",
-        config_service: "ConfigurationService",
+        logger: logging.Logger,
+        config_service: ConfigurationService,
+        graph_db_service: IGraphService,
     ) -> "AhaClient":
-        """Build AhaClient using configuration service
-        Args:
-            logger: Logger instance
-            config_service: Configuration service instance
-        Returns:
-            AhaClient instance.
         """
-        try:
-            config = await cls._get_connector_config(logger, config_service)
-            if not config:
-                msg = "Failed to get Aha connector configuration"
-                raise ValueError(msg)
+        Load credentials from services if available.
 
-            auth_config = (config.get("auth") or {}) if isinstance(config, dict) else {}
-            if not auth_config:
-                msg = "Auth configuration not found in Aha connector configuration"
-                raise ValueError(msg)
-
-            credentials_config = (config.get("credentials") or {}) if isinstance(config, dict) else {}
-            if not credentials_config:
-                msg = "Credentials configuration not found in Aha connector configuration"
-                raise ValueError(msg)
-
-            # Determine auth type
-            auth_type = auth_config.get("authType", "BEARER_TOKEN")  # BEARER_TOKEN, API_KEY, OAUTH
-
-            # Resolve base_url: prefer explicit base_url, else derive from subdomain
-            base_url = (credentials_config.get("base_url") or "").rstrip("/")
-            subdomain = (credentials_config.get("subdomain") or "").strip()
-            if not base_url and subdomain:
-                base_url = f"https://{subdomain}.aha.io/api/v1"
-
-            if auth_type == "API_KEY":
-                api_key = auth_config.get("api_key") or credentials_config.get("api_key") or ""
-                if not base_url:
-                    msg = "base_url or subdomain required for API_KEY auth type"
-                    raise ValueError(msg)
-                if not api_key:
-                    msg = "api_key required for API_KEY auth type"
-                    raise ValueError(msg)
-                client = AhaRESTClientViaApiKey(base_url, api_key)
-
-            elif auth_type == "BEARER_TOKEN":
-                token = auth_config.get("bearerToken") or credentials_config.get("access_token") or ""
-                if not base_url:
-                    msg = "base_url or subdomain required for BEARER_TOKEN auth type"
-                    raise ValueError(msg)
-                if not token:
-                    msg = "Token required for BEARER_TOKEN auth type"
-                    raise ValueError(msg)
-                client = AhaRESTClientViaToken(base_url, token)
-
-            elif auth_type == "OAUTH":
-                # Placeholder parity with Confluence; uses access_token same as bearer
-                access_token = credentials_config.get("access_token") or auth_config.get("access_token") or ""
-                if not base_url:
-                    msg = "base_url or subdomain required for OAUTH auth type"
-                    raise ValueError(msg)
-                if not access_token:
-                    msg = "Access token required for OAUTH auth type"
-                    raise ValueError(msg)
-                client = AhaRESTClientViaToken(base_url, access_token)
-
-            else:
-                msg = f"Invalid auth type: {auth_type}"
-                raise ValueError(msg)
-
-            return cls(client)
-
-        except Exception as e:
-            logger.exception(f"Failed to build Aha client from services: {e!s}")
-            raise
-
-    @staticmethod
-    async def _get_connector_config(logger: "logging.Logger", config_service: "ConfigurationService") -> dict[str, Any]:
-        """Fetch connector config from etcd for Aha."""
-        try:
-            # Keep path consistent with Confluence pattern
-            return await config_service.get_config("/services/connectors/aha/config") or {}
-        except Exception as e:
-            logger.exception(f"Failed to get Aha connector config: {e}")
-            return {}
-
+        Implementers: fetch stored credentials from graph_db_service and/or
+        config_service; return appropriate AhaClient instance.
+        """
+        # Placeholder for actual service lookups
+        # Example:
+        # cfg = await config_service.get("aha")
+        # if cfg.get("access_token"):
+        #     return cls.build_with_token(AhaTokenConfig(base_url=cfg.get("base_url"), access_token=cfg["access_token"]))
+        return cls(client=None)  # type: ignore

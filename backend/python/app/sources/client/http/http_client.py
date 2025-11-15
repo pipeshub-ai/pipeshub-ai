@@ -1,4 +1,3 @@
-from typing import Optional
 
 import httpx  # type: ignore
 
@@ -13,25 +12,25 @@ class HTTPClient(IClient):
         token: str,
         token_type: str = "Bearer",
         timeout: float = 30.0,
-        follow_redirects: bool = True
+        follow_redirects: bool = True,
     ) -> None:
         self.headers = {
             "Authorization": f"{token_type} {token}",
         }
         self.timeout = timeout
         self.follow_redirects = follow_redirects
-        self.client: Optional[httpx.AsyncClient] = None
+        self.client: httpx.AsyncClient | None = None
 
     def get_client(self) -> "HTTPClient":
-        """Get the client"""
+        """Get the client."""
         return self
 
     async def _ensure_client(self) -> httpx.AsyncClient:
-        """Ensure client is created and available"""
+        """Ensure client is created and available."""
         if self.client is None:
             self.client = httpx.AsyncClient(
                 timeout=self.timeout,
-                follow_redirects=self.follow_redirects
+                follow_redirects=self.follow_redirects,
             )
         return self.client
 
@@ -41,7 +40,7 @@ class HTTPClient(IClient):
             request: The HTTP request to execute
             kwargs: Additional keyword arguments to pass to the request
         Returns:
-            A HTTPResponse object containing the response from the server
+            A HTTPResponse object containing the response from the server.
         """
         url = f"{request.url.format(**request.path_params)}"
         client = await self._ensure_client()
@@ -51,7 +50,7 @@ class HTTPClient(IClient):
         request_kwargs = {
             "params": request.query_params,
             "headers": merged_headers,
-            **kwargs
+            **kwargs,
         }
 
         if isinstance(request.body, dict):
@@ -70,16 +69,16 @@ class HTTPClient(IClient):
         return HTTPResponse(response)
 
     async def close(self) -> None:
-        """Close the client"""
+        """Close the client."""
         if self.client:
             await self.client.aclose()
             self.client = None
 
     async def __aenter__(self) -> "HTTPClient":
-        """Async context manager entry"""
+        """Async context manager entry."""
         await self._ensure_client()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Async context manager exit"""
+        """Async context manager exit."""
         await self.close()
