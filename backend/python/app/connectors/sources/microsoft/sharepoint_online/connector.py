@@ -91,6 +91,8 @@ class SharePointCredentials:
     has_admin_consent: bool = False
     root_site_url: Optional[str] = None  # e.g., "contoso.sharepoint.com"
     enable_subsite_discovery: bool = True  # Whether to attempt subsite discovery
+    certificate_path: Optional[str] = None  # Path to certificate.pem file
+    certificate_data: Optional[str] = None  # Raw certificate content (alternative to path)
 
 
 @dataclass
@@ -203,7 +205,7 @@ class SharePointConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
 
-        self.filters = {"exclude_onedrive_sites": True, "exclude_pages": True, "exclude_lists": True, "exclude_document_libraries": True}
+        self.filters = {"exclude_onedrive_sites": True, "exclude_pages": True, "exclude_lists": True, "exclude_document_libraries": False}
         # Batch processing configuration
         self.batch_size = 50  # Reduced for better memory management
         self.max_concurrent_batches = 1  # Reduced to avoid rate limiting
@@ -226,26 +228,47 @@ class SharePointConnector(BaseConnector):
         }
 
     async def init(self) -> None:
+        # --- NEW CODE: Hardcoded Certificate Setup (FOR TESTING ONLY) ---
+        # NOTE: In a production environment, these must be loaded securely from a configuration store.
+        # Set self.certificate_path to the absolute path of your .pfx or .pem file.
+        # Set self.certificate_password if your certificate file is password-protected.
+        self.certificate_path = f"/home/rogue/Programs/cert-pipeshub/certificate.pfx"  # Replace with "/path/to/your/certificate.pfx" for testing
+        self.certificate_password = ""  # Replace with "your-certificate-password" for testing
+        # --- END HARDCODED SETUP ---
+        
+        # Load configuration from service
         config = await self.config_service.get_config("/services/connectors/sharepointonline/config") or \
                             await self.config_service.get_config(f"/services/connectors/sharepointonline/config/{self.data_entities_processor.org_id}")
+        
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
             raise ValueError("SharePoint Online credentials not found")
+        
         credentials_config = config.get("auth",{})
         if not credentials_config:
             self.logger.error("❌ SharePoint Online credentials not found")
             raise ValueError("SharePoint Online credentials not found")
+        
+        # Load credentials from config
         tenant_id = credentials_config.get("tenantId")
         client_id = credentials_config.get("clientId")
         client_secret = credentials_config.get("clientSecret")
         sharepoint_domain = credentials_config.get("sharepointDomain")
-        # Normalize SharePoint domain to scheme+host (no path), since tokens must target the tenant host
+        
+        # --- NEW CODE: Load certificate details from config (if fields are added to ConnectorBuilder) ---
+        # Only load from config if not hardcoded for testing
+        if not self.certificate_path:
+            self.certificate_path = credentials_config.get("certificatePath")
+            self.certificate_password = credentials_config.get("certificatePassword")
+        # --- END NEW CODE ---
+
+        # Normalize SharePoint domain to scheme+host (no path)
         try:
+            import urllib.parse
             parsed_domain = urllib.parse.urlparse(sharepoint_domain or "")
             host = parsed_domain.hostname
             scheme = parsed_domain.scheme or "https"
             if not host:
-                # Handle cases where a bare host or host with path is provided without scheme
                 candidate = sharepoint_domain or ""
                 if "://" not in candidate:
                     candidate = f"https://{candidate.lstrip('/')}"
@@ -259,10 +282,19 @@ class SharePointConnector(BaseConnector):
         except Exception:
             normalized_sharepoint_domain = sharepoint_domain
 
-        if not all((tenant_id, client_id, client_secret, sharepoint_domain)):
-            self.logger.error("❌ Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and clientSecret are configured.")
-            raise ValueError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and clientSecret are configured.")
+        # Validation
+        if not all((tenant_id, client_id, sharepoint_domain)):
+            self.logger.error("❌ Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
+            raise ValueError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
+
+        # Check for one valid authentication method
+        if not (self.certificate_path or client_secret):
+            self.logger.error("❌ Authentication credentials missing. Provide either clientSecret or certificatePath.")
+            raise ValueError("Authentication credentials missing.")
+
         has_admin_consent = credentials_config.get("hasAdminConsent", False)
+        
+
         credentials = SharePointCredentials(
             tenant_id=tenant_id,
             client_id=client_id,
@@ -270,16 +302,37 @@ class SharePointConnector(BaseConnector):
             sharepoint_domain=normalized_sharepoint_domain,
             has_admin_consent=has_admin_consent,
         )
-        # Store credential as instance variable to prevent it from being garbage collected
-        self.credential = ClientSecretCredential(
+        
+        # --- NEW CODE: Choose Credential based on availability ---
+        from azure.identity.aio import ClientSecretCredential, CertificateCredential
+        # Initialize base credential for MS Graph Client (prioritizing certificate)
+        if self.certificate_path:
+             credential = CertificateCredential(
+                 tenant_id=credentials.tenant_id,
+                 client_id=credentials.client_id,
+                 certificate_path=self.certificate_path,
+                 client_certificate_password=self.certificate_password,
+             )
+             self.logger.info("✅ Using CertificateCredential for MS Graph client.")
+        elif client_secret:
+            credential = ClientSecretCredential(
                 tenant_id=credentials.tenant_id,
                 client_id=credentials.client_id,
                 client_secret=credentials.client_secret,
             )
+            self.logger.info("✅ Using ClientSecretCredential for MS Graph client.")
+        else:
+            # Should be caught by the earlier check, but kept for robustness
+            raise ValueError("No valid credential (Certificate or Client Secret) found.")
+        
+        # Store class attributes
         self.sharepoint_domain = credentials.sharepoint_domain
         self.tenant_id = credentials.tenant_id
         self.client_id = credentials.client_id
         self.client_secret = credentials.client_secret
+        
+        # Initialize Graph Client
+        from msgraph import GraphServiceClient
         self.client = GraphServiceClient(
             self.credential,
             scopes=["https://graph.microsoft.com/.default"]
@@ -448,7 +501,8 @@ class SharePointConnector(BaseConnector):
                                 hostname is not None and
                                 re.fullmatch(r"[a-zA-Z0-9-]+-my\.sharepoint\.com", hostname)
                             )
-                            self.logger.debug(f"Hostname matches expected OneDrive pattern: {bool(contains_onedrive)}")
+                            if contains_onedrive:
+                                self.logger.debug(f"Hostname matches expected OneDrive pattern: {bool(contains_onedrive)}")
 
                             if self.filters.get('exclude_onedrive_sites') and contains_onedrive:
                                 self.logger.debug(f"Skipping OneDrive site: '{site.display_name or site.name}'")
@@ -546,6 +600,131 @@ class SharePointConnector(BaseConnector):
             site_id = site_record_group.external_group_id
             site_name = site_record_group.name
             self.logger.info(f"Starting sync for site: '{site_name}' (ID: {site_id})")
+                
+                
+            print("\n\n\n\n\n !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            # Get and print site groups using SharePoint REST API
+            try:
+                self.logger.info(f"Fetching site groups for site: {site_name}")
+                
+                try:
+                    # Get site details
+                    async with self.rate_limiter:
+                        site_details = await self.client.sites.by_site_id(site_id).get()
+                    
+                    if not site_details or not site_details.web_url:
+                        self.logger.debug(f"No web URL available for site: {site_name}")
+                    else:
+                        site_web_url = site_details.web_url
+                        rest_api_url = f"{site_web_url}/_api/web/sitegroups"
+                        
+                        print(f" !!!!!!!!!!!! Requesting: {rest_api_url}")
+                        
+                        # Extract SharePoint domain from site URL
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(site_web_url)
+                        sharepoint_resource = f"https://{parsed_url.netloc}"
+                        
+                        # Get token for SharePoint using certificate or client secret
+                        if hasattr(self, 'certificate_path') and self.certificate_path:
+                            # Use certificate-based authentication
+                            from azure.identity.aio import CertificateCredential
+                            
+                            credential = CertificateCredential(
+                                tenant_id=self.tenant_id,
+                                client_id=self.client_id,
+                                certificate_path=self.certificate_path
+                            )
+                            
+                            print(f" !!!!!!!!!!!! Using certificate authentication...")
+                        else:
+                            # Fall back to client secret
+                            from azure.identity.aio import ClientSecretCredential
+                            
+                            credential = ClientSecretCredential(
+                                tenant_id=self.tenant_id,
+                                client_id=self.client_id,
+                                client_secret=self.client_secret
+                            )
+                            
+                            print(f" !!!!!!!!!!!! Using client secret authentication...")
+                        
+                        # Request token with SharePoint scope
+                        token_response = await credential.get_token(f"{sharepoint_resource}/.default")
+                        access_token = token_response.token
+                        
+                        print(f" !!!!!!!!!!!! Got access token, making API request...")
+                        
+                        headers = {
+                            'Authorization': f'Bearer {access_token}',
+                            'Accept': 'application/json;odata=verbose',
+                            'Content-Type': 'application/json;odata=verbose'
+                        }
+                        
+                        async with httpx.AsyncClient(timeout=30.0) as http_client:
+                            response = await http_client.get(rest_api_url, headers=headers)
+                            
+                            print(f" !!!!!!!!!!!! Status: {response.status_code}")
+                            
+                            if response.status_code == 200:
+                                data = response.json()
+                                print("!!!!!!!!!!!!!!!!!! raw data: ", data)
+                                site_groups = data.get('d', {}).get('results', [])
+                                
+                                print(f"\n{'='*80}")
+                                print(f"Site Groups for: {site_name} (Total: {len(site_groups)})")
+                                print(f"{'='*80}")
+                                
+                                for idx, group in enumerate(site_groups, 1):
+                                    group_title = group.get('Title', 'N/A')
+                                    group_id = group.get('Id', 'N/A')
+                                    owner_title = group.get('OwnerTitle', 'N/A')
+                                    login_name = group.get('LoginName', 'N/A')
+                                    description = group.get('Description', 'N/A')
+                                    principal_type = group.get('PrincipalType', 'N/A')
+                                    
+                                    print(f"\n{idx}. {group_title}")
+                                    print(f"   - ID: {group_id}")
+                                    print(f"   - Login Name: {login_name}")
+                                    print(f"   - Owner: {owner_title}")
+                                    print(f"   - Principal Type: {principal_type}")
+                                    if description:
+                                        print(f"   - Description: {description}")
+                                
+                                print(f"\n{'='*80}\n")
+                                
+                            elif response.status_code == 401:
+                                print(f" !!!!!!!!!!!! 401 Unauthorized Error")
+                                print(f" !!!!!!!!!!!! Response: {response.text[:500]}")
+                                print(f"\n !!!!!!!!!!!! Possible reasons:")
+                                if hasattr(self, 'certificate_path') and self.certificate_path:
+                                    print(f" !!!!!!!!!!!!   1. Certificate not properly configured in Azure AD")
+                                    print(f" !!!!!!!!!!!!   2. Certificate thumbprint mismatch")
+                                    print(f" !!!!!!!!!!!!   3. Sites.FullControl.All permission not granted")
+                                    print(f" !!!!!!!!!!!!   4. SharePoint REST API doesn't support certificate-based app-only tokens")
+                                    print(f"\n !!!!!!!!!!!!   TIP: Try the SharePoint Add-in authentication instead (Option 1)")
+                                else:
+                                    print(f" !!!!!!!!!!!!   1. The app doesn't have Sites.FullControl.All APPLICATION permission")
+                                    print(f" !!!!!!!!!!!!   2. OR admin consent wasn't granted")
+                                    print(f" !!!!!!!!!!!!   3. OR the SharePoint REST API doesn't support app-only for this endpoint")
+                                    print(f"\n !!!!!!!!!!!!   SOLUTION: Use SharePoint Add-in authentication (separate client ID/secret)")
+                            else:
+                                print(f" !!!!!!!!!!!! Error: {response.status_code}")
+                                print(f" !!!!!!!!!!!! Response: {response.text[:500]}")
+                        
+                        # Close credential
+                        await credential.close()
+                                    
+                except Exception as inner_error:
+                    import traceback
+                    print(" !!!!!!!!!!!! inner error: ", traceback.format_exc())
+                    self.logger.debug(f"Error fetching site groups for {site_name}: {inner_error}")
+                    
+            except Exception as outer_error:
+                import traceback
+                print(" !!!!!!!!!!!! outer error: ", traceback.format_exc())
+                self.logger.debug(f"Site groups fetch wrapper error: {outer_error}")
+                pass
 
 
             # Process all content types
@@ -814,6 +993,7 @@ class SharePointConnector(BaseConnector):
 
             # Get permissions
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
+            print(f"\n\n\n !!!!!!!!!!!!!!!!!!!!! permissions for {item_id} {drive_id} {site_id}:", permissions)
 
             # Todo: Get permissions for the record
             for user in users:
@@ -2012,49 +2192,49 @@ class SharePointConnector(BaseConnector):
                 self.logger.error(f"❌ Error getting Microsoft 365 Groups: {groups_error}")
 
             # Also try to get site permissions which might include group information
-            # try:
-            #     sites = await self._get_all_sites()
-            #     for site in sites:
-            #         try:
-            #             encoded_site_id = self._construct_site_url(site.id)
+            try:
+                sites = await self._get_all_sites()
+                for site in sites:
+                    try:
+                        encoded_site_id = self._construct_site_url(site.id)
 
-            #             # Get site permissions which might include group information
-            #             async with self.rate_limiter:
-            #                 permissions_response = await self._safe_api_call(
-            #                     self.client.sites.by_site_id(encoded_site_id).permissions.get()
-            #                 )
+                        # Get site permissions which might include group information
+                        async with self.rate_limiter:
+                            permissions_response = await self._safe_api_call(
+                                self.client.sites.by_site_id(encoded_site_id).permissions.get()
+                            )
 
-            #             if permissions_response and permissions_response.value:
-            #                 for permission in permissions_response.value:
-            #                     # Check if this permission is for a group
-            #                     if hasattr(permission, 'granted_to_identities') and permission.granted_to_identities:
-            #                         for identity in permission.granted_to_identities:
-            #                             if hasattr(identity, 'application') and identity.application:
-            #                                 # This is a group permission
-            #                                 group_name = getattr(identity.application, 'display_name', 'Unknown Group')
-            #                                 user_group = {
-            #                                     "id": str(uuid.uuid4()),
-            #                                     "name": group_name,
-            #                                     "source_user_group_id": getattr(identity.application, 'id', str(uuid.uuid4())),
-            #                                     "email": None,
-            #                                     "description": f"Site permission group for {site.display_name or site.name}",
-            #                                     "metadata": {
-            #                                         "site_id": site.id,
-            #                                         "site_name": site.display_name or site.name,
-            #                                         "group_type": "SITE_PERMISSION_GROUP",
-            #                                         "permission_level": getattr(permission, 'roles', ['Read'])
-            #                                     }
-            #                                 }
+                        if permissions_response and permissions_response.value:
+                            for permission in permissions_response.value:
+                                # Check if this permission is for a group
+                                if hasattr(permission, 'granted_to_identities') and permission.granted_to_identities:
+                                    for identity in permission.granted_to_identities:
+                                        if hasattr(identity, 'application') and identity.application:
+                                            # This is a group permission
+                                            group_name = getattr(identity.application, 'display_name', 'Unknown Group')
+                                            user_group = {
+                                                "id": str(uuid.uuid4()),
+                                                "name": group_name,
+                                                "source_user_group_id": getattr(identity.application, 'id', str(uuid.uuid4())),
+                                                "email": None,
+                                                "description": f"Site permission group for {site.display_name or site.name}",
+                                                "metadata": {
+                                                    "site_id": site.id,
+                                                    "site_name": site.display_name or site.name,
+                                                    "group_type": "SITE_PERMISSION_GROUP",
+                                                    "permission_level": getattr(permission, 'roles', ['Read'])
+                                                }
+                                            }
 
-            #                                 await self.data_entities_processor.on_new_user_groups(
-            #                                     [user_group],
-            #                                     []  # No member permissions for site permission groups
-            #                                 )
-            #                                 total_groups += 1
+                                            await self.data_entities_processor.on_new_user_groups(
+                                                [user_group],
+                                                []  # No member permissions for site permission groups
+                                            )
+                                            total_groups += 1
 
-                    # except Exception as site_error:
-                    #     self.logger.debug(f"❌ Error processing permissions for site {site.display_name or site.name}: {site_error}")
-                    #     continue
+                    except Exception as site_error:
+                        self.logger.debug(f"❌ Error processing permissions for site {site.display_name or site.name}: {site_error}")
+                        continue
 
             except Exception as sites_error:
                 self.logger.error(f"❌ Error processing sites for permissions: {sites_error}")
@@ -2116,12 +2296,12 @@ class SharePointConnector(BaseConnector):
                 self.logger.error(f"❌ Error syncing users: {user_error}")
 
             # Step 2: Sync user groups
-            # self.logger.info("Syncing SharePoint groups...")
-            # try:
-            #     await self._sync_user_groups()
-            #     self.logger.info("✅ Successfully synced SharePoint groups")
-            # except Exception as group_error:
-            #     self.logger.error(f"❌ Error syncing groups: {group_error}")
+            self.logger.info("Syncing SharePoint groups...")
+            try:
+                await self._sync_user_groups()
+                self.logger.info("✅ Successfully synced SharePoint groups")
+            except Exception as group_error:
+                self.logger.error(f"❌ Error syncing groups: {group_error}")
 
             # Step 3: Discover and sync sites
             sites = await self._get_all_sites()
@@ -2297,6 +2477,16 @@ class SharePointConnector(BaseConnector):
         """Cleanup resources when shutting down the connector."""
         try:
             self.logger.info("🧹 Starting SharePoint connector cleanup")
+
+            # Clean up temporary certificate file if it exists
+            if hasattr(self, 'temp_cert_path') and self.temp_cert_path:
+                try:
+                    import os
+                    if os.path.exists(self.temp_cert_path):
+                        os.remove(self.temp_cert_path)
+                        self.logger.info(f"✅ Removed temporary certificate file")
+                except Exception as cert_error:
+                    self.logger.debug(f"❌ Error removing temporary certificate: {cert_error}")
 
             # Clear caches
             if hasattr(self, 'site_cache'):
