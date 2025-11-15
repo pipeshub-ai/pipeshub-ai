@@ -201,7 +201,10 @@ class DomainExtractor:
         """
         self.logger.info("🎯 Extracting domain metadata")
         try:
-            self.llm, _ = await get_llm(self.config_service)
+            self.llm, config = await get_llm(self.config_service)
+            context_length = config.get("contextLength")
+            if not isinstance(context_length, (int)) or context_length <= 0:
+                    raise ValueError("Context length is not valid. Please provide a valid context length.")
             self.logger.info("✅ LLM initialized successfully")
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize LLM: {str(e)}")
@@ -226,6 +229,8 @@ class DomainExtractor:
             ).replace("{sentiment_list}", sentiment_list)
             self.prompt_template = PromptTemplate.from_template(filled_prompt)
             token_count = count_tokens_text(content,None)
+            MAX_CONTENT_TOKENS = int(context_length * 0.9) 
+
             if token_count > MAX_CONTENT_TOKENS:
                 self.logger.info("🎯 Prompt exceeds MAX_CONTENT_TOKENS tokens, truncating content")
                 content = get_first_n_tokens(content,MAX_CONTENT_TOKENS)
