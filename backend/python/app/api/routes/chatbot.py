@@ -620,9 +620,8 @@ async def askAIStream(
                     is_multimodal_llm,
                     tools=tools,
                     tool_runtime_kwargs=tool_runtime_kwargs,
-                    target_words_per_chunk=2,
+                    target_words_per_chunk=1,
                     mode=query_info.mode,
-
                 ):
                     event_type = stream_event["event"]
                     event_data = stream_event["data"]
