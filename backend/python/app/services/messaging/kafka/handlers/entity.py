@@ -1,7 +1,12 @@
 import asyncio
 from uuid import uuid4
 
-from app.config.constants.arangodb import AccountType, CollectionNames, Connectors
+from app.config.constants.arangodb import (
+    AccountType,
+    CollectionNames,
+    Connectors,
+    ConnectorScopes,
+)
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.services.base_arango_service import (
     BaseArangoService as ArangoService,
@@ -362,14 +367,19 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
 
-    async def __handle_google_app_account_services(self, org_id: str, account_type: str, app_names: list[str],connector_id: str) -> bool:
+    async def __handle_google_app_account_services(self, org_id: str, account_type: str, app_names: list[str],connector_id: str, scope: str) -> bool:
         """Handle Google account services"""
-        if account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value:
-            await initialize_enterprise_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
-        elif account_type == AccountType.INDIVIDUAL.value:
+        # Personal scope connectors use individual initialization regardless of account type
+        # (personal scope means individual user credentials, not admin/service account)
+        if scope == ConnectorScopes.PERSONAL.value:
             await initialize_individual_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
+            return True
+        # Team scope connectors use enterprise initialization for enterprise/business accounts
+        elif scope == ConnectorScopes.TEAM.value and (account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value):
+            await initialize_enterprise_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
+            return True
         else:
-            self.logger.error("Account Type not valid")
+            self.logger.error(f"Invalid account type/scope combination: account_type={account_type}, scope={scope}")
             return False
 
     # APP EVENTS
@@ -382,7 +392,7 @@ class EntityEventService(BaseEventService):
             apps = payload["apps"]
             sync_action = payload.get("syncAction", "none")
             connector_id = payload.get("connectorId", "")
-
+            scope = payload.get("scope", ConnectorScopes.PERSONAL.value)
             # Get org details to check account type
             org = await self.arango_service.get_document(
                 org_id, CollectionNames.ORGS.value
@@ -400,9 +410,14 @@ class EntityEventService(BaseEventService):
                 if self.app_container and "google" in app_group.lower():
                     accountType = org["accountType"]
                     # Use the existing app container to initialize services
-                    await self.__handle_google_app_account_services(org_id, accountType, enabled_apps,connector_id)
+                    init_success = await self.__handle_google_app_account_services(org_id, accountType, enabled_apps,connector_id, scope)
+                    if not init_success:
+                        self.logger.error(
+                            f"❌ Failed to initialize services for account type: {org['accountType']}, scope: {scope}"
+                        )
+                        return False
                     self.logger.info(
-                        f"✅ Successfully initialized services for account type: {org['accountType']}"
+                        f"✅ Successfully initialized services for account type: {org['accountType']}, scope: {scope}"
                     )
                 else:
                     self.logger.warning(

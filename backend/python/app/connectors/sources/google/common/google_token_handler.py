@@ -81,7 +81,7 @@ class GoogleTokenHandler:
         retry=retry_if_exception_type((aiohttp.ClientError, Exception)),
         reraise=True,
     )
-    async def get_individual_token(self, org_id, user_id, connector_id: str) -> dict:
+    async def get_individual_token(self, connector_id: str) -> dict:
         """Get individual OAuth token for a specific connector (gmail/drive)."""
         # First try connector-scoped credentials from etcd
         try:
@@ -106,7 +106,7 @@ class GoogleTokenHandler:
         retry=retry_if_exception_type((aiohttp.ClientError, Exception)),
         reraise=True,
     )
-    async def refresh_token(self, org_id, user_id, connector_id: str) -> None:
+    async def refresh_token(self, connector_id: str) -> None:
         """Refresh access token for a specific connector (gmail/drive)."""
         try:
             self.logger.info("🔄 Refreshing access token for app: %s", connector_id)
@@ -168,7 +168,7 @@ class GoogleTokenHandler:
         retry=retry_if_exception_type((aiohttp.ClientError, Exception)),
         reraise=True,
     )
-    async def get_enterprise_token(self, org_id, connector_id: str) -> dict:
+    async def get_enterprise_token(self, connector_id: str) -> dict:
         # Read service account JSON from etcd for the specified connector (e.g., DRIVE, GMAIL)
         # org_id currently not used because credentials are per-connector; kept for API compatibility
         # resolved_id = await self._resolve_instance_id_from_name(org_id, connector_id)

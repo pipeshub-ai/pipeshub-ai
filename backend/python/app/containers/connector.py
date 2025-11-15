@@ -623,7 +623,7 @@ async def cache_google_workspace_service_credentials(org_id, arango_service, log
 
                     # Fetch and cache credentials
                     SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-                    credentials_json = await google_token_handler.get_enterprise_token(org_id,connector_id=connector_id)
+                    credentials_json = await google_token_handler.get_enterprise_token(connector_id=connector_id)
                     credentials = service_account.Credentials.from_service_account_info(
                         credentials_json, scopes=SCOPES
                     )
@@ -689,8 +689,8 @@ async def refresh_google_workspace_user_credentials(org_id, arango_service, logg
 
                 # Refresh token
                 # Refresh Gmail tokens (primary for individual flows)
-                await google_token_handler.refresh_token(org_id, user_id, connector_id=connector_id)
-                creds_data = await google_token_handler.get_individual_token(org_id, user_id,connector_id=connector_id)
+                await google_token_handler.refresh_token(connector_id=connector_id)
+                creds_data = await google_token_handler.get_individual_token(connector_id=connector_id)
 
                 if not creds_data.get("access_token"):
                     raise Exception("Invalid credentials. Access token not found")

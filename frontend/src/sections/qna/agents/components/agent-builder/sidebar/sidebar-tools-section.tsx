@@ -3,8 +3,8 @@
 
 import React from 'react';
 import { Box, List, Typography, useTheme, alpha } from '@mui/material';
-import { SidebarCategory } from './SidebarCategory';
-import { SidebarNodeItem } from './SidebarNodeItem';
+import { SidebarCategory } from './sidebar-category';
+import { SidebarNodeItem } from './sidebar-node-item';
 import { getToolIcon } from './sidebar.icons';
 import { NodeTemplate, SidebarToolsSectionProps } from './sidebar.types';
 import {

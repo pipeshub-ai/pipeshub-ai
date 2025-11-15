@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.entity import router as entity_router
-from app.config.constants.arangodb import AccountType, Connectors
+from app.config.constants.arangodb import AccountType, Connectors, ConnectorScopes
 from app.connectors.api.router import router
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
@@ -88,14 +88,18 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                 app_group = app.get("appGroup", "")
 
                 if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value or "google" in app_group.lower():
-                    if app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower():
+                    if app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower() and app["scope"] == ConnectorScopes.TEAM.value:
                         await initialize_enterprise_google_account_services_fn(org_id, app_container,connector_id, ['drive'])
-                    elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower():
+                    elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower() and app["scope"] == ConnectorScopes.TEAM.value:
                         await initialize_enterprise_google_account_services_fn(org_id, app_container,connector_id, ['gmail'])
-                elif accountType == AccountType.INDIVIDUAL.value or "google" in app_group.lower():
-                    if app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower():
+                    elif app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower() and app["scope"] == ConnectorScopes.PERSONAL.value:
                         await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['drive'])
-                    elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower():
+                    elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower() and app["scope"] == ConnectorScopes.PERSONAL.value:
+                        await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['gmail'])
+                elif accountType == AccountType.INDIVIDUAL.value or "google" in app_group.lower():
+                    if app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower() and app["scope"] == ConnectorScopes.PERSONAL.value:
+                        await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['drive'])
+                    elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower() and app["scope"] == ConnectorScopes.PERSONAL.value:
                         await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['gmail'])
                 else:
                     logger.error("Account Type not valid")
@@ -402,18 +406,13 @@ async def authenticate_requests(request: Request, call_next)-> JSONResponse:
     logger = app.container.logger()  # type: ignore
     logger.info(f"Middleware request: {request.url.path}")
 
-    # Check if path should be excluded from authentication (OAuth callbacks)
-    if "/oauth/callback" in request.url.path:
-        # Skip authentication for OAuth callbacks
-        return await call_next(request)
-
     # Apply middleware only to specific paths
     if not any(request.url.path.startswith(path) for path in INCLUDE_PATHS):
         # Skip authentication for other paths
         return await call_next(request)
 
     try:
-        # Apply authentication
+        # Apply authentication (including OAuth callbacks - they come from Node.js backend with auth headers)
         authenticated_request = await authMiddleware(request)
         # Continue with the request
         logger.info("Call Next")

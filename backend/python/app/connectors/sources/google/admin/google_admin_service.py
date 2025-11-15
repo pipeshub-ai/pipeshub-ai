@@ -61,7 +61,7 @@ class GoogleAdminService:
 
             try:
                 credentials_json = await self.google_token_handler.get_enterprise_token(
-                    org_id, connector_id
+                    connector_id
                 )
 
                 self.logger.info(f"🔍 Retrieved credentials for org {org_id}, app {connector_id}")

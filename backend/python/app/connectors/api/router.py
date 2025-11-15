@@ -443,11 +443,18 @@ async def download_file(
         connector_id = record.connector_id
         creds = None
         if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
-            if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
-                # Use service account credentials
+            # Get connector instance to check scope
+            connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
+            connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value) if connector_instance else ConnectorScope.PERSONAL.value
+
+            # Use service account credentials only for TEAM scope connectors in enterprise/business accounts
+            # Personal scope connectors always use user credentials regardless of account type
+            if (org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value] and
+                connector_scope == ConnectorScope.TEAM.value):
+                # Use service account credentials for team scope in enterprise accounts
                 creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container, connector, connector_id)
             else:
-                # Individual account - use stored OAuth credentials
+                # Use user credentials for personal scope or individual accounts
                 creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector,connector_id)
         # Download file based on connector type
         try:
@@ -861,15 +868,21 @@ async def stream_record(
         connector_id = record.connector_id
         recordType = record.record_type
         logger.info(f"Connector: {connector} connector_id: {connector_id}")
-        # Different auth handling based on account type
+        # Different auth handling based on account type and connector scope
         creds = None
         if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+            # Get connector instance to check scope
+            connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
+            connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value) if connector_instance else ConnectorScope.PERSONAL.value
 
-            if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
-                # Use service account credentials
+            # Use service account credentials only for TEAM scope connectors in enterprise/business accounts
+            # Personal scope connectors always use user credentials regardless of account type
+            if (org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value] and
+                connector_scope == ConnectorScope.TEAM.value):
+                # Use service account credentials for team scope in enterprise accounts
                 creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container,connector, connector_id)
             else:
-                # Individual account - use stored OAuth credentials
+                # Use user credentials for personal scope or individual accounts
                 creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container,connector=connector, connector_id=connector_id)
         # Download file based on connector type
         try:
@@ -1644,7 +1657,7 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
 
             # Create new credentials
             SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-            credentials_json = await google_token_handler.get_enterprise_token(org_id, connector_id=connector_id)
+            credentials_json = await google_token_handler.get_enterprise_token(connector_id=connector_id)
             credentials = service_account.Credentials.from_service_account_info(
                 credentials_json, scopes=SCOPES
             )
@@ -1701,8 +1714,8 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
             # Create new credentials
             SCOPES = await google_token_handler.get_account_scopes(connector_id=connector_id)
             # Refresh token
-            await google_token_handler.refresh_token(org_id, user_id, connector_id=connector_id)
-            creds_data = await google_token_handler.get_individual_token(org_id, user_id, connector_id=connector_id)
+            await google_token_handler.refresh_token(connector_id=connector_id)
+            creds_data = await google_token_handler.get_individual_token(connector_id=connector_id)
 
             if not creds_data.get("access_token"):
                 raise HTTPException(
@@ -2185,31 +2198,41 @@ async def get_connector_registry(
     connector_registry = request.app.state.connector_registry
     container = request.app.container
     logger = container.logger()
-    # Validate scope
-    if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="Invalid scope. Must be 'personal' or 'team'"
-        )
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-    result = await connector_registry.get_all_registered_connectors(
-        is_admin=is_admin,
-        scope=scope,
-        page=page,
-        limit=limit,
-        search=search
-    )
 
-    if not result:
-        raise HTTPException(
-            status_code=HttpStatusCode.NOT_FOUND.value,
-            detail="No connectors found in registry"
+    try:
+        # Validate scope
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Invalid scope. Must be 'personal' or 'team'"
+            )
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        result = await connector_registry.get_all_registered_connectors(
+            is_admin=is_admin,
+            scope=scope,
+            page=page,
+            limit=limit,
+            search=search
         )
 
-    return {
-        "success": True,
-        **result
-    }
+        if not result:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="No connectors found in registry"
+            )
+
+        return {
+            "success": True,
+            **result
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Error getting connector registry: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error getting connector registry: {str(e)}"
+        )
 
 
 
@@ -2233,37 +2256,48 @@ async def get_connector_instances(
         Dictionary with success status and list of connector instances
     """
     connector_registry = request.app.state.connector_registry
+    container = request.app.container
+    logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    try:
+        logger.info("Getting connector instances")
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
 
-    if not user_id or not org_id:
-        raise HTTPException(
-            status_code=HttpStatusCode.UNAUTHORIZED.value,
-            detail="User not authenticated"
+        # Validate scope
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Invalid scope. Must be 'personal' or 'team'"
+            )
+
+        result = await connector_registry.get_all_connector_instances(
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+            scope=scope,
+            page=page,
+            limit=limit,
+            search=search
         )
 
-    # Validate scope
-    if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+        return {
+            "success": True,
+            **result
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Error getting connector instances: {str(e)}")
         raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="Invalid scope. Must be 'personal' or 'team'"
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error getting connector instances: {str(e)}"
         )
-
-    result = await connector_registry.get_all_connector_instances(
-        user_id=user_id,
-        org_id=org_id,
-        is_admin=is_admin,
-        scope=scope,
-        page=page,
-        limit=limit,
-        search=search
-    )
-
-    return {
-        "success": True,
-        **result
-    }
 
 
 @router.get("/api/v1/connectors/active")
@@ -2298,6 +2332,8 @@ async def get_active_connector_instances(request: Request) -> Dict[str, Any]:
             "success": True,
             "connectors": connectors
         }
+    except HTTPException as e:
+        raise e
     except Exception as e:
         logger.error(f"Error getting active connector instances: {str(e)}")
         raise HTTPException(
@@ -2337,6 +2373,8 @@ async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
             "success": True,
             "connectors": connectors
         }
+    except HTTPException as e:
+        raise e
     except Exception as e:
         logger.error(f"Error getting inactive connector instances: {str(e)}")
         raise HTTPException(
@@ -2363,35 +2401,46 @@ async def get_configured_connector_instances(
         Dictionary with configured connector instances
     """
     connector_registry = request.app.state.connector_registry
+    container = request.app.container
+    logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-    if not user_id or not org_id:
-        raise HTTPException(
-            status_code=HttpStatusCode.UNAUTHORIZED.value,
-            detail="User not authenticated"
+    try:
+        logger.info("Getting configured connector instances")
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Invalid scope. Must be 'personal' or 'team'"
+            )
+        connectors = await connector_registry.get_configured_connector_instances(
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+            scope=scope,
+            page=page,
+            limit=limit,
+            search=search
         )
 
-    if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+        return {
+            "success": True,
+            "connectors": connectors
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Error getting configured connector instances: {str(e)}")
         raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="Invalid scope. Must be 'personal' or 'team'"
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error getting configured connector instances: {str(e)}"
         )
-    connectors = await connector_registry.get_configured_connector_instances(
-        user_id=user_id,
-        org_id=org_id,
-        is_admin=is_admin,
-        scope=scope,
-        page=page,
-        limit=limit,
-        search=search
-    )
-
-    return {
-        "success": True,
-        "connectors": connectors
-    }
-
 
 # ============================================================================
 # Instance Configuration Endpoints
@@ -2423,7 +2472,7 @@ async def create_connector_instance(
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
-
+    logger.info("Creating connector instance")
     try:
         user_id = request.state.user.get("userId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
@@ -2585,33 +2634,45 @@ async def get_connector_instance(
         HTTPException: 404 if instance not found
     """
     connector_registry = request.app.state.connector_registry
+    container = request.app.container
+    logger = container.logger()
+    logger.info("Getting connector instance")
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-    if not user_id or not org_id:
-        raise HTTPException(
-            status_code=HttpStatusCode.UNAUTHORIZED.value,
-            detail="User not authenticated"
+
+    try:
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        connector = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
         )
 
-    connector = await connector_registry.get_connector_instance(
-        connector_id=connector_id,
-        user_id=user_id,
-        org_id=org_id,
-        is_admin=is_admin
-    )
+        if not connector:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
 
-    if not connector:
+        return {
+            "success": True,
+            "connector": connector
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Error getting connector instance: {str(e)}")
         raise HTTPException(
-            status_code=HttpStatusCode.NOT_FOUND.value,
-            detail=f"Connector instance {connector_id} not found or access denied"
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error getting connector instance: {str(e)}"
         )
-
-    return {
-        "success": True,
-        "connector": connector
-    }
-
 
 @router.get("/api/v1/connectors/{connector_id}/config")
 async def get_connector_instance_config(
@@ -4091,7 +4152,8 @@ async def toggle_connector_instance(
             org_account_type = str(org.get("accountType", "")).lower()
             custom_google_business_logic = (
                 org_account_type == "enterprise" and
-                connector_type in ["GMAIL", "DRIVE"]
+                connector_type in ["GMAIL", "DRIVE"] and
+                instance.get("scope") == ConnectorScope.TEAM.value
             )
 
             if auth_type == "OAUTH":
@@ -4141,7 +4203,9 @@ async def toggle_connector_instance(
             "updatedBy": user_id
         }
 
-        success = await connector_registry.update_connector_instance(connector_id=connector_id, updates=updates,
+        success = await connector_registry.update_connector_instance(
+            connector_id=connector_id,
+            updates=updates,
             user_id=user_id,
             org_id=org_id,
             is_admin=is_admin
@@ -4166,7 +4230,8 @@ async def toggle_connector_instance(
                 "credentialsRoute": credentials_route,
                 "apps": [connector_type.replace(" ", "").lower()],
                 "connectorId": connector_id,
-                "syncAction": "immediate"
+                "syncAction": "immediate",
+                "scope": instance.get("scope")
             }
 
             message = {
@@ -4218,7 +4283,7 @@ async def get_connector_schema(
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
-
+    logger.info("Getting connector schema")
     try:
         metadata = await connector_registry.get_connector_metadata(connector_type)
         if not metadata:

@@ -140,8 +140,8 @@ export const useConnectorConfig = ({
    */
   const isBusinessGoogleOAuth = useMemo(
     () =>
-      isBusiness && connector?.appGroup === 'Google Workspace' && connector?.authType === 'OAUTH',
-    [isBusiness, connector?.appGroup, connector?.authType]
+      isBusiness && connector?.appGroup === 'Google Workspace' && connector?.authType === 'OAUTH' && connector?.scope === 'team',
+    [isBusiness, connector?.appGroup, connector?.authType, connector?.scope]
   );
 
   /**

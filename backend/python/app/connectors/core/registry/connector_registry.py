@@ -212,12 +212,12 @@ class ConnectorRegistry:
     def _normalize_connector_name(self, name: str) -> str:
         """
         Normalize connector name for matching (case-insensitive, ignore spaces).
-        
+
         This matches the logic used in ConnectorFactory for beta connector identification.
-        
+
         Args:
             name: Connector name to normalize
-            
+
         Returns:
             Normalized connector name
         """
@@ -226,7 +226,7 @@ class ConnectorRegistry:
     def _get_beta_connector_names(self) -> List[str]:
         """
         Get list of normalized beta connector names from ConnectorFactory.
-        
+
         Returns:
             List of normalized beta connector names
         """
@@ -514,7 +514,8 @@ class ConnectorRegistry:
         self,
         connector_type: str,
         metadata: Dict[str, Any],
-        instance_data: Optional[Dict[str, Any]] = None
+        instance_data: Optional[Dict[str, Any]] = None,
+        scope: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Build connector information dictionary from metadata and instance data.
@@ -544,7 +545,7 @@ class ConnectorRegistry:
             'supportsSync': connector_config.get('supportsSync', False),
             'supportsAgent': connector_config.get('supportsAgent', False),
             'config': connector_config,
-            'connectorScopes': metadata.get('connectorScopes', ['personal'])
+            'scope': scope if scope else metadata.get('connectorScopes', [ConnectorScope.PERSONAL.value])
         }
 
         # Add instance-specific data if provided
@@ -645,7 +646,7 @@ class ConnectorRegistry:
                 await feature_flag_service.refresh()
             except Exception as e:
                 self.logger.debug(f"Feature flag refresh failed: {e}")
-            
+
             from app.services.featureflag.config.config import CONFIG
             beta_enabled = feature_flag_service.is_feature_enabled(CONFIG.ENABLE_BETA_CONNECTORS)
             beta_names = self._get_beta_connector_names() if not beta_enabled else []
@@ -667,7 +668,7 @@ class ConnectorRegistry:
                 if normalized_name in beta_names:
                     continue
 
-            connector_info = self._build_connector_info(connector_type, metadata)
+            connector_info = self._build_connector_info(connector_type, metadata, scope=scope)
             if matches_search(connector_info):
                 connectors.append(connector_info)
 

@@ -161,23 +161,43 @@ class BaseDriveSyncService(ABC):
         self.logger.info("🚀 Starting sync, Action: start")
         async with self._transition_lock:
             try:
-                users = await self.arango_service.get_users(org_id=org_id)
-                for user in users:
-                    # Check current state using get_user_sync_state
-                    sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
-                    )
-                    current_state = (
-                        sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
-                    )
+                # For individual scope, check credential owner's sync state, not logged-in user
+                if hasattr(self, 'credential_owner') and self.credential_owner:
+                    credential_owner_email = self.credential_owner.get("email")
+                    if credential_owner_email:
+                        sync_state = await self.arango_service.get_user_sync_state(
+                            credential_owner_email, Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
+                        )
+                        current_state = (
+                            sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
+                        )
 
-                    if current_state == ProgressStatus.IN_PROGRESS.value:
-                        self.logger.warning("💥 Sync service is already running")
-                        return False
+                        if current_state == ProgressStatus.IN_PROGRESS.value:
+                            self.logger.warning("💥 Sync service is already running for credential owner")
+                            return False
 
-                    if current_state == ProgressStatus.PAUSED.value:
-                        self.logger.warning("💥 Sync is paused, use resume to continue")
-                        return False
+                        if current_state == ProgressStatus.PAUSED.value:
+                            self.logger.warning("💥 Sync is paused for credential owner, use resume to continue")
+                            return False
+                else:
+                    # Fallback to old behavior if credential owner not set
+                    users = await self.arango_service.get_users(org_id=org_id)
+                    for user in users:
+                        # Check current state using get_user_sync_state
+                        sync_state = await self.arango_service.get_user_sync_state(
+                            user["email"], Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
+                        )
+                        current_state = (
+                            sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
+                        )
+
+                        if current_state == ProgressStatus.IN_PROGRESS.value:
+                            self.logger.warning("💥 Sync service is already running")
+                            return False
+
+                        if current_state == ProgressStatus.PAUSED.value:
+                            self.logger.warning("💥 Sync is paused, use resume to continue")
+                            return False
 
                     # Cancel any existing task
                     if self._sync_task and not self._sync_task.done():
@@ -1966,27 +1986,136 @@ class DriveSyncIndividualService(BaseDriveSyncService):
         )
         self.drive_user_service = drive_user_service
         self.connector_id = connector_id
+        # Store credential owner info to ensure all edges/permissions use the correct user
+        self.credential_owner = None
+
+    async def _should_stop(self, org_id) -> bool:
+        """Check if operation should stop - for individual sync, check credential owner only"""
+        if self._stop_requested:
+            if not self.credential_owner:
+                return False
+            credential_owner_email = self.credential_owner.get("email")
+            if not credential_owner_email:
+                return False
+            current_state = await self.arango_service.get_user_sync_state(
+                credential_owner_email, Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id
+            )
+            if current_state:
+                current_state = current_state.get("syncState")
+                if current_state == ProgressStatus.IN_PROGRESS.value:
+                    await self.arango_service.update_user_sync_state(
+                        credential_owner_email,
+                        ProgressStatus.PAUSED.value,
+                        service_type=Connectors.GOOGLE_DRIVE.value.lower(),
+                        connector_id=self.connector_id,
+                    )
+                    self.logger.info("✅ Drive sync state updated before stopping for credential owner")
+                    return True
+            return False
+        return False
 
     async def connect_services(self, org_id: str) -> bool:
-        """Connect to services for individual setup"""
+        """Connect to services for individual setup
+
+        For individual/personal scope connectors, we MUST use the user whose OAuth credentials
+        were used to configure the connector, NOT the logged-in user. This ensures data is
+        synced for the correct user.
+
+        The user is determined by calling the Google API (list_individual_user) which returns
+        the user whose credentials are stored in the connector config.
+        """
         try:
             self.logger.info("🚀 Connecting to individual user services")
 
-            user_id = None
-            user_info = await self.arango_service.get_users(org_id, active=True)
-            if user_info and user_info[0].get("userId"):
-                user_id = user_info[0]["userId"]
-            else:
-                # Fallback: fetch individual user directly from Drive API to get a valid user_id
-                self.logger.warning("⚠️ No active users found in DB; fetching individual user from Drive API")
-                fetched_users = await self.drive_user_service.list_individual_user(org_id)
-                if fetched_users and len(fetched_users) > 0 and fetched_users[0].get("userId"):
-                    user_id = fetched_users[0]["userId"]
-                else:
-                    self.logger.error("❌ Unable to determine user_id for individual Drive connection")
+            if not self.connector_id:
+                self.logger.error("❌ Connector ID not set")
+                return False
+
+            # Step 1: Connect the service directly from connector config (no user_id needed)
+            # This initializes the service so we can call the API
+            self.logger.info("📋 Initializing Drive service from connector config")
+            if not await self.drive_user_service.connect_from_connector_config(org_id, self.connector_id):
+                self.logger.error("❌ Failed to initialize Drive service from connector config")
+                return False
+
+            # Step 2: Get the credential owner user from the Google API
+            # This is the ONLY source of truth for who the credentials belong to
+            self.logger.info("📋 Fetching credential owner user from Drive API")
+            fetched_users = await self.drive_user_service.list_individual_user(org_id)
+            if not fetched_users or len(fetched_users) == 0:
+                self.logger.error("❌ Unable to get credential owner user from Drive API")
+                return False
+
+            credential_owner = fetched_users[0]
+            credential_owner_email = credential_owner.get("email")
+            if not credential_owner_email:
+                self.logger.error("❌ Credential owner user has no email address")
+                return False
+
+            self.logger.info(f"✅ Credential owner user from API: {credential_owner_email}")
+
+            # Store credential owner info for use throughout sync
+            self.credential_owner = credential_owner
+
+            # Ensure the credential owner user exists in the USERS collection (not people or groups)
+            # This is critical: sync operations require users to be in the users collection
+            existing_user = await self.arango_service.get_user_by_email(credential_owner_email)
+
+            if not existing_user:
+                self.logger.info(f"🔨 Creating user record in users collection for credential owner: {credential_owner_email}")
+                # Update user data with org_id
+                credential_owner["orgId"] = org_id
+                await self.arango_service.batch_upsert_nodes(
+                    [credential_owner], collection=CollectionNames.USERS.value
+                )
+                # Get the user ID after creation - use users-only check
+                existing_user = await self.arango_service.get_user_by_email(credential_owner_email)
+                if not existing_user:
+                    self.logger.error(f"❌ Failed to create user record in users collection for {credential_owner_email}")
                     return False
 
-            # Connect to Google Drive
+                # Create user-org relationship if it doesn't exist
+                user_org_relation = {
+                    "_from": f"{CollectionNames.USERS.value}/{existing_user.id}",
+                    "_to": f"{CollectionNames.ORGS.value}/{org_id}",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "entityType": "ORGANIZATION",
+                }
+                await self.arango_service.batch_create_edges(
+                    [user_org_relation],
+                    collection=CollectionNames.BELONGS_TO.value
+                )
+                self.logger.info(f"✅ Created user-org relationship for {credential_owner_email}")
+            else:
+                # Verify the user document exists and update if needed
+                user_doc = await self.arango_service.get_document(existing_user.id, CollectionNames.USERS.value)
+                if not user_doc:
+                    # This should not happen, but if it does, create the user
+                    self.logger.warning(f"⚠️ User ID {existing_user.id} found but document missing. Creating user record.")
+                    credential_owner["orgId"] = org_id
+                    await self.arango_service.batch_upsert_nodes(
+                        [credential_owner], collection=CollectionNames.USERS.value
+                    )
+                    existing_user = await self.arango_service.get_user_by_email(credential_owner_email)
+                    if not existing_user:
+                        self.logger.error(f"❌ Failed to create user record for {credential_owner_email}")
+                        return False
+                elif user_doc.get("orgId") != org_id:
+                    self.logger.info(f"🔄 Updating user org_id for {credential_owner_email}")
+                    user_doc["orgId"] = org_id
+                    await self.arango_service.batch_upsert_nodes(
+                        [user_doc], collection=CollectionNames.USERS.value
+                    )
+
+
+            # Use the credential owner's user_id for connection
+            user_id = self.credential_owner["userId"]
+            if not user_id:
+                self.logger.error("❌ Unable to determine user_id for credential owner")
+                return False
+
+            # Connect to Google Drive using the credential owner's credentials
             if not await self.drive_user_service.connect_individual_user(
                 org_id, user_id, self.connector_id
             ):
@@ -2054,18 +2183,35 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             if not await self.connect_services(org_id):
                 return False
 
-            # Get and store user info with initial sync state
-            user_info = await self.drive_user_service.list_individual_user(org_id)
-            if user_info:
-                # Add sync state to user info
-                user_id = await self.arango_service.get_entity_id_by_email(
-                    user_info[0]["email"]
-                )
-                if not user_id:
-                    await self.arango_service.batch_upsert_nodes(
-                        user_info, collection=CollectionNames.USERS.value
-                    )
-                user_info = user_info[0]
+            # Get credential owner user info (already ensured to exist in connect_services)
+            user_info_list = await self.drive_user_service.list_individual_user(org_id)
+            if not user_info_list or len(user_info_list) == 0:
+                self.logger.error("❌ Unable to get credential owner user info")
+                return False
+
+            credential_owner_email = user_info_list[0].get("email")
+            if not credential_owner_email:
+                self.logger.error("❌ Credential owner has no email")
+                return False
+
+            # Get user from database (should exist from connect_services)
+            user_id = await self.arango_service.get_entity_id_by_email(credential_owner_email)
+            if not user_id:
+                self.logger.error(f"❌ Credential owner user {credential_owner_email} not found in database")
+                return False
+
+            user_doc = await self.arango_service.get_document(user_id, CollectionNames.USERS.value)
+            if not user_doc:
+                self.logger.error(f"❌ User document not found for {credential_owner_email}")
+                return False
+
+            # Use the credential owner's info
+            user_info = {
+                "email": credential_owner_email,
+                "userId": user_doc.get("userId") or user_id,
+                "_key": user_id,
+                "orgId": user_doc.get("orgId", org_id)
+            }
 
             # Check if sync is already running
             sync_state = await self.arango_service.get_user_sync_state(
@@ -2143,8 +2289,35 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                 self.logger.info("Sync stopped before starting")
                 return False
 
-            user = await self.arango_service.get_users(org_id, active=True)
-            user = user[0]
+            # For individual scope, ALWAYS use the credential owner, not logged-in user
+            if not self.credential_owner:
+                self.logger.error("❌ Credential owner not set. Call connect_services first.")
+                return False
+
+            # Get credential owner user from database - MUST be in users collection
+            credential_owner_email = self.credential_owner["email"]
+            user = await self.arango_service.get_user_by_email(credential_owner_email)
+            if not user:
+                self.logger.error(f"❌ Credential owner user {credential_owner_email} not found in users collection. User must exist in users collection for sync operations.")
+                return False
+            user_id = user.id
+            if not user_id:
+                self.logger.error(f"❌ Credential owner user {credential_owner_email} not found in users collection. User must exist in users collection for sync operations.")
+                return False
+
+            user_doc = await self.arango_service.get_document(user_id, CollectionNames.USERS.value)
+            if not user_doc:
+                self.logger.error(f"❌ User document not found in users collection for {credential_owner_email} (ID: {user_id})")
+                return False
+
+            # Use credential owner for all operations
+            user = {
+                "email": credential_owner_email,
+                "userId": user_doc.get("userId") or user_id,
+                "_key": user_id,
+                "orgId": user_doc.get("orgId", org_id)
+            }
+            self.logger.info(f"🔐 Using credential owner for sync: {user['email']}")
 
             sync_state = await self.arango_service.get_user_sync_state(
                 user["email"], Connectors.GOOGLE_DRIVE.value.lower(), connector_id=self.connector_id

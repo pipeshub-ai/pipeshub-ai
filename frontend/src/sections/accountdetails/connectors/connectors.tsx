@@ -37,6 +37,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { Iconify } from 'src/components/iconify';
 import infoIcon from '@iconify-icons/mdi/info-circle';
+import plusCircleIcon from '@iconify-icons/mdi/plus-circle';
 import magniferIcon from '@iconify-icons/mdi/magnify';
 import linkBrokenIcon from '@iconify-icons/mdi/link-off';
 import linkIcon from '@iconify-icons/mdi/link-variant';
@@ -523,8 +524,9 @@ const Connectors: React.FC = () => {
               </Stack>
 
               <Button
-                variant="outlined"
-                startIcon={<Iconify icon={appsIcon} width={18} height={18} />}
+                variant="contained"
+                color="primary"
+                startIcon={<Iconify icon={plusCircleIcon} width={18} height={18} />}
                 onClick={handleBrowseRegistry}
                 sx={{
                   textTransform: 'none',
@@ -534,7 +536,7 @@ const Connectors: React.FC = () => {
                   height: 40,
                 }}
               >
-                Available Connectors
+                Add New Connectors
               </Button>
             </Stack>
 

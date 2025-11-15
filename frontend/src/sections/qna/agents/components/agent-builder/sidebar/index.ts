@@ -7,11 +7,11 @@
  */
 
 // Components
-export * from './SidebarHeader';
-export * from './SidebarNodeItem';
-export * from './SidebarCategory';
-export * from './SidebarToolsSection';
-export * from './SidebarKnowledgeSection';
+export * from './sidebar-header';
+export * from './sidebar-node-item';
+export * from './sidebar-category';
+export * from './sidebar-tools-section';
+export * from './sidebar-knowledge-section';
 
 // Types
 export * from './sidebar.types';

@@ -450,7 +450,8 @@ const ConnectorRegistry: React.FC = () => {
               </Stack>
 
               <Button
-                variant="outlined"
+                variant="contained"
+                color="primary"
                 startIcon={<Iconify icon={arrowLeftIcon} width={18} height={18} />}
                 onClick={handleBackToInstances}
                 sx={{

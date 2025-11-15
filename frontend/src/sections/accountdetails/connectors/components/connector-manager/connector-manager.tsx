@@ -98,7 +98,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
   // Determine whether to show Authenticate button
   const isGoogleWorkspace = connector.appGroup === 'Google Workspace';
   const hideAuthenticate =
-    authType === 'OAUTH_ADMIN_CONSENT' || (isOauth && isBusiness && isGoogleWorkspace);
+    authType === 'OAUTH_ADMIN_CONSENT' || (isOauth && isBusiness && isGoogleWorkspace && connector.scope === 'team');
 
   return (
     <Container maxWidth="xl" sx={{ py: 2 }}>

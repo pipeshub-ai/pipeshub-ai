@@ -23,6 +23,7 @@ import { useAccountType } from 'src/hooks/use-account-type';
 import settingsIcon from '@iconify-icons/mdi/settings';
 import closeIcon from '@iconify-icons/mdi/close';
 import saveIcon from '@iconify-icons/eva/save-outline';
+import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 import { useConnectorConfig } from '../../hooks/use-connector-config';
 import AuthSection from './auth-section';
 import SyncSection from './sync-section';
@@ -44,7 +45,9 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   initialInstanceName,
 }) => {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
+  const scrollableStyles = createScrollableContainerStyle(theme);
 
   const {
     // State
@@ -195,18 +198,16 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             sx={{
               p: 1,
               borderRadius: 1.5,
-              bgcolor: alpha(theme.palette.primary.main, 0.1),
+              backgroundColor: isDark
+                ? alpha(theme.palette.common.white, 0.9)
+                : alpha(theme.palette.grey[100], 0.8),
+              border: `1px solid ${theme.palette.divider}`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
             }}
           >
-            <Iconify
-              icon={settingsIcon}
-              width={20}
-              height={20}
-              color={theme.palette.primary.main}
-            />
+            <img src={connector.iconPath} alt={connector.name} width={28} height={28} />
           </Box>
           <Box>
             <Typography
@@ -257,7 +258,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         </IconButton>
       </DialogTitle>
 
-      <DialogContent sx={{ p: 0, overflow: 'auto', flex: 1 }}>
+      <DialogContent sx={{ p: 0, ...scrollableStyles, flex: 1 }}>
         {saveError && (
           <Alert
             severity="error"
@@ -369,6 +370,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           {!isNoAuthType && activeStep < 1 ? (
             <Button
               variant="contained"
+              color="primary"
               onClick={handleNext}
               disabled={saving}
               sx={{
