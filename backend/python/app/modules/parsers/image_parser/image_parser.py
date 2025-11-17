@@ -101,7 +101,6 @@ class ImageParser:
                 self.logger.warning(f"URL does not appear to be an image URL: {url[:100]}...")
                 return None
 
-                # First do a HEAD request to check content-type without downloading
             self.logger.debug(f"HEAD request for URL: {url[:200]}...")
             async with session.head(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as head_response:
                 head_response.raise_for_status()
