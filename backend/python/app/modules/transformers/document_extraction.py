@@ -65,9 +65,13 @@ class DocumentExtraction(Transformer):
             sub_category_level_2=document_classification.subcategories.level2,
             sub_category_level_3=document_classification.subcategories.level3,
         )
+        self.logger.info(f"🎯 Document extraction completed successfully")
 
-    def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int) -> List[dict]:
-        MAX_TOKENS = int(context_length * 0.9) 
+
+    def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int | None) -> List[dict]:
+        if context_length is None:
+            context_length = 128000
+        MAX_TOKENS = int(context_length * 0.85) 
         MAX_IMAGES = 50
         total_tokens = 0
         image_count = 0
@@ -173,8 +177,7 @@ class DocumentExtraction(Transformer):
         self.llm, config= await get_llm(self.config_service)
         is_multimodal_llm = config.get("isMultimodal")
         context_length = config.get("contextLength")
-        if not isinstance(context_length, (int)) or context_length <= 0:
-                    raise ValueError("Context length is not valid. Please provide a valid context length.")
+        
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
             departments = await self.arango_service.get_departments(org_id)

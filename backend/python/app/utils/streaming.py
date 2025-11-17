@@ -132,6 +132,15 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
         raise
 
+def get_qdrant_limit(context_length: int) -> int:
+    if context_length <=17000:
+        return 187
+    elif context_length <=33000:
+        return 231
+    elif context_length <=65000:
+        return 320
+    else:
+        return 500
 
 async def execute_tool_calls(
     llm,
@@ -145,7 +154,7 @@ async def execute_tool_calls(
     retrieval_service: RetrievalService,
     user_id: str,
     org_id: str,
-    context_length: int,
+    context_length,
     target_words_per_chunk: int = 1,
     is_multimodal_llm: Optional[bool] = False,
     max_hops: int = 1,
@@ -194,7 +203,7 @@ async def execute_tool_calls(
 
         # Check if there are tool calls
         if not (isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None)):
-            logger.debug("execute_tool_calls: no tool_calls returned; exiting tool loop without adding AI message (will be streamed)")
+            logger.debug("execute_tool_calls: no tool_calls returned; exiting tool loop")
             messages.append(ai)
             break
 
@@ -383,8 +392,9 @@ async def execute_tool_calls(
             message_contents.append(message_content)
 
         current_message_tokens, new_tokens = count_tokens(messages,message_contents)
-        
-        MAX_TOKENS_THRESHOLD = context_length
+        if context_length is None:
+            context_length = 128000 
+        MAX_TOKENS_THRESHOLD = int(context_length * 0.7)
         
         logger.debug(
             "execute_tool_calls: token_count | current_messages=%d new_records=%d threshold=%d",
@@ -401,12 +411,12 @@ async def execute_tool_calls(
             )
 
             virtual_record_ids = [r.get("virtual_record_id") for r in records if r.get("virtual_record_id")]
-
+            qdrant_limit =  get_qdrant_limit(context_length)
             result = await retrieval_service.search_with_filters(
                 queries=[all_queries[0]],
                 org_id=org_id,
                 user_id=user_id,
-                limit=500,
+                limit=qdrant_limit,
                 filter_groups=None,
                 virtual_record_ids_from_tool=virtual_record_ids,
             )
