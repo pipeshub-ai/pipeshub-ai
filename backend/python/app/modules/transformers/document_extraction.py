@@ -13,6 +13,8 @@ from app.modules.extraction.prompt_template import (
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.llm import get_llm
 
+DEFAULT_CONTEXT_LENGTH = 128000
+CONTENT_TOKEN_RATIO = 0.85  
 SentimentType = Literal["Positive", "Neutral", "Negative"]
 
 class SubCategories(BaseModel):
@@ -70,8 +72,8 @@ class DocumentExtraction(Transformer):
 
     def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int | None) -> List[dict]:
         if context_length is None:
-            context_length = 128000
-        MAX_TOKENS = int(context_length * 0.85) 
+            context_length = DEFAULT_CONTEXT_LENGTH
+        MAX_TOKENS = int(context_length * CONTENT_TOKEN_RATIO) 
         MAX_IMAGES = 50
         total_tokens = 0
         image_count = 0

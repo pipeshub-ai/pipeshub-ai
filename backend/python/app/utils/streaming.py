@@ -26,6 +26,8 @@ from app.utils.citations import (
 from app.utils.logger import create_logger
 
 MAX_TOKENS_THRESHOLD = 80000
+DEFAULT_CONTEXT_LENGTH = 128000
+TOOL_EXECUTION_TOKEN_RATIO = 0.7
 
 # Create a logger for this module
 logger = create_logger("streaming")
@@ -132,15 +134,20 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
         raise
 
+# Configuration for Qdrant limits based on context length.
+QDRANT_LIMIT_TIERS = [
+    (17000, 187),  # For context lengths up to 17k
+    (33000, 231),  # For context lengths up to 33k
+    (65000, 320),  # For context lengths up to 65k
+]
+DEFAULT_QDRANT_LIMIT = 500
+
 def get_qdrant_limit(context_length: int) -> int:
-    if context_length <=17000:
-        return 187
-    elif context_length <=33000:
-        return 231
-    elif context_length <=65000:
-        return 320
-    else:
-        return 500
+    """Determines the Qdrant search limit based on the LLM's context length."""
+    for length_threshold, limit in QDRANT_LIMIT_TIERS:
+        if context_length <= length_threshold:
+            return limit
+    return DEFAULT_QDRANT_LIMIT
 
 async def execute_tool_calls(
     llm,
@@ -154,7 +161,7 @@ async def execute_tool_calls(
     retrieval_service: RetrievalService,
     user_id: str,
     org_id: str,
-    context_length,
+    context_length:int|None,
     target_words_per_chunk: int = 1,
     is_multimodal_llm: Optional[bool] = False,
     max_hops: int = 1,
@@ -393,8 +400,8 @@ async def execute_tool_calls(
 
         current_message_tokens, new_tokens = count_tokens(messages,message_contents)
         if context_length is None:
-            context_length = 128000 
-        MAX_TOKENS_THRESHOLD = int(context_length * 0.7)
+            context_length = DEFAULT_CONTEXT_LENGTH 
+        MAX_TOKENS_THRESHOLD = int(context_length * TOOL_EXECUTION_TOKEN_RATIO)
         
         logger.debug(
             "execute_tool_calls: token_count | current_messages=%d new_records=%d threshold=%d",
@@ -1028,7 +1035,7 @@ async def stream_llm_response_with_tools(
     virtual_record_id_to_result,
     blob_store,
     is_multimodal_llm,
-    context_length,
+    context_length:int|None,
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
     target_words_per_chunk: int = 1,
@@ -1065,7 +1072,22 @@ async def stream_llm_response_with_tools(
         tools_were_called = False
         try:
             logger.info(f"executing tool calls with tools={tools}")
-            async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results,virtual_record_id_to_result, blob_store, all_queries, retrieval_service, user_id, org_id, context_length,is_multimodal_llm):
+            
+            async for tool_event in execute_tool_calls(
+                llm=llm, 
+                messages=final_messages, 
+                tools=tools, 
+                tool_runtime_kwargs=tool_runtime_kwargs, 
+                final_results=final_results,
+                virtual_record_id_to_result=virtual_record_id_to_result, 
+                blob_store=blob_store, 
+                all_queries=all_queries, 
+                retrieval_service=retrieval_service, 
+                user_id=user_id, 
+                org_id=org_id, 
+                context_length=context_length,
+                is_multimodal_llm=is_multimodal_llm
+            ):
 
                 if tool_event.get("event") == "tool_execution_complete":
                     # Extract the final messages and tools_executed status
