@@ -380,7 +380,7 @@ class BlobStorage(Transformer):
                 "_key": mapping_key,
                 "virtualRecordId": virtual_record_id,
                 "documentId": document_id,
-                "createdAt": get_epoch_timestamp_in_ms()
+                "updatedAt": get_epoch_timestamp_in_ms()
             }
 
             success = await self.arango_service.batch_upsert_nodes(
