@@ -336,7 +336,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     ValidationMiddleware.validate(uploadRecordsSchema),
 
     // Upload handler
-    uploadRecordsToKB(recordRelationService, keyValueStoreService, appConfig),
+    uploadRecordsToKB( keyValueStoreService, appConfig),
   );
 
   // Upload records to a specific folder in the KB
@@ -358,7 +358,6 @@ export function createKnowledgeBaseRouter(container: Container): Router {
 
     // Upload handler
     uploadRecordsToFolder(
-      recordRelationService,
       keyValueStoreService,
       appConfig,
     ),

@@ -8,11 +8,8 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { endpoint } from '../../storage/constants/constants';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
-import { RecordRelationService } from '../services/kb.relation.service';
 import { IRecordDocument } from '../types/record';
 import { IFileRecordDocument } from '../types/file_record';
-import { Event, EventType } from '../services/records_events.service';
-import { InternalServerError } from '../../../libs/errors/http.errors';
 
 const logger = Logger.getInstance({
   service: 'knowledge_base.utils',
@@ -36,7 +33,6 @@ export const saveFileToStorageAndGetDocumentId = async (
   fileRecord: IFileRecordDocument,
   keyValueStoreService: KeyValueStoreService,
   defaultConfig: DefaultStorageConfig,
-  recordRelationService: RecordRelationService,
 ): Promise<StorageResponseMetadata> => {
   const formData = new FormData();
 
@@ -98,8 +94,6 @@ export const saveFileToStorageAndGetDocumentId = async (
         documentName,
         record,
         fileRecord,
-        recordRelationService,
-        keyValueStoreService,
       );
       return { documentId, documentName };
     } else {
@@ -119,8 +113,6 @@ function runInBackGround(
   documentName: string,
   record: IRecordDocument,
   fileRecord: IFileRecordDocument,
-  recordRelationService: RecordRelationService,
-  keyValueStoreService: KeyValueStoreService,
 ) {
   // Start the upload in the background
   (async () => {
@@ -154,45 +146,6 @@ function runInBackGround(
           record.externalRecordId = documentId;
           record.recordName = documentName;
           fileRecord.name = documentName;
-
-          if (response.status === 200) {
-            try {
-              const recordExists =
-                await recordRelationService.checkRecordExists(record._key);
-              logger.info('Record exists, key', {
-                recordExists,
-                recordKey: record._key,
-              });
-              if (!recordExists) {
-                throw new InternalServerError(
-                  `Record ${record._key} not found in database`,
-                );
-              }
-              // Create the payload using the separate function
-              const newRecordPayload =
-                await recordRelationService.createNewRecordEventPayload(
-                  record,
-                  keyValueStoreService,
-                  fileRecord,
-                );
-
-              const event: Event = {
-                eventType: EventType.NewRecordEvent,
-                timestamp: Date.now(),
-                payload: newRecordPayload,
-              };
-
-              // Return the promise for event publishing
-              return recordRelationService.eventProducer.publishEvent(event);
-            } catch (error) {
-              logger.error(
-                `Failed to create event payload for record ${record._key}`,
-                { error },
-              );
-              // Return a resolved promise to avoid failing the Promise.all
-              return Promise.resolve();
-            }
-          }
         })
         .catch((uploadError) => {
           // TODO: Notify the user about the upload failure
