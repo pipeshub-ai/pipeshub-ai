@@ -373,7 +373,6 @@ export function createKnowledgeBaseRouter(
 
     // Upload handler
     uploadRecordsToFolder(
-      recordRelationService,
       keyValueStoreService,
       appConfig,
       notificationService,
