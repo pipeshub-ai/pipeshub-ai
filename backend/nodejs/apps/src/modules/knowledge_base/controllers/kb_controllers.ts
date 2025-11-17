@@ -633,7 +633,6 @@ export const deleteFolder =
 //  Upload records in KB along with folder creation and folder record creation new controller
 export const uploadRecordsToKB =
   (
-    recordRelationService: RecordRelationService,
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
   ) =>
@@ -753,7 +752,6 @@ export const uploadRecordsToKB =
             fileRecord,
             keyValueStoreService,
             appConfig.storage,
-            recordRelationService,
           );
 
         // Update record and fileRecord with storage info
@@ -804,7 +802,6 @@ export const uploadRecordsToKB =
 
 export const uploadRecordsToFolder =
   (
-    recordRelationService: RecordRelationService,
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
   ) =>
@@ -928,7 +925,6 @@ export const uploadRecordsToFolder =
             fileRecord,
             keyValueStoreService,
             appConfig.storage,
-            recordRelationService,
           );
 
         // Update record and fileRecord with storage info
