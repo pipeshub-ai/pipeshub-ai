@@ -203,7 +203,7 @@ class DomainExtractor:
         try:
             self.llm, config = await get_llm(self.config_service)
             context_length = config.get("contextLength",None)
-            
+
             self.logger.info("✅ LLM initialized successfully")
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize LLM: {str(e)}")
@@ -230,8 +230,8 @@ class DomainExtractor:
             token_count = count_tokens_text(content,None)
             if context_length is None:
                 context_length = 128000
-            
-            MAX_CONTENT_TOKENS = int(context_length * 0.85) 
+
+            MAX_CONTENT_TOKENS = int(context_length * 0.85)
 
             if token_count > MAX_CONTENT_TOKENS:
                 self.logger.info("🎯 Prompt exceeds MAX_CONTENT_TOKENS tokens, truncating content")

@@ -467,8 +467,8 @@ async def askAIStream(
 
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
-                
-                
+
+
 
                 if config.get("provider").lower() == "ollama":
                     query_info.mode = "simple"

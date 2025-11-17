@@ -14,7 +14,7 @@ from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.llm import get_llm
 
 DEFAULT_CONTEXT_LENGTH = 128000
-CONTENT_TOKEN_RATIO = 0.85  
+CONTENT_TOKEN_RATIO = 0.85
 SentimentType = Literal["Positive", "Neutral", "Negative"]
 
 class SubCategories(BaseModel):
@@ -67,13 +67,13 @@ class DocumentExtraction(Transformer):
             sub_category_level_2=document_classification.subcategories.level2,
             sub_category_level_3=document_classification.subcategories.level3,
         )
-        self.logger.info(f"🎯 Document extraction completed successfully")
+        self.logger.info("🎯 Document extraction completed successfully")
 
 
     def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int | None) -> List[dict]:
         if context_length is None:
             context_length = DEFAULT_CONTEXT_LENGTH
-        MAX_TOKENS = int(context_length * CONTENT_TOKEN_RATIO) 
+        MAX_TOKENS = int(context_length * CONTENT_TOKEN_RATIO)
         MAX_IMAGES = 50
         total_tokens = 0
         image_count = 0
@@ -179,7 +179,7 @@ class DocumentExtraction(Transformer):
         self.llm, config= await get_llm(self.config_service)
         is_multimodal_llm = config.get("isMultimodal")
         context_length = config.get("contextLength")
-        
+
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
             departments = await self.arango_service.get_departments(org_id)

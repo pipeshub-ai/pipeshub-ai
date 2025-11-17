@@ -400,9 +400,9 @@ async def execute_tool_calls(
 
         current_message_tokens, new_tokens = count_tokens(messages,message_contents)
         if context_length is None:
-            context_length = DEFAULT_CONTEXT_LENGTH 
+            context_length = DEFAULT_CONTEXT_LENGTH
         MAX_TOKENS_THRESHOLD = int(context_length * TOOL_EXECUTION_TOKEN_RATIO)
-        
+
         logger.debug(
             "execute_tool_calls: token_count | current_messages=%d new_records=%d threshold=%d",
             current_message_tokens,
@@ -1040,7 +1040,7 @@ async def stream_llm_response_with_tools(
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
     target_words_per_chunk: int = 1,
     mode: Optional[str] = "json",
-    
+
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1072,19 +1072,19 @@ async def stream_llm_response_with_tools(
         tools_were_called = False
         try:
             logger.info(f"executing tool calls with tools={tools}")
-            
+
             async for tool_event in execute_tool_calls(
-                llm=llm, 
-                messages=final_messages, 
-                tools=tools, 
-                tool_runtime_kwargs=tool_runtime_kwargs, 
+                llm=llm,
+                messages=final_messages,
+                tools=tools,
+                tool_runtime_kwargs=tool_runtime_kwargs,
                 final_results=final_results,
-                virtual_record_id_to_result=virtual_record_id_to_result, 
-                blob_store=blob_store, 
-                all_queries=all_queries, 
-                retrieval_service=retrieval_service, 
-                user_id=user_id, 
-                org_id=org_id, 
+                virtual_record_id_to_result=virtual_record_id_to_result,
+                blob_store=blob_store,
+                all_queries=all_queries,
+                retrieval_service=retrieval_service,
+                user_id=user_id,
+                org_id=org_id,
                 context_length=context_length,
                 is_multimodal_llm=is_multimodal_llm
             ):
