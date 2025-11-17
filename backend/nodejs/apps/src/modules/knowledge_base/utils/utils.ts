@@ -8,7 +8,6 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { endpoint } from '../../storage/constants/constants';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
-import { RecordRelationService } from '../services/kb.relation.service';
 import { IRecordDocument } from '../types/record';
 import { IFileRecordDocument } from '../types/file_record';
 import { ConnectorServiceCommand } from '../../../libs/commands/connector_service/connector.service.command';
