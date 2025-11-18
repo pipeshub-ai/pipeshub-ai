@@ -591,7 +591,7 @@ class ConnectorMigrationService:
         update_query = f"""
             LET updated = (
               FOR doc IN {collection_name}
-                FILTER LOWER(REPLACE(doc.connectorName, ' ', '')) == LOWER(REPLACE(@connector_name, ' ', ''))
+                FILTER LOWER(SUBSTITUTE(doc.connectorName, " ", "")) == LOWER(SUBSTITUTE(@connector_name, " ", ""))
                   AND (
                     doc.connectorId == null
                     OR doc.connectorId == ''
@@ -753,6 +753,7 @@ class ConnectorMigrationService:
         Returns:
             int: Number of sync points migrated
         """
+        SPLIT_KEY_PARTS_COUNT = 3
         legacy_key = legacy_app.get("_key", "")
         connector_name = legacy_app.get("name", "")
         new_connector_id = new_app["_key"]
@@ -760,7 +761,7 @@ class ConnectorMigrationService:
         # Find all sync points that reference the legacy connector ID
         query = f"""
             FOR sync_point IN {CollectionNames.SYNC_POINTS.value}
-              FILTER LOWER(REPLACE(sync_point.connectorName, ' ', '')) == LOWER(REPLACE(@connector_name, ' ', ''))
+              FILTER LOWER(SUBSTITUTE(doc.connectorName, " ", "")) == LOWER(SUBSTITUTE(@connector_name, " ", ""))
               RETURN sync_point
         """
 
@@ -793,10 +794,10 @@ class ConnectorMigrationService:
 
                 # Parse the sync point key format: {org_id}/{connector_id}/{sync_data_point_type}/{sync_point_key}
                 # We need to replace the connector_id part
-                key_parts = old_sync_point_key.split("/", 3)
+                key_parts = old_sync_point_key.split("/", SPLIT_KEY_PARTS_COUNT)
 
                 # Validate we have at least the minimum parts
-                if len(key_parts) < 3:
+                if len(key_parts) < SPLIT_KEY_PARTS_COUNT:
                     self.logger.warning(
                         f"Sync point key format unexpected (too few parts) for {old_sync_point_key}, skipping"
                     )
@@ -814,9 +815,9 @@ class ConnectorMigrationService:
                 # Reconstruct the key with new connector_id
                 new_sync_point_key = f"{org_id}/{new_connector_id}/{sync_data_point_type}"
 
-                if len(key_parts) > 3:
+                if len(key_parts) > SPLIT_KEY_PARTS_COUNT:
                     # The sync_point_key part might also contain connector_id
-                    sync_point_key_part = key_parts[3]
+                    sync_point_key_part = key_parts[SPLIT_KEY_PARTS_COUNT]
                     new_sync_point_key = f"{new_sync_point_key}/{sync_point_key_part}"
 
                 # Update the sync point document using its _key
