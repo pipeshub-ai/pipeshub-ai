@@ -331,7 +331,7 @@ class BlobStorage(Transformer):
                 headers = {
                     "Authorization": f"Bearer {jwt_token}"
                 }
-
+      
                 # Get endpoint configuration
                 endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
@@ -351,20 +351,15 @@ class BlobStorage(Transformer):
                     async with session.get(download_url, headers=headers) as resp:
                         if resp.status == HttpStatusCode.SUCCESS.value:
                             data = await resp.json()
-                            if(data.get("signedUrl")):
-                                signed_url = data.get("signedUrl")
-                                # Reuse the same session for signed URL fetch
-                                async with session.get(signed_url, headers=headers) as resp:
-                                        if resp.status == HttpStatusCode.SUCCESS.value:
-                                            data = await resp.json()
                             if data.get("record"):
                                 return data.get("record")
                             elif data.get("signedUrl"):
                                 signed_url = data.get("signedUrl")
                                 # Reuse the same session for signed URL fetch
-                                async with session.get(signed_url) as resp:
-                                    if resp.status == HttpStatusCode.SUCCESS.value:
-                                        data = await resp.json()
+                                async with session.get(signed_url) as res:
+                                    if res.status == HttpStatusCode.SUCCESS.value:
+                                        data = await res.json()
+                                        
                                         if data.get("record"):
                                             return data.get("record")
                                         else:
