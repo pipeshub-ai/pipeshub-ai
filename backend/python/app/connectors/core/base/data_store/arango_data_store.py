@@ -273,6 +273,9 @@ class ArangoTransactionStore(TransactionStore):
                     RecordType.TICKET: {
                         "collection": CollectionNames.TICKETS.value,
                     },
+                    RecordType.COMMENT: {
+                        "collection": CollectionNames.COMMENTS.value,
+                    },
                 }
 
                 # Get the configuration for the current record type

@@ -32,6 +32,7 @@ class RecordType(str, Enum):
     MESSAGE = "MESSAGE"
     MAIL = "MAIL"
     TICKET = "TICKET"
+    COMMENT = "COMMENT"
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_LIST_ITEM = "SHAREPOINT_LIST_ITEM"
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
@@ -318,6 +319,42 @@ class WebpageRecord(Record):
         return {
             "_key": self.id,
             "orgId": self.org_id,
+        }
+
+class CommentRecord(Record):
+    """
+    Comment record for page comments (footer and inline).
+
+    Fields:
+    - author_id: User accountId who created the comment
+    - resolution_status: Status of the comment (e.g., "resolved", "open", None)
+    - comment_selection: For inline comments, the original text selection (HTML)
+    - record_type: Type of comment (e.g., inline, footer)
+    """
+    author_id: str
+    resolution_status: Optional[str] = None
+    comment_selection: Optional[str] = None
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "authorId": self.author_id,
+            "resolutionStatus": self.resolution_status,
+            "commentSelection": self.comment_selection,
         }
 
 class TicketRecord(Record):

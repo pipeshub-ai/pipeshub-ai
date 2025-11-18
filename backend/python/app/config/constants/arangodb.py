@@ -104,6 +104,7 @@ class CollectionNames(Enum):
     MAILS = "mails"
     #MESSAGES = "messages"
     WEBPAGES = "webpages"
+    COMMENTS = "comments"
     TICKETS = "tickets"
 
     # Users and groups
