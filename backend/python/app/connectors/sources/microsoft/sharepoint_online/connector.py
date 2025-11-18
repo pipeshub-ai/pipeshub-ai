@@ -600,132 +600,6 @@ class SharePointConnector(BaseConnector):
             site_id = site_record_group.external_group_id
             site_name = site_record_group.name
             self.logger.info(f"Starting sync for site: '{site_name}' (ID: {site_id})")
-                
-                
-            print("\n\n\n\n\n !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-            # Get and print site groups using SharePoint REST API
-            try:
-                self.logger.info(f"Fetching site groups for site: {site_name}")
-                
-                try:
-                    # Get site details
-                    async with self.rate_limiter:
-                        site_details = await self.client.sites.by_site_id(site_id).get()
-                    
-                    if not site_details or not site_details.web_url:
-                        self.logger.debug(f"No web URL available for site: {site_name}")
-                    else:
-                        site_web_url = site_details.web_url
-                        rest_api_url = f"{site_web_url}/_api/web/sitegroups"
-                        
-                        print(f" !!!!!!!!!!!! Requesting: {rest_api_url}")
-                        
-                        # Extract SharePoint domain from site URL
-                        from urllib.parse import urlparse
-                        parsed_url = urlparse(site_web_url)
-                        sharepoint_resource = f"https://{parsed_url.netloc}"
-                        
-                        # Get token for SharePoint using certificate or client secret
-                        if hasattr(self, 'certificate_path') and self.certificate_path:
-                            # Use certificate-based authentication
-                            from azure.identity.aio import CertificateCredential
-                            
-                            credential = CertificateCredential(
-                                tenant_id=self.tenant_id,
-                                client_id=self.client_id,
-                                certificate_path=self.certificate_path
-                            )
-                            
-                            print(f" !!!!!!!!!!!! Using certificate authentication...")
-                        else:
-                            # Fall back to client secret
-                            from azure.identity.aio import ClientSecretCredential
-                            
-                            credential = ClientSecretCredential(
-                                tenant_id=self.tenant_id,
-                                client_id=self.client_id,
-                                client_secret=self.client_secret
-                            )
-                            
-                            print(f" !!!!!!!!!!!! Using client secret authentication...")
-                        
-                        # Request token with SharePoint scope
-                        token_response = await credential.get_token(f"{sharepoint_resource}/.default")
-                        access_token = token_response.token
-                        
-                        print(f" !!!!!!!!!!!! Got access token, making API request...")
-                        
-                        headers = {
-                            'Authorization': f'Bearer {access_token}',
-                            'Accept': 'application/json;odata=verbose',
-                            'Content-Type': 'application/json;odata=verbose'
-                        }
-                        
-                        async with httpx.AsyncClient(timeout=30.0) as http_client:
-                            response = await http_client.get(rest_api_url, headers=headers)
-                            
-                            print(f" !!!!!!!!!!!! Status: {response.status_code}")
-                            
-                            if response.status_code == 200:
-                                data = response.json()
-                                print("!!!!!!!!!!!!!!!!!! raw data: ", data)
-                                site_groups = data.get('d', {}).get('results', [])
-                                
-                                print(f"\n{'='*80}")
-                                print(f"Site Groups for: {site_name} (Total: {len(site_groups)})")
-                                print(f"{'='*80}")
-                                
-                                for idx, group in enumerate(site_groups, 1):
-                                    group_title = group.get('Title', 'N/A')
-                                    group_id = group.get('Id', 'N/A')
-                                    owner_title = group.get('OwnerTitle', 'N/A')
-                                    login_name = group.get('LoginName', 'N/A')
-                                    description = group.get('Description', 'N/A')
-                                    principal_type = group.get('PrincipalType', 'N/A')
-                                    
-                                    print(f"\n{idx}. {group_title}")
-                                    print(f"   - ID: {group_id}")
-                                    print(f"   - Login Name: {login_name}")
-                                    print(f"   - Owner: {owner_title}")
-                                    print(f"   - Principal Type: {principal_type}")
-                                    if description:
-                                        print(f"   - Description: {description}")
-                                
-                                print(f"\n{'='*80}\n")
-                                
-                            elif response.status_code == 401:
-                                print(f" !!!!!!!!!!!! 401 Unauthorized Error")
-                                print(f" !!!!!!!!!!!! Response: {response.text[:500]}")
-                                print(f"\n !!!!!!!!!!!! Possible reasons:")
-                                if hasattr(self, 'certificate_path') and self.certificate_path:
-                                    print(f" !!!!!!!!!!!!   1. Certificate not properly configured in Azure AD")
-                                    print(f" !!!!!!!!!!!!   2. Certificate thumbprint mismatch")
-                                    print(f" !!!!!!!!!!!!   3. Sites.FullControl.All permission not granted")
-                                    print(f" !!!!!!!!!!!!   4. SharePoint REST API doesn't support certificate-based app-only tokens")
-                                    print(f"\n !!!!!!!!!!!!   TIP: Try the SharePoint Add-in authentication instead (Option 1)")
-                                else:
-                                    print(f" !!!!!!!!!!!!   1. The app doesn't have Sites.FullControl.All APPLICATION permission")
-                                    print(f" !!!!!!!!!!!!   2. OR admin consent wasn't granted")
-                                    print(f" !!!!!!!!!!!!   3. OR the SharePoint REST API doesn't support app-only for this endpoint")
-                                    print(f"\n !!!!!!!!!!!!   SOLUTION: Use SharePoint Add-in authentication (separate client ID/secret)")
-                            else:
-                                print(f" !!!!!!!!!!!! Error: {response.status_code}")
-                                print(f" !!!!!!!!!!!! Response: {response.text[:500]}")
-                        
-                        # Close credential
-                        await credential.close()
-                                    
-                except Exception as inner_error:
-                    import traceback
-                    print(" !!!!!!!!!!!! inner error: ", traceback.format_exc())
-                    self.logger.debug(f"Error fetching site groups for {site_name}: {inner_error}")
-                    
-            except Exception as outer_error:
-                import traceback
-                print(" !!!!!!!!!!!! outer error: ", traceback.format_exc())
-                self.logger.debug(f"Site groups fetch wrapper error: {outer_error}")
-                pass
-
 
             # Process all content types
             batch_records = []
@@ -993,7 +867,7 @@ class SharePointConnector(BaseConnector):
 
             # Get permissions
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
-            print(f"\n\n\n !!!!!!!!!!!!!!!!!!!!! permissions for {item_id} {drive_id} {site_id}:", permissions)
+            print(f"\n\n\n\n\n\n !!!!!!!!!!!!!!!!!!!!! permissions for {item_id} {drive_id} {site_id}:", permissions)
 
             # Todo: Get permissions for the record
             for user in users:
@@ -2157,9 +2031,8 @@ class SharePointConnector(BaseConnector):
                             source_user_group_id=group.id,
                             app_name=self.connector_name,
                             name=group.display_name,
-                            mail=group.mail,
                             description=group.description,
-                            created_at_timestamp=self._parse_datetime(group.created_date_time),
+                            created_at=self._parse_datetime(group.created_date_time),
                         )
                         self.logger.info(f"User group: {user_group}")
 
@@ -2172,7 +2045,7 @@ class SharePointConnector(BaseConnector):
                                     source_user_id=member.id,
                                     email=member.mail or member.user_principal_name,
                                     full_name=member.display_name,
-                                    created_at_timestamp=self._parse_datetime(member.created_date_time),
+                                    created_at=self._parse_datetime(member.created_date_time),
                                     app_name=self.connector_name,
                                 ))
                         except Exception as member_error:
@@ -2191,53 +2064,162 @@ class SharePointConnector(BaseConnector):
             except Exception as groups_error:
                 self.logger.error(f"❌ Error getting Microsoft 365 Groups: {groups_error}")
 
-            # Also try to get site permissions which might include group information
+            # Fetch SharePoint site groups and store them as user groups
+            self.logger.info("Starting SharePoint Site Groups fetch...")
+            
+            sharepoint_groups_with_members = []
+            
             try:
+                # Get all sites
                 sites = await self._get_all_sites()
+                
                 for site in sites:
                     try:
-                        encoded_site_id = self._construct_site_url(site.id)
-
-                        # Get site permissions which might include group information
+                        site_id = site.id
+                        site_name = site.display_name or site.name
+                        
+                        self.logger.info(f"Fetching site groups for site: {site_name}")
+                        
+                        # Get site details
                         async with self.rate_limiter:
-                            permissions_response = await self._safe_api_call(
-                                self.client.sites.by_site_id(encoded_site_id).permissions.get()
+                            site_details = await self.client.sites.by_site_id(site_id).get()
+                        
+                        if not site_details or not site_details.web_url:
+                            self.logger.debug(f"No web URL available for site: {site_name}")
+                            continue
+                        
+                        site_web_url = site_details.web_url
+                        rest_api_url = f"{site_web_url}/_api/web/sitegroups"
+                                                
+                        # Extract SharePoint domain from site URL
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(site_web_url)
+                        sharepoint_resource = f"https://{parsed_url.netloc}"
+                        
+                        # Get token for SharePoint using certificate or client secret
+                        if hasattr(self, 'certificate_path') and self.certificate_path:
+                            from azure.identity.aio import CertificateCredential
+                            
+                            credential = CertificateCredential(
+                                tenant_id=self.tenant_id,
+                                client_id=self.client_id,
+                                certificate_path=self.certificate_path
                             )
-
-                        if permissions_response and permissions_response.value:
-                            for permission in permissions_response.value:
-                                # Check if this permission is for a group
-                                if hasattr(permission, 'granted_to_identities') and permission.granted_to_identities:
-                                    for identity in permission.granted_to_identities:
-                                        if hasattr(identity, 'application') and identity.application:
-                                            # This is a group permission
-                                            group_name = getattr(identity.application, 'display_name', 'Unknown Group')
-                                            user_group = {
-                                                "id": str(uuid.uuid4()),
-                                                "name": group_name,
-                                                "source_user_group_id": getattr(identity.application, 'id', str(uuid.uuid4())),
-                                                "email": None,
-                                                "description": f"Site permission group for {site.display_name or site.name}",
-                                                "metadata": {
-                                                    "site_id": site.id,
-                                                    "site_name": site.display_name or site.name,
-                                                    "group_type": "SITE_PERMISSION_GROUP",
-                                                    "permission_level": getattr(permission, 'roles', ['Read'])
-                                                }
-                                            }
-
-                                            await self.data_entities_processor.on_new_user_groups(
-                                                [user_group],
-                                                []  # No member permissions for site permission groups
-                                            )
-                                            total_groups += 1
-
+                            
+                            print(f" !!!!!!!!!!!! Using certificate authentication...")
+                        else:
+                            from azure.identity.aio import ClientSecretCredential
+                            
+                            credential = ClientSecretCredential(
+                                tenant_id=self.tenant_id,
+                                client_id=self.client_id,
+                                client_secret=self.client_secret
+                            )
+                            
+                            print(f" !!!!!!!!!!!! Using client secret authentication...")
+                        
+                        # Request token with SharePoint scope
+                        token_response = await credential.get_token(f"{sharepoint_resource}/.default")
+                        access_token = token_response.token
+                                                
+                        headers = {
+                            'Authorization': f'Bearer {access_token}',
+                            'Accept': 'application/json;odata=verbose',
+                            'Content-Type': 'application/json;odata=verbose'
+                        }
+                        
+                        async with httpx.AsyncClient(timeout=30.0) as http_client:
+                            response = await http_client.get(rest_api_url, headers=headers)
+                                                        
+                            if response.status_code == 200:
+                                data = response.json()
+                                site_groups = data.get('d', {}).get('results', [])
+                                
+                                print(f"\n{'='*80}")
+                                print(f"Site Groups for: {site_name} (Total: {len(site_groups)})")
+                                print(f"{'='*80}")
+                                
+                                for idx, group in enumerate(site_groups, 1):
+                                    group_title = group.get('Title', 'N/A')
+                                    group_id = group.get('Id', 'N/A')
+                                    description = group.get('Description', 'N/A')
+                                    
+                                    # Create AppUserGroup for SharePoint site group
+                                    user_group = AppUserGroup(
+                                        id=str(uuid.uuid4()),
+                                        source_user_group_id=str(group_id),
+                                        app_name=self.connector_name,
+                                        name=group_title,
+                                        description=description if description != 'N/A' else None,
+                                    )
+                                                                
+                                    # Fetch users for this group
+                                    app_users = []
+                                    users_url = f"{site_web_url}/_api/web/sitegroups/GetById({group_id})/users"
+                                    
+                                    try:
+                                        users_response = await http_client.get(users_url, headers=headers)
+                                        
+                                        if users_response.status_code == 200:
+                                            users_data = users_response.json()
+                                            users = users_data.get('d', {}).get('results', [])
+                                            
+                                            if users:
+                                                print(f"   - Total Users: {len(users)}")
+                                                for user_idx, user in enumerate(users, 1):
+                                                    user_id = user.get('Id')
+                                                    user_title = user.get('Title', 'N/A')
+                                                    user_email = user.get('Email')
+                                                    user_principal = user.get('UserPrincipalName')
+                                                                                                        
+                                                    # Only create AppUser if email exists
+                                                    if user_email or user_principal:
+                                                        app_user = AppUser(
+                                                            source_user_id=str(user_id) if user_id else None,
+                                                            email=user_email or user_principal,
+                                                            full_name=user_title if user_title != 'N/A' else None,
+                                                            app_name=self.connector_name,
+                                                        )
+                                                        app_users.append(app_user)
+                                            else:
+                                                self.logger.info(f"   - No users in this group")
+                                        else:
+                                            self.logger.info(f"   - Error fetching users: {users_response.status_code}")
+                                            
+                                    except Exception as user_error:
+                                        self.logger.info(f"   - Exception fetching users: {user_error}")
+                                    
+                                    # Add group with members to list
+                                    sharepoint_groups_with_members.append((user_group, app_users))
+                                    total_groups += 1
+                                
+                                print(f"\n{'='*80}\n")
+                                
+                            elif response.status_code == 401:
+                                self.logger.info(f" 401 Unauthorized Error")
+                                self.logger.info(f" Response: {response.text[:500]}")
+                            else:
+                                self.logger.info(f" Error: {response.status_code}")
+                                self.logger.info(f" Response: {response.text[:500]}")
+                        
+                        # Close credential
+                        await credential.close()
+                        
                     except Exception as site_error:
-                        self.logger.debug(f"❌ Error processing permissions for site {site.display_name or site.name}: {site_error}")
+                        import traceback
+                        self.logger.info(f" Error processing site {site_name}: {traceback.format_exc()}")
+                        self.logger.debug(f"Error fetching site groups for {site_name}: {site_error}")
                         continue
-
-            except Exception as sites_error:
-                self.logger.error(f"❌ Error processing sites for permissions: {sites_error}")
+                
+                # Process all SharePoint site groups
+                if sharepoint_groups_with_members:
+                    self.logger.info(f"Processing {len(sharepoint_groups_with_members)} SharePoint site groups")
+                    await self.data_entities_processor.on_new_user_groups(
+                        sharepoint_groups_with_members
+                    )
+                        
+            except Exception as outer_error:
+                self.logger.debug(f"Site groups fetch wrapper error: {outer_error}")
 
             self.logger.info(f"Completed SharePoint group synchronization - processed {total_groups} groups")
 
