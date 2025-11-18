@@ -357,8 +357,25 @@ class BlobStorage(Transformer):
                                 async with session.get(signed_url, headers=headers) as resp:
                                         if resp.status == HttpStatusCode.SUCCESS.value:
                                             data = await resp.json()
-                            self.logger.info("✅ Successfully retrieved record for virtual_record_id from blob storage: %s", virtual_record_id)
-                            return data.get("record")
+                            if data.get("record"):
+                                return data.get("record")
+                            elif data.get("signedUrl"):
+                                signed_url = data.get("signedUrl")
+                                # Reuse the same session for signed URL fetch
+                                async with session.get(signed_url) as resp:
+                                    if resp.status == HttpStatusCode.SUCCESS.value:
+                                        data = await resp.json()
+                                        if data.get("record"):
+                                            return data.get("record")
+                                        else:
+                                            self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                                            raise Exception("No record found for virtual_record_id")
+                                    else:
+                                        self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
+                                        raise Exception("Failed to retrieve record from storage")
+                            else:
+                                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                                raise Exception("No record found for virtual_record_id")
                         else:
                             self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
                             raise Exception("Failed to retrieve record from storage")

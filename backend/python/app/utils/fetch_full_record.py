@@ -58,29 +58,6 @@ async def _fetch_full_record_using_vrid(vrid: str, blob_store: BlobStorage,org_i
     else:
         return {"ok": False, "error": f"Record with vrid '{vrid}' not found in blob store."}
 
-async def _fetch_full_record_impl(
-    record_id: str,
-    virtual_record_id_to_result: Dict[str, Any]
-) -> Dict[str, Any]:
-    """
-    Fetch complete record in the structure your prompt expects:
-    {
-      "record_id": ...,
-      "record_name": ...,
-      "semantic_metadata": {...},
-      "block_containers": {"blocks": [...], "block_groups": [...]},
-      ...
-    }
-    """
-    records = list(virtual_record_id_to_result.values())
-
-    record = next((record for record in records if  record is not None and record.get("id") == record_id), None)
-    if record:
-        return {"ok": True, "record": record}
-
-    # Nothing found
-    return {"ok": False, "error": f"Record '{record_id}' not found via blob store or arango."}
-
 
 async def _fetch_multiple_records_impl(
     record_ids: List[str],
