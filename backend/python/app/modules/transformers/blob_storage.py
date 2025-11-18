@@ -326,7 +326,7 @@ class BlobStorage(Transformer):
                 headers = {
                     "Authorization": f"Bearer {jwt_token}"
                 }
-      
+
                 # Get endpoint configuration
                 endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
@@ -354,7 +354,7 @@ class BlobStorage(Transformer):
                                 async with session.get(signed_url) as res:
                                     if res.status == HttpStatusCode.SUCCESS.value:
                                         data = await res.json()
-                                        
+
                                         if data.get("record"):
                                             return data.get("record")
                                         else:
