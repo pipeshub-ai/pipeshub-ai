@@ -1866,12 +1866,17 @@ class SharePointConnector(BaseConnector):
         """Get permissions for a drive item."""
         try:
             permissions = []
-            encoded_site_id = self._construct_site_url(site_id)
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! getting permissions")
 
             async with self.rate_limiter:
+                # Use the drives endpoint directly without going through sites
                 perms_response = await self._safe_api_call(
-                    self.client.sites.by_site_id(encoded_site_id).drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get()
+                    self.client.drives.by_drive_id(drive_id)
+                        .items.by_drive_item_id(item_id)
+                        .permissions.get()
                 )
+            
+            print("\n\n\n !!!!!!!!!!!!!!!!!!!! raw_permissions:", perms_response)
 
             if perms_response and perms_response.value:
                 permissions = await self._convert_to_permissions(perms_response.value)
@@ -1879,7 +1884,7 @@ class SharePointConnector(BaseConnector):
             return permissions
 
         except Exception as e:
-            self.logger.debug(f"❌ Could not get item permissions: {e}")
+            self.logger.debug(f"❌ Could not get item permissions for item {item_id}: {e}")
             return []
 
     async def _get_list_permissions(self, site_id: str, list_id: str) -> List[Permission]:
@@ -1922,76 +1927,75 @@ class SharePointConnector(BaseConnector):
             return []
 
     async def _convert_to_permissions(self, msgraph_permissions: List) -> List[Permission]:
-        """Convert Microsoft Graph permissions to our Permission model."""
+        """
+        Convert Microsoft Graph permissions to our Permission model.
+        Handles both user and group permissions.
+        """
         permissions = []
+
 
         for perm in msgraph_permissions:
             try:
                 # Handle user permissions
-                if hasattr(perm, 'granted_to') and perm.granted_to:
-                    if hasattr(perm.granted_to, 'user') and perm.granted_to.user:
-                        user = perm.granted_to.user
+                if hasattr(perm, 'granted_to_v2') and perm.granted_to_v2:
+                    if hasattr(perm.granted_to_v2, 'user') and perm.granted_to_v2.user:
+                        user = perm.granted_to_v2.user
                         permissions.append(Permission(
                             external_id=user.id,
-                            email=getattr(user, 'mail', None) or getattr(user, 'user_principal_name', None),
+                            email=user.additional_data.get("email", None) if hasattr(user, 'additional_data') else None,
                             type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
                             entity_type=EntityType.USER
                         ))
+                    if hasattr(perm.granted_to_v2, 'group') and perm.granted_to_v2.group:
+                        group = perm.granted_to_v2.group
+                        permissions.append(Permission(
+                            external_id=group.id,
+                            email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
+                            type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                            entity_type=EntityType.GROUP
+                        ))
+
 
                 # Handle group permissions
-                if hasattr(perm, 'granted_to_identities') and perm.granted_to_identities:
-                    for identity in perm.granted_to_identities:
-                        try:
-                            if hasattr(identity, 'group') and identity.group:
-                                group = identity.group
-                                permissions.append(Permission(
-                                    external_id=group.id,
-                                    email=getattr(group, 'mail', None),
-                                    type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                                    entity_type=EntityType.GROUP
-                                ))
-                            elif hasattr(identity, 'user') and identity.user:
-                                user = identity.user
-                                permissions.append(Permission(
-                                    external_id=user.id,
-                                    email=getattr(user, 'mail', None) or getattr(user, 'user_principal_name', None),
-                                    type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                                    entity_type=EntityType.USER
-                                ))
-                        except Exception:
-                            continue
+                if hasattr(perm, 'granted_to_identities_v2') and perm.granted_to_identities_v2:
+                    for identity in perm.granted_to_identities_v2:
+                        if hasattr(identity, 'group') and identity.group:
+                            group = identity.group
+                            permissions.append(Permission(
+                                external_id=group.id,
+                                email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
+                                type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                                entity_type=EntityType.GROUP
+                            ))
+                        elif hasattr(identity, 'user') and identity.user:
+                            user = identity.user
+                            permissions.append(Permission(
+                                external_id=user.id,
+                                email=user.additional_data.get("email", None) if hasattr(user, 'additional_data') else None,
+                                type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                                entity_type=EntityType.USER
+                            ))
 
-                # Handle link permissions
+                # Handle link permissions (anyone with link)
                 if hasattr(perm, 'link') and perm.link:
                     link = perm.link
-                    if hasattr(link, 'scope'):
-                        if link.scope == "anonymous":
-                            permissions.append(Permission(
-                                external_id="anyone_with_link",
-                                email=None,
-                                type=map_msgraph_role_to_permission_type(getattr(link, 'type', 'read')),
-                                entity_type=EntityType.ANYONE_WITH_LINK
-                            ))
-                        elif link.scope == "organization":
-                            permissions.append(Permission(
-                                external_id="anyone_in_org",
-                                email=None,
-                                type=map_msgraph_role_to_permission_type(getattr(link, 'type', 'read')),
-                                entity_type=EntityType.ORG
-                            ))
-
-                # Handle invitation permissions
-                if hasattr(perm, 'invitation') and perm.invitation:
-                    invitation = perm.invitation
-                    if hasattr(invitation, 'email') and invitation.email:
+                    if link.scope == "anonymous":
                         permissions.append(Permission(
-                            external_id=invitation.email,
-                            email=invitation.email,
-                            type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                            entity_type=EntityType.USER
+                            external_id="anyone_with_link",
+                            email=None,
+                            type=map_msgraph_role_to_permission_type(link.type),
+                            entity_type=EntityType.ANYONE_WITH_LINK
+                        ))
+                    elif link.scope == "organization":
+                        permissions.append(Permission(
+                            external_id="anyone_in_org",
+                            email=None,
+                            type=map_msgraph_role_to_permission_type(link.type),
+                            entity_type=EntityType.ORG
                         ))
 
-            except Exception:
+            except Exception as e:
+                self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)
                 continue
 
         return permissions
@@ -2278,12 +2282,12 @@ class SharePointConnector(BaseConnector):
                 self.logger.error(f"❌ Error syncing users: {user_error}")
 
             # Step 2: Sync user groups
-            self.logger.info("Syncing SharePoint groups...")
-            try:
-                await self._sync_user_groups()
-                self.logger.info("✅ Successfully synced SharePoint groups")
-            except Exception as group_error:
-                self.logger.error(f"❌ Error syncing groups: {group_error}")
+            # self.logger.info("Syncing SharePoint groups...")
+            # try:
+            #     await self._sync_user_groups()
+            #     self.logger.info("✅ Successfully synced SharePoint groups")
+            # except Exception as group_error:
+            #     self.logger.error(f"❌ Error syncing groups: {group_error}")
 
             # Step 3: Discover and sync sites
             sites = await self._get_all_sites()
