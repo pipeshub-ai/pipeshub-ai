@@ -394,37 +394,39 @@ class ZendeskClient(IClient):
         cls,
         logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "ZendeskClient":
         """Build ZendeskClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+            connector_instance_id: Optional connector instance ID to get specific instance config
         Returns:
             ZendeskClient instance
         """
         try:
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
             if not config:
                 raise ValueError("Failed to get Zendesk connector configuration")
             auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
-            auth_config = config.get("auth", {})
+            auth_config = config.get("auth", {}) or {}
 
             if auth_type == "API_TOKEN":
                 client = ZendeskRESTClientViaToken(
-                    subdomain=auth_config.get("subdomain"),
-                    token=auth_config.get("apiToken"),
-                    email=auth_config.get("email")
+                    subdomain=auth_config.get("subdomain", ""),
+                    token=auth_config.get("apiToken", ""),
+                    email=auth_config.get("email", "")
                 )
 
 
             elif auth_type == "OAUTH":
                 credentials_config = auth_config.get("credentials", {})
                 client = ZendeskRESTClientViaOAuth(
-                    subdomain=auth_config.get("subdomain"),
-                    client_id=auth_config.get("clientId"),
-                    client_secret=auth_config.get("clientSecret"),
-                    redirect_uri=auth_config.get("redirectUri"),
-                    access_token=credentials_config.get("access_token")
+                    subdomain=auth_config.get("subdomain", ""),
+                    client_id=auth_config.get("clientId", ""),
+                    client_secret=auth_config.get("clientSecret", ""),
+                    redirect_uri=auth_config.get("redirectUri", ""),
+                    access_token=credentials_config.get("access_token", "" )
                 )
 
             else:
@@ -437,11 +439,13 @@ class ZendeskClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for Zendesk."""
         try:
-            config = await config_service.get_config("/services/connectors/zendesk/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get Zendesk connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get Zendesk connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get Zendesk connector configuration for instance {connector_instance_id}")

@@ -8,7 +8,7 @@ import {
   getRecordBuffer,
   reindexRecord,
   getConnectorStats,
-  reindexAllRecords,
+  reindexFailedRecords,
   resyncConnectorRecords,
   createKnowledgeBase,
   listKnowledgeBases,
@@ -36,7 +36,7 @@ import {
   getRecordByIdSchema,
   updateRecordSchema,
   deleteRecordSchema,
-  reindexAllRecordSchema,
+  reindexFailedRecordSchema,
   resyncConnectorSchema,
   createKBSchema,
   getKBSchema,
@@ -229,7 +229,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
 
   // connector stats
   router.get(
-    '/stats/:connector',
+    '/stats/:connectorId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
     userAdminCheck,
@@ -239,12 +239,12 @@ export function createKnowledgeBaseRouter(container: Container): Router {
 
   // reindex all failed records per connector
   router.post(
-    '/reindex-all/connector',
+    '/reindex-failed/connector',
     authMiddleware.authenticate,
     metricsMiddleware(container),
     userAdminCheck,
-    ValidationMiddleware.validate(reindexAllRecordSchema),
-    reindexAllRecords(recordRelationService, appConfig),
+    ValidationMiddleware.validate(reindexFailedRecordSchema),
+    reindexFailedRecords(recordRelationService, appConfig),
   );
 
   // resync connector records

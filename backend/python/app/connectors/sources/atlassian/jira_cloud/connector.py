@@ -20,6 +20,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.sources.atlassian.core.apps import JiraApp
@@ -203,13 +204,14 @@ class AtlassianCloudResource:
     avatar_url: Optional[str] = None
 
 class JiraClient:
-    def __init__(self, logger: Logger, config_service: ConfigurationService) -> None:
+    def __init__(self, logger: Logger, config_service: ConfigurationService, connector_id: str) -> None:
         self.logger = logger
         self.config_service = config_service
         self.base_url = BASE_URL
         self.session = None
         self.accessible_resources = None
         self.cloud_id = None
+        self.connector_id = connector_id
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """Ensure session is created and available"""
@@ -247,7 +249,7 @@ class JiraClient:
         **kwargs
     ) -> Dict[str, Any]:
         """Make authenticated API request and return JSON response"""
-        config = await self.config_service.get_config(f"{OAUTH_JIRA_CONFIG_PATH}")
+        config = await self.config_service.get_config(f"{OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)}")
         token = None
         if not config:
             self.logger.error("❌ Jira credentials not found")
@@ -341,6 +343,7 @@ class JiraClient:
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.JIRA,
+                connector_id=self.connector_id,
                 record_group_type=RecordGroupType.JIRA_PROJECT,
                 external_record_group_id=project_id,
                 version=0,
@@ -372,6 +375,7 @@ class JiraClient:
             record_group = RecordGroup(
                 external_group_id=project_id,
                 connector_name=Connectors.JIRA.value,
+                connector_id=self.connector_id,
                 name=project_name,
                 short_name=project_key,
                 group_type=RecordGroupType.JIRA_PROJECT,
@@ -418,6 +422,7 @@ class JiraClient:
     .with_auth_type("OAUTH")\
     .with_description("Sync issues from Jira Cloud")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/jira.svg")
         .add_documentation_link(DocumentationLink(
@@ -453,16 +458,18 @@ class JiraClient:
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access())
-
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class JiraConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
-                 data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
-        super().__init__(JiraApp(), logger, data_entities_processor, data_store_provider, config_service)
+                 data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> None:
+        super().__init__(JiraApp(), logger, data_entities_processor, data_store_provider, config_service, connector_id)
         self.provider = None
+        self.connector_id = connector_id
 
-    async def init(self) -> None:
+    async def init(self) -> bool:
         pass
 
     async def run_sync(self) -> None:
@@ -487,7 +494,7 @@ class JiraConnector(BaseConnector):
 
 
     async def get_jira_client(self) -> JiraClient:
-        jira_client = JiraClient(self.logger, self.config_service)
+        jira_client = JiraClient(self.logger, self.config_service, self.connector_id)
         await jira_client.initialize()
 
         return jira_client
@@ -519,8 +526,8 @@ class JiraConnector(BaseConnector):
         )
 
     @classmethod
-    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> "BaseConnector":
+    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> "BaseConnector":
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
+        return JiraConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id)

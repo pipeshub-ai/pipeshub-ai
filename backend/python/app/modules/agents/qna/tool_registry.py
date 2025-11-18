@@ -230,8 +230,30 @@ class RegistryToolWrapper(BaseTool):
                     config_service = retrieval_service.config_service
                     logger = self.state.get("logger")
 
+                    # Find connector instance ID for this tool/app
+                    connector_instance_id = self._get_connector_instance_id()
+
+                    if connector_instance_id and logger:
+                        logger.info(f"Using connector instance ID {connector_instance_id} for {self.app_name}")
+                    elif logger:
+                        logger.debug(f"No connector instance ID found for {self.app_name}, using default config")
+
+                    # Pass connector instance ID in state for factory to use
+                    # The factory will use this to get the correct config from etcd
+                    # Create a copy of state to avoid mutating the original
+                    if isinstance(self.state, dict):
+                        tool_state = dict(self.state)
+                    else:
+                        tool_state = self.state
+
+                    # Add connector instance ID to state
+                    if not isinstance(tool_state, dict):
+                        tool_state = {"connector_instance_id": connector_instance_id}
+                    else:
+                        tool_state["connector_instance_id"] = connector_instance_id
+
                     # Pass chat state into factory for auth/impersonation decisions
-                    client = factory.create_client_sync(config_service, logger, self.state)
+                    client = factory.create_client_sync(config_service, logger, tool_state, connector_instance_id)
                     return action_class(client)
 
             raise ValueError("Not able to get the client from factory")
@@ -243,6 +265,22 @@ class RegistryToolWrapper(BaseTool):
                     f"Factory creation failed for {self.app_name}, using fallback: {e}"
                 )
             raise
+
+    def _get_connector_instance_id(self) -> Optional[str]:
+        """Get connector instance ID for this tool based on app_name.
+
+        Returns:
+            Connector instance ID if found, None otherwise
+        """
+        tool_to_connector_map = self.state.get("tool_to_connector_map")
+        if not tool_to_connector_map:
+            return None
+
+        # Try to find connector instance ID by app_name (normalized to uppercase)
+        app_name_normalised = self.app_name.replace(" ", "").lower()
+        connector_id = tool_to_connector_map.get(app_name_normalised) or tool_to_connector_map.get(self.app_name)
+
+        return connector_id
 
     def _format_result(self, result: ToolResult) -> str:
         """Format tool result for LLM consumption.

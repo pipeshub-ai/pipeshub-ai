@@ -30,6 +30,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.sources.bookstack.common.apps import BookStackApp
@@ -70,6 +71,7 @@ class RecordUpdate:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync content from your BookStack instance")\
     .with_categories(["Knowledge Management"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/bookstack.svg")\
         .add_documentation_link(DocumentationLink(
@@ -109,6 +111,8 @@ class RecordUpdate:
             is_secret=True
         ))
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(False)
     )\
     .build_decorator()
 class BookStackConnector(BaseConnector):
@@ -124,16 +128,19 @@ class BookStackConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str
     ) -> None:
         super().__init__(
             BookStackApp(),
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
+            connector_id
         )
 
         self.connector_name = Connectors.BOOKSTACK
+        self.connector_id = connector_id
 
         # Initialize sync points for tracking changes
         self._create_sync_points()
@@ -147,7 +154,7 @@ class BookStackConnector(BaseConnector):
         """Initialize sync points for different data types."""
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
-                connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
                 data_store_provider=self.data_store_provider
@@ -166,7 +173,7 @@ class BookStackConnector(BaseConnector):
         """
         try:
             config = await self.config_service.get_config(
-                "/services/connectors/bookstack/config"
+                f"/services/connectors/{self.connector_id}/config"
             )
             if not config:
                 self.logger.error("BookStack configuration not found.")
@@ -291,7 +298,7 @@ class BookStackConnector(BaseConnector):
         for user in users:
             app_users.append(
                 AppUser(
-                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
                     source_user_id=str(user.get("id")),
                     full_name=user.get("name"),
                     email=user.get("email"),
@@ -658,7 +665,7 @@ class BookStackConnector(BaseConnector):
                     # Call data_entities_processor to remove the user
                     success = await self.data_entities_processor.on_user_removed(
                         user_email=user_email,
-                        connector_name=self.connector_name
+                        connector_id=self.connector_id
                     )
 
                     if success:
@@ -732,6 +739,7 @@ class BookStackConnector(BaseConnector):
             # Create the AppRole object for the role.
             app_role = AppRole(
                 app_name=self.connector_name,
+                connector_id=self.connector_id,
                 source_role_id=str(role.get("id")),
                 name=role.get("display_name"),
                 org_id=self.data_entities_processor.org_id
@@ -749,7 +757,7 @@ class BookStackConnector(BaseConnector):
 
                 # Create AppUser object from the user details
                 app_user = AppUser(
-                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
                     source_user_id=str(user_id),
                     email=user_details.get("email", ""),
                     full_name=user_details.get("name", ""),
@@ -980,6 +988,7 @@ class BookStackConnector(BaseConnector):
         # Create the AppRole object
         app_role = AppRole(
             app_name=self.connector_name,
+            connector_id=self.connector_id,
             source_role_id=str(role_id),
             name=role_details.get("display_name"),
             org_id=self.data_entities_processor.org_id
@@ -1007,7 +1016,7 @@ class BookStackConnector(BaseConnector):
 
                 # Create AppUser object from the fetched details
                 app_user = AppUser(
-                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
                     source_user_id=str(user_id),
                     email=user_details.get("email", ""),
                     full_name=user_details.get("name", ""),
@@ -1040,7 +1049,7 @@ class BookStackConnector(BaseConnector):
         # Call the data processor to delete the group from the database
         await self.data_entities_processor.on_app_role_deleted(
             external_role_id=str(role_id),
-            connector_name=self.connector_name
+            connector_id=self.connector_id
         )
 
     #-------------------------------Record Groups Sync-----------------------------------#
@@ -1175,6 +1184,7 @@ class BookStackConnector(BaseConnector):
                 external_group_id=f"{content_type_name}/{item_id}",
                 description=item.get("description", ""),
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 group_type=RecordGroupType.KB,
                 parent_external_group_id=parent_external_id,
                 inherit_permissions=parent_external_id is not None,
@@ -1548,7 +1558,7 @@ class BookStackConnector(BaseConnector):
             existing_record = None
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
-                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
                     external_id=f"page/{page_id}"
                 )
 
@@ -1591,6 +1601,7 @@ class BookStackConnector(BaseConnector):
                 record_name=page.get("name"),
                 external_record_id=f"page/{page_id}",
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 record_type=RecordType.FILE.value,
                 external_record_group_id=parent_external_id,
                 origin=OriginTypes.CONNECTOR.value,
@@ -1842,7 +1853,8 @@ class BookStackConnector(BaseConnector):
         cls,
         logger: Logger,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str
     ) -> "BaseConnector":
         """
         Factory method to create a BookStack connector instance.
@@ -1861,5 +1873,5 @@ class BookStackConnector(BaseConnector):
         await data_entities_processor.initialize()
 
         return BookStackConnector(
-            logger, data_entities_processor, data_store_provider, config_service
+            logger, data_entities_processor, data_store_provider, config_service, connector_id
         )

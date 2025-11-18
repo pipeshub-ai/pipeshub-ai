@@ -44,6 +44,7 @@ class GmailUserService:
         config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         google_token_handler,
+        connector_id: str,
         credentials=None,
         admin_service=None,
     ) -> None:
@@ -55,11 +56,13 @@ class GmailUserService:
             self.service = None
             self.credentials = credentials
             self.google_token_handler = google_token_handler
+            self.connector_id = connector_id
             self.gmail_drive_interface = GmailDriveInterface(
                 logger=self.logger,
                 config_service=self.config_service,
                 google_token_handler=self.google_token_handler,
                 rate_limiter=rate_limiter,
+                connector_id=self.connector_id,
                 admin_service=admin_service,
             )
 
@@ -81,27 +84,158 @@ class GmailUserService:
                 details={"error": str(e)},
             )
 
-    async def _get_gmail_scopes(self) -> List[str]:
-        """Get scopes for gmail, with fallback to default readonly scope."""
-        SCOPES = await self.google_token_handler.get_account_scopes(app_name="gmail")
-        if not SCOPES:
-            SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-            self.logger.warning("Scopes for gmail not found in config, using default.")
-        self.logger.debug("Using scopes for gmail: %s", SCOPES)
-        return SCOPES
+    async def _resolve_scopes(self) -> List[str]:
+        """Resolve OAuth scopes for the current connector with robust fallbacks.
+
+        Resolution order:
+        1) Use scopes from token handler for the provided connector_id
+        2) Fallback to etcd connector config at /services/connectors/{connector_id}/config -> auth.scopes
+        3) Fallback to safe defaults for Gmail read access
+        """
+        try:
+            # Primary source: token handler
+            scopes = await self.google_token_handler.get_account_scopes(
+                connector_id=self.connector_id
+            )
+            if scopes:
+                return scopes
+
+            # Fallback: read from etcd config for this connector instance
+            try:
+                config_path = f"/services/connectors/{self.connector_id}/config"
+                config = await self.config_service.get_config(config_path)
+                auth_cfg = (config or {}).get("auth", {}) if isinstance(config, dict) else {}
+                etcd_scopes = auth_cfg.get("scopes", [])
+                if etcd_scopes:
+                    return etcd_scopes
+            except Exception:
+                # ignore and fallback to defaults
+                pass
+
+            # Final fallback: conservative Gmail scopes for read-only listing
+            return [
+                "https://www.googleapis.com/auth/gmail.readonly",
+            ]
+        except Exception:
+            # On any unexpected failure, still return basic read-only scope
+            return [
+                "https://www.googleapis.com/auth/gmail.readonly",
+            ]
+
+    async def connect_from_connector_config(self, org_id: str, connector_id: Optional[str] = None) -> bool:
+        """Connect using OAuth2 credentials directly from connector config (for individual scope)
+
+        This method initializes the service from connector config without needing a user_id.
+        Use this when you need to connect first to get the user info from the API.
+        """
+        try:
+            self.org_id = org_id
+            if connector_id:
+                self.connector_id = connector_id
+
+            if not self.connector_id:
+                raise GoogleAuthError("Connector ID is required")
+
+            SCOPES = await self._resolve_scopes()
+            self.logger.info(f"🚀 SCOPES: {SCOPES}")
+
+            # Get credentials directly from connector config (doesn't require user_id)
+            try:
+                config = await self.google_token_handler._get_connector_config(self.connector_id)
+                creds = (config or {}).get("credentials") or {}
+                auth_cfg = (config or {}).get("auth", {}) or {}
+
+                if not creds:
+                    raise GoogleAuthError(
+                        f"No credentials found in connector config for {self.connector_id}",
+                        details={"org_id": org_id, "connector_id": self.connector_id},
+                    )
+
+                # Merge credentials with auth config
+                creds_data = dict(creds)
+                creds_data['clientId'] = auth_cfg.get("clientId")
+                creds_data['clientSecret'] = auth_cfg.get("clientSecret")
+            except Exception as e:
+                raise GoogleAuthError(
+                    "Failed to get credentials from connector config: " + str(e),
+                    details={"org_id": org_id, "connector_id": self.connector_id, "error": str(e)},
+                )
+
+            try:
+                # Create credentials object from the response
+                creds = google.oauth2.credentials.Credentials(
+                    token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
+                    refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=creds_data.get(CredentialKeys.CLIENT_ID.value),
+                    client_secret=creds_data.get(CredentialKeys.CLIENT_SECRET.value),
+                    scopes=SCOPES,
+                )
+            except Exception as e:
+                raise GoogleAuthError(
+                    "Failed to create credentials object: " + str(e),
+                    details={"org_id": org_id, "connector_id": self.connector_id, "error": str(e)},
+                )
+
+            # Update token expiry time
+            try:
+                # Prefer created_at + expires_in from OAuthToken if available
+                expires_in = creds_data.get("expires_in")
+                created_at_str = creds_data.get("created_at")
+                if expires_in and created_at_str:
+                    created_at = datetime.fromisoformat(created_at_str)
+                    # Treat naive datetimes as UTC
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+                    self.token_expiry = created_at + timedelta(seconds=int(expires_in))
+                else:
+                    # Fallback to access_token_expiry_time (ms epoch) if present
+                    expiry_ms = creds_data.get("access_token_expiry_time")
+                    if expiry_ms:
+                        self.token_expiry = datetime.fromtimestamp(
+                            int(expiry_ms) / 1000, tz=timezone.utc
+                        )
+                    else:
+                        # As a last resort, set short-lived window to avoid tight loops
+                        self.token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+                self.logger.info("✅ Token expiry time: %s", self.token_expiry)
+            except Exception as e:
+                self.logger.warning("Failed to set token expiry: %s", str(e))
+
+            try:
+                self.service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+                self.logger.debug("Self Gmail Service: %s", self.service)
+            except Exception as e:
+                raise MailOperationError(
+                    "Failed to build Gmail service: " + str(e),
+                    details={"org_id": org_id, "connector_id": self.connector_id, "error": str(e)},
+                )
+
+            self.logger.info("✅ GmailUserService connected successfully from connector config")
+            return True
+
+        except (GoogleAuthError, MailOperationError):
+            raise
+        except Exception as e:
+            raise GoogleMailError(
+                "Failed to connect Gmail service from connector config: " + str(e),
+                details={"org_id": org_id, "connector_id": self.connector_id, "error": str(e)},
+            )
 
     @token_refresh
-    async def connect_individual_user(self, org_id: str, user_id: str) -> bool:
+    async def connect_individual_user(self, org_id: str, user_id: str, connector_id: Optional[str] = None) -> bool:
         """Connect using Oauth2 credentials for individual user"""
         try:
             self.org_id = org_id
             self.user_id = user_id
-
-            SCOPES = await self._get_gmail_scopes()
+            if connector_id:
+                self.connector_id = connector_id
+            SCOPES = await self._resolve_scopes()
+            self.logger.info(f"🚀 SCOPES: {SCOPES}")
 
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
-                    org_id, user_id, app_name="gmail"
+                    self.connector_id
                 )
                 if not creds_data:
                     raise GoogleAuthError(
@@ -164,7 +298,8 @@ class GmailUserService:
                 )
 
             try:
-                self.service = build("gmail", "v1", credentials=creds)
+                self.logger.debug("Building Gmail client with provided credentials")
+                self.service = build("gmail", "v1", credentials=creds, cache_discovery=False)
                 self.logger.debug("Self Gmail Service: %s", self.service)
             except Exception as e:
                 raise MailOperationError(
@@ -202,12 +337,14 @@ class GmailUserService:
         )
 
         if time_until_refresh.total_seconds() <= 0:
-            await self.google_token_handler.refresh_token(self.org_id, self.user_id, app_name="gmail")
+            self.logger.info("Token is due for refresh; refreshing now")
+            await self.google_token_handler.refresh_token(connector_id=self.connector_id)
 
             creds_data = await self.google_token_handler.get_individual_token(
-                self.org_id, self.user_id, app_name="gmail"
+                connector_id=self.connector_id
             )
-            SCOPES = await self._get_gmail_scopes()
+            SCOPES = await self._resolve_scopes()
+            self.logger.info(f"🚀 SCOPES: {SCOPES}")
             creds = google.oauth2.credentials.Credentials(
                 token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
                 refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),
@@ -217,7 +354,8 @@ class GmailUserService:
                 scopes=SCOPES,
             )
 
-            self.service = build("gmail", "v1", credentials=creds)
+            self.logger.debug("Rebuilding Gmail client after token refresh")
+            self.service = build("gmail", "v1", credentials=creds, cache_discovery=False)
             self.logger.debug("Self Gmail Service: %s", self.service)
             # Update token expiry time using created_at + expires_in if possible
             try:
@@ -776,12 +914,12 @@ class GmailUserService:
             if accountType == AccountType.INDIVIDUAL.value:
                 self.logger.info("Creating Individual Gmail User watch")
                 creds_data = await self.google_token_handler.get_individual_token(
-                    self.org_id, self.user_id, app_name="gmail"
+                    connector_id=self.connector_id
                 )
             else:
                 self.logger.info("Creating Enterprise Gmail User watch")
                 creds_data = await self.google_token_handler.get_enterprise_token(
-                    self.org_id, app_name="gmail"
+                    connector_id=self.connector_id
                 )
 
             enable_real_time_updates = creds_data.get("enableRealTimeUpdates", False)

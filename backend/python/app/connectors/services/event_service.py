@@ -50,11 +50,12 @@ class EventService:
         """Initializes the event service connector and its dependencies."""
         try:
             org_id = payload.get("orgId")
+            connector_id = payload.get("connectorId")
             if not org_id:
                 self.logger.error(f"'orgId' is required in the payload for '{connector_name}.init' event.")
                 return False
 
-            self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id}")
+            self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id} and connector_id: {connector_id}")
             config_service = self.app_container.config_service()
             arango_service = await self.app_container.arango_service()
             data_store_provider = ArangoDataStore(self.logger, arango_service)
@@ -63,24 +64,31 @@ class EventService:
                 name=connector_name,
                 logger=self.logger,
                 data_store_provider=data_store_provider,
-                config_service=config_service
+                config_service=config_service,
+                connector_id=connector_id
             )
 
             if not connector:
                 self.logger.error(f"❌ Failed to create {connector_name} connector")
                 return False
 
-            await connector.init()
+            is_initialized = await connector.init()
+
+            if not is_initialized:
+                self.logger.error(f"❌ Failed to initialize {connector_name} connector (init returned False). Not storing in container.")
+                return False
+
+            self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
             # Store connector in container using generic approach
-            connector_key = f"{connector_name}_connector"
+            connector_key = f"{connector_id}_connector"
             if hasattr(self.app_container, connector_key):
                 getattr(self.app_container, connector_key).override(providers.Object(connector))
             else:
                 # Store in connectors_map if specific connector attribute doesn't exist
                 if not hasattr(self.app_container, 'connectors_map'):
                     self.app_container.connectors_map = {}
-                self.app_container.connectors_map[connector_name] = connector
+                self.app_container.connectors_map[connector_id] = connector
             # Initialize directly since we can't use BackgroundTasks in Kafka consumer
             return True
         except Exception as e:
@@ -91,32 +99,33 @@ class EventService:
         """Queue immediate start of the sync service"""
         try:
             org_id = payload.get("orgId")
+            connector_id = payload.get("connectorId")
             if not org_id:
                 raise ValueError("orgId is required")
 
-            self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}")
+            self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id} and connector_id: {connector_id}")
             connector_name = connector_name.replace(" ", "").lower()
 
             try:
                 # Try to get connector from specific container attribute first
-                connector_key = f"{connector_name}_connector"
+                connector_key = f"{connector_id}_connector"
                 connector = None
 
                 if hasattr(self.app_container, connector_key):
                     connector = getattr(self.app_container, connector_key)()
                 elif hasattr(self.app_container, 'connectors_map'):
-                    connector = self.app_container.connectors_map.get(connector_name)
+                    connector = self.app_container.connectors_map.get(connector_id)
 
                 if connector:
                     asyncio.create_task(connector.run_sync())
-                    self.logger.info(f"Started sync for {connector_name} connector")
+                    self.logger.info(f"Started sync for {connector_name} {connector_id} connector")
                     return True
                 else:
-                    self.logger.error(f"{connector_name.capitalize()} connector not initialized")
+                    self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
                     return False
             except Exception as e:
-                self.logger.error(f"Failed to get {connector_name.capitalize()} connector: {str(e)}")
+                self.logger.error(f"Failed to get {connector_name.capitalize()} {connector_id} connector: {str(e)}")
                 return False
         except Exception as e:
-            self.logger.error(f"Failed to queue {connector_name.capitalize()} sync service start: {str(e)}")
+            self.logger.error(f"Failed to queue {connector_name.capitalize()} {connector_id} sync service start: {str(e)}")
             return False

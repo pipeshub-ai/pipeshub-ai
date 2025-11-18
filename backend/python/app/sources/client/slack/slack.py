@@ -163,44 +163,47 @@ class SlackClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> 'SlackClient':
         """
         Build SlackClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+            connector_instance_id: Optional connector instance ID to get specific instance config
         Returns:
             SlackClient instance
         """
         try:
             # Get Slack configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
 
             if not config:
-                raise ValueError("Failed to get Slack connector configuration")
+                    raise ValueError("Failed to get Slack connector configuration")
 
             # Extract configuration values
             auth_type = config.get("authType", "botToken")  # token, username_password, api_key
+            auth_config = config.get("auth",{}) or {}
 
             # Create appropriate client based on auth type
             # to be implemented
             if auth_type == "USERNAME_PASSWORD":
-                username = config.get("username", "")
-                password = config.get("password", "")
+                username = auth_config.get("username", "")
+                password = auth_config.get("password", "")
                 if not username or not password:
                     raise ValueError("Username and password required for username_password auth type")
                 client = SlackRESTClientViaUsernamePassword(username, password)
 
             # to be implemented
             elif auth_type == "API_KEY":
-                email = config.get("email", "")
-                api_key = config.get("apiKey", "")
+                email = auth_config.get("email", "")
+                api_key = auth_config.get("apiKey", "")
                 if not email or not api_key:
                     raise ValueError("Email and API key required for api_key auth type")
                 client = SlackRESTClientViaApiKey(email, api_key)
 
             elif auth_type == "API_TOKEN" or auth_type == "botToken":  # Default to token auth
-                token = config.get("botToken", "")
+                token = auth_config.get("botToken", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
                 client = SlackRESTClientViaToken(token)
@@ -215,11 +218,24 @@ class SlackClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
-        """Fetch connector config from etcd for Slack."""
+    async def _get_connector_config(
+        logger: logging.Logger,
+        config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Fetch connector config from etcd for Slack.
+
+        Args:
+            logger: Logger instance
+            config_service: Configuration service instance
+            connector_instance_id: Optional connector instance ID to get specific instance config
+
+        Returns:
+            Configuration dictionary
+        """
         try:
-            config = await config_service.get_config("/services/connectors/slack/config")
-            return config.get("auth",{}) or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            return config or {}
         except Exception as e:
             logger.error(f"Failed to get Slack connector config: {e}")
             return {}

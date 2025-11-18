@@ -99,7 +99,7 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
       <Stack spacing={2}>
         <Grid container spacing={2}>
           {/* Timezone */}
-          <Grid item xs={12} md={6}>
+          {/* <Grid item xs={12} md={6}>
             <Typography
               variant="body2"
               sx={{
@@ -143,7 +143,7 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
                 ))}
               </Select>
             </FormControl>
-          </Grid>
+          </Grid> */}
 
           {/* Sync Interval */}
           <Grid item xs={12} md={6}>

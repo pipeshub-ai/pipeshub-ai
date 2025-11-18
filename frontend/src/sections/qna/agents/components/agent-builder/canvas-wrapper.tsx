@@ -10,6 +10,9 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   sidebarWidth,
   nodeTemplates,
   loading,
+  activeAgentConnectors,
+  activeConnectors,
+  connectorRegistry,
   nodes,
   edges,
   onNodesChange,
@@ -22,6 +25,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   setNodes,
   onNodeEdit,
   onNodeDelete,
+  onError,
 }) => (
   <Box
     sx={{
@@ -36,6 +40,9 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
       nodeTemplates={nodeTemplates}
       loading={loading}
       sidebarWidth={sidebarWidth}
+      activeAgentConnectors={activeAgentConnectors}
+      activeConnectors={activeConnectors}
+      connectorRegistry={connectorRegistry}
     />
 
     <AgentBuilderCanvas
@@ -54,6 +61,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
       sidebarWidth={sidebarWidth}
       onNodeEdit={onNodeEdit}
       onNodeDelete={onNodeDelete}
+      onError={onError}
     />
   </Box>
 );

@@ -33,7 +33,7 @@ interface AuthSectionProps {
   conditionalDisplay: Record<string, boolean>;
   accountTypeLoading: boolean;
   isBusiness: boolean;
-  
+
   // Business OAuth props
   adminEmail: string;
   adminEmailError: string | null;
@@ -74,11 +74,14 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   const { auth } = connectorConfig.config;
   let { documentationLinks } = connectorConfig.config;
   // Simplified helper function for business OAuth support
-  const customGoogleBusinessOAuth = (connectorParam: Connector, accountType: string): boolean => 
-    accountType === 'business' && 
-    (connectorParam.appGroup === 'Google Workspace') && 
-    connectorParam.authType === 'OAUTH';
-  const pipeshubDocumentationUrl = documentationLinks?.find((link) => link.type === 'pipeshub')?.url || `https://docs.pipeshub.com/connectors/overview`;
+  const customGoogleBusinessOAuth = (connectorParam: Connector, accountType: string): boolean =>
+    accountType === 'business' &&
+    connectorParam.appGroup === 'Google Workspace' &&
+    connectorParam.authType === 'OAUTH' &&
+    connectorParam.scope === 'team';
+  const pipeshubDocumentationUrl =
+    documentationLinks?.find((link) => link.type === 'pipeshub')?.url ||
+    `https://docs.pipeshub.com/connectors/overview`;
 
   documentationLinks = documentationLinks?.filter((link) => link.type !== 'pipeshub');
   return (
@@ -111,8 +114,9 @@ const AuthSection: React.FC<AuthSectionProps> = ({
       </Alert>
 
       {/* Redirect URI Info - Conditionally displayed */}
-      {((auth.displayRedirectUri && auth.redirectUri!=="") ||
-        (auth.conditionalDisplay && Object.keys(auth.conditionalDisplay).length>0 &&
+      {((auth.displayRedirectUri && auth.redirectUri !== '') ||
+        (auth.conditionalDisplay &&
+          Object.keys(auth.conditionalDisplay).length > 0 &&
           shouldShowElement(auth.conditionalDisplay, 'redirectUri', formData))) && (
         <Paper
           variant="outlined"
@@ -135,12 +139,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                 mt: 0.25,
               }}
             >
-              <Iconify
-                icon={infoIcon}
-                width={14}
-                height={14}
-                color={theme.palette.primary.main}
-              />
+              <Iconify icon={infoIcon} width={14} height={14} color={theme.palette.primary.main} />
             </Box>
             <Box sx={{ flex: 1 }}>
               <Typography
@@ -213,6 +212,201 @@ const AuthSection: React.FC<AuthSectionProps> = ({
         </Paper>
       )}
 
+      {/* Account Type Loading */}
+      {accountTypeLoading && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+          <CircularProgress size={24} />
+        </Box>
+      )}
+
+      {/* Business OAuth Section */}
+      {!accountTypeLoading &&
+        customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') && (
+          <BusinessOAuthSection
+            adminEmail={adminEmail}
+            adminEmailError={adminEmailError}
+            selectedFile={selectedFile}
+            fileName={fileName}
+            fileError={fileError}
+            jsonData={jsonData}
+            onAdminEmailChange={onAdminEmailChange}
+            onFileUpload={onFileUpload}
+            onFileChange={onFileChange}
+            fileInputRef={fileInputRef}
+          />
+        )}
+
+      {/* Form Fields */}
+      {!accountTypeLoading &&
+        !customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') && (
+          <Paper
+            variant="outlined"
+            sx={{
+              p: 2,
+              borderRadius: 1.5,
+              bgcolor: theme.palette.background.paper,
+              borderColor: alpha(theme.palette.divider, 0.12),
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 2 }}>
+              <Box
+                sx={{
+                  p: 0.375,
+                  borderRadius: 0.75,
+                  bgcolor: alpha(theme.palette.text.primary, 0.04),
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Iconify
+                  icon={
+                    auth.type === 'OAUTH'
+                      ? shieldIcon
+                      : auth.type === 'API_TOKEN'
+                        ? keyIcon
+                        : auth.type === 'USERNAME_PASSWORD'
+                          ? personIcon
+                          : settingsIcon
+                  }
+                  width={14}
+                  height={14}
+                  color={theme.palette.text.secondary}
+                />
+              </Box>
+              <Box>
+                <Typography
+                  variant="subtitle2"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.8125rem',
+                    color: theme.palette.text.primary,
+                    mb: 0.125,
+                  }}
+                >
+                  {auth.type === 'OAUTH'
+                    ? 'OAuth2 Credentials'
+                    : auth.type === 'API_TOKEN'
+                      ? 'API Credentials'
+                      : auth.type === 'USERNAME_PASSWORD'
+                        ? 'Login Credentials'
+                        : 'Authentication Settings'}
+                </Typography>
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{
+                    fontSize: '0.75rem',
+                    lineHeight: 1.3,
+                  }}
+                >
+                  Enter your {connector.name} authentication details
+                </Typography>
+              </Box>
+            </Box>
+
+            <Grid container spacing={2}>
+              {auth.schema.fields.map((field) => {
+                // Check if field should be displayed based on conditional display rules
+                let shouldShow = true; // Default to showing the field
+
+                // If there's a conditional display rule for this field, evaluate it
+                if (auth.conditionalDisplay && auth.conditionalDisplay[field.name]) {
+                  shouldShow = shouldShowElement(auth.conditionalDisplay, field.name, formData);
+                }
+
+                // Hide client_id and client_secret fields for business OAuth
+                const isBusinessOAuthField =
+                  customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
+                  (field.name === 'clientId' || field.name === 'clientSecret');
+
+                if (!shouldShow || isBusinessOAuthField) return null;
+
+                return (
+                  <Grid item xs={12} key={field.name}>
+                    <FieldRenderer
+                      field={field}
+                      value={formData[field.name]}
+                      onChange={(value) => onFieldChange('auth', field.name, value)}
+                      error={formErrors[field.name]}
+                    />
+                  </Grid>
+                );
+              })}
+
+              {auth.customFields.map((field) => {
+                // Check if custom field should be displayed based on conditional display rules
+                const shouldShow =
+                  !auth.conditionalDisplay ||
+                  !auth.conditionalDisplay[field.name] ||
+                  shouldShowElement(auth.conditionalDisplay, field.name, formData);
+
+                // Hide client_id and client_secret fields for business OAuth
+                const isBusinessOAuthField =
+                  customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
+                  (field.name === 'clientId' || field.name === 'clientSecret');
+
+                if (!shouldShow || isBusinessOAuthField) return null;
+
+                return (
+                  <Grid item xs={12} key={field.name}>
+                    <FieldRenderer
+                      field={field}
+                      value={formData[field.name]}
+                      onChange={(value) => onFieldChange('auth', field.name, value)}
+                      error={formErrors[field.name]}
+                    />
+                  </Grid>
+                );
+              })}
+
+              {/* Render conditionally displayed fields that might not be in schema */}
+              {auth.conditionalDisplay &&
+                Object.keys(auth.conditionalDisplay).map((fieldName) => {
+                  // Skip if field is already rendered in schema or custom fields
+                  const isInSchema = auth.schema.fields.some((f) => f.name === fieldName);
+                  const isInCustomFields = auth.customFields.some((f) => f.name === fieldName);
+
+                  if (isInSchema || isInCustomFields) return null;
+
+                  // Check if this conditional field should be shown
+                  const shouldShow = shouldShowElement(
+                    auth.conditionalDisplay,
+                    fieldName,
+                    formData
+                  );
+                  if (!shouldShow) return null;
+
+                  // Create a basic field definition for conditional fields
+                  const conditionalField = {
+                    name: fieldName,
+                    displayName:
+                      fieldName.charAt(0).toUpperCase() +
+                      fieldName.slice(1).replace(/([A-Z])/g, ' $1'),
+                    fieldType: 'TEXT' as const,
+                    required: false,
+                    placeholder: `Enter ${fieldName}`,
+                    description: `Enter ${fieldName}`,
+                    defaultValue: '',
+                    validation: {},
+                    isSecret: false,
+                  };
+
+                  return (
+                    <Grid item xs={12} key={fieldName}>
+                      <FieldRenderer
+                        field={conditionalField}
+                        value={formData[fieldName]}
+                        onChange={(value) => onFieldChange('auth', fieldName, value)}
+                        error={formErrors[fieldName]}
+                      />
+                    </Grid>
+                  );
+                })}
+            </Grid>
+          </Paper>
+        )}
+
       {/* Documentation Links - Compact Visual Guide */}
       {documentationLinks && documentationLinks.length > 0 && (
         <Paper
@@ -236,12 +430,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                 mt: 0.125,
               }}
             >
-              <Iconify
-                icon={bookIcon}
-                width={12}
-                height={12}
-                color={theme.palette.info.main}
-              />
+              <Iconify icon={bookIcon} width={12} height={12} color={theme.palette.info.main} />
             </Box>
 
             <Box sx={{ flex: 1 }}>
@@ -364,195 +553,6 @@ const AuthSection: React.FC<AuthSectionProps> = ({
           </Box>
         </Paper>
       )}
-
-      {/* Account Type Loading */}
-      {accountTypeLoading && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
-          <CircularProgress size={24} />
-        </Box>
-      )}
-
-      {/* Business OAuth Section */}
-      {!accountTypeLoading && customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') && (
-        <BusinessOAuthSection
-          adminEmail={adminEmail}
-          adminEmailError={adminEmailError}
-          selectedFile={selectedFile}
-          fileName={fileName}
-          fileError={fileError}
-          jsonData={jsonData}
-          onAdminEmailChange={onAdminEmailChange}
-          onFileUpload={onFileUpload}
-          onFileChange={onFileChange}
-          fileInputRef={fileInputRef}
-        />
-      )}
-
-      {/* Form Fields */}
-      <Paper
-        variant="outlined"
-        sx={{
-          p: 2,
-          borderRadius: 1.5,
-          bgcolor: theme.palette.background.paper,
-          borderColor: alpha(theme.palette.divider, 0.12),
-        }}
-      >
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 2 }}>
-          <Box
-            sx={{
-              p: 0.375,
-              borderRadius: 0.75,
-              bgcolor: alpha(theme.palette.text.primary, 0.04),
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Iconify
-              icon={
-                auth.type === 'OAUTH'
-                  ? shieldIcon
-                  : auth.type === 'API_TOKEN'
-                    ? keyIcon
-                    : auth.type === 'USERNAME_PASSWORD'
-                      ? personIcon
-                      : settingsIcon
-              }
-              width={14}
-              height={14}
-              color={theme.palette.text.secondary}
-            />
-          </Box>
-          <Box>
-            <Typography
-              variant="subtitle2"
-              sx={{
-                fontWeight: 600,
-                fontSize: '0.8125rem',
-                color: theme.palette.text.primary,
-                mb: 0.125,
-              }}
-            >
-              {auth.type === 'OAUTH'
-                ? 'OAuth2 Credentials'
-                : auth.type === 'API_TOKEN'
-                  ? 'API Credentials'
-                  : auth.type === 'USERNAME_PASSWORD'
-                    ? 'Login Credentials'
-                    : 'Authentication Settings'}
-            </Typography>
-            <Typography
-              variant="body2"
-              color="text.secondary"
-              sx={{
-                fontSize: '0.75rem',
-                lineHeight: 1.3,
-              }}
-            >
-              Enter your {connector.name} authentication details
-            </Typography>
-          </Box>
-        </Box>
-
-        <Grid container spacing={2}>
-          {auth.schema.fields.map((field) => {
-            // Check if field should be displayed based on conditional display rules
-            let shouldShow = true; // Default to showing the field
-            
-            // If there's a conditional display rule for this field, evaluate it
-            if (auth.conditionalDisplay && auth.conditionalDisplay[field.name]) {
-              shouldShow = shouldShowElement(auth.conditionalDisplay, field.name, formData);
-            }
-
-            // Hide client_id and client_secret fields for business OAuth
-            const isBusinessOAuthField = customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
-              (field.name === 'clientId' || field.name === 'clientSecret');
-
-            if (!shouldShow || isBusinessOAuthField) return null;
-
-            return (
-              <Grid item xs={12} key={field.name}>
-                <FieldRenderer
-                  field={field}
-                  value={formData[field.name]}
-                  onChange={(value) => onFieldChange('auth', field.name, value)}
-                  error={formErrors[field.name]}
-                />
-              </Grid>
-            );
-          })}
-
-          {auth.customFields.map((field) => {
-            // Check if custom field should be displayed based on conditional display rules
-            const shouldShow =
-              !auth.conditionalDisplay ||
-              !auth.conditionalDisplay[field.name] ||
-              shouldShowElement(auth.conditionalDisplay, field.name, formData);
-
-            // Hide client_id and client_secret fields for business OAuth
-            const isBusinessOAuthField = customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
-              (field.name === 'clientId' || field.name === 'clientSecret');
-
-            if (!shouldShow || isBusinessOAuthField) return null;
-
-            return (
-              <Grid item xs={12} key={field.name}>
-                <FieldRenderer
-                  field={field}
-                  value={formData[field.name]}
-                  onChange={(value) => onFieldChange('auth', field.name, value)}
-                  error={formErrors[field.name]}
-                />
-              </Grid>
-            );
-          })}
-
-          {/* Render conditionally displayed fields that might not be in schema */}
-          {auth.conditionalDisplay &&
-            Object.keys(auth.conditionalDisplay).map((fieldName) => {
-              // Skip if field is already rendered in schema or custom fields
-              const isInSchema = auth.schema.fields.some((f) => f.name === fieldName);
-              const isInCustomFields = auth.customFields.some((f) => f.name === fieldName);
-
-              if (isInSchema || isInCustomFields) return null;
-
-              // Check if this conditional field should be shown
-              const shouldShow = shouldShowElement(
-                auth.conditionalDisplay,
-                fieldName,
-                formData
-              );
-              if (!shouldShow) return null;
-
-              // Create a basic field definition for conditional fields
-              const conditionalField = {
-                name: fieldName,
-                displayName:
-                  fieldName.charAt(0).toUpperCase() +
-                  fieldName.slice(1).replace(/([A-Z])/g, ' $1'),
-                fieldType: 'TEXT' as const,
-                required: false,
-                placeholder: `Enter ${fieldName}`,
-                description: `Enter ${fieldName}`,
-                defaultValue: '',
-                validation: {},
-                isSecret: false,
-              };
-
-              return (
-                <Grid item xs={12} key={fieldName}>
-                  <FieldRenderer
-                    field={conditionalField}
-                    value={formData[fieldName]}
-                    onChange={(value) => onFieldChange('auth', fieldName, value)}
-                    error={formErrors[fieldName]}
-                  />
-                </Grid>
-              );
-            })}
-        </Grid>
-      </Paper>
     </Box>
   );
 };
