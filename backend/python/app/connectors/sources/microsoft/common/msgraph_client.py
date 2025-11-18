@@ -167,7 +167,7 @@ class MSGraphClient:
         except Exception as ex:
             self.logger.error(f"Unexpected error fetching groups: {ex}")
             raise ex
-   
+
     async def get_group_members(self, group_id: str) -> List[dict]:
         """
         Get all members of a specific group.

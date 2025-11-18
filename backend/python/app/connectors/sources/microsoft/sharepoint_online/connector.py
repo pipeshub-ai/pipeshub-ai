@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from http import HTTPStatus
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -15,6 +16,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from msgraph import GraphServiceClient
 from msgraph.generated.models.drive_item import DriveItem
+from msgraph.generated.models.group import Group
 from msgraph.generated.models.list_item import ListItem
 from msgraph.generated.models.site import Site
 from msgraph.generated.models.site_page import SitePage
@@ -64,6 +66,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import stream_content
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants for SharePoint site ID composite format
 # A composite site ID has the format: "hostname,site-id,web-id"
@@ -232,29 +235,29 @@ class SharePointConnector(BaseConnector):
         # NOTE: In a production environment, these must be loaded securely from a configuration store.
         # Set self.certificate_path to the absolute path of your .pfx or .pem file.
         # Set self.certificate_password if your certificate file is password-protected.
-        self.certificate_path = f"/home/rogue/Programs/cert-pipeshub/certificate.pfx"  # Replace with "/path/to/your/certificate.pfx" for testing
+        self.certificate_path = "/home/rogue/Programs/cert-pipeshub/certificate.pfx"  # Replace with "/path/to/your/certificate.pfx" for testing
         self.certificate_password = ""  # Replace with "your-certificate-password" for testing
         # --- END HARDCODED SETUP ---
-        
+
         # Load configuration from service
         config = await self.config_service.get_config("/services/connectors/sharepointonline/config") or \
                             await self.config_service.get_config(f"/services/connectors/sharepointonline/config/{self.data_entities_processor.org_id}")
-        
+
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
             raise ValueError("SharePoint Online credentials not found")
-        
+
         credentials_config = config.get("auth",{})
         if not credentials_config:
             self.logger.error("❌ SharePoint Online credentials not found")
             raise ValueError("SharePoint Online credentials not found")
-        
+
         # Load credentials from config
         tenant_id = credentials_config.get("tenantId")
         client_id = credentials_config.get("clientId")
         client_secret = credentials_config.get("clientSecret")
         sharepoint_domain = credentials_config.get("sharepointDomain")
-        
+
         # --- NEW CODE: Load certificate details from config (if fields are added to ConnectorBuilder) ---
         # Only load from config if not hardcoded for testing
         if not self.certificate_path:
@@ -293,7 +296,7 @@ class SharePointConnector(BaseConnector):
             raise ValueError("Authentication credentials missing.")
 
         has_admin_consent = credentials_config.get("hasAdminConsent", False)
-        
+
 
         credentials = SharePointCredentials(
             tenant_id=tenant_id,
@@ -302,9 +305,9 @@ class SharePointConnector(BaseConnector):
             sharepoint_domain=normalized_sharepoint_domain,
             has_admin_consent=has_admin_consent,
         )
-        
+
         # --- NEW CODE: Choose Credential based on availability ---
-        from azure.identity.aio import ClientSecretCredential, CertificateCredential
+        from azure.identity.aio import CertificateCredential, ClientSecretCredential
         # Initialize base credential for MS Graph Client (prioritizing certificate)
         if self.certificate_path:
              credential = CertificateCredential(
@@ -324,15 +327,14 @@ class SharePointConnector(BaseConnector):
         else:
             # Should be caught by the earlier check, but kept for robustness
             raise ValueError("No valid credential (Certificate or Client Secret) found.")
-        
+
         # Store class attributes
         self.sharepoint_domain = credentials.sharepoint_domain
         self.tenant_id = credentials.tenant_id
         self.client_id = credentials.client_id
         self.client_secret = credentials.client_secret
-        
+
         # Initialize Graph Client
-        from msgraph import GraphServiceClient
         self.client = GraphServiceClient(
             self.credential,
             scopes=["https://graph.microsoft.com/.default"]
@@ -867,7 +869,6 @@ class SharePointConnector(BaseConnector):
 
             # Get permissions
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
-            print(f"\n\n\n\n\n\n !!!!!!!!!!!!!!!!!!!!! permissions for {item_id} {drive_id} {site_id}:", permissions)
 
             # Todo: Get permissions for the record
             for user in users:
@@ -1866,7 +1867,6 @@ class SharePointConnector(BaseConnector):
         """Get permissions for a drive item."""
         try:
             permissions = []
-            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! getting permissions")
 
             async with self.rate_limiter:
                 # Use the drives endpoint directly without going through sites
@@ -1875,8 +1875,6 @@ class SharePointConnector(BaseConnector):
                         .items.by_drive_item_id(item_id)
                         .permissions.get()
                 )
-            
-            print("\n\n\n !!!!!!!!!!!!!!!!!!!! raw_permissions:", perms_response)
 
             if perms_response and perms_response.value:
                 permissions = await self._convert_to_permissions(perms_response.value)
@@ -2019,135 +2017,93 @@ class SharePointConnector(BaseConnector):
         try:
             self.logger.info("Starting SharePoint group synchronization")
 
+            # Part 1: Sync Azure AD groups
             # Get Microsoft 365 Groups instead of trying to access site groups directly
             # Microsoft Graph API doesn't expose site groups directly through sites.groups
-            total_groups = 0
-            group_with_members = []
-
             try:
-                groups = await self.msgraph_client.get_all_user_groups()
-                self.logger.debug(f"Groups type: {type(groups)}")
-                self.logger.debug(f"Groups: {groups}")
-                for group in groups:
-                        # Get group members
-                        user_group = AppUserGroup(
-                            id=str(uuid.uuid4()),
-                            source_user_group_id=group.id,
-                            app_name=self.connector_name,
-                            name=group.display_name,
-                            description=group.description,
-                            created_at=self._parse_datetime(group.created_date_time),
-                        )
-                        self.logger.info(f"User group: {user_group}")
-
-                        app_users = []
-                        try:
-                            members = await self.msgraph_client.get_group_members(group.id)
-                            self.logger.info(f"Members: {members}")
-                            for member in members:
-                                app_users.append(AppUser(
-                                    source_user_id=member.id,
-                                    email=member.mail or member.user_principal_name,
-                                    full_name=member.display_name,
-                                    created_at=self._parse_datetime(member.created_date_time),
-                                    app_name=self.connector_name,
-                                ))
-                        except Exception as member_error:
-                            self.logger.info(f"❌ Error getting members for group {group.display_name}: {member_error}")
-                            # Continue with empty permissions
-                        self.logger.info(f"Member permissions: {app_users}")
-                        group_with_members.append((user_group, app_users))
-                        total_groups += 1
-
-                # Process all collected groups
-                if group_with_members:
-                    await self.data_entities_processor.on_new_user_groups(
-                        group_with_members
-                    )
-
+                await self._sync_azure_ad_groups_delta()
             except Exception as groups_error:
-                self.logger.error(f"❌ Error getting Microsoft 365 Groups: {groups_error}")
+                self.logger.error(f"❌ Error syncing Azure AD Groups with delta: {groups_error}")
 
+            # Part 2: Sync SharePoint groups
             # Fetch SharePoint site groups and store them as user groups
             self.logger.info("Starting SharePoint Site Groups fetch...")
-            
+
             sharepoint_groups_with_members = []
-            
+            total_groups = 0
+
             try:
                 # Get all sites
                 sites = await self._get_all_sites()
-                
+
                 for site in sites:
                     try:
                         site_id = site.id
                         site_name = site.display_name or site.name
-                        
+
                         self.logger.info(f"Fetching site groups for site: {site_name}")
-                        
+
                         # Get site details
                         async with self.rate_limiter:
                             site_details = await self.client.sites.by_site_id(site_id).get()
-                        
+
                         if not site_details or not site_details.web_url:
                             self.logger.debug(f"No web URL available for site: {site_name}")
                             continue
-                        
+
                         site_web_url = site_details.web_url
                         rest_api_url = f"{site_web_url}/_api/web/sitegroups"
-                                                
+
                         # Extract SharePoint domain from site URL
                         from urllib.parse import urlparse
                         parsed_url = urlparse(site_web_url)
                         sharepoint_resource = f"https://{parsed_url.netloc}"
-                        
+
                         # Get token for SharePoint using certificate or client secret
                         if hasattr(self, 'certificate_path') and self.certificate_path:
                             from azure.identity.aio import CertificateCredential
-                            
+
                             credential = CertificateCredential(
                                 tenant_id=self.tenant_id,
                                 client_id=self.client_id,
                                 certificate_path=self.certificate_path
                             )
-                            
-                            print(f" !!!!!!!!!!!! Using certificate authentication...")
+
                         else:
                             from azure.identity.aio import ClientSecretCredential
-                            
+
                             credential = ClientSecretCredential(
                                 tenant_id=self.tenant_id,
                                 client_id=self.client_id,
                                 client_secret=self.client_secret
                             )
-                            
-                            print(f" !!!!!!!!!!!! Using client secret authentication...")
-                        
+
                         # Request token with SharePoint scope
                         token_response = await credential.get_token(f"{sharepoint_resource}/.default")
                         access_token = token_response.token
-                                                
+
                         headers = {
                             'Authorization': f'Bearer {access_token}',
                             'Accept': 'application/json;odata=verbose',
                             'Content-Type': 'application/json;odata=verbose'
                         }
-                        
+
                         async with httpx.AsyncClient(timeout=30.0) as http_client:
                             response = await http_client.get(rest_api_url, headers=headers)
-                                                        
-                            if response.status_code == 200:
+
+                            if response.status_code == HTTPStatus.OK:
                                 data = response.json()
                                 site_groups = data.get('d', {}).get('results', [])
-                                
+
                                 print(f"\n{'='*80}")
                                 print(f"Site Groups for: {site_name} (Total: {len(site_groups)})")
                                 print(f"{'='*80}")
-                                
+
                                 for idx, group in enumerate(site_groups, 1):
                                     group_title = group.get('Title', 'N/A')
                                     group_id = group.get('Id', 'N/A')
                                     description = group.get('Description', 'N/A')
-                                    
+
                                     # Create AppUserGroup for SharePoint site group
                                     user_group = AppUserGroup(
                                         id=str(uuid.uuid4()),
@@ -2156,18 +2112,18 @@ class SharePointConnector(BaseConnector):
                                         name=group_title,
                                         description=description if description != 'N/A' else None,
                                     )
-                                                                
+
                                     # Fetch users for this group
                                     app_users = []
                                     users_url = f"{site_web_url}/_api/web/sitegroups/GetById({group_id})/users"
-                                    
+
                                     try:
                                         users_response = await http_client.get(users_url, headers=headers)
-                                        
-                                        if users_response.status_code == 200:
+
+                                        if users_response.status_code == HTTPStatus.OK:
                                             users_data = users_response.json()
                                             users = users_data.get('d', {}).get('results', [])
-                                            
+
                                             if users:
                                                 print(f"   - Total Users: {len(users)}")
                                                 for user_idx, user in enumerate(users, 1):
@@ -2175,7 +2131,7 @@ class SharePointConnector(BaseConnector):
                                                     user_title = user.get('Title', 'N/A')
                                                     user_email = user.get('Email')
                                                     user_principal = user.get('UserPrincipalName')
-                                                                                                        
+
                                                     # Only create AppUser if email exists
                                                     if user_email or user_principal:
                                                         app_user = AppUser(
@@ -2186,42 +2142,42 @@ class SharePointConnector(BaseConnector):
                                                         )
                                                         app_users.append(app_user)
                                             else:
-                                                self.logger.info(f"   - No users in this group")
+                                                self.logger.info("   - No users in this group")
                                         else:
                                             self.logger.info(f"   - Error fetching users: {users_response.status_code}")
-                                            
+
                                     except Exception as user_error:
                                         self.logger.info(f"   - Exception fetching users: {user_error}")
-                                    
+
                                     # Add group with members to list
                                     sharepoint_groups_with_members.append((user_group, app_users))
                                     total_groups += 1
-                                
+
                                 print(f"\n{'='*80}\n")
-                                
-                            elif response.status_code == 401:
-                                self.logger.info(f" 401 Unauthorized Error")
+
+                            elif response.status_code == HTTPStatus.UNAUTHORIZED:
+                                self.logger.info(" 401 Unauthorized Error")
                                 self.logger.info(f" Response: {response.text[:500]}")
                             else:
                                 self.logger.info(f" Error: {response.status_code}")
                                 self.logger.info(f" Response: {response.text[:500]}")
-                        
+
                         # Close credential
                         await credential.close()
-                        
+
                     except Exception as site_error:
                         import traceback
                         self.logger.info(f" Error processing site {site_name}: {traceback.format_exc()}")
                         self.logger.debug(f"Error fetching site groups for {site_name}: {site_error}")
                         continue
-                
+
                 # Process all SharePoint site groups
                 if sharepoint_groups_with_members:
                     self.logger.info(f"Processing {len(sharepoint_groups_with_members)} SharePoint site groups")
                     await self.data_entities_processor.on_new_user_groups(
                         sharepoint_groups_with_members
                     )
-                        
+
             except Exception as outer_error:
                 self.logger.debug(f"Site groups fetch wrapper error: {outer_error}")
 
@@ -2229,6 +2185,163 @@ class SharePointConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing SharePoint groups: {e}")
+
+    async def _sync_azure_ad_groups_delta(self) -> None:
+        """
+        Incremental Azure AD groups synchronization using Delta API.
+        Uses Graph Delta API for BOTH initial full sync and subsequent incremental syncs.
+        """
+        try:
+            sync_point_key = generate_record_sync_point_key(
+                SyncDataPointType.GROUPS.value,
+                "organization",
+                self.data_entities_processor.org_id
+            )
+            sync_point = await self.user_group_sync_point.read_sync_point(sync_point_key)
+
+            # 1. Determine starting URL
+            # Default to fresh delta start
+            url = "https://graph.microsoft.com/v1.0/groups/delta"
+            # If we have a saved state, prefer nextLink (resuming interrupted sync) or deltaLink (incremental sync)
+            if sync_point:
+                url = sync_point.get('nextLink') or sync_point.get('deltaLink') or url
+
+            self.logger.info("Starting Azure AD groups delta sync...")
+
+            while True:
+                # 2. Fetch page of results
+                result = await self.msgraph_client.get_groups_delta_response(url)
+                groups = result.get('groups', [])
+
+                self.logger.info(f"Fetched page with {len(groups)} Azure AD groups")
+
+                # 3. Process each group in the current page
+                for group in groups:
+                    # A) Check for DELETION marker
+                    if hasattr(group, 'additional_data') and group.additional_data and '@removed' in group.additional_data:
+                        self.logger.info(f"[DELTA ACTION] 🗑️ REMOVE Group: {group.id}")
+                        await self._handle_delete_group(group.id)
+                        continue
+
+                    # B) Process ADD/UPDATE
+                    self.logger.info(f"[DELTA ACTION] ✅ ADD/UPDATE Group: {getattr(group, 'display_name', 'N/A')} ({group.id})")
+                    await self._handle_group_create(group)
+
+                    # C) Check for specific MEMBER changes in this delta
+                    if hasattr(group, 'additional_data') and group.additional_data:
+                        member_changes = group.additional_data.get('members@delta', [])
+
+                        if member_changes:
+                            self.logger.info(f"    -> [ACTION] 👥 Processing {len(member_changes)} member changes for group: {group.id}")
+
+                        for member_change in member_changes:
+                            user_id = member_change.get('id')
+
+                            # 1. Fetch email (needed for both add and remove)
+                            email = await self.msgraph_client.get_user_email(user_id)
+
+                            if not email:
+                                self.logger.warning(f"Could not find email for user ID {user_id}, skipping member change processing.")
+                                continue
+
+                            # 2. Handle based on change type
+                            if '@removed' in member_change:
+                                self.logger.info(f"    -> [ACTION] 👤⛔ REMOVING member: {email} ({user_id}) from group {group.id}")
+                                await self.data_entities_processor.on_user_group_member_removed(
+                                    external_group_id=group.id,
+                                    user_email=email,
+                                    connector_name=self.connector_name
+                                )
+                            else:
+                                self.logger.info(f"    -> [ACTION] 👤✨ ADDING member: {email} ({user_id}) to group {group.id}")
+                                # Member addition is handled in _handle_group_create
+
+                # 4. Handle pagination and completion
+                if result.get('next_link'):
+                    # More data available, update URL for next loop iteration
+                    url = result.get('next_link')
+
+                    # OPTIONAL: Save intermediate 'nextLink' for resumability during long initial sync
+                    # await self.user_group_sync_point.update_sync_point(sync_point_key, {"nextLink": url, "deltaLink": None})
+
+                elif result.get('delta_link'):
+                    # End of current data stream. Save the delta_link for the NEXT run.
+                    await self.user_group_sync_point.update_sync_point(
+                        sync_point_key,
+                        {"nextLink": None, "deltaLink": result.get('delta_link')}
+                    )
+                    self.logger.info("Azure AD groups delta sync cycle completed, delta link saved for next run.")
+                    break
+                else:
+                    # Fallback ensuring loop terminates if API returns neither link
+                    self.logger.warning("Received response with neither next_link nor delta_link.")
+                    break
+
+        except Exception as e:
+            self.logger.error(f"❌ Error in Azure AD groups delta sync: {e}", exc_info=True)
+            raise
+
+
+    async def _handle_group_create(self, group: Group) -> None:
+        """
+        Handles the creation or update of a single user group.
+        Fetches members and sends to data processor.
+        """
+        try:
+
+            # 1. Fetch latest members for this group
+            members = await self.msgraph_client.get_group_members(group.id)
+
+            # 2. Create AppUserGroup entity
+            user_group = AppUserGroup(
+                source_user_group_id=group.id,
+                app_name=self.connector_name,
+                name=group.display_name,
+                description=group.description,
+                source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
+            )
+
+            # 3. Create AppUser entities for members
+            app_users = []
+            for member in members:
+                app_user = AppUser(
+                    source_user_id=member.id,
+                    email=member.mail or member.user_principal_name,
+                    full_name=member.display_name,
+                    source_created_at=member.created_date_time.timestamp() if member.created_date_time else get_epoch_timestamp_in_ms(),
+                    app_name=self.connector_name,
+                )
+                app_users.append(app_user)
+
+            # 4. Send to processor (wrapped in list as expected by on_new_user_groups)
+            await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
+
+            self.logger.info(f"Processed group creation/update for: {group.display_name}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error handling group create for {getattr(group, 'id', 'unknown')}: {e}", exc_info=True)
+
+    async def _handle_delete_group(self, group_id: str) -> None:
+        """
+        Handles the deletion of a single user group.
+        Calls the data processor to remove it from the database.
+
+        Args:
+            group_id: The external ID of the group to be deleted.
+        """
+        try:
+            self.logger.info(f"Handling group deletion for: {group_id}")
+
+            # Call the data entities processor to handle the deletion logic
+            await self.data_entities_processor.on_user_group_deleted(
+                external_group_id=group_id,
+                connector_name=self.connector_name
+            )
+
+            self.logger.info(f"Successfully processed group deletion for: {group_id}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error handling group delete for {group_id}: {e}", exc_info=True)
 
     def _map_group_to_permission_type(self, group_name: str) -> PermissionType:
         """Map SharePoint group names to permission types."""
@@ -2282,12 +2395,12 @@ class SharePointConnector(BaseConnector):
                 self.logger.error(f"❌ Error syncing users: {user_error}")
 
             # Step 2: Sync user groups
-            # self.logger.info("Syncing SharePoint groups...")
-            # try:
-            #     await self._sync_user_groups()
-            #     self.logger.info("✅ Successfully synced SharePoint groups")
-            # except Exception as group_error:
-            #     self.logger.error(f"❌ Error syncing groups: {group_error}")
+            self.logger.info("Syncing SharePoint groups...")
+            try:
+                await self._sync_user_groups()
+                self.logger.info("✅ Successfully synced SharePoint groups")
+            except Exception as group_error:
+                self.logger.error(f"❌ Error syncing groups: {group_error}")
 
             # Step 3: Discover and sync sites
             sites = await self._get_all_sites()
@@ -2470,7 +2583,7 @@ class SharePointConnector(BaseConnector):
                     import os
                     if os.path.exists(self.temp_cert_path):
                         os.remove(self.temp_cert_path)
-                        self.logger.info(f"✅ Removed temporary certificate file")
+                        self.logger.info("✅ Removed temporary certificate file")
                 except Exception as cert_error:
                     self.logger.debug(f"❌ Error removing temporary certificate: {cert_error}")
 
