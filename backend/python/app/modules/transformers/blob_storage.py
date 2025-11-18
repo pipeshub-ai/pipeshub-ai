@@ -221,9 +221,10 @@ class BlobStorage(Transformer):
                     self.logger.exception("Detailed error trace:")
                     raise e
             else:
+                # Use unique documentPath for each record to ensure separate S3 locations
                 placeholder_data = {
                     "documentName": f"record_{record_id}",
-                    "documentPath": "records",
+                    "documentPath": f"records/{virtual_record_id}",  # Make path unique per record
                     "extension": "json"
                 }
 
