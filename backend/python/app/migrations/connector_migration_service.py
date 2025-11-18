@@ -761,7 +761,7 @@ class ConnectorMigrationService:
         # Find all sync points that reference the legacy connector ID
         query = f"""
             FOR sync_point IN {CollectionNames.SYNC_POINTS.value}
-              FILTER LOWER(SUBSTITUTE(doc.connectorName, " ", "")) == LOWER(SUBSTITUTE(@connector_name, " ", ""))
+              FILTER LOWER(SUBSTITUTE(sync_point.connectorName, " ", "")) == LOWER(SUBSTITUTE(@connector_name, " ", ""))
               RETURN sync_point
         """
 
