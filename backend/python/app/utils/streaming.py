@@ -125,8 +125,11 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
             # Non-streaming – yield whole blob once
             response = await llm.ainvoke(messages)
             content = getattr(response, "content", response)
-            parts.append(content)
-            yield _stringify_content(content)
+            parts.append(response)
+
+            text = _stringify_content(content)
+            if text:
+                yield text
     except Exception as e:
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
         raise
@@ -175,7 +178,7 @@ async def execute_tool_calls(
                     return
                 elif event.get("event") == "tool_calls":
                     ai = event.get("data").get("ai")
-                else:    
+                else:
                     yield event
 
 
@@ -186,7 +189,6 @@ async def execute_tool_calls(
         except Exception as e:
             logger.debug("Error in llm call with tools: %s", str(e))
             break
-
 
         # Check if there are tool calls
         if not (isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None)):
@@ -1153,7 +1155,7 @@ async def call_aiter_llm_stream(
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
     state = AnswerParserState()
     answer_key_re, cite_block_re, incomplete_cite_re, word_iter = _initialize_answer_parser_regex()
-    
+
     parts = []
     async for token in aiter_llm_stream(llm, messages,parts):
         state.full_json_buf += token
@@ -1225,7 +1227,7 @@ async def call_aiter_llm_stream(
                         }
                         # Break after yielding to avoid re-processing the same words on next token
                         break
-    
+
     ai = None
     for part in parts:
         if ai is None:
@@ -1251,7 +1253,7 @@ async def call_aiter_llm_stream(
                 "call_aiter_llm_stream: No answer field found in LLM response. Using reflection to guide LLM to proper format. Retry count: %d",
                 reflection_retry_count
             )
-            
+
             # Create reflection message to guide the LLM
             reflection_message = HumanMessage(
                 content=(
@@ -1260,7 +1262,7 @@ async def call_aiter_llm_stream(
                     "The JSON must be valid and parseable. Start directly with the opening brace '{'."
                 )
             )
-            
+
             # Add the reflection message to the messages list
             updated_messages = messages.copy()
             if ai is not None:
@@ -1268,9 +1270,9 @@ async def call_aiter_llm_stream(
                     content=ai.content,
                 )
                 updated_messages.append(ai_message)
-                
+
             updated_messages.append(reflection_message)
-            
+
             # Recursively call the function with updated messages
             async for event in call_aiter_llm_stream(
                 llm,
@@ -1292,7 +1294,7 @@ async def call_aiter_llm_stream(
             yield {
                 "event": "error",
                 "data": {
-                    "error": "LLM did not provided any appropriate answer"
+                    "error": "LLM did not provide any appropriate answer"
                 },
             }
             return
@@ -1308,7 +1310,7 @@ async def call_aiter_llm_stream(
                 "citations": c,
                 "reason": parsed.get("reason"),
                 "confidence": parsed.get("confidence"),
-                
+
             },
         }
     except Exception:
