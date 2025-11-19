@@ -335,7 +335,7 @@ export const dashboardRoutes = [
                         element: CONFIG.auth.skip ? (
                           <ConnectorSettings />
                         ) : (
-                          <BusinessAdminOnlyRoute component={ConnectorSettings} />
+                          <ConnectorSettings />
                         ),
                         index: true,
                       },
@@ -344,7 +344,7 @@ export const dashboardRoutes = [
                         element: CONFIG.auth.skip ? (
                           <ConnectorRegistry />
                         ) : (
-                          <BusinessAdminOnlyRoute component={ConnectorRegistry} />
+                          <ConnectorRegistry />
                         ),
                       },
                       {
@@ -352,7 +352,7 @@ export const dashboardRoutes = [
                         element: CONFIG.auth.skip ? (
                           <ConnectorOAuthCallback />
                         ) : (
-                          <BusinessAdminOnlyRoute component={ConnectorOAuthCallback} />
+                          <ConnectorOAuthCallback />
                         ),
                       },
                       {
@@ -360,7 +360,7 @@ export const dashboardRoutes = [
                         element: CONFIG.auth.skip ? (
                           <ConnectorManagementPage />
                         ) : (
-                          <BusinessAdminOnlyRoute component={ConnectorManagementPage} />
+                          <ConnectorManagementPage />
                         ),
                       },
                     ],

@@ -71,6 +71,7 @@ export interface Record {
   recordType: string;
   origin: string;
   connectorName: string;
+  mimeType: string;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
   sourceCreatedAtTimestamp: number;
@@ -81,6 +82,7 @@ export interface Record {
   version: number;
   fileRecord: FileRecord | null;
   mailRecord: MailRecord | null;
+  ticketRecord: TicketRecord | null;
   departments?: Array<{ _id: string; name: string }>;
   appSpecificRecordType?: Array<{ _id: string; name: string }>;
   modules?: Array<{ _id: string; name: string }>;
@@ -122,6 +124,23 @@ export interface MailRecord {
   historyId: string;
   webUrl: string;
   labelIds: string[];
+}
+
+export interface TicketRecord {
+  _key: string;
+  _id: string;
+  _rev: string;
+  orgId: string;
+  name: string;
+  summary: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  assignee: string | null;
+  reporterEmail: string | null;
+  assigneeEmail: string | null;
+  creatorEmail: string;
+  creatorName: string;
 }
 
 export interface Permissions {

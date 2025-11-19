@@ -123,7 +123,7 @@ class SiteMetadata:
             'https://docs.pipeshub.com/connectors/microsoft-365/sharepoint',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/SharePoint Online", False)
+        .with_redirect_uri("connectors/oauth/callback/SharePoint Online", True)
         .add_auth_field(AuthField(
             name="clientId",
             display_name="Application (Client) ID",

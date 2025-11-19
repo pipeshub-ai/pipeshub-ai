@@ -322,7 +322,7 @@ class ConfluenceClient:
             'https://docs.pipeshub.com/connectors/confluence/confluence',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Confluence", False)
+        .with_redirect_uri("connectors/oauth/callback/Confluence", True)
         .add_auth_field(AuthField(
             name="clientId",
             display_name="Application (Client) ID",

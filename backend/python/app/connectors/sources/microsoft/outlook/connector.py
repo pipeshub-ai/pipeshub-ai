@@ -91,7 +91,7 @@ class OutlookCredentials:
             'https://docs.pipeshub.com/connectors/microsoft-365/outlook',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/Outlook/oauth/callback", False)
+        .with_redirect_uri("connectors/Outlook/oauth/callback", True)
         .add_auth_field(AuthField(
             name="clientId",
             display_name="Application (Client) ID",

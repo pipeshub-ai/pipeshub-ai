@@ -39,7 +39,7 @@ const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
  * @param operation - Description of the operation that failed
  * @returns Appropriate HTTP error
  */
-const handleBackendError = (error: any, operation: string): Error => {
+export const handleBackendError = (error: any, operation: string): Error => {
   if (error) {
     if (
       (error?.cause && error.cause.code === 'ECONNREFUSED') ||
@@ -102,7 +102,7 @@ const handleBackendError = (error: any, operation: string): Error => {
  * @param body - Optional request body
  * @returns Response from connector service
  */
-const executeConnectorCommand = async (
+export const executeConnectorCommand = async (
   uri: string,
   method: HttpMethod,
   headers: Record<string, string>,
@@ -130,7 +130,7 @@ const executeConnectorCommand = async (
  * @param operation - Description of the operation that failed
  * @param failureMessage - Message for other failures
  */
-const handleConnectorResponse = (
+export const handleConnectorResponse = (
   connectorResponse: any,
   res: Response,
   operation: string,
@@ -146,7 +146,7 @@ const handleConnectorResponse = (
   res.status(200).json(connectorsData);
 };
 
-const isUserAdmin = async (req: AuthenticatedUserRequest): Promise<boolean> => {
+export const isUserAdmin = async (req: AuthenticatedUserRequest): Promise<boolean> => {
   const { userId, orgId } = req.user || {};
   if (!userId) {
     throw new UnauthorizedError('User authentication required');

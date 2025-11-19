@@ -78,7 +78,7 @@ class OneDriveCredentials:
             'https://docs.pipeshub.com/connectors/microsoft-365/one-drive',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/OneDrive", False)
+        .with_redirect_uri("connectors/oauth/callback/OneDrive", True)
         .add_auth_field(AuthField(
             name="clientId",
             display_name="Application (Client) ID",

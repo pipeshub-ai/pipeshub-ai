@@ -337,7 +337,6 @@ export function createConnectorRouter(container: Container): Router {
     '/:connectorId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(connectorIdParamSchema),
     getConnectorInstance(config)
   );
@@ -350,7 +349,6 @@ export function createConnectorRouter(container: Container): Router {
     '/:connectorId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(connectorIdParamSchema),
     deleteConnectorInstance(config)
   );
@@ -367,7 +365,6 @@ export function createConnectorRouter(container: Container): Router {
     '/:connectorId/config',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(connectorIdParamSchema),
     getConnectorInstanceConfig(config)
   );
@@ -380,7 +377,6 @@ export function createConnectorRouter(container: Container): Router {
     '/:connectorId/config',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(updateConnectorInstanceConfigSchema),
     updateConnectorInstanceConfig(config)
   );
@@ -393,7 +389,6 @@ export function createConnectorRouter(container: Container): Router {
     '/:connectorId/name',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(
       z.object({
         body: z.object({ instanceName: z.string().min(1, 'Instance name is required') }),
@@ -415,7 +410,6 @@ export function createConnectorRouter(container: Container): Router {
     '/:connectorId/oauth/authorize',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(getOAuthAuthorizationUrlSchema),
     getOAuthAuthorizationUrl(config)
   );
@@ -428,7 +422,6 @@ export function createConnectorRouter(container: Container): Router {
     '/oauth/callback',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(handleOAuthCallbackSchema),
     handleOAuthCallback(config)
   );
@@ -445,7 +438,6 @@ export function createConnectorRouter(container: Container): Router {
     '/:connectorId/filters',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(connectorIdParamSchema),
     getConnectorInstanceFilterOptions(config)
   );
@@ -458,7 +450,6 @@ export function createConnectorRouter(container: Container): Router {
     '/:connectorId/filters',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(saveConnectorInstanceFilterOptionsSchema),
     saveConnectorInstanceFilterOptions(config)
   );
@@ -475,7 +466,6 @@ export function createConnectorRouter(container: Container): Router {
     '/:connectorId/toggle',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(connectorToggleSchema),
     toggleConnectorInstance(config)
   );
@@ -493,7 +483,6 @@ export function createConnectorRouter(container: Container): Router {
     '/',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     getConnectorInstances(config)
   );
 

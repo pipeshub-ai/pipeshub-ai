@@ -20,6 +20,7 @@ import {
   useTheme,
   Typography,
   IconButton,
+  Link,
 } from '@mui/material';
 
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
@@ -220,10 +221,22 @@ const CitationHoverCard = ({
   const getWebUrl = () => {
     try {
       let webUrl = citation?.metadata?.webUrl;
+      if (!webUrl) {
+        return undefined;
+      }
+
       if (citation?.metadata?.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
         const baseUrl = `${window.location.protocol}//${window.location.host}`;
         webUrl = baseUrl + webUrl;
       }
+
+      // Check if blockText exists and is not empty before adding text fragment
+      const blockText = citation?.metadata?.blockText;
+      if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
+        const textFragment = blockText.trim().split(/\s+/).slice(0, 5).join(' ');
+        return `${webUrl}#:~:text=${encodeURIComponent(textFragment)}`;
+      }
+
       return webUrl;
     } catch (error) {
       console.warn('Error accessing webUrl:', error);
@@ -336,9 +349,10 @@ const CitationHoverCard = ({
                   sx={{ zIndex: 2999, pb: 10 }}
                 >
                   <Box component="span" sx={{ zIndex: 2999 }}>
-                    <IconButton
-                      onClick={() => window.open(webUrl, '_blank', 'noopener,noreferrer')}
-                      size="small"
+                    <Link
+                      href={webUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
                       sx={{
                         mr: 0.75,
                         color: 'primary.main',
@@ -355,7 +369,7 @@ const CitationHoverCard = ({
                       }}
                     >
                       <Icon icon={linkIcon} width={14} height={14} />
-                    </IconButton>
+                    </Link>
                   </Box>
                 </Tooltip>
               )}

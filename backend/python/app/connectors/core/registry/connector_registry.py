@@ -283,6 +283,79 @@ class ConnectorRegistry:
             self.logger.error(f"Error checking connector access: {e}")
             return False
 
+    async def _check_name_uniqueness(
+        self,
+        instance_name: str,
+        scope: str,
+        org_id: str,
+        user_id: str,
+    ) -> bool:
+        """
+        Check if connector instance name is unique based on scope.
+
+        Args:
+            instance_name: Name to check
+            scope: Connector scope (personal/team)
+            org_id: Organization ID
+            user_id: User ID (for personal scope)
+            exclude_connector_id: Optional connector ID to exclude from check (for updates)
+
+        Returns:
+            True if name is unique, False if already exists
+        """
+        try:
+            arango_service = await self._get_arango_service()
+
+            # Normalize name for comparison (case-insensitive, trim whitespace)
+            normalized_name = instance_name.strip().lower()
+
+            if scope == ConnectorScope.PERSONAL.value:
+                # For personal scope: check uniqueness within user's personal connectors
+                query = """
+                FOR doc IN @@collection
+                    FILTER doc.scope == @scope
+                    FILTER doc.createdBy == @user_id
+                    FILTER LOWER(TRIM(doc.name)) == @normalized_name
+                    RETURN doc._key
+                """
+                bind_vars = {
+                    "@collection": self._collection_name,
+                    "scope": ConnectorScope.PERSONAL.value,
+                    "user_id": user_id,
+                    "normalized_name": normalized_name,
+                }
+            else:  # TEAM scope
+                # For team scope: check uniqueness within organization's team connectors
+                # We need to check via org relationship
+                query = """
+                FOR edge IN @@edge_collection
+                    FILTER edge._from == @org_id
+                    FOR doc IN @@collection
+                        FILTER doc._id == edge._to
+                        FILTER doc.scope == @scope
+                        FILTER LOWER(TRIM(doc.name)) == @normalized_name
+                        FILTER doc._key != @exclude_key
+                        RETURN doc._key
+                """
+                bind_vars = {
+                    "@collection": self._collection_name,
+                    "@edge_collection": CollectionNames.ORG_APP_RELATION.value,
+                    "org_id": f"{CollectionNames.ORGS.value}/{org_id}",
+                    "scope": ConnectorScope.TEAM.value,
+                    "normalized_name": normalized_name,
+                }
+
+            cursor = arango_service.db.aql.execute(query, bind_vars=bind_vars)
+            existing = list(cursor)
+
+            # If any results found, name is not unique
+            return len(existing) == 0
+
+        except Exception as e:
+            self.logger.error(f"Error checking name uniqueness: {e}")
+            # On error, allow the operation (fail-open to avoid blocking)
+            return True
+
     async def _get_connector_instance_from_db(
         self,
         connector_id: str
@@ -348,6 +421,23 @@ class ConnectorRegistry:
                 )
                 return None
 
+            # Check name uniqueness before creating
+            is_unique = await self._check_name_uniqueness(
+                instance_name=instance_name,
+                scope=scope,
+                org_id=org_id,
+                user_id=created_by
+            )
+
+            if not is_unique:
+                self.logger.warning(
+                    f"Connector instance name '{instance_name}' already exists for scope {scope}"
+                )
+                raise ValueError(
+                    f"Connector instance name '{instance_name}' already exists. "
+                    f"Please choose a different name."
+                )
+
             # Create connector instance document
             instance_key = str(uuid4())
             current_timestamp = get_epoch_timestamp_in_ms()
@@ -403,6 +493,9 @@ class ConnectorRegistry:
             )
             return instance_document
 
+        except ValueError:
+            # Re-raise ValueError (name uniqueness) as-is
+            raise
         except Exception as e:
             self.logger.error(
                 f"Error creating connector instance for {connector_type}: {e}"
@@ -568,27 +661,38 @@ class ConnectorRegistry:
 
     async def _get_all_connector_instances(self, user_id: str, org_id: str) -> List[Dict[str, Any]]:
         """
-        Get all connector instances from the database. (Team and personal connectors)
+        Get all connector instances from the database.
+
+        Returns:
+            - All personal connectors created by the user
+            - All team connectors in the organization (regardless of creator)
         """
         connectors = []
         try:
             arango_service = await self._get_arango_service()
-            # get all connectors which are of team type or have user_id as createdBy
+            # Get connectors that are either:
+            # 1. Team scope connectors (shared across org)
+            # 2. Personal scope connectors created by this user
             query = """
             FOR doc IN @@collection
                 FILTER doc._id != null
-                FILTER (doc.scope == @scope OR doc.createdBy == @user_id)
+                FILTER (
+                    doc.scope == @team_scope OR
+                    (doc.scope == @personal_scope AND doc.createdBy == @user_id)
+                )
                 RETURN doc
             """
             bind_vars = {
                 "@collection": self._collection_name,
-                "scope": ConnectorScope.TEAM.value,
+                "team_scope": ConnectorScope.TEAM.value,
+                "personal_scope": ConnectorScope.PERSONAL.value,
                 "user_id": user_id,
             }
             cursor = arango_service.db.aql.execute(query, bind_vars=bind_vars)
             documents = list[Dict[str, Any]](cursor)
             for document in documents:
-                connectors.append(self._build_connector_info(document['type'], self._connectors[document['type']], document))
+                if document['type'] in self._connectors:
+                    connectors.append(self._build_connector_info(document['type'], self._connectors[document['type']], document))
             return connectors
         except Exception as e:
             self.logger.error(f"Error getting all connector instances: {e}")
@@ -1156,6 +1260,8 @@ class ConnectorRegistry:
             is_admin: Whether the user is an admin
         Returns:
             Created connector instance document or None if failed
+        Raises:
+            ValueError: If instance name is not unique
         """
         if connector_type not in self._connectors:
             self.logger.error(
@@ -1190,6 +1296,8 @@ class ConnectorRegistry:
             is_admin: Whether the user is an admin
         Returns:
             Updated connector instance document or None if failed
+        Raises:
+            ValueError: If instance name is not unique
         """
         try:
             arango_service = await self._get_arango_service()
@@ -1218,6 +1326,30 @@ class ConnectorRegistry:
                     f"User {user_id} does not have permission to update connector {connector_id}"
                 )
                 return None
+
+            # If name is being updated, check uniqueness
+            if 'name' in updates:
+                new_name = updates['name']
+                scope = existing_document.get('scope', ConnectorScope.PERSONAL.value)
+                created_by = existing_document.get('createdBy', user_id)
+
+                # Check if name is unique (excluding current connector)
+                is_unique = await self._check_name_uniqueness(
+                    instance_name=new_name,
+                    scope=scope,
+                    org_id=org_id,
+                    user_id=created_by,
+                    exclude_connector_id=connector_id
+                )
+
+                if not is_unique:
+                    self.logger.warning(
+                        f"Connector instance name '{new_name}' already exists for scope {scope}"
+                    )
+                    raise ValueError(
+                        f"Connector instance name '{new_name}' already exists. "
+                        f"Please choose a different name."
+                    )
 
             # Merge updates with existing document
             updated_document = {
@@ -1254,6 +1386,9 @@ class ConnectorRegistry:
             self.logger.info(f"Updated connector instance {connector_id}")
             return updated_document
 
+        except ValueError:
+            # Re-raise ValueError (name uniqueness) as-is
+            raise
         except Exception as e:
             self.logger.error(
                 f"Error updating connector instance {connector_id}: {e}"

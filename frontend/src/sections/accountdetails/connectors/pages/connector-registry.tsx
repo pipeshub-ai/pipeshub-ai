@@ -42,8 +42,10 @@ import arrowLeftIcon from '@iconify-icons/mdi/arrow-left';
 import accountIcon from '@iconify-icons/mdi/account';
 import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import checkCircleIcon from '@iconify-icons/mdi/check-circle';
+import infoIcon from '@iconify-icons/mdi/info-circle';
 import { SnackbarState } from 'src/types/chat-sidebar';
 import { useAccountType } from 'src/hooks/use-account-type';
+import { useAdmin } from 'src/context/AdminContext';
 import { ConnectorApiService } from '../services/api';
 import { ConnectorRegistry as ConnectorRegistryType } from '../types/types';
 import ConnectorRegistryCard from '../components/connector-registry-card';
@@ -75,9 +77,21 @@ const ConnectorRegistry: React.FC = () => {
   const theme = useTheme();
   const navigate = useNavigate();
   const { isBusiness } = useAccountType();
+  const { isAdmin } = useAdmin();
   const isDark = theme.palette.mode === 'dark';
 
-  const initialScope = (searchParams.get('scope') as 'personal' | 'team') || 'personal';
+  // Determine initial scope based on admin status and URL params
+  const getInitialScope = (): 'personal' | 'team' => {
+    const urlScope = searchParams.get('scope') as 'personal' | 'team';
+    // Admins can use URL param or default to personal (they can switch to team)
+    if (isBusiness && isAdmin) return urlScope || 'personal';
+    // Non-admin business users are locked to personal (ignore URL param for team)
+    if (isBusiness && !isAdmin) return 'personal';
+    // Individual users are always personal
+    return 'personal';
+  };
+
+  const initialScope = getInitialScope();
 
   // ============================================================================
   // STATE MANAGEMENT
@@ -102,9 +116,8 @@ const ConnectorRegistry: React.FC = () => {
   const [searchInput, setSearchInput] = useState('');
   const [activeSearchQuery, setActiveSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [selectedScope, setSelectedScope] = useState<'personal' | 'team'>(
-    isBusiness ? initialScope : 'personal'
-  );
+  // Auto-set scope based on admin status: admins see team, non-admins see personal
+  const [selectedScope, setSelectedScope] = useState<'personal' | 'team'>(initialScope);
   const [pageByScope, setPageByScope] = useState<PageState>({
     personal: INITIAL_PAGE,
     team: INITIAL_PAGE,
@@ -128,15 +141,27 @@ const ConnectorRegistry: React.FC = () => {
   // COMPUTED VALUES
   // ============================================================================
 
-  const effectiveScope = useMemo(
-    () => (isBusiness ? selectedScope : 'personal'),
-    [isBusiness, selectedScope]
+  // Determine effective scope based on role:
+  // - Admins can access both personal and team connectors (can switch)
+  // - Non-admin business users can only access personal connectors (no team access)
+  // - Individual users can only access personal connectors
+  const effectiveScope = useMemo(() => {
+    // Use selectedScope for admins (they can switch), otherwise default to personal
+    if (isBusiness && isAdmin) {
+      return selectedScope; // Admins can switch between personal and team
+    }
+    return 'personal'; // Everyone else is locked to personal
+  }, [isBusiness, isAdmin, selectedScope]);
+
+  // Determine if tabs should be shown:
+  // - Show tabs only for admins (they can access both personal and team)
+  // - Non-admin business users and individual users don't see tabs (locked to personal)
+  const showScopeTabs = useMemo(
+    () => isBusiness && isAdmin, // Only admins can switch between personal/team
+    [isBusiness, isAdmin]
   );
 
-  const currentPage = useMemo(
-    () => pageByScope[effectiveScope],
-    [pageByScope, effectiveScope]
-  );
+  const currentPage = useMemo(() => pageByScope[effectiveScope], [pageByScope, effectiveScope]);
 
   // Extract unique categories
   const categories = useMemo(() => {
@@ -179,6 +204,22 @@ const ConnectorRegistry: React.FC = () => {
       }
     };
   }, [searchInput, activeSearchQuery]);
+
+  // ============================================================================
+  // AUTO-SET SCOPE - Based on admin status
+  // ============================================================================
+
+  // Auto-set scope when admin status changes
+  // Admins default to personal (but can switch to team)
+  // Non-admins are always locked to personal
+  useEffect(() => {
+    if (!isBusiness || !isAdmin) {
+      // Non-admin business users and individual users are locked to personal
+      setSelectedScope('personal');
+    }
+    // Admins can keep their selected scope or default to personal on first load
+    // (selectedScope state will persist if already set)
+  }, [isBusiness, isAdmin]);
 
   // ============================================================================
   // RESET PAGINATION
@@ -335,6 +376,9 @@ const ConnectorRegistry: React.FC = () => {
 
   const handleScopeChange = useCallback(
     (_event: React.SyntheticEvent, newScope: 'personal' | 'team') => {
+      // Only admins can switch scopes
+      // Non-admin business users and individual users are locked to personal
+      if (!isBusiness || !isAdmin) return;
       if (!isBusiness && newScope === 'team') return;
 
       setIsSwitchingScope(true);
@@ -352,7 +396,7 @@ const ConnectorRegistry: React.FC = () => {
         setIsSwitchingScope(false);
       }, 400);
     },
-    [isBusiness]
+    [isBusiness, isAdmin]
   );
 
   const handleCategoryChange = useCallback((category: string) => {
@@ -435,7 +479,9 @@ const ConnectorRegistry: React.FC = () => {
                       mb: 0.5,
                     }}
                   >
-                    Available Connectors
+                    {isBusiness && isAdmin && effectiveScope === 'team'
+                      ? 'Team Connectors Registry'
+                      : 'Available Connectors'}
                   </Typography>
                   <Typography
                     variant="body2"
@@ -444,7 +490,9 @@ const ConnectorRegistry: React.FC = () => {
                       fontSize: '0.875rem',
                     }}
                   >
-                    Browse and configure new connector instances
+                    {isBusiness && isAdmin && effectiveScope === 'team'
+                      ? 'Browse and configure team connector instances for your organization'
+                      : 'Browse and configure new connector instances'}
                   </Typography>
                 </Box>
               </Stack>
@@ -466,36 +514,36 @@ const ConnectorRegistry: React.FC = () => {
               </Button>
             </Stack>
 
-            {/* Scope Tabs */}
-            <Box sx={{ borderBottom: 1, borderColor: 'divider', mt: 2 }}>
-              <Tabs
-                value={effectiveScope}
-                onChange={handleScopeChange}
-                sx={{
-                  '& .MuiTab-root': {
-                    textTransform: 'none',
-                    fontWeight: 600,
-                    minHeight: 48,
-                  },
-                }}
-              >
-                <Tab
-                  icon={<Iconify icon={accountIcon} width={18} height={18} />}
-                  iconPosition="start"
-                  label="Personal Connectors"
-                  value="personal"
-                  sx={{ mr: 1 }}
-                />
-                {isBusiness && (
+            {/* Scope Tabs - Only show for non-admin business users */}
+            {showScopeTabs && (
+              <Box sx={{ borderBottom: 1, borderColor: 'divider', mt: 2 }}>
+                <Tabs
+                  value={effectiveScope}
+                  onChange={handleScopeChange}
+                  sx={{
+                    '& .MuiTab-root': {
+                      textTransform: 'none',
+                      fontWeight: 600,
+                      minHeight: 48,
+                    },
+                  }}
+                >
+                  <Tab
+                    icon={<Iconify icon={accountIcon} width={18} height={18} />}
+                    iconPosition="start"
+                    label="Personal Connectors"
+                    value="personal"
+                    sx={{ mr: 1 }}
+                  />
                   <Tab
                     icon={<Iconify icon={accountGroupIcon} width={18} height={18} />}
                     iconPosition="start"
                     label="Team Connectors"
                     value="team"
                   />
-                )}
-              </Tabs>
-            </Box>
+                </Tabs>
+              </Box>
+            )}
           </Stack>
         </Box>
 

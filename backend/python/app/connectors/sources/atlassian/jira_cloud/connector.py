@@ -301,27 +301,66 @@ class JiraClient:
         ]
 
     async def fetch_issues_with_permissions(self, project_key: str, project_id: str, user: AppUser) -> List[Tuple[Record, List[Permission]]]:
-        url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/search"
+        url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/search/jql"
         issues = []
 
+        # Use JQL query format for Jira Cloud API
+        jql_query = f"project = {project_key}"
+
         while True:
-            issues_batch = await self.make_authenticated_json_request("GET", url, params={"projectKey": project_key, "maxResults": 25})
+            issues_batch = await self.make_authenticated_json_request(
+                "GET",
+                url,
+                params={
+                    "jql": jql_query,
+                    "maxResults": 25,
+                    "fields": "summary,status,priority,creator,key,created,updated"  # Include created and updated timestamps
+                }
+            )
             issues = issues + issues_batch.get("issues", [])
-            next_url = issues_batch.get("_links", {}).get("next", None)
-            if not next_url:
+
+            # Check for pagination - Jira uses startAt for pagination
+            total = issues_batch.get("total", 0)
+            start_at = issues_batch.get("startAt", 0)
+            max_results = issues_batch.get("maxResults", 25)
+
+            # If we have more results, update startAt
+            if start_at + max_results < total:
+                issues_batch = await self.make_authenticated_json_request(
+                    "GET",
+                    url,
+                    params={
+                        "jql": jql_query,
+                        "maxResults": 25,
+                        "startAt": start_at + max_results,
+                        "fields": "summary,status,priority,creator,key,created,updated"
+                    }
+                )
+                issues = issues + issues_batch.get("issues", [])
+                start_at = issues_batch.get("startAt", 0)
+            else:
                 break
-            url = next_url
 
         issue_records = []
         for issue in issues:
-            issue_id = f"project-{project_key}/issue-{issue.get('id')}"
+            # Use the issue key (e.g., "QUES-10289") as the external_record_id for API calls
+            issue_key = issue.get("key")
+            if not issue_key:
+                self.logger.warning(f"Issue missing key field, skipping: {issue.get('id')}")
+                continue
+
             fields = issue.get("fields", {})
+            self.logger.debug(f"\n \n Issue fields: {issue} \n\n")
             issue_name = fields.get("summary")
             status = fields.get("status", {}).get("name")
             priority = fields.get("priority", {}).get("name")
             creator = fields.get("creator") or {}
             creator_email = creator.get("emailAddress")
             creator_name = creator.get("displayName")
+
+            # Extract created and updated timestamps
+            source_created_at = fields.get("created")
+            source_updated_at = fields.get("updated")
 
             if creator_email is None:
                 creator_email = user.email
@@ -338,7 +377,7 @@ class JiraClient:
                 summary=issue_name,
                 creator_email=creator_email,
                 creator_name=creator_name,
-                external_record_id=issue_id,
+                external_record_id=issue_key,  # Use issue key (e.g., "QUES-10289") instead of custom format
                 record_name=issue_name,
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
@@ -348,7 +387,9 @@ class JiraClient:
                 external_record_group_id=project_id,
                 version=0,
                 mime_type=MimeTypes.PLAIN_TEXT.value,
-                weburl=f"{atlassian_domain}/browse/{issue.get('key')}"
+                weburl=f"{atlassian_domain}/browse/{issue_key}",
+                source_created_at=source_created_at,
+                source_updated_at=source_updated_at
             )
             issue_records.append((issue_record, permissions))
 
@@ -403,9 +444,28 @@ class JiraClient:
         self,
         issue_id: str,
     ) -> str:
+        """
+        Fetch issue content from Jira API.
+        Args:
+            issue_id: Issue key (e.g., "QUES-10289") or legacy format 'project-QUES/issue-10289'
+        Returns:
+            Formatted issue content as text
+        """
         base_url = f"{BASE_URL}/{self.cloud_id}"
-        url = f"{base_url}/rest/api/3/issue/{issue_id}"
-        print(url, "jira request url")
+
+        # Handle both new format (issue key) and legacy format (project-QUES/issue-10289)
+        if "/issue-" in issue_id:
+            # Legacy format: "project-QUES/issue-10289" -> extract and construct issue key
+            numeric_id = issue_id.split("/issue-")[-1]
+            project_part = issue_id.split("/issue-")[0].replace("project-", "")
+            jira_issue_id = f"{project_part}-{numeric_id}"
+            self.logger.debug(f"Converted legacy issue ID format {issue_id} to {jira_issue_id}")
+        else:
+            # Assume it's already in the correct format (issue key like "QUES-10289")
+            jira_issue_id = issue_id
+
+        url = f"{base_url}/rest/api/3/issue/{jira_issue_id}"
+        self.logger.debug(f"Fetching Jira issue content from: {url}")
         issue_details = await self.make_authenticated_json_request("GET", url)
         description = issue_details.get("fields", {}).get("description", "")
         summary = issue_details.get("fields", {}).get("summary", "")
@@ -435,7 +495,7 @@ class JiraClient:
             'https://docs.pipeshub.com/connectors/jira/jira',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Jira", False)
+        .with_redirect_uri("connectors/oauth/callback/Jira", True)
         .add_auth_field(AuthField(
             name="clientId",
             display_name="Application (Client) ID",
@@ -470,7 +530,9 @@ class JiraConnector(BaseConnector):
         self.connector_id = connector_id
 
     async def init(self) -> bool:
-        pass
+        await self.data_entities_processor.initialize()
+        self.jira_client = await self.get_jira_client()
+        return True
 
     async def run_sync(self) -> None:
         users = await self.data_entities_processor.get_all_active_users()
@@ -479,18 +541,68 @@ class JiraConnector(BaseConnector):
             return
 
         jira_client = await self.get_jira_client()
-        user = users[0]
+
         try:
-            projects = await jira_client.fetch_projects_with_permissions()
+            async with jira_client:
+                # Fetch projects once - they are team-level resources
+                self.logger.info("Fetching Jira projects...")
+                projects = await jira_client.fetch_projects_with_permissions()
 
-            await self.data_entities_processor.on_new_record_groups(projects)
+                if not projects:
+                    self.logger.warning("No projects found in Jira")
+                    return
 
-            for project, permissions in projects:
-                issues = await jira_client.fetch_issues_with_permissions(project.short_name, project.external_group_id, user)
-                await self.data_entities_processor.on_new_records(issues)
+                await self.data_entities_processor.on_new_record_groups(projects)
+                self.logger.info(f"Processed {len(projects)} projects")
 
+                # Process each active user to get their accessible issues
+                self.logger.info(f"Processing issues for {len(users)} active users...")
+                for i, user in enumerate(users, 1):
+                    try:
+                        self.logger.info(f"Processing user {i}/{len(users)}: {user.email}")
+
+                        # Fetch issues for each project for this user
+                        all_user_issues = []
+                        for project, permissions in projects:
+                            try:
+                                issues = await jira_client.fetch_issues_with_permissions(
+                                    project.short_name,
+                                    project.external_group_id,
+                                    user
+                                )
+                                all_user_issues.extend(issues)
+                                self.logger.debug(
+                                    f"Fetched {len(issues)} issues from project {project.short_name} "
+                                    f"for user {user.email}"
+                                )
+                            except Exception as project_error:
+                                self.logger.error(
+                                    f"Error fetching issues from project {project.short_name} "
+                                    f"for user {user.email}: {project_error}"
+                                )
+                                continue
+
+                        # Process all issues for this user in batch
+                        if all_user_issues:
+                            await self.data_entities_processor.on_new_records(all_user_issues)
+                            self.logger.info(
+                                f"Processed {len(all_user_issues)} total issues for user {user.email}"
+                            )
+                        else:
+                            self.logger.info(f"No issues found for user {user.email}")
+
+                    except Exception as user_error:
+                        self.logger.error(
+                            f"Error processing user {user.email}: {user_error}",
+                            exc_info=True
+                        )
+                        # Continue to next user even if this one fails
+                        continue
+
+                self.logger.info("Jira sync completed successfully")
         except Exception as e:
-            self.logger.error(f"Error processing user {user.email}: {e}")
+            self.logger.error(f"Error during Jira sync: {e}", exc_info=True)
+            raise
 
 
     async def get_jira_client(self) -> JiraClient:
@@ -520,10 +632,11 @@ class JiraConnector(BaseConnector):
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         jira_client = await self.get_jira_client()
-        issue_content = await jira_client.fetch_issue_content(record.external_record_id)
-        return StreamingResponse(
-            iter([issue_content]), media_type=MimeTypes.PLAIN_TEXT.value, headers={}
-        )
+        async with jira_client:
+            issue_content = await jira_client.fetch_issue_content(record.external_record_id)
+            return StreamingResponse(
+                iter([issue_content]), media_type=MimeTypes.PLAIN_TEXT.value, headers={}
+            )
 
     @classmethod
     async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> "BaseConnector":

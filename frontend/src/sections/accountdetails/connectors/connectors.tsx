@@ -50,6 +50,7 @@ import accountIcon from '@iconify-icons/mdi/account';
 import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import { SnackbarState } from 'src/types/chat-sidebar';
 import { useAccountType } from 'src/hooks/use-account-type';
+import { useAdmin } from 'src/context/AdminContext';
 import { ConnectorApiService } from './services/api';
 import { Connector } from './types/types';
 import ConnectorCard from './components/connector-card';
@@ -89,6 +90,7 @@ const Connectors: React.FC = () => {
   const theme = useTheme();
   const navigate = useNavigate();
   const { isBusiness } = useAccountType();
+  const { isAdmin } = useAdmin();
   const isDark = theme.palette.mode === 'dark';
 
   // ============================================================================
@@ -113,6 +115,7 @@ const Connectors: React.FC = () => {
   // Filter State
   const [searchInput, setSearchInput] = useState('');
   const [activeSearchQuery, setActiveSearchQuery] = useState(''); // What's actually being searched
+  // Initial scope will be set by useEffect when admin status is determined
   const [selectedScope, setSelectedScope] = useState<'personal' | 'team'>('personal');
   const [selectedFilter, setSelectedFilter] = useState<FilterType>('all');
   const [pageByScope, setPageByScope] = useState<PageState>({
@@ -138,15 +141,20 @@ const Connectors: React.FC = () => {
   // COMPUTED VALUES
   // ============================================================================
 
-  const effectiveScope = useMemo(
-    () => (isBusiness ? selectedScope : 'personal'),
-    [isBusiness, selectedScope]
+  const effectiveScope = useMemo(() => {
+    // Use selectedScope for admins (they can switch), otherwise default to personal
+    if (isBusiness && isAdmin) {
+      return selectedScope; // Admins can switch between personal and team
+    }
+    return 'personal'; // Everyone else is locked to personal
+  }, [isBusiness, isAdmin, selectedScope]);
+
+  const showScopeTabs = useMemo(
+    () => isBusiness && isAdmin, // Only admins can switch between personal/team
+    [isBusiness, isAdmin]
   );
 
-  const currentPage = useMemo(
-    () => pageByScope[effectiveScope],
-    [pageByScope, effectiveScope]
-  );
+  const currentPage = useMemo(() => pageByScope[effectiveScope], [pageByScope, effectiveScope]);
 
   // Filter connectors by scope
   const currentScopeConnectors = useMemo(
@@ -231,6 +239,22 @@ const Connectors: React.FC = () => {
       }
     };
   }, [searchInput, activeSearchQuery]);
+
+  // ============================================================================
+  // AUTO-SET SCOPE - Based on admin status
+  // ============================================================================
+
+  // Auto-set scope when admin status changes
+  // Admins default to personal (but can switch to team)
+  // Non-admins are always locked to personal
+  useEffect(() => {
+    if (!isBusiness || !isAdmin) {
+      // Non-admin business users and individual users are locked to personal
+      setSelectedScope('personal');
+    }
+    // Admins can keep their selected scope or default to personal on first load
+    // (selectedScope state will persist if already set)
+  }, [isBusiness, isAdmin]);
 
   // ============================================================================
   // RESET PAGINATION - When filters change
@@ -397,6 +421,9 @@ const Connectors: React.FC = () => {
 
   const handleScopeChange = useCallback(
     (_event: React.SyntheticEvent, newScope: 'personal' | 'team') => {
+      // Only admins can switch scopes
+      // Non-admin business users and individual users are locked to personal
+      if (!isBusiness || !isAdmin) return;
       if (!isBusiness && newScope === 'team') return;
 
       setIsSwitchingScope(true);
@@ -415,7 +442,7 @@ const Connectors: React.FC = () => {
         setIsSwitchingScope(false);
       }, 400);
     },
-    [isBusiness]
+    [isBusiness, isAdmin]
   );
 
   const handleFilterChange = useCallback((filter: FilterType) => {
@@ -431,8 +458,12 @@ const Connectors: React.FC = () => {
     const basePath = isBusiness
       ? '/account/company-settings/settings/connector/registry'
       : '/account/individual/settings/connector/registry';
-    navigate(`${basePath}?scope=${effectiveScope}`);
-  }, [isBusiness, effectiveScope, navigate]);
+    if (isBusiness && isAdmin) {
+      navigate(`${basePath}?scope=${effectiveScope}`);
+    } else {
+      navigate(`${basePath}`);
+    }
+  }, [isBusiness, isAdmin, effectiveScope, navigate]);
 
   const handleCloseSnackbar = useCallback(() => {
     setSnackbar((prev) => ({ ...prev, open: false }));
@@ -494,7 +525,9 @@ const Connectors: React.FC = () => {
                       mb: 0.5,
                     }}
                   >
-                    My Connectors
+                    {isBusiness && isAdmin && effectiveScope === 'team'
+                      ? 'Team Connectors'
+                      : 'My Connectors'}
                   </Typography>
                   <Typography
                     variant="body2"
@@ -503,7 +536,9 @@ const Connectors: React.FC = () => {
                       fontSize: '0.875rem',
                     }}
                   >
-                    Manage your configured connector instances
+                    {isBusiness && isAdmin && effectiveScope === 'team'
+                      ? 'Manage team connector instances for your organization'
+                      : 'Manage your configured connector instances'}
                     {filterCounts.active > 0 && (
                       <Chip
                         label={`${filterCounts.active} active`}
@@ -513,8 +548,12 @@ const Connectors: React.FC = () => {
                           height: 20,
                           fontSize: '0.6875rem',
                           fontWeight: 600,
-                          backgroundColor: isDark ? alpha(theme.palette.common.white, 0.48) : alpha(theme.palette.success.main, 0.1),
-                          color: isDark ? alpha(theme.palette.primary.main, 0.6) : theme.palette.success.main,
+                          backgroundColor: isDark
+                            ? alpha(theme.palette.common.white, 0.48)
+                            : alpha(theme.palette.success.main, 0.1),
+                          color: isDark
+                            ? alpha(theme.palette.primary.main, 0.6)
+                            : theme.palette.success.main,
                           border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
                         }}
                       />
@@ -540,36 +579,36 @@ const Connectors: React.FC = () => {
               </Button>
             </Stack>
 
-            {/* Scope Tabs */}
-            <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-              <Tabs
-                value={effectiveScope}
-                onChange={handleScopeChange}
-                sx={{
-                  '& .MuiTab-root': {
-                    textTransform: 'none',
-                    fontWeight: 600,
-                    minHeight: 48,
-                  },
-                }}
-              >
-                <Tab
-                  icon={<Iconify icon={accountIcon} width={18} height={18} />}
-                  iconPosition="start"
-                  label="Personal"
-                  value="personal"
-                  sx={{ mr: 1 }}
-                />
-                {isBusiness && (
+            {/* Scope Tabs - Only show for non-admin business users */}
+            {showScopeTabs && (
+              <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+                <Tabs
+                  value={effectiveScope}
+                  onChange={handleScopeChange}
+                  sx={{
+                    '& .MuiTab-root': {
+                      textTransform: 'none',
+                      fontWeight: 600,
+                      minHeight: 48,
+                    },
+                  }}
+                >
+                  <Tab
+                    icon={<Iconify icon={accountIcon} width={18} height={18} />}
+                    iconPosition="start"
+                    label="Personal"
+                    value="personal"
+                    sx={{ mr: 1 }}
+                  />
                   <Tab
                     icon={<Iconify icon={accountGroupIcon} width={18} height={18} />}
                     iconPosition="start"
                     label="Team"
                     value="team"
                   />
-                )}
-              </Tabs>
-            </Box>
+                </Tabs>
+              </Box>
+            )}
           </Stack>
         </Box>
 
@@ -698,12 +737,20 @@ const Connectors: React.FC = () => {
                           },
                           ...(isSelected
                             ? {
-                                backgroundColor: isDark ? alpha(theme.palette.common.black, 0.3) : alpha(theme.palette.primary.contrastText, 0.4),
-                                color: isDark ? alpha(theme.palette.primary.main, 0.6) : alpha(theme.palette.primary.contrastText, 0.8),
+                                backgroundColor: isDark
+                                  ? alpha(theme.palette.common.black, 0.3)
+                                  : alpha(theme.palette.primary.contrastText, 0.4),
+                                color: isDark
+                                  ? alpha(theme.palette.primary.main, 0.6)
+                                  : alpha(theme.palette.primary.contrastText, 0.8),
                               }
                             : {
-                                backgroundColor: isDark ? alpha(theme.palette.common.white, 0.48) : alpha(theme.palette.primary.main, 0.1),
-                                color: isDark ? alpha(theme.palette.primary.main, 0.6) : theme.palette.primary.main,
+                                backgroundColor: isDark
+                                  ? alpha(theme.palette.common.white, 0.48)
+                                  : alpha(theme.palette.primary.main, 0.1),
+                                color: isDark
+                                  ? alpha(theme.palette.primary.main, 0.6)
+                                  : theme.palette.primary.main,
                               }),
                         }}
                       />

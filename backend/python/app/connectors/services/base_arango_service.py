@@ -843,6 +843,10 @@ class BaseArangoService:
                 additional_data["webUrl"] = (
                     f"https://mail.google.com/mail?authuser={user['email']}#all/{message_id}"
                 )
+            elif record["recordType"] == RecordTypes.TICKET.value:
+                additional_data = await self.get_document(
+                    record_id, CollectionNames.TICKETS.value
+                )
 
             metadata_query = f"""
             LET record = DOCUMENT(CONCAT('{CollectionNames.RECORDS.value}/', @recordId))
@@ -966,6 +970,11 @@ class BaseArangoService:
                         if record["recordType"] == RecordTypes.MAIL.value
                         else None
                     ),
+                    "ticketRecord": (
+                        additional_data
+                        if record["recordType"] == RecordTypes.TICKET.value
+                        else None
+                    ),
                 },
                 "knowledgeBase": kb_info,
                 "folder": folder_info,
@@ -1018,7 +1027,7 @@ class BaseArangoService:
                 if origins and include_filter_vars:
                     conditions.append("record.origin IN @origins")
                 if connectors and include_filter_vars:
-                    conditions.append("record.connectorName IN @connectors")
+                    conditions.append("record.connectorId IN @connectors")
                 if indexing_status and include_filter_vars:
                     conditions.append("record.indexingStatus IN @indexing_status")
                 if date_from and include_filter_vars:
@@ -1385,6 +1394,16 @@ class BaseArangoService:
                     ) : []
                 )
 
+                LET ticketRecord = (
+                    record.recordType == "TICKET" ? (
+                        FOR ticketEdge IN @@is_of_type
+                            FILTER ticketEdge._from == record._id
+                            LET ticket = DOCUMENT(ticketEdge._to)
+                            FILTER ticket != null
+                            RETURN ticket
+                    ) : []
+                )
+
                 RETURN {{
                     id: record._key,
                     externalRecordId: record.externalRecordId,
@@ -1406,6 +1425,7 @@ class BaseArangoService:
                     webUrl: record.webUrl,
                     fileRecord: LENGTH(fileRecord) > 0 ? fileRecord[0] : null,
                     mailRecord: LENGTH(mailRecord) > 0 ? mailRecord[0] : null,
+                    ticketRecord: LENGTH(ticketRecord) > 0 ? ticketRecord[0] : null,
                     permission: {{role: item.permission.role, type: item.permission.type}},
                     kb: {{id: item.kb_id || null, name: item.kb_name || null }}
                 }}

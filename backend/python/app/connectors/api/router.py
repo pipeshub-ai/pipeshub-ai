@@ -2542,14 +2542,22 @@ async def create_connector_instance(
                 )
 
         # Create instance in database
-        instance = await connector_registry.create_connector_instance_on_configuration(
-            connector_type=connector_type,
-            instance_name=instance_name,
-            scope=scope,
-            created_by=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
+        try:
+            instance = await connector_registry.create_connector_instance_on_configuration(
+                connector_type=connector_type,
+                instance_name=instance_name,
+                scope=scope,
+                created_by=user_id,
+                org_id=org_id,
+                is_admin=is_admin
+            )
+        except ValueError as e:
+            # Handle name uniqueness validation error
+            logger.error(f"Name uniqueness validation failed: {str(e)}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=str(e)
+            )
 
         if not instance:
             logger.error("Failed to create connector instance")
@@ -2924,6 +2932,7 @@ async def update_connector_instance_config(
         # Update instance status
         updates = {
             "isConfigured": True,
+            "isAuthenticated": False,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             "updatedBy": user_id
         }
@@ -3135,13 +3144,22 @@ async def update_connector_instance_name(
             "updatedBy": user_id
         }
 
-        updated = await connector_registry.update_connector_instance(
-            connector_id=connector_id,
-            updates=updates,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
+        try:
+            updated = await connector_registry.update_connector_instance(
+                connector_id=connector_id,
+                updates=updates,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin
+            )
+        except ValueError as e:
+            # Handle name uniqueness validation error
+            logger.error(f"Name uniqueness validation failed: {str(e)}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=str(e)
+            )
+
         if not updated:
             logger.error(f"Failed to update {instance.get('name')} connector instance name")
             raise HTTPException(
