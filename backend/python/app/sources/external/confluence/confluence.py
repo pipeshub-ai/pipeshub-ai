@@ -7455,7 +7455,6 @@ class ConfluenceDataSource:
             query=_as_str_dict(_query),
             body=None,
         )
-        print(f"Request URL: {req}, url : {url}, query: {_query}")
         resp = await self._client.execute(req)
         return resp
 

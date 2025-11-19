@@ -1084,7 +1084,7 @@ class ConfluenceConnector(BaseConnector):
                 version=comment_data.get("version", {}).get("number", 0),
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
-                # mime_type=MimeTypes.HTML.value,
+                mime_type=MimeTypes.HTML.value,
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=parent_record_type,
                 external_record_group_id=parent_space_id,
@@ -1450,6 +1450,7 @@ class ConfluenceConnector(BaseConnector):
             # Parse timestamps
             source_created_at = None
             source_updated_at = None
+            external_revision_id = None
 
             history = page_data.get("history", {})
             created_date = history.get("createdDate")
@@ -1460,6 +1461,8 @@ class ConfluenceConnector(BaseConnector):
             updated_when = last_updated.get("when")
             if updated_when:
                 source_updated_at = self._parse_confluence_datetime(updated_when)
+            if last_updated:
+                external_revision_id = last_updated.get("number")
 
             # Extract space ID for external_record_group_id
             space_data = page_data.get("space", {})
@@ -1498,6 +1501,7 @@ class ConfluenceConnector(BaseConnector):
                 record_name=page_title,
                 record_type=RecordType.WEBPAGE,
                 external_record_id=page_id,
+                external_revision_id=str(external_revision_id) if external_revision_id else None,
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,

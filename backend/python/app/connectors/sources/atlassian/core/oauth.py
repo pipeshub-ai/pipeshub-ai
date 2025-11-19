@@ -60,8 +60,8 @@ class AtlassianScope(Enum):
     CONFLUENCE_ATTACHMENT_WRITE = "write:attachment:confluence"
     CONFLUENCE_BLOGPOST_WRITE = "write:blogpost:confluence"
     CONFLUENCE_COMMENT_WRITE = "write:comment:confluence"
-    CONFLUECNE_SEARCH = "search:confluence"
-    CONFLUECNE_EMAIL_READ = "read:email-address:confluence"
+    CONFLUENCE_SEARCH = "search:confluence"
+    CONFLUENCE_EMAIL_READ = "read:email-address:confluence"
 
     # Common Scopes
     ACCOUNT_READ = "read:account"
@@ -111,14 +111,14 @@ class AtlassianScope(Enum):
             cls.CONFLUENCE_FOLDER_READ.value,
             cls.OFFLINE_ACCESS.value,
             cls.CONFLUENCE_AUDIT_LOG_READ.value,
-            cls.CONFLUECNE_SEARCH.value,
+            cls.CONFLUENCE_SEARCH.value,
             cls.CONFLUENCE_CONTENT_DETAILS_READ.value,
             cls.CONFLUENCE_GROUPS_READ_CLASSIC.value,
             cls.CONFLUENCE_CONTENT_READ.value,
             cls.ACCOUNT_READ.value,
             cls.CONFLUENCE_CONTENT_PERMISSION.value,
             cls.CONFLUENCE_PROPS_READ.value,
-            cls.CONFLUECNE_EMAIL_READ.value,
+            cls.CONFLUENCE_EMAIL_READ.value,
         ]
 
     @classmethod
