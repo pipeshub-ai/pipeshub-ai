@@ -5,6 +5,8 @@ import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 import aiohttp
+from langfuse.langchain import CallbackHandler
+langfuse_handler = CallbackHandler()
 from fastapi import HTTPException
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -113,7 +115,7 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
         parts = []
     try:
         if hasattr(llm, "astream"):
-            async for part in llm.astream(messages):
+            async for part in llm.astream(messages, config={"callbacks": [langfuse_handler]}):
                 if not part:
                     continue
                 parts.append(part)
@@ -123,7 +125,7 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
                     yield text
         else:
             # Non-streaming – yield whole blob once
-            response = await llm.ainvoke(messages)
+            response = await llm.ainvoke(messages, config={"callbacks": [langfuse_handler]})
             content = getattr(response, "content", response)
             if parts is not None:
                 parts.append(content)

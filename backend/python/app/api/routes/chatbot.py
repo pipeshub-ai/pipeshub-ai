@@ -25,6 +25,9 @@ from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
 from app.utils.streaming import create_sse_event, stream_llm_response_with_tools
 
+
+from langfuse.langchain import CallbackHandler
+langfuse_handler = CallbackHandler()
 router = APIRouter()
 
 # Pydantic models
@@ -346,7 +349,7 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
 
     # Initial call with provider-level error handling
     try:
-        ai: AIMessage = await llm_with_tools.ainvoke(messages)
+        ai: AIMessage = await llm_with_tools.ainvoke(messages, config={"callbacks": [langfuse_handler]})
     except Exception as e:
         error_str = str(e).lower()
         # Check if this is a tool-related error from the provider
