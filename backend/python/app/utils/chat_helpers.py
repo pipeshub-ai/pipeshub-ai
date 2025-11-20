@@ -1222,8 +1222,6 @@ def block_group_to_message_content(tool_result: Dict[str, Any], final_results: L
     return content
 
 
-
-
 def count_tokens_in_messages(messages: List[Any],enc) -> int:
     """
     Count the total number of tokens in a messages array.
@@ -1239,8 +1237,6 @@ def count_tokens_in_messages(messages: List[Any],enc) -> int:
         "count_tokens_in_messages: starting token count for %d messages",
         len(messages) if messages else 0,
     )
-
-
 
     total_tokens = 0
 

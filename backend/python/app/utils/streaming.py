@@ -404,7 +404,7 @@ async def execute_tool_calls(
                 queries=[all_queries[0]],
                 org_id=org_id,
                 user_id=user_id,
-                limit=500,
+                limit=400,
                 filter_groups=None,
                 virtual_record_ids_from_tool=virtual_record_ids,
             )
