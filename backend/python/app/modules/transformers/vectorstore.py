@@ -1010,7 +1010,11 @@ class VectorStore(Transformer):
                     "quote",
                 ]:
                     text_blocks.append(block)
-                elif block_type.lower() in ["image", "drawing"] and block.data is not None and block.data.get("uri"):
+                elif (
+                    block_type.lower() in ["image", "drawing"]
+                    and isinstance(block.data, dict)
+                    and block.data.get("uri")
+                ):
                     image_blocks.append(block)
                 elif block_type.lower() in ["table", "table_row", "table_cell"]:
                     table_blocks.append(block)
