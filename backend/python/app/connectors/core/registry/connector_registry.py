@@ -298,7 +298,6 @@ class ConnectorRegistry:
             scope: Connector scope (personal/team)
             org_id: Organization ID
             user_id: User ID (for personal scope)
-            exclude_connector_id: Optional connector ID to exclude from check (for updates)
 
         Returns:
             True if name is unique, False if already exists
@@ -334,7 +333,6 @@ class ConnectorRegistry:
                         FILTER doc._id == edge._to
                         FILTER doc.scope == @scope
                         FILTER LOWER(TRIM(doc.name)) == @normalized_name
-                        FILTER doc._key != @exclude_key
                         RETURN doc._key
                 """
                 bind_vars = {

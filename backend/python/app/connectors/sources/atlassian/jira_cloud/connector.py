@@ -307,39 +307,32 @@ class JiraClient:
         # Use JQL query format for Jira Cloud API
         jql_query = f"project = {project_key}"
 
+        start_at = 0
+        max_results = 25
         while True:
             issues_batch = await self.make_authenticated_json_request(
                 "GET",
                 url,
                 params={
                     "jql": jql_query,
-                    "maxResults": 25,
+                    "maxResults": max_results,
+                    "startAt": start_at,
                     "fields": "summary,status,priority,creator,key,created,updated"  # Include created and updated timestamps
                 }
             )
-            issues = issues + issues_batch.get("issues", [])
-
-            # Check for pagination - Jira uses startAt for pagination
-            total = issues_batch.get("total", 0)
-            start_at = issues_batch.get("startAt", 0)
-            max_results = issues_batch.get("maxResults", 25)
-
-            # If we have more results, update startAt
-            if start_at + max_results < total:
-                issues_batch = await self.make_authenticated_json_request(
-                    "GET",
-                    url,
-                    params={
-                        "jql": jql_query,
-                        "maxResults": 25,
-                        "startAt": start_at + max_results,
-                        "fields": "summary,status,priority,creator,key,created,updated"
-                    }
-                )
-                issues = issues + issues_batch.get("issues", [])
-                start_at = issues_batch.get("startAt", 0)
-            else:
+            batch_issues = issues_batch.get("issues", [])
+            if not batch_issues:
                 break
+
+            issues.extend(batch_issues)
+
+            total = issues_batch.get("total", 0)
+            current_count = len(issues)
+
+            if current_count >= total:
+                break
+            
+            start_at = current_count
 
         issue_records = []
         for issue in issues:
