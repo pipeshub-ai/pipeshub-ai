@@ -1,21 +1,24 @@
+# ruff: noqa: T201
 """Comprehensive example usage of DocuSign integration with PipesHub.
 
 This script demonstrates all available DocuSign APIs including envelopes,
 templates, accounts, users, groups, folders, and workspaces.
 
-Environment Variables Required:
-    DOCUSIGN_ACCESS_TOKEN: OAuth access token
-    DOCUSIGN_BASE_URI: Base URI (e.g., https://demo.docusign.net)
-    DOCUSIGN_ACCOUNT_ID: Your DocuSign account ID
+It supports both the SDK Wrapper methods (Synchronous) and the new
+Manual HTTP methods (Asynchronous).
 """
 
-# ruff: noqa: T201
-
+import asyncio
 import os
+import sys
+
+# Ensure 'app' is found in the python path
+sys.path.append(os.getcwd())
 
 from app.sources.client.docusign.docusign import (
     DocuSignClient,
     DocuSignClientError,
+    DocuSignOAuthConfig,
 )
 from app.sources.external.docusign.docusign import DocuSignDataSource
 
@@ -27,46 +30,103 @@ def print_section(title: str) -> None:
     print(f"{'=' * 70}\n")
 
 
-def check_environment() -> bool:
-    """Check if required environment variables are set."""
-    required_vars = [
-        "DOCUSIGN_ACCESS_TOKEN",
-        "DOCUSIGN_BASE_URI",
-        "DOCUSIGN_ACCOUNT_ID",
-    ]
-    missing_vars = [var for var in required_vars if not os.environ.get(var)]
+def get_configured_base_path() -> str:
+    """Get base path from env var, ensuring /restapi suffix exists."""
+    base_uri = os.environ.get("DOCUSIGN_BASE_URI", "https://demo.docusign.net")
+    # The SDK expects the full path including /restapi
+    if not base_uri.endswith("/restapi"):
+        return f"{base_uri}/restapi"
+    return base_uri
 
-    if missing_vars:
+
+async def authenticate_oauth() -> str:
+    """Interactive OAuth flow to get a token if one isn't provided."""
+    print_section("OAuth Verification")
+
+    client_id = os.environ.get("DOCUSIGN_CLIENT_ID")
+    client_secret = os.environ.get("DOCUSIGN_CLIENT_SECRET")
+    redirect_uri = os.environ.get(
+        "DOCUSIGN_REDIRECT_URI", "http://localhost:3000/callback"
+    )
+    account_id = os.environ.get("DOCUSIGN_ACCOUNT_ID")
+
+    if not (client_id and client_secret and account_id):
+        print("Error: Missing OAuth credentials.")
         print(
-            "Error: Missing required environment variables: "
-            f"{', '.join(missing_vars)}"
+            "Please set: DOCUSIGN_CLIENT_ID, DOCUSIGN_CLIENT_SECRET, DOCUSIGN_ACCOUNT_ID"
         )
-        print("\nPlease set:")
-        print("  export DOCUSIGN_ACCESS_TOKEN=your_token")
-        print("  export DOCUSIGN_BASE_URI=https://demo.docusign.net")
-        print("  export DOCUSIGN_ACCOUNT_ID=your_account_id")
-        return False
-    return True
+        sys.exit(1)
+
+    # Use the configured base path
+    base_path = get_configured_base_path()
+    print(f"Using Base Path: {base_path}")
+
+    config = DocuSignOAuthConfig(
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
+        base_path=base_path,  # <--- Added config
+    )
+
+    # 1. Get Auth URL
+    oauth_client = config.create_client()
+    auth_url = oauth_client.get_authorization_url()
+    print(f"1. Visit this URL to authorize the app:\n\n{auth_url}\n")
+
+    # 2. Get Code
+    code = input("2. Paste the 'code' parameter from the callback URL here: ").strip()
+    if not code:
+        print("No code provided.")
+        sys.exit(1)
+
+    # 3. Exchange for Token
+    print("\nExchanging code for token...")
+    response = await oauth_client.exchange_code_for_token(code)
+
+    if response.success and response.data:
+        token = response.data.get("access_token")
+        print("✓ Authentication successful! Token generated.")
+        return token
+    else:
+        print(f"✗ Authentication failed: {response.message}")
+        sys.exit(1)
 
 
-def initialize_client() -> tuple[DocuSignDataSource | None, str | None]:
+def initialize_client(
+    access_token: str,
+) -> tuple[DocuSignDataSource | None, str | None]:
     """Initialize DocuSign client and get inbox folder ID."""
     try:
-        client = DocuSignClient(
-            access_token=os.environ["DOCUSIGN_ACCESS_TOKEN"],
-            base_uri=os.environ["DOCUSIGN_BASE_URI"],
-            account_id=os.environ["DOCUSIGN_ACCOUNT_ID"],
-        )
-        ds = DocuSignDataSource(client)
-        print("✓ DocuSign client initialized successfully")
+        account_id = os.environ["DOCUSIGN_ACCOUNT_ID"]
+        base_path = get_configured_base_path()
 
-        # Get inbox folder ID
-        folders = ds.list_folders()
+        # Build using OAuth config with existing token
+        config = DocuSignOAuthConfig(
+            client_id=os.environ.get("DOCUSIGN_CLIENT_ID", ""),
+            client_secret=os.environ.get("DOCUSIGN_CLIENT_SECRET", ""),
+            redirect_uri=os.environ.get("DOCUSIGN_REDIRECT_URI", ""),
+            access_token=access_token,
+            base_path=base_path,  # <--- Added config
+        )
+
+        # Build the Unified Client using the new Builder pattern
+        client = DocuSignClient.build_with_config(config)
+        client.set_account_id(account_id)
+
+        # Initialize Data Source
+        ds = DocuSignDataSource(client)
+        print(f"✓ DocuSign client initialized successfully (Base: {base_path})")
+
+        # Get inbox folder ID (Using Sync SDK Wrapper)
         inbox_folder_id = None
-        for folder in folders.get("folders", []):
-            if folder.get("type") == "inbox":
-                inbox_folder_id = folder.get("folder_id")
-                break
+        try:
+            folders = ds.list_folders()
+            for folder in folders.get("folders", []):
+                if folder.get("type") == "inbox":
+                    inbox_folder_id = folder.get("folder_id")
+                    break
+        except Exception:
+            pass
 
         return ds, inbox_folder_id
     except DocuSignClientError as e:
@@ -74,9 +134,14 @@ def initialize_client() -> tuple[DocuSignDataSource | None, str | None]:
         return None, None
 
 
+# ========================================================================
+# SDK Wrapper Operation Tests (Synchronous)
+# ========================================================================
+
+
 def example_account_operations(ds: DocuSignDataSource) -> None:
     """Demonstrate account operations."""
-    print_section("Account Operations")
+    print_section("Account Operations (SDK Sync)")
 
     try:
         # Get account information
@@ -88,7 +153,7 @@ def example_account_operations(ds: DocuSignDataSource) -> None:
 
         # Get account settings
         settings = ds.get_account_settings()
-        settings_list = settings.get('account_settings', [])
+        settings_list = settings.get("account_settings", [])
         print(f"\n✓ Retrieved {len(settings_list)} account settings")
 
         # List brands (may fail if branding not enabled)
@@ -98,7 +163,7 @@ def example_account_operations(ds: DocuSignDataSource) -> None:
             print(f"✓ Found {len(brand_list)} brands")
         except DocuSignClientError as brand_error:
             if "ACCOUNT_LACKS_PERMISSIONS" in str(brand_error):
-                print("ℹ Branding not enabled for this account (normal for demo accounts)")
+                print("ℹ Branding not enabled for this account (normal for demo)")
             else:
                 print(f"✗ Error listing brands: {brand_error}")
 
@@ -111,7 +176,7 @@ def example_envelope_operations(
     folder_id: str | None,
 ) -> list[dict]:
     """Demonstrate envelope operations."""
-    print_section("Envelope Operations")
+    print_section("Envelope Operations (SDK Sync)")
 
     try:
         # List envelopes
@@ -152,7 +217,7 @@ def example_envelope_operations(
 
 def example_template_operations(ds: DocuSignDataSource) -> None:
     """Demonstrate template operations."""
-    print_section("Template Operations")
+    print_section("Template Operations (SDK Sync)")
 
     try:
         templates = ds.list_templates(count="10")
@@ -176,7 +241,7 @@ def example_template_operations(ds: DocuSignDataSource) -> None:
 
 def example_user_operations(ds: DocuSignDataSource) -> None:
     """Demonstrate user operations."""
-    print_section("User Operations")
+    print_section("User Operations (SDK Sync)")
 
     try:
         users = ds.list_users(count="10")
@@ -202,7 +267,7 @@ def example_user_operations(ds: DocuSignDataSource) -> None:
 
 def example_group_operations(ds: DocuSignDataSource) -> None:
     """Demonstrate group operations."""
-    print_section("Group Operations")
+    print_section("Group Operations (SDK Sync)")
 
     try:
         groups = ds.list_groups(count="10")
@@ -226,7 +291,7 @@ def example_group_operations(ds: DocuSignDataSource) -> None:
 
 def example_folder_operations(ds: DocuSignDataSource) -> None:
     """Demonstrate folder operations."""
-    print_section("Folder Operations")
+    print_section("Folder Operations (SDK Sync)")
 
     try:
         folders = ds.list_folders()
@@ -247,7 +312,9 @@ def example_folder_operations(ds: DocuSignDataSource) -> None:
                     folder_items = items.get("folder_items") or []
 
                     if folder_items:
-                        print(f"    First item: {folder_items[0].get('subject', 'N/A')}")
+                        print(
+                            f"    First item: {folder_items[0].get('subject', 'N/A')}"
+                        )
                     else:
                         print("    First item: N/A")
 
@@ -260,7 +327,7 @@ def example_folder_operations(ds: DocuSignDataSource) -> None:
 
 def example_workspace_operations(ds: DocuSignDataSource) -> None:
     """Demonstrate workspace operations."""
-    print_section("Workspace Operations")
+    print_section("Workspace Operations (SDK Sync)")
 
     try:
         workspaces = ds.list_workspaces()
@@ -284,18 +351,21 @@ def example_workspace_operations(ds: DocuSignDataSource) -> None:
 
 def example_batch_operations(ds: DocuSignDataSource) -> None:
     """Demonstrate batch operations with pagination."""
-    print_section("Batch Operations (Pagination)")
+    print_section("Batch Operations (Pagination/Loops)")
 
     try:
         # Fetch all users
+        print("Fetching all users...")
         all_users = ds.fetch_all_users()
         print(f"✓ Fetched {len(all_users)} users total")
 
         # Fetch all templates
+        print("Fetching all templates...")
         all_templates = ds.fetch_all_templates()
         print(f"✓ Fetched {len(all_templates)} templates total")
 
         # Fetch all groups
+        print("Fetching all groups...")
         all_groups = ds.fetch_all_groups()
         print(f"✓ Fetched {len(all_groups)} groups total")
 
@@ -303,16 +373,53 @@ def example_batch_operations(ds: DocuSignDataSource) -> None:
         print(f"✗ Error: {e}")
 
 
-def main() -> None:
-    """Run comprehensive DocuSign API demonstrations."""
-    if not check_environment():
-        return
+# ========================================================================
+# Async Manual HTTP Operation Tests
+# ========================================================================
 
-    ds, folder_id = initialize_client()
+
+async def example_async_operations(ds: DocuSignDataSource) -> None:
+    """Demonstrate the NEW async manual HTTP methods."""
+    print_section("Async Manual HTTP Operations (New PR Features)")
+
+    account_id = os.environ["DOCUSIGN_ACCOUNT_ID"]
+
+    try:
+        # Test 1: Async Account Info
+        print("1. Testing accounts_get_account (Async)...")
+        acc_resp = await ds.accounts_get_account(account_id)
+        if acc_resp.success:
+            print(f"   ✓ Success! Name: {acc_resp.data.get('accountName')}")
+        else:
+            print(f"   ✗ Failed: {acc_resp.error}")
+
+        # Test 2: Async Users List
+        print("\n2. Testing users_list (Async)...")
+        users_resp = await ds.users_list(account_id, count=5)
+        if users_resp.success:
+            users = users_resp.data.get("users", [])
+            print(f"   ✓ Success! Fetched {len(users)} users asynchronously.")
+        else:
+            print(f"   ✗ Failed: {users_resp.error}")
+
+    except Exception as e:
+        print(f"✗ Async Exception: {e}")
+
+
+async def main() -> None:
+    """Run comprehensive DocuSign API demonstrations."""
+
+    # 1. Auth Flow (if needed)
+    token = os.environ.get("DOCUSIGN_ACCESS_TOKEN")
+    if not token:
+        token = await authenticate_oauth()
+
+    # 2. Initialize Client
+    ds, folder_id = initialize_client(token)
     if not ds:
         return
 
-    # Run all examples
+    # 3. Run Sync SDK Examples (Original functionality)
     example_account_operations(ds)
     example_envelope_operations(ds, folder_id)
     example_template_operations(ds)
@@ -322,11 +429,12 @@ def main() -> None:
     example_workspace_operations(ds)
     example_batch_operations(ds)
 
+    # 4. Run New Async Examples
+    await example_async_operations(ds)
+
     print_section("All Examples Complete")
-    print("✓ Successfully demonstrated all DocuSign APIs!")
-    print("\nNote: Some operations may show '0 results' if your")
-    print("account doesn't have that data. This is normal.")
+    print("✓ Successfully demonstrated Sync SDK and Async HTTP methods.")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

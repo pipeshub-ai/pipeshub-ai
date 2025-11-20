@@ -4,6 +4,7 @@ This module provides the data source interface for integrating DocuSign
 with the PipesHub platform.
 """
 
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -24,16 +25,18 @@ class DocuSignDataSource:
 
     client: DocuSignClient
 
+
     def __init__(self, client: DocuSignClient) -> None:
-        self._client = client
+        self.client = client  # <--- Fixed: Match the dataclass field name
         self.http = client.get_client()
+
         if self.http is None:
             raise ValueError('HTTP client is not initialized')
         try:
+            # Removing trailing slash prevents double slash errors later
             self.base_url = self.http.get_base_path().rstrip('/')
         except AttributeError as exc:
             raise ValueError('HTTP client does not have get_base_path method') from exc
-
     # ========================================================================
     # ENVELOPE OPERATIONS
     # ========================================================================
@@ -389,7 +392,7 @@ class DocuSignDataSource:
         search_text: str | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch all templates with pagination."""
-        
+
         all_templates: list[dict[str, Any]] = []
         start_position = 0
         count = 100  # reliable page size
@@ -498,7 +501,7 @@ class DocuSignDataSource:
             start_position += count
 
         return all_groups
-    
+
     async def accounts_get_account(
         self,
         accountId: str,
@@ -522,7 +525,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -580,7 +585,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -600,7 +607,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -626,7 +635,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -896,7 +907,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -928,7 +941,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -975,7 +990,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1083,7 +1100,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1105,7 +1124,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1143,7 +1164,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1214,7 +1237,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1291,7 +1316,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1319,7 +1346,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1351,7 +1380,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1406,7 +1437,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1444,7 +1477,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1537,7 +1572,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1701,7 +1738,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1730,7 +1769,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1767,7 +1808,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1789,7 +1832,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1852,7 +1897,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1878,7 +1925,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -1907,7 +1956,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2011,7 +2062,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2033,7 +2086,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2072,7 +2127,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2098,7 +2155,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2120,7 +2179,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2154,7 +2215,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2176,7 +2239,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2208,7 +2273,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2236,7 +2303,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2264,7 +2333,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2290,7 +2361,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2311,7 +2384,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2342,7 +2417,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2378,7 +2455,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2421,7 +2500,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2444,7 +2525,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2503,7 +2586,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2532,7 +2617,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2559,7 +2646,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2586,7 +2675,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2613,7 +2704,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2634,7 +2727,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2655,7 +2750,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2692,7 +2789,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2728,7 +2827,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2758,7 +2859,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2793,7 +2896,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2816,7 +2921,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2852,7 +2959,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2896,7 +3005,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2921,7 +3032,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2954,7 +3067,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -2986,7 +3101,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3020,7 +3137,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3043,7 +3162,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3080,7 +3201,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3107,7 +3230,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3135,7 +3260,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3177,7 +3304,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3207,7 +3336,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3245,7 +3376,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3268,7 +3401,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3291,7 +3426,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3326,10 +3463,12 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
-    
+
     async def clickwrap_versions_get(
         self,
         accountId: str,
@@ -3351,7 +3490,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3388,7 +3529,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3427,7 +3570,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3462,7 +3607,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3493,7 +3640,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3540,7 +3689,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3563,7 +3714,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3604,7 +3757,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3627,7 +3782,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3664,7 +3821,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3687,7 +3846,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3716,7 +3877,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3753,7 +3916,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3792,7 +3957,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3822,7 +3989,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3854,7 +4023,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3877,7 +4048,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3913,7 +4086,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3938,7 +4113,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3963,7 +4140,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -3984,7 +4163,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -4020,7 +4201,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -4043,7 +4226,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -4078,7 +4263,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -4101,7 +4288,9 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
 
@@ -4134,10 +4323,12 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
-    
+
 
     async def monitor_dataset_stream(
         self,
@@ -4168,6 +4359,8 @@ class DocuSignDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return DocuSignResponse(success=True, data=response)
+            # <--- Added: Parse the JSON response body
+            data = response.json() if hasattr(response, 'json') else None
+            return DocuSignResponse(success=True, data=data)
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e))
