@@ -26,6 +26,7 @@ from app.utils.citations import (
 from app.utils.logger import create_logger
 
 MAX_TOKENS_THRESHOLD = 80000
+RETRIEVAL_LIMIT_AFTER_TOOL_CALL = 400
 
 # Create a logger for this module
 logger = create_logger("streaming")
@@ -404,7 +405,7 @@ async def execute_tool_calls(
                 queries=[all_queries[0]],
                 org_id=org_id,
                 user_id=user_id,
-                limit=500,
+                limit=RETRIEVAL_LIMIT_AFTER_TOOL_CALL,
                 filter_groups=None,
                 virtual_record_ids_from_tool=virtual_record_ids,
             )
