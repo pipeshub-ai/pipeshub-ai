@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import re
+from http import HTTPStatus
 from typing import Optional
 from urllib.parse import unquote, urlparse
 
@@ -106,7 +107,7 @@ class ImageParser:
                 if not is_valid:
                     self.logger.info(f"⚠️ Content-type invalid during GET: {get_content_type} from URL: {url[:100]}...")
                     return None
-                
+
                 extension = get_extension_from_mimetype(get_content_type)
                 if not extension:
                     self.logger.info(f"⚠️ Extension couldn't be determined for URL: {url[:100]}... Skipping image")
@@ -115,7 +116,7 @@ class ImageParser:
                 if f".{extension}" not in VALID_IMAGE_EXTENSIONS:
                     self.logger.info(f"⚠️ Extension {extension} not in valid image extensions, from URL: {url[:100]}... Skipping image")
                     return None
-                
+
                 # Read content and encode to base64
                 content = await response.read()
 
@@ -129,14 +130,14 @@ class ImageParser:
                     self.logger.debug("Detected SVG extension from GET; converting SVG base64 to PNG base64")
                     base64_image = f"data:image/png;base64,{self.svg_base64_to_png_base64(base64_encoded)}"
                     return base64_image
-                
+
                 base64_image = f"data:image/{extension};base64,{base64_encoded}"
                 self.logger.debug(f"Converted URL to base64 for {extension}: {url[:100]}")
                 return base64_image
 
         except aiohttp.ClientResponseError as e:
             # Handle HTTP errors specifically
-            if e.status == 403:
+            if e.status == HTTPStatus.FORBIDDEN:
                 # Check if this is a signed URL that might have expired
                 if 'X-Amz-Expires' in str(e):
                     self.logger.warning(
@@ -148,9 +149,9 @@ class ImageParser:
                         f"⚠️ Access denied (403) for URL - insufficient permissions: {url[:150]}... "
                         f"(Original error: {e.status}, {e.message})"
                     )
-            elif e.status == 404:
+            elif e.status == HTTPStatus.NOT_FOUND:
                 self.logger.warning(f"⚠️ Image not found (404) at URL: {url[:150]}...")
-            elif e.status >= 500:
+            elif e.status >= HTTPStatus.INTERNAL_SERVER_ERROR:
                 self.logger.warning(f"⚠️ Server error ({e.status}) when fetching URL: {url[:150]}...")
             else:
                 self.logger.warning(
