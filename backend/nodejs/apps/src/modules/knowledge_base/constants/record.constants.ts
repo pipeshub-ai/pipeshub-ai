@@ -4,6 +4,7 @@
 export const RECORD_TYPE = {
   FILE: 'FILE',
   WEBPAGE: 'WEBPAGE',
+  COMMENT: 'COMMENT',
   MESSAGE: 'MESSAGE',
   EMAIL: 'EMAIL',
   OTHERS: 'OTHERS',

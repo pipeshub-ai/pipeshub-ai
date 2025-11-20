@@ -239,6 +239,7 @@ class RecordTypes(Enum):
     MAIL = "MAIL"
     DRIVE = "DRIVE"
     WEBPAGE = "WEBPAGE"
+    COMMENT = "COMMENT"
     TICKET = "TICKET"
     MESSAGE = "MESSAGE"
     WEBPAGE_COMMENT = "WEBPAGE_COMMENT"

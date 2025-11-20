@@ -2091,6 +2091,107 @@ class ConfluenceDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    async def get_blogposts_v1(
+        self,
+        modified_after: Optional[str] = None,
+        created_after: Optional[str] = None,
+        space_key: Optional[str] = None,
+        order_by: str = "lastModified",
+        sort_order: str = "asc",
+        expand: str = "version,space,history.lastUpdated,children.attachment,children.attachment.history.lastUpdated,children.attachment.version",
+        cursor: Optional[str] = None,
+        limit: int = 25,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """Fetch blogposts using v1 content API with time-based filtering.
+
+        Args:
+            modified_after: Filter blogposts modified after this datetime (ISO 8601)
+            created_after: Filter blogposts created after this datetime (ISO 8601)
+            space_key: Filter blogposts by specific space key
+            order_by: Sort field (default: lastModified)
+            sort_order: Sort direction - asc or desc (default: asc)
+            expand: Comma-separated list of properties to expand
+            cursor: Pagination cursor from previous response's _links.next
+            limit: Number of results per page
+
+        Returns:
+            HTTPResponse containing blogposts array with pagination links
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        _headers: Dict[str, Any] = dict(headers or {})
+
+        _query: Dict[str, Any] = {
+            "limit": limit,
+        }
+
+        # Add expand parameter
+        if expand:
+            _query["expand"] = expand
+
+        def format_cql_date(iso_date: str, confluence_timezone: str = "Asia/Kolkata") -> str:
+            """Convert ISO 8601 UTC to CQL format in Confluence's timezone: yyyy-MM-dd HH:mm"""
+            # Parse the ISO date string (UTC)
+            if iso_date.endswith('Z'):
+                dt_utc = datetime.fromisoformat(iso_date.replace('Z', '+00:00'))
+            else:
+                dt_utc = datetime.fromisoformat(iso_date)
+
+            # Convert to Confluence's timezone
+            confluence_tz = pytz.timezone(confluence_timezone)
+            dt_local = dt_utc.astimezone(confluence_tz)
+
+            # Round up to the next minute if there are any seconds or microseconds
+            if dt_local.second > 0 or dt_local.microsecond > 0:
+                dt_local = dt_local.replace(second=0, microsecond=0) + timedelta(minutes=1)
+            else:
+                dt_local = dt_local.replace(second=0, microsecond=0)
+
+            # Format to CQL date format: yyyy-MM-dd HH:mm
+            return dt_local.strftime("%Y-%m-%d %H:%M")
+
+        # Build CQL query for time filtering and ordering
+        cql_parts = ["type=blogpost"]
+
+        # Add space filter if provided
+        if space_key:
+            cql_parts.append(f"space='{space_key}'")
+
+        if modified_after:
+            formatted_date = format_cql_date(modified_after)
+            cql_parts.append(f'lastModified > "{formatted_date}"')
+        if created_after:
+            formatted_date = format_cql_date(created_after)
+            cql_parts.append(f'created > "{formatted_date}"')
+
+        # Combine filters with ordering
+        cql_query = " AND ".join(cql_parts)
+        cql_query += f" order by {order_by} {sort_order}"
+
+        _query["cql"] = cql_query
+
+        # Handle pagination cursor
+        if cursor:
+            _query["cursor"] = cursor
+
+        # v1 API uses /wiki/rest/api instead of /wiki/api/v2
+        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
+        rel_path = "/rest/api/content/search"
+        url = v1_base_url + rel_path
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+
+        resp = await self._client.execute(req)
+        return resp
+
     async def get_page_permissions_v1(
         self,
         page_id: str,
@@ -2192,6 +2293,43 @@ class ConfluenceDataSource:
         _path: Dict[str, Any] = {"id": page_id}
 
         rel_path = "/pages/{id}"
+        url = self.base_url + _safe_format_url(rel_path, _path)
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=None,
+        )
+
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_blogpost_content_v2(
+        self,
+        blogpost_id: str,
+        body_format: str = "export_view",
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """Fetch blogpost content using v2 blogposts API with body-format parameter.
+
+        Args:
+            blogpost_id: The blogpost ID
+            body_format: Format for body content (export_view, storage, atlas_doc_format, etc.)
+
+        Returns:
+            HTTPResponse containing blogpost data with formatted body
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        _headers: Dict[str, Any] = dict(headers or {})
+
+        _query: Dict[str, Any] = {"body-format": body_format}
+        _path: Dict[str, Any] = {"id": blogpost_id}
+
+        rel_path = "/blogposts/{id}"
         url = self.base_url + _safe_format_url(rel_path, _path)
 
         req = HTTPRequest(

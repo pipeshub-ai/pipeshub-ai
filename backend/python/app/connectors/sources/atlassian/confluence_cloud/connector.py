@@ -19,11 +19,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import (
-    Connectors,
-    MimeTypes,
-    OriginTypes,
-)
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -232,12 +228,14 @@ class ConfluenceConnector(BaseConnector):
         1. Users and Groups (global, includes group memberships)
         2. Spaces
             - Permissions
-        3. Pages
+        3. Pages (per space)
             - Permissions
             - Attachments
-            - Comments
-                - inline
-                - footer
+            - Comments (inline, footer)
+        4. Blogposts (per space)
+            - Permissions
+            - Attachments
+            - Comments (inline, footer)
         """
         try:
             org_id = self.data_entities_processor.org_id
@@ -256,11 +254,17 @@ class ConfluenceConnector(BaseConnector):
             # Step 3: Sync spaces
             spaces = await self._sync_spaces()
 
-            # Step 4: Sync pages (with attachments, comments, permissions)
+            # Step 4: Sync pages and blogposts per space
             for space in spaces:
                 space_key = space.short_name
-                self.logger.info(f"🔄 Syncing pages for space: {space.short_name} ({space_key})")
+
+                # Sync pages (with attachments, comments, permissions)
+                self.logger.info(f"Syncing pages for space: {space.name} ({space_key})")
                 await self._sync_pages(space_key)
+
+                # Sync blogposts (with attachments, comments, permissions)
+                self.logger.info(f"Syncing blogposts for space: {space.name} ({space_key})")
+                await self._sync_blogposts(space_key)
 
             self.logger.info("✅ Confluence sync completed successfully")
 
@@ -701,6 +705,185 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Page sync failed: {e}", exc_info=True)
             raise
 
+    async def _sync_blogposts(self, space_key: str) -> None:
+        """
+        Sync blogposts from Confluence using v1 API with CQL search.
+
+        Uses cursor-based pagination with modification time filtering for incremental sync.
+        Creates WebpageRecord for each blogpost with attachments.
+        Blogposts are flat (no parent hierarchy) and connected directly to space.
+        """
+        try:
+            self.logger.info(f"Starting blogpost synchronization for space {space_key}...")
+
+            # Get last sync checkpoint
+            sync_point_key = generate_record_sync_point_key(
+                RecordType.WEBPAGE.value, "confluence_blogposts", space_key
+            )
+            last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
+            last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
+
+            # Build modified_after parameter for incremental sync
+            modified_after = None
+            if last_sync_time:
+                self.logger.info(f"🔄 Incremental sync: Fetching blogposts modified after {last_sync_time}")
+                modified_after = last_sync_time
+            else:
+                self.logger.info("🆕 Full sync: Fetching all blogposts (first time)")
+
+            # Pagination variables
+            batch_size = 50
+            cursor = None
+            total_blogposts_synced = 0
+            total_attachments_synced = 0
+            total_comments_synced = 0
+            total_permissions_synced = 0
+            latest_update_time = None
+
+            # Paginate through all blogposts
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_blogposts_v1(
+                    modified_after=modified_after,
+                    cursor=cursor,
+                    limit=batch_size,
+                    space_key=space_key,
+                    order_by="lastModified",
+                    sort_order="asc",
+                    expand="history.lastUpdated,space,children.attachment,children.attachment.history.lastUpdated,children.attachment.version"
+                )
+
+                # Check response
+                if not response or response.status != HTTP_STATUS_200:
+                    self.logger.error(f"❌ Failed to fetch blogposts: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                blogposts_data = response_data.get("results", [])
+
+                if not blogposts_data:
+                    break
+
+                # Track the latest update timestamp for checkpoint (blogposts are in ascending order)
+                if blogposts_data:
+                    last_blogpost = blogposts_data[-1]
+                    last_updated_when = last_blogpost.get("history", {}).get("lastUpdated", {}).get("when")
+                    if last_updated_when:
+                        latest_update_time = last_updated_when
+
+                # Transform blogposts to WebpageRecords with permissions
+                records_with_permissions = []
+                for blogpost_data in blogposts_data:
+                    try:
+                        blogpost_id = blogpost_data.get("id")
+                        blogpost_title = blogpost_data.get("title")
+
+                        if not blogpost_id or not blogpost_title:
+                            continue
+
+                        self.logger.debug(f"Processing blogpost: {blogpost_title} ({blogpost_id})")
+
+                        # Transform blogpost to WebpageRecord
+                        webpage_record = self._transform_to_blogpost_webpage_record(blogpost_data)
+                        if not webpage_record:
+                            continue
+
+                        # Fetch blogpost permissions using same method as pages
+                        permissions = await self._fetch_page_permissions(blogpost_id, blogpost_title)
+                        total_permissions_synced += len(permissions)
+
+                        # Add blogpost to batch
+                        records_with_permissions.append((webpage_record, permissions))
+                        total_blogposts_synced += 1
+                        self.logger.debug(f"Blogpost {blogpost_title}: {len(permissions)} permissions")
+
+                        # Extract space_id for use with attachments and comments
+                        space_data = blogpost_data.get("space", {})
+                        space_id = str(space_data.get("id")) if space_data.get("id") else None
+
+                        # Fetch and sync inline comments
+                        inline_comments = await self._fetch_comments_recursive(
+                            page_id=blogpost_id,
+                            page_title=blogpost_title,
+                            comment_type="inline",
+                            page_permissions=permissions,
+                            parent_space_id=space_id,
+                            parent_type="blogpost"
+                        )
+
+                        for comment_record, comment_permissions in inline_comments:
+                            records_with_permissions.append((comment_record, comment_permissions))
+                            total_comments_synced += 1
+
+                        # Fetch and sync footer comments
+                        footer_comments = await self._fetch_comments_recursive(
+                            page_id=blogpost_id,
+                            page_title=blogpost_title,
+                            comment_type="footer",
+                            page_permissions=permissions,
+                            parent_space_id=space_id,
+                            parent_type="blogpost"
+                        )
+
+                        for comment_record, comment_permissions in footer_comments:
+                            records_with_permissions.append((comment_record, comment_permissions))
+                            total_comments_synced += 1
+
+                        # Process attachments for this blogpost
+                        children = blogpost_data.get("children", {})
+                        attachment_data = children.get("attachment", {})
+                        attachments = attachment_data.get("results", [])
+
+                        if attachments:
+                            self.logger.debug(f"Found {len(attachments)} attachments for blogpost {blogpost_title}")
+
+                            for attachment in attachments:
+                                try:
+                                    attachment_record = self._transform_to_attachment_file_record(
+                                        attachment,
+                                        blogpost_id,
+                                        space_id
+                                    )
+
+                                    if attachment_record:
+                                        # Attachments inherit permissions from parent blogpost
+                                        records_with_permissions.append((attachment_record, permissions))
+                                        total_attachments_synced += 1
+                                        self.logger.debug(f"Attachment: {attachment_record.record_name}")
+
+                                except Exception as att_error:
+                                    self.logger.error(f"❌ Failed to process attachment: {att_error}")
+                                    continue
+
+                    except Exception as blogpost_error:
+                        self.logger.error(f"❌ Failed to process blogpost {blogpost_data.get('title')}: {blogpost_error}")
+                        continue
+
+                # Save batch to database
+                if records_with_permissions:
+                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    self.logger.info(f"Synced batch of {len(records_with_permissions)} items (blogposts + attachments)")
+
+                # Extract next cursor from response
+                cursor_url = response_data.get("_links", {}).get("next")
+                if not cursor_url:
+                    break
+
+                cursor = self._extract_cursor_from_next_link(cursor_url)
+                if not cursor:
+                    break
+
+            # Update sync checkpoint with latest modification time
+            if latest_update_time:
+                await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": latest_update_time})
+                self.logger.info(f"Updated blogposts sync checkpoint to {latest_update_time}")
+
+            self.logger.info(f"✅ Blogpost sync complete. Blogposts: {total_blogposts_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Blogpost sync failed: {e}", exc_info=True)
+            raise
+
     async def _fetch_space_permissions(self, space_id: str, space_name: str) -> List[Permission]:
         """
         Fetch all permissions for a space with cursor-based pagination.
@@ -807,20 +990,22 @@ class ConfluenceConnector(BaseConnector):
         page_title: str,
         comment_type: str,
         page_permissions: List[Permission],
-        parent_space_id: Optional[str]
+        parent_space_id: Optional[str],
+        parent_type: str = "page"
     ) -> List[tuple[CommentRecord, List[Permission]]]:
         """
-        Recursively fetch all comments (footer or inline) for a page.
+        Recursively fetch all comments (footer or inline) for a page or blogpost.
 
         Fetches top-level comments and all nested replies in a flat list.
-        Each comment inherits permissions from the parent page.
+        Each comment inherits permissions from the parent.
 
         Args:
-            page_id: The page ID
-            page_title: The page title (for logging)
+            page_id: The page/blogpost ID
+            page_title: The page/blogpost title (for logging)
             comment_type: "footer" or "inline"
-            page_permissions: Permissions inherited from parent page
+            page_permissions: Permissions inherited from parent
             parent_space_id: Space ID for external_record_group_id
+            parent_type: "page" or "blogpost" (determines which API to call)
 
         Returns:
             List of tuples (CommentRecord, permissions list)
@@ -830,25 +1015,46 @@ class ConfluenceConnector(BaseConnector):
             batch_size = 100
             cursor = None
 
-            self.logger.debug(f"Fetching {comment_type} comments for page: {page_title}")
+            self.logger.debug(f"Fetching {comment_type} comments for {parent_type}: {page_title}")
 
             # Fetch top-level comments
             while True:
                 datasource = await self._get_fresh_datasource()
-                if comment_type == "footer":
-                    response = await datasource.get_page_footer_comments(
-                        id=int(page_id),
-                        cursor=cursor,
-                        limit=batch_size,
-                        body_format="storage"
-                    )
-                else:  # inline
-                    response = await datasource.get_page_inline_comments(
-                        id=int(page_id),
-                        cursor=cursor,
-                        limit=batch_size,
-                        body_format="storage"
-                    )
+
+                # Route to correct API based on parent_type
+                if parent_type == "page":
+                    if comment_type == "footer":
+                        response = await datasource.get_page_footer_comments(
+                            id=int(page_id),
+                            cursor=cursor,
+                            limit=batch_size,
+                            body_format="storage"
+                        )
+                    else:  # inline
+                        response = await datasource.get_page_inline_comments(
+                            id=int(page_id),
+                            cursor=cursor,
+                            limit=batch_size,
+                            body_format="storage"
+                        )
+                elif parent_type == "blogpost":
+                    if comment_type == "footer":
+                        response = await datasource.get_blog_post_footer_comments(
+                            id=int(page_id),
+                            cursor=cursor,
+                            limit=batch_size,
+                            body_format="storage"
+                        )
+                    else:  # inline
+                        response = await datasource.get_blog_post_inline_comments(
+                            id=int(page_id),
+                            cursor=cursor,
+                            limit=batch_size,
+                            body_format="storage"
+                        )
+                else:
+                    self.logger.error(f"Unknown parent type: {parent_type}")
+                    break
 
                 # Check response
                 if not response or response.status != HTTP_STATUS_200:
@@ -1079,7 +1285,7 @@ class ConfluenceConnector(BaseConnector):
                 id=comment_record_id,
                 org_id=self.data_entities_processor.org_id,
                 record_name=title,
-                record_type=RecordType.COMMENT,
+                record_type=RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT,
                 external_record_id=comment_id,
                 version=comment_data.get("version", {}).get("number", 0),
                 origin=OriginTypes.CONNECTOR,
@@ -1499,7 +1705,7 @@ class ConfluenceConnector(BaseConnector):
             return WebpageRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=page_title,
-                record_type=RecordType.WEBPAGE,
+                record_type=RecordType.CONFLUENCE_PAGE,
                 external_record_id=page_id,
                 external_revision_id=str(external_revision_id) if external_revision_id else None,
                 version=0,
@@ -1516,6 +1722,89 @@ class ConfluenceConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to transform page: {e}")
+            return None
+
+    def _transform_to_blogpost_webpage_record(
+        self,
+        blogpost_data: Dict[str, Any]
+    ) -> Optional[WebpageRecord]:
+        """
+        Transform Confluence blogpost data to WebpageRecord entity.
+
+        Args:
+            blogpost_data: Raw blogpost data from Confluence API
+
+        Returns:
+            WebpageRecord object or None if transformation fails
+        """
+        try:
+            blogpost_id = blogpost_data.get("id")
+            blogpost_title = blogpost_data.get("title")
+
+            if not blogpost_id or not blogpost_title:
+                return None
+
+            # Parse timestamps
+            source_created_at = None
+            source_updated_at = None
+            external_revision_id = None
+
+            history = blogpost_data.get("history", {})
+            created_date = history.get("createdDate")
+            if created_date:
+                source_created_at = self._parse_confluence_datetime(created_date)
+
+            last_updated = history.get("lastUpdated", {})
+            updated_when = last_updated.get("when")
+            if updated_when:
+                source_updated_at = self._parse_confluence_datetime(updated_when)
+            if last_updated:
+                external_revision_id = last_updated.get("number")
+
+            # Extract space ID for external_record_group_id
+            space_data = blogpost_data.get("space", {})
+            space_id = space_data.get("id")
+            external_record_group_id = str(space_id) if space_id else None
+
+            if not external_record_group_id:
+                self.logger.warning(f"Blogpost {blogpost_id} has no space - skipping")
+                return None
+
+            # Blogposts have no parent hierarchy - they are flat and connected directly to space
+            parent_external_record_id = None
+
+            # Construct web URL from _links.webui
+            web_url = None
+            links = blogpost_data.get("_links", {})
+            webui = links.get("webui")
+            self_link = links.get("self")
+
+            if webui and self_link:
+                # Extract base URL and construct full URL
+                if "/wiki/" in self_link:
+                    base_url = self_link.split("/wiki/")[0] + "/wiki"
+                    web_url = f"{base_url}{webui}"
+
+            return WebpageRecord(
+                org_id=self.data_entities_processor.org_id,
+                record_name=blogpost_title,
+                record_type=RecordType.CONFLUENCE_BLOGPOST,
+                external_record_id=blogpost_id,
+                external_revision_id=str(external_revision_id) if external_revision_id else None,
+                version=0,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.CONFLUENCE,
+                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
+                external_record_group_id=external_record_group_id,
+                parent_external_record_id=parent_external_record_id,
+                weburl=web_url,
+                mime_type=MimeTypes.HTML.value,
+                source_created_at=source_created_at,
+                source_updated_at=source_updated_at,
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform blogpost: {e}")
             return None
 
     def _transform_to_attachment_file_record(
@@ -1834,9 +2123,9 @@ class ConfluenceConnector(BaseConnector):
         try:
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
 
-            if record.record_type == RecordType.WEBPAGE:
-                # Page - fetch HTML content from v1 API
-                html_content = await self._fetch_page_content(record.external_record_id)
+            if record.record_type in [RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST]:
+                # Page or blogpost - fetch HTML content based on record type
+                html_content = await self._fetch_page_content(record.external_record_id, record.record_type)
 
                 async def generate_page() -> AsyncGenerator[bytes, None]:
                     yield html_content.encode('utf-8')
@@ -1847,8 +2136,8 @@ class ConfluenceConnector(BaseConnector):
                     headers={"Content-Disposition": f'inline; filename="{record.external_record_id}.html"'}
                 )
 
-            elif record.record_type == RecordType.COMMENT:
-                # Comment - fetch HTML content from comment body
+            elif record.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
+                # Comment - fetch HTML content based on comment type
                 html_content = await self._fetch_comment_content(record)
 
                 async def generate_comment() -> AsyncGenerator[bytes, None]:
@@ -1884,34 +2173,47 @@ class ConfluenceConnector(BaseConnector):
                 status_code=500, detail=f"Failed to stream record: {str(e)}"
             )
 
-    async def _fetch_page_content(self, page_id: str) -> str:
+    async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
         """
-        Fetch page HTML content from Confluence using v1 API.
+        Fetch page or blogpost HTML content from Confluence using v2 API.
 
         Args:
-            page_id: The page ID
+            page_id: The page or blogpost ID
+            record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
 
         Returns:
-            str: HTML content of the page
+            str: HTML content of the page/blogpost
 
         Raises:
-            HTTPException: If page not found or fetch fails
+            HTTPException: If content not found or fetch fails
         """
         try:
-            self.logger.debug(f"Fetching page content for {page_id}")
+            self.logger.debug(f"Fetching content for {page_id} (type: {record_type})")
 
-            # Fetch page content using v1 API with body.export_view expansion
             datasource = await self._get_fresh_datasource()
-            response = await datasource.get_page_content_v2(
-                page_id=page_id,
-                body_format="export_view"
-            )
+
+            # Call appropriate API based on record type
+            if record_type == RecordType.CONFLUENCE_PAGE:
+                response = await datasource.get_page_content_v2(
+                    page_id=page_id,
+                    body_format="export_view"
+                )
+            elif record_type == RecordType.CONFLUENCE_BLOGPOST:
+                response = await datasource.get_blogpost_content_v2(
+                    blogpost_id=page_id,
+                    body_format="export_view"
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported record type: {record_type}"
+                )
 
             # Check response
             if not response or response.status != HTTP_STATUS_200:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Page not found: {page_id}"
+                    detail=f"Content not found: {page_id}"
                 )
 
             response_data = response.json()
@@ -1922,31 +2224,27 @@ class ConfluenceConnector(BaseConnector):
             html_content = export_view.get("value", "")
 
             if not html_content:
-                # If no content, return empty HTML
-                self.logger.warning(f"Page {page_id} has no content")
+                self.logger.warning(f"Content {page_id} has no body")
                 html_content = "<p>No content available</p>"
 
-            self.logger.debug(f"✅ Fetched {len(html_content)} bytes of HTML for page {page_id}")
+            self.logger.debug(f"✅ Fetched {len(html_content)} bytes of HTML for {page_id}")
             return html_content
 
         except HTTPException:
-            raise  # Re-raise HTTP exceptions
+            raise
         except Exception as e:
-            self.logger.error(f"Failed to fetch page content: {e}", exc_info=True)
+            self.logger.error(f"Failed to fetch content: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to fetch page content: {str(e)}"
+                detail=f"Failed to fetch content: {str(e)}"
             )
 
     async def _fetch_comment_content(self, record: CommentRecord) -> str:
         """
-        Fetch comment HTML content from Confluence.
-
-        Tries to fetch as footer comment first, then falls back to inline comment
-        if that fails, since comment_type may be null.
+        Fetch comment HTML content from Confluence based on record type.
 
         Args:
-            record: CommentRecord with external_record_id and comment_type
+            record: CommentRecord with external_record_id and record_type
 
         Returns:
             str: HTML content of the comment
@@ -1956,39 +2254,30 @@ class ConfluenceConnector(BaseConnector):
         """
         try:
             comment_id = record.external_record_id
-
-            self.logger.debug(f"Fetching comment content for {comment_id}")
+            self.logger.debug(f"Fetching comment content for {comment_id} (type: {record.record_type})")
 
             datasource = await self._get_fresh_datasource()
-            response = None
 
-            # Try footer comment first
-            try:
+            # Call appropriate API based on record type
+            if record.record_type == RecordType.COMMENT:
+                # Footer comment
                 response = await datasource.get_footer_comment_by_id(
                     comment_id=int(comment_id),
                     body_format="storage"
                 )
-                if response and response.status == HTTP_STATUS_200:
-                    self.logger.debug(f"Successfully fetched comment {comment_id} as footer comment")
-                else:
-                    response = None
-            except Exception as e:
-                self.logger.debug(f"Failed to fetch as footer comment: {e}")
-                response = None
+            elif record.record_type == RecordType.INLINE_COMMENT:
+                # Inline comment
+                response = await datasource.get_inline_comment_by_id(
+                    comment_id=int(comment_id),
+                    body_format="storage"
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported comment type: {record.record_type}"
+                )
 
-            # If footer failed, try inline comment
-            if not response:
-                try:
-                    response = await datasource.get_inline_comment_by_id(
-                        comment_id=int(comment_id),
-                        body_format="storage"
-                    )
-                    if response and response.status == HTTP_STATUS_200:
-                        self.logger.debug(f"Successfully fetched comment {comment_id} as inline comment")
-                except Exception as e:
-                    self.logger.debug(f"Failed to fetch as inline comment: {e}")
-
-            # Check final response
+            # Check response
             if not response or response.status != HTTP_STATUS_200:
                 raise HTTPException(
                     status_code=404,
@@ -2003,7 +2292,6 @@ class ConfluenceConnector(BaseConnector):
             html_content = storage.get("value", "")
 
             if not html_content:
-                # If no content, return empty HTML
                 self.logger.warning(f"Comment {comment_id} has no content")
                 html_content = "<p>No content available</p>"
 
@@ -2011,7 +2299,7 @@ class ConfluenceConnector(BaseConnector):
             return html_content
 
         except HTTPException:
-            raise  # Re-raise HTTP exceptions
+            raise
         except Exception as e:
             self.logger.error(f"Failed to fetch comment content: {e}", exc_info=True)
             raise HTTPException(

@@ -140,7 +140,7 @@ class Record(Node):
         }
 
     def validate(self) -> bool:
-        valid_record_types = ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS"]
+        valid_record_types = ["FILE", "DRIVE", "WEBPAGE", "COMMENT", "MESSAGE", "MAIL", "OTHERS"]
         valid_origins = ["UPLOAD", "CONNECTOR"]
         return (
             self.record_type in valid_record_types and
