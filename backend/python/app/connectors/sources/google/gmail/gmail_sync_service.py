@@ -1068,10 +1068,11 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         )
 
                         if matching_user:
+                            matching_user_key = await self.arango_service.get_entity_id_by_email(matching_user["email"])
                             # Check if the relationship already exists
                             existing_relation = (
                                 await self.arango_service.check_edge_exists(
-                                    f'users/{matching_user["_key"]}',
+                                    f'users/{matching_user_key}',
                                     f'groups/{group["_key"]}',
                                     CollectionNames.BELONGS_TO.value,
                                 )
@@ -1106,9 +1107,10 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             # Create relationships between users and orgs in belongsTo collection
             belongs_to_org_relations = []
             for user in enterprise_users:
+                user_key = await self.arango_service.get_entity_id_by_email(user["email"])
                 # Check if the relationship already exists
                 existing_relation = await self.arango_service.check_edge_exists(
-                    f"{CollectionNames.USERS.value}/{user['_key']}",
+                    f"{CollectionNames.USERS.value}/{user_key}",
                     f"{CollectionNames.ORGS.value}/{org_id}",
                     CollectionNames.BELONGS_TO.value,
                 )
@@ -1168,32 +1170,45 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     "🚀 Setting up changes watch for user %s", user["email"]
                 )
 
-                try:
-                    channel_data = await self.setup_changes_watch(org_id, user["email"])
-                    if not channel_data:
-                        self.logger.warning(
-                            "Changes watch not created for user: %s", user["email"]
-                        )
-                        continue
-                    else:
-                        await self.arango_service.store_channel_history_id(
-                            channel_data["historyId"],
-                            channel_data["expiration"],
+                                # Only set up changes watch if user has completed an initial sync
+                # If user has never been synced, skip watch setup - it will be set up after first sync
+                if current_state not in ["NOT_STARTED", "FAILED"]:
+                    self.logger.info(
+                        "🚀 Setting up changes watch for user %s", user["email"]
+                    )
+
+                    try:
+                        channel_data = await self.setup_changes_watch(org_id, user["email"])
+                        if not channel_data:
+                            self.logger.warning(
+                                "Changes watch not created for user: %s", user["email"]
+                            )
+                            continue
+                        else:
+                            await self.arango_service.store_channel_history_id(
+                                channel_data["historyId"],
+                                channel_data["expiration"],
+                                user["email"],
+                            )
+
+                        self.logger.info(
+                            "✅ Changes watch set up successfully for user: %s",
                             user["email"],
                         )
 
-                    self.logger.info(
-                        "✅ Changes watch set up successfully for user: %s",
-                        user["email"],
-                    )
+                    except Exception as e:
+                        self.logger.error(
+                            "❌ Error setting up changes watch for user %s: %s",
+                            user["email"],
+                            str(e),
+                        )
+                        continue
 
-                except Exception as e:
-                    self.logger.error(
-                        "❌ Error setting up changes watch for user %s: %s",
+                else:
+                    self.logger.info(
+                        "⏭️ Skipping changes watch setup for user %s - initial sync not completed yet",
                         user["email"],
-                        str(e),
                     )
-                    continue
 
             self.logger.info("✅ Gmail Sync service initialized successfully")
             return True
@@ -1904,12 +1919,30 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 user["email"]
             )
 
+            # Check sync state first - if never synced, do full sync regardless of history
+            sync_state = await self.arango_service.get_user_sync_state(
+                user["email"], Connectors.GOOGLE_MAIL.value.lower()
+            )
+            current_state = (
+                sync_state.get("syncState") if sync_state else "NOT_STARTED"
+            )
+
             channel_history = await self.arango_service.get_channel_history_id(
                 user["email"]
             )
+
+            # If user has never completed initial sync, do full sync even if history exists
+            if current_state in ["NOT_STARTED", "FAILED"]:
+                self.logger.warning(
+                    f"User {user['email']} has not completed initial sync (state: {current_state}). "
+                    f"Performing initial sync instead."
+                )
+                return await self.sync_specific_user(user["email"])
+
             if not channel_history:
-                self.logger.warning(f"⚠️ No historyId found for {user['email']}")
-                return True
+                self.logger.warning(f"⚠️ No historyId found for {user['email']}. Performing initial sync instead.")
+                # Perform initial sync for users without historyId
+                return await self.sync_specific_user(user["email"])
 
             changes = await user_service.fetch_gmail_changes_async(
                 user["email"], channel_history["historyId"]
@@ -2534,12 +2567,30 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             user_service = self.gmail_user_service
             self.logger.info(f"Resyncing Gmail for user {user['email']}")
 
+            # Check sync state first - if never synced, do full sync regardless of history
+            sync_state = await self.arango_service.get_user_sync_state(
+                user["email"], Connectors.GOOGLE_MAIL.value.lower()
+            )
+            current_state = (
+                sync_state.get("syncState") if sync_state else "NOT_STARTED"
+            )
+
             channel_history = await self.arango_service.get_channel_history_id(
                 user["email"]
             )
+
+            # If user has never completed initial sync, do full sync even if history exists
+            if current_state in ["NOT_STARTED", "FAILED"]:
+                self.logger.warning(
+                    f"User {user['email']} has not completed initial sync (state: {current_state}). "
+                    f"Performing initial sync instead."
+                )
+                return await self.perform_initial_sync(org_id, action="start")
+
             if not channel_history:
-                self.logger.warning(f"⚠️ No historyId found for {user['email']}")
-                return
+                self.logger.warning(f"⚠️ No historyId found for {user['email']}. Performing initial sync instead.")
+                # Perform initial sync for users without historyId
+                return await self.perform_initial_sync(org_id, action="start")
 
             changes = await user_service.fetch_gmail_changes_async(
                 user["email"], channel_history["historyId"]

@@ -1022,10 +1022,11 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                             None,
                         )
                         if matching_user:
+                            matching_user_key = await self.arango_service.get_entity_id_by_email(matching_user["email"])
                             # Check if the relationship already exists
                             existing_relation = (
                                 await self.arango_service.check_edge_exists(
-                                    f"{CollectionNames.USERS.value}/{matching_user['_key']}",
+                                    f"{CollectionNames.USERS.value}/{matching_user_key}",
                                     f"{CollectionNames.GROUPS.value}/{group['_key']}",
                                     CollectionNames.BELONGS_TO.value,
                                 )
@@ -1058,9 +1059,10 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             # Create relationships between users and orgs
             belongs_to_org_relations = []
             for user in enterprise_users:
+                user_key = await self.arango_service.get_entity_id_by_email(user["email"])
                 # Check if the relationship already exists
                 existing_relation = await self.arango_service.check_edge_exists(
-                    f"{CollectionNames.USERS.value}/{user['_key']}",
+                    f"{CollectionNames.USERS.value}/{user_key}",
                     f"{CollectionNames.ORGS.value}/{org_id}",
                     CollectionNames.BELONGS_TO.value,
                 )
@@ -1118,37 +1120,44 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         service_type=Connectors.GOOGLE_DRIVE.value.lower(),
                     )
 
-                try:
-                    self.logger.info(
-                        "🚀 Setting up changes watch for user %s", user["email"]
-                    )
-                    channel_data = await self.setup_changes_watch(user["email"])
-                    if not channel_data:
-                        self.logger.error(
-                            "Token not created for user: %s", user["email"]
+                if current_state not in [ProgressStatus.NOT_STARTED.value, ProgressStatus.FAILED.value]:
+                    try:
+                        self.logger.info(
+                            "🚀 Setting up changes watch for user %s", user["email"]
                         )
-                        continue
-                    else:
-                        await self.arango_service.store_page_token(
-                            channel_data["channelId"],
-                            channel_data["resourceId"],
+                        channel_data = await self.setup_changes_watch(user["email"])
+                        if not channel_data:
+                            self.logger.error(
+                                "Token not created for user: %s", user["email"]
+                            )
+                            continue
+                        else:
+                            await self.arango_service.store_page_token(
+                                channel_data["channelId"],
+                                channel_data["resourceId"],
+                                user["email"],
+                                channel_data["token"],
+                                channel_data["expiration"],
+                            )
+
+                        self.logger.info(
+                            "✅ Changes watch set up successfully for user: %s",
                             user["email"],
-                            channel_data["token"],
-                            channel_data["expiration"],
                         )
 
-                    self.logger.info(
-                        "✅ Changes watch set up successfully for user: %s",
-                        user["email"],
-                    )
+                    except Exception as e:
+                        self.logger.error(
+                            "❌ Error setting up changes watch for user %s: %s",
+                            user["email"],
+                            str(e),
+                        )
+                        return False
 
-                except Exception as e:
-                    self.logger.error(
-                        "❌ Error setting up changes watch for user %s: %s",
+                else:
+                    self.logger.info(
+                        "⏭️ Skipping changes watch setup for user %s - initial sync not completed yet",
                         user["email"],
-                        str(e),
                     )
-                    return False
 
             self.logger.info("✅ Drive Sync service initialized successfully")
             return True
@@ -1761,13 +1770,30 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 user["email"]
             )
             self.logger.info(f"Resyncing drive for user {user['email']}")
+            # Check sync state first - if never synced, do full sync regardless of token
+            sync_state = await self.arango_service.get_user_sync_state(
+                user["email"], Connectors.GOOGLE_DRIVE.value.lower()
+            )
+            current_state = (
+                sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
+            )
+
             page_token = await self.arango_service.get_page_token_db(
                 user_email=user["email"]
             )
 
+            # If user has never completed initial sync, do full sync even if token exists
+            if current_state in [ProgressStatus.NOT_STARTED.value, ProgressStatus.FAILED.value]:
+                self.logger.warning(
+                    f"User {user['email']} has not completed initial sync (state: {current_state}). "
+                    f"Performing initial sync instead."
+                )
+                return await self.sync_specific_user(user["email"])
+
             if not page_token:
-                self.logger.warning(f"No page token found for user {user['email']}")
-                return True
+                self.logger.warning(f"No page token found for user {user['email']}. Performing initial sync instead.")
+                # Perform initial sync for users without page token
+                return await self.sync_specific_user(user["email"])
 
             changes, new_token = await user_service.get_changes(
                 page_token=page_token["token"]
@@ -2364,13 +2390,38 @@ class DriveSyncIndividualService(BaseDriveSyncService):
         try:
             user_service = self.drive_user_service
             self.logger.info(f"Resyncing drive for user {user['email']}")
+
+            # Ensure the Drive service is connected for this user before resync
+            try:
+                await user_service.connect_individual_user(org_id, user["userId"])
+            except Exception as _e:
+                self.logger.error("❌ Failed to ensure Drive user connection for %s: %s", user["email"], str(_e))
+                return False
+
+            # Check sync state first - if never synced, do full sync regardless of token
+            sync_state = await self.arango_service.get_user_sync_state(
+                user["email"], Connectors.GOOGLE_DRIVE.value.lower()
+            )
+            current_state = (
+                sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
+            )
+
             page_token = await self.arango_service.get_page_token_db(
                 user_email=user["email"]
             )
 
+            # If user has never completed initial sync, do full sync even if token exists
+            if current_state in [ProgressStatus.NOT_STARTED.value, ProgressStatus.FAILED.value]:
+                self.logger.warning(
+                    f"User {user['email']} has not completed initial sync (state: {current_state}). "
+                    f"Performing initial sync instead."
+                )
+                return await self.perform_initial_sync(org_id, action="start")
+
             if not page_token:
-                self.logger.warning(f"No page token found for user {user['email']}")
-                return True
+                self.logger.warning(f"No page token found for user {user['email']}. Performing initial sync instead.")
+                # For individual scope, perform initial sync for users without page token
+                return await self.perform_initial_sync(org_id, action="start")
 
             changes, new_token = await user_service.get_changes(
                 page_token=page_token["token"]
