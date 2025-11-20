@@ -784,6 +784,24 @@ class ConnectorRegistry:
 
         paginated_connectors = connectors[start_idx:end_idx]
 
+        # Calculate registry counts by scope (all connectors after beta filtering, before search filtering)
+        # This represents the total available connector types per scope
+        registry_counts_by_scope = {"personal": 0, "team": 0}
+
+        for connector_type, metadata in self._connectors.items():
+            # Filter by feature flag (beta connectors)
+            if not beta_enabled:
+                normalized_name = self._normalize_connector_name(connector_type)
+                if normalized_name in beta_names:
+                    continue
+
+            # Count by scope
+            connector_scopes = metadata.get('connectorScopes', [])
+            if ConnectorScope.PERSONAL.value in connector_scopes:
+                registry_counts_by_scope["personal"] += 1
+            if ConnectorScope.TEAM.value in connector_scopes:
+                registry_counts_by_scope["team"] += 1
+
         return {
             "connectors": paginated_connectors,
             "pagination": {
@@ -796,7 +814,8 @@ class ConnectorRegistry:
                 "hasNext": has_next,
                 "prevPage": page - 1,
                 "nextPage": page + 1
-            }
+            },
+            "registryCountsByScope": registry_counts_by_scope
         }
 
     async def get_all_connector_instances(
@@ -861,10 +880,53 @@ class ConnectorRegistry:
                 query += " FILTER (LOWER(doc.name) LIKE @search) OR (LOWER(doc.type) LIKE @search) OR (LOWER(doc.appGroup) LIKE @search)"
                 bind_vars["search"] = f"%{search.lower()}%"
 
-            # Get total count
+            # Get total count for current query (with filters)
             count_query = query + " COLLECT WITH COUNT INTO total RETURN total"
             count_cursor = arango_service.db.aql.execute(count_query, bind_vars=bind_vars)
             total_count = next(count_cursor, 0)
+
+            # Calculate scope counts (total configured connectors per scope, without search/pagination filters)
+            # These counts represent the total configured connectors for each scope
+            scope_counts = {"personal": 0, "team": 0}
+
+            try:
+                # Count personal connectors (configured = isConfigured = True)
+                personal_count_query = """
+                FOR doc IN @@collection
+                    FILTER doc._id != null
+                    FILTER doc.scope == @personal_scope
+                    FILTER doc.createdBy == @user_id
+                    FILTER doc.isConfigured == true
+                    COLLECT WITH COUNT INTO total
+                    RETURN total
+                """
+                personal_bind_vars = {
+                    "@collection": self._collection_name,
+                    "personal_scope": ConnectorScope.PERSONAL.value,
+                    "user_id": user_id,
+                }
+                personal_cursor = arango_service.db.aql.execute(personal_count_query, bind_vars=personal_bind_vars)
+                scope_counts["personal"] = next(personal_cursor, 0)
+
+                # Count team connectors (only for admins)
+                if is_admin:
+                    team_count_query = """
+                    FOR doc IN @@collection
+                        FILTER doc._id != null
+                        FILTER doc.scope == @team_scope
+                        FILTER doc.isConfigured == true
+                        COLLECT WITH COUNT INTO total
+                        RETURN total
+                    """
+                    team_bind_vars = {
+                        "@collection": self._collection_name,
+                        "team_scope": ConnectorScope.TEAM.value,
+                    }
+                    team_cursor = arango_service.db.aql.execute(team_count_query, bind_vars=team_bind_vars)
+                    scope_counts["team"] = next(team_cursor, 0)
+            except Exception as e:
+                self.logger.warning(f"Error calculating scope counts: {e}")
+                # Continue with zero counts if there's an error
 
             # Add pagination
             query += """
@@ -914,7 +976,8 @@ class ConnectorRegistry:
                     "hasNext": has_next,
                     "prevPage": page - 1,
                     "nextPage": page + 1
-                }
+                },
+                "scopeCounts": scope_counts
             }
 
         except Exception as e:
@@ -1087,7 +1150,8 @@ class ConnectorRegistry:
                 "hasNext": has_next,
                 "prevPage": page - 1,
                 "nextPage": page + 1
-            }
+            },
+            "scopeCounts": result.get("scopeCounts", {"personal": 0, "team": 0})
         }
 
     async def get_connector_metadata(self, connector_type: str, instance_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:

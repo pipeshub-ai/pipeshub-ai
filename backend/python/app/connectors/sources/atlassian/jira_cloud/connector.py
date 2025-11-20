@@ -331,7 +331,7 @@ class JiraClient:
 
             if current_count >= total:
                 break
-            
+
             start_at = current_count
 
         issue_records = []

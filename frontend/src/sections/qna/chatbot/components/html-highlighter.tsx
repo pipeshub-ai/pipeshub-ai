@@ -17,7 +17,7 @@ import { Box, Paper, useTheme, Typography, CircularProgress } from '@mui/materia
 import CitationSidebar from './highlighter-sidebar';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
-// Props type definition - UPDATED to match MarkdownViewer
+// Props type definition
 type HtmlViewerProps = {
   citations: DocumentContent[] | CustomCitation[];
   url: string | null;
@@ -25,7 +25,7 @@ type HtmlViewerProps = {
   buffer?: ArrayBuffer | null;
   sx?: Record<string, unknown>;
   highlightCitation?: SearchResult | CustomCitation | null;
-  onClosePdf :() => void;
+  onClosePdf: () => void;
 };
 
 const SIMILARITY_THRESHOLD = 0.6;
@@ -70,64 +70,238 @@ const ErrorOverlay = styled(Box)(({ theme }) => ({
   zIndex: 10,
 }));
 
-const HtmlContentContainer = styled(Box)({
+const HtmlContentContainer = styled(Box)(({ theme }) => ({
   width: '100%',
   height: '100%',
   overflow: 'auto',
   minHeight: '100px',
   padding: '1rem 1.5rem',
+  backgroundColor: theme.palette.mode === 'dark' ? theme.palette.background.paper : '#ffffff',
+  
   '& .html-rendered-content': {
-    fontFamily:
-      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif",
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif",
     lineHeight: 1.6,
     maxWidth: '100%',
     wordWrap: 'break-word',
-    '& img': {
-      maxWidth: '100%',
-      height: 'auto',
+    color: theme.palette.text.primary,
+    
+    // Reset all email colors and backgrounds for dark mode
+    '& *': {
+      color: `${theme.palette.text.primary} !important`,
+      backgroundColor: 'transparent !important',
+      borderColor: `${theme.palette.divider} !important`,
     },
-    '& pre': {
-      backgroundColor: 'rgba(0, 0, 0, 0.05)',
-      padding: '1em',
-      borderRadius: '3px',
-      overflowX: 'auto',
-      fontFamily: 'monospace',
-    },
-    '& code:not(pre > code)': {
-      fontFamily: 'monospace',
-      backgroundColor: 'rgba(0, 0, 0, 0.05)',
-      padding: '0.2em 0.4em',
-      borderRadius: '3px',
-    },
+    
+    // Tables - Clean email table styling
     '& table': {
       borderCollapse: 'collapse',
       marginBottom: '1em',
-      width: 'auto',
+      marginTop: '0.5em',
+      width: '100% !important',
+      maxWidth: '100%',
+      border: 'none !important',
+      backgroundColor: 'transparent !important',
+      tableLayout: 'auto',
     },
+    
+    '& tbody, & thead, & tfoot': {
+      backgroundColor: 'transparent !important',
+      border: 'none !important',
+    },
+    
+    '& tr': {
+      backgroundColor: 'transparent !important',
+      border: 'none !important',
+      borderBottom: theme.palette.mode === 'dark' 
+        ? `1px solid ${theme.palette.divider} !important`
+        : `1px solid rgba(0, 0, 0, 0.08) !important`,
+      '&:last-child': {
+        borderBottom: 'none !important',
+      },
+    },
+    
     '& th, & td': {
-      border: '1px solid #ddd',
-      padding: '0.5em',
-      textAlign: 'left',
+      border: 'none !important',
+      padding: '0.75em 0.5em !important',
+      textAlign: 'left !important',
+      verticalAlign: 'top !important',
+      backgroundColor: 'transparent !important',
+      color: `${theme.palette.text.primary} !important`,
+      fontSize: '0.95em',
+      lineHeight: 1.5,
     },
+    
     '& th': {
-      backgroundColor: '#f2f2f2',
+      fontWeight: 600,
+      paddingBottom: '0.5em !important',
+      borderBottom: theme.palette.mode === 'dark'
+        ? `2px solid ${theme.palette.divider} !important`
+        : `2px solid rgba(0, 0, 0, 0.12) !important`,
     },
+    
+    // Remove borders from nested tables (common in emails)
+    '& table table': {
+      border: 'none !important',
+      margin: 0,
+    },
+    
+    '& table table td, & table table th': {
+      border: 'none !important',
+      padding: '0.25em !important',
+    },
+    
+    // Headings
+    '& h1, & h2, & h3, & h4, & h5, & h6': {
+      marginTop: '1.2em',
+      marginBottom: '0.6em',
+      lineHeight: 1.3,
+      fontWeight: 600,
+      color: `${theme.palette.text.primary} !important`,
+    },
+    
+    '& h1': { fontSize: '1.8em' },
+    '& h2': { fontSize: '1.5em' },
+    '& h3': { fontSize: '1.3em' },
+    '& h4': { fontSize: '1.1em' },
+    '& h5': { fontSize: '1em' },
+    '& h6': { fontSize: '0.95em' },
+    
+    // Paragraphs
+    '& p': {
+      marginTop: '0.5em',
+      marginBottom: '0.5em',
+      lineHeight: 1.6,
+      color: `${theme.palette.text.primary} !important`,
+    },
+    
+    // Lists
+    '& ul, & ol': {
+      marginTop: '0.5em',
+      marginBottom: '0.5em',
+      paddingLeft: '1.5em',
+    },
+    
+    '& li': {
+      marginBottom: '0.25em',
+      lineHeight: 1.6,
+      color: `${theme.palette.text.primary} !important`,
+    },
+    
+    // Links
     '& a': {
-      color: '#007bff',
+      color: theme.palette.mode === 'dark' 
+        ? `${theme.palette.primary.light} !important`
+        : `${theme.palette.primary.main} !important`,
       textDecoration: 'underline',
+      '&:hover': {
+        color: theme.palette.mode === 'dark'
+          ? `${theme.palette.primary.lighter} !important`
+          : `${theme.palette.primary.dark} !important`,
+      },
     },
+    
+    // Images
+    '& img': {
+      maxWidth: '100%',
+      height: 'auto',
+      display: 'block',
+      margin: '1em 0',
+      borderRadius: '4px',
+    },
+    
+    // Code blocks
+    '& pre': {
+      backgroundColor: theme.palette.mode === 'dark'
+        ? `${theme.palette.grey[800]} !important`
+        : `${theme.palette.grey[100]} !important`,
+      color: `${theme.palette.text.primary} !important`,
+      padding: '1em',
+      borderRadius: '4px',
+      overflowX: 'auto',
+      fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace",
+      fontSize: '0.9em',
+      margin: '1em 0',
+      border: `1px solid ${theme.palette.divider} !important`,
+    },
+    
+    '& code': {
+      fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace",
+      fontSize: '0.9em',
+      padding: '0.2em 0.4em',
+      borderRadius: '3px',
+      backgroundColor: theme.palette.mode === 'dark'
+        ? `${theme.palette.grey[800]} !important`
+        : `${theme.palette.grey[100]} !important`,
+      color: `${theme.palette.text.primary} !important`,
+    },
+    
+    '& pre code': {
+      backgroundColor: 'transparent !important',
+      padding: 0,
+    },
+    
+    // Blockquotes
     '& blockquote': {
-      borderLeft: '4px solid #ccc',
+      borderLeft: `4px solid ${theme.palette.divider}`,
       paddingLeft: '1em',
       marginLeft: 0,
-      color: '#666',
+      marginRight: 0,
+      marginTop: '1em',
+      marginBottom: '1em',
+      color: `${theme.palette.text.secondary} !important`,
+      fontStyle: 'italic',
     },
-    '& h1, & h2, & h3, & h4, & h5, & h6': {
-      marginTop: '1.5em',
-      marginBottom: '0.8em',
+    
+    // Horizontal rules
+    '& hr': {
+      border: 'none',
+      borderTop: `1px solid ${theme.palette.divider} !important`,
+      margin: '1.5em 0',
+    },
+    
+    // Divs and spans - Remove email layout artifacts
+    '& div[style*="mso-"]': {
+      display: 'block !important',
+    },
+    
+    '& span[style]': {
+      backgroundColor: 'transparent !important',
+    },
+    
+    // Remove common email spacer elements
+    '& td[style*="line-height: 0"]': {
+      display: 'none !important',
+    },
+    
+    '& div[style*="line-height: 0"]': {
+      display: 'none !important',
+    },
+    
+    // Strong and emphasis
+    '& strong, & b': {
+      fontWeight: 700,
+      color: `${theme.palette.text.primary} !important`,
+    },
+    
+    '& em, & i': {
+      fontStyle: 'italic',
+      color: `${theme.palette.text.primary} !important`,
+    },
+    
+    // Remove any remaining borders and backgrounds
+    '& [cellpadding], & [cellspacing]': {
+      padding: '0 !important',
+    },
+    
+    '& [bgcolor]': {
+      backgroundColor: 'transparent !important',
+    },
+    
+    '& [style*="background"]': {
+      backgroundColor: 'transparent !important',
     },
   },
-});
+}));
 
 // --- Helper functions ---
 const getNextId = (): string => `html-hl-${Math.random().toString(36).substring(2, 10)}`;
@@ -136,9 +310,144 @@ const isDocumentContent = (
   citation: DocumentContent | CustomCitation
 ): citation is DocumentContent => 'metadata' in citation && citation.metadata !== undefined;
 
+/**
+ * Enhanced text normalization that handles table content better
+ */
 const normalizeText = (text: string | null | undefined): string => {
   if (!text) return '';
-  return text.trim().replace(/\s+/g, ' ');
+  
+  // Replace table cell separators with spaces
+  const normalized = text
+    .replace(/\s*\|\s*/g, ' ') // Remove table pipes
+    .replace(/[\r\n\t]+/g, ' ') // Replace newlines and tabs with spaces
+    .replace(/\s+/g, ' ') // Collapse multiple spaces
+    .trim();
+  
+  return normalized;
+};
+
+/**
+ * Enhanced HTML cleaning that strips email artifacts and inline styles
+ */
+const cleanEmailHtml = (html: string): string => {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  
+  // Remove style tags and their content
+  doc.querySelectorAll('style').forEach(el => el.remove());
+  
+  // Remove script tags
+  doc.querySelectorAll('script').forEach(el => el.remove());
+  
+  // Remove common email tracking pixels
+  doc.querySelectorAll('img[width="1"][height="1"]').forEach(el => el.remove());
+  doc.querySelectorAll('img[style*="display:none"]').forEach(el => el.remove());
+  
+  // Clean table attributes
+  doc.querySelectorAll('table, tr, td, th').forEach(el => {
+    // Remove problematic attributes
+    el.removeAttribute('border');
+    el.removeAttribute('cellpadding');
+    el.removeAttribute('cellspacing');
+    el.removeAttribute('bgcolor');
+    el.removeAttribute('background');
+    el.removeAttribute('width');
+    el.removeAttribute('height');
+    el.removeAttribute('align');
+    el.removeAttribute('valign');
+    
+    // Clean inline styles - keep only essential spacing
+    const style = el.getAttribute('style');
+    if (style) {
+      // Remove color, background, border styles
+      const cleaned = style
+        .split(';')
+        .filter(s => {
+          const prop = s.trim().toLowerCase();
+          return !prop.includes('color') &&
+                 !prop.includes('background') &&
+                 !prop.includes('border') &&
+                 !prop.includes('font-family') &&
+                 !prop.includes('font-size') &&
+                 !prop.includes('width') &&
+                 !prop.includes('height');
+        })
+        .join(';');
+      
+      if (cleaned.trim()) {
+        el.setAttribute('style', cleaned);
+      } else {
+        el.removeAttribute('style');
+      }
+    }
+  });
+  
+  // Clean all other elements
+  doc.querySelectorAll('*').forEach(el => {
+    // Remove email-specific attributes
+    ['class', 'id'].forEach(attr => {
+      const value = el.getAttribute(attr);
+      if (value && (value.includes('mso-') || value.includes('outlook') || value.includes('gmail'))) {
+        el.removeAttribute(attr);
+      }
+    });
+    
+    // Clean inline styles from all elements
+    const style = el.getAttribute('style');
+    if (style) {
+      const cleaned = style
+        .split(';')
+        .filter(s => {
+          const prop = s.trim().toLowerCase();
+          // Keep only essential layout properties, remove colors and backgrounds
+          return prop.includes('margin') || 
+                 prop.includes('padding') && 
+                 !prop.includes('color') &&
+                 !prop.includes('background');
+        })
+        .join(';');
+      
+      if (cleaned.trim()) {
+        el.setAttribute('style', cleaned);
+      } else {
+        el.removeAttribute('style');
+      }
+    }
+  });
+  
+  // Remove empty elements that are just spacers
+  doc.querySelectorAll('p, div, span').forEach(el => {
+    const text = el.textContent?.trim();
+    const hasChildren = el.children.length > 0;
+    if (!text && !hasChildren) {
+      el.remove();
+    }
+  });
+  
+  return doc.body.innerHTML;
+};
+
+/**
+ * Extract text content from element, handling tables properly
+ */
+const extractTextContent = (element: Element): string => {
+  if (element.tagName === 'TABLE') {
+    // For tables, extract text row by row with separators
+    const rows: string[] = [];
+    element.querySelectorAll('tr').forEach(row => {
+      const cells: string[] = [];
+      row.querySelectorAll('td, th').forEach(cell => {
+        const text = cell.textContent?.trim();
+        if (text) cells.push(text);
+      });
+      if (cells.length > 0) {
+        rows.push(cells.join(' '));
+      }
+    });
+    return rows.join(' ');
+  }
+  
+  return element.textContent || '';
 };
 
 const processTextHighlight = (citation: DocumentContent | CustomCitation): HighlightType | null => {
@@ -217,7 +526,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
     style.textContent = `
       /* Base highlight style - Professional with warm amber tones */
       .html-highlight {
-        background-color: rgba(255, 193, 7, 0.15); /* Warm amber */
+        background-color: rgba(255, 193, 7, 0.15) !important; /* Warm amber */
         border-radius: 2px;
         padding: 0.1em 0.2em;
         margin: -0.1em -0.1em;
@@ -226,10 +535,9 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
         display: inline;
         position: relative;
         z-index: 1;
-        border: 1px solid rgba(255, 193, 7, 0.25);
+        border: 1px solid rgba(255, 193, 7, 0.25) !important;
         /* Preserve formatting */
         white-space: pre-wrap !important;
-        color: inherit !important;
         text-decoration: none !important;
         /* Subtle text contrast enhancement */
         text-shadow: 0 0 1px rgba(0, 0, 0, 0.1);
@@ -238,8 +546,8 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
       /* Dark mode adjustments - Enhanced visibility with warmer tones */
       @media (prefers-color-scheme: dark) {
         .html-highlight {
-          background-color: rgba(255, 213, 79, 0.20); /* Brighter amber for dark backgrounds */
-          border-color: rgba(255, 213, 79, 0.35);
+          background-color: rgba(255, 213, 79, 0.25) !important; /* Brighter amber for dark backgrounds */
+          border-color: rgba(255, 213, 79, 0.40) !important;
           text-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
         }
       }
@@ -248,14 +556,14 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
       .MuiCssBaseline-root[data-mui-color-scheme="dark"] .html-highlight,
       [data-theme="dark"] .html-highlight,
       .dark .html-highlight {
-        background-color: rgba(255, 213, 79, 0.20); /* Brighter amber for dark backgrounds */
-        border-color: rgba(255, 213, 79, 0.35);
+        background-color: rgba(255, 213, 79, 0.25) !important; /* Brighter amber for dark backgrounds */
+        border-color: rgba(255, 213, 79, 0.40) !important;
         text-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
       }
 
       .html-highlight:hover {
-        background-color: rgba(255, 193, 7, 0.25);
-        border-color: rgba(255, 193, 7, 0.45);
+        background-color: rgba(255, 193, 7, 0.30) !important;
+        border-color: rgba(255, 193, 7, 0.50) !important;
         transform: translateY(-0.5px);
         box-shadow: 0 2px 4px rgba(255, 193, 7, 0.2);
         z-index: 2;
@@ -263,8 +571,8 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
 
       @media (prefers-color-scheme: dark) {
         .html-highlight:hover {
-          background-color: rgba(255, 213, 79, 0.30);
-          border-color: rgba(255, 213, 79, 0.55);
+          background-color: rgba(255, 213, 79, 0.35) !important;
+          border-color: rgba(255, 213, 79, 0.60) !important;
           box-shadow: 0 2px 4px rgba(255, 213, 79, 0.25);
         }
       }
@@ -272,13 +580,13 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
       .MuiCssBaseline-root[data-mui-color-scheme="dark"] .html-highlight:hover,
       [data-theme="dark"] .html-highlight:hover,
       .dark .html-highlight:hover {
-        background-color: rgba(255, 213, 79, 0.30);
-        border-color: rgba(255, 213, 79, 0.55);
+        background-color: rgba(255, 213, 79, 0.35) !important;
+        border-color: rgba(255, 213, 79, 0.60) !important;
         box-shadow: 0 2px 4px rgba(255, 213, 79, 0.25);
       }
 
       .html-highlight-active {
-        background-color: rgba(255, 152, 0, 0.35) !important; /* Vibrant orange for active state */
+        background-color: rgba(255, 152, 0, 0.40) !important; /* Vibrant orange for active state */
         border-color: rgba(255, 152, 0, 0.8) !important;
         border-width: 1.5px !important;
         transform: translateY(-1px) !important;
@@ -289,7 +597,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
 
       @media (prefers-color-scheme: dark) {
         .html-highlight-active {
-          background-color: rgba(255, 183, 77, 0.40) !important; /* Brighter orange for dark mode */
+          background-color: rgba(255, 183, 77, 0.45) !important; /* Brighter orange for dark mode */
           border-color: rgba(255, 183, 77, 0.9) !important;
           box-shadow: 0 3px 8px rgba(255, 183, 77, 0.35) !important;
         }
@@ -298,7 +606,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
       .MuiCssBaseline-root[data-mui-color-scheme="dark"] .html-highlight-active,
       [data-theme="dark"] .html-highlight-active,
       .dark .html-highlight-active {
-        background-color: rgba(255, 183, 77, 0.40) !important; /* Brighter orange for dark mode */
+        background-color: rgba(255, 183, 77, 0.45) !important; /* Brighter orange for dark mode */
         border-color: rgba(255, 183, 77, 0.9) !important;
         box-shadow: 0 3px 8px rgba(255, 183, 77, 0.35) !important;
       }
@@ -320,35 +628,35 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
 
       /* Professional fuzzy match styling with green tones */
       .html-highlight-fuzzy {
-        background-color: rgba(76, 175, 80, 0.12); /* Soft green */
-        border-color: rgba(76, 175, 80, 0.25);
-        border-style: dashed;
+        background-color: rgba(76, 175, 80, 0.15) !important; /* Soft green */
+        border-color: rgba(76, 175, 80, 0.30) !important;
+        border-style: dashed !important;
       }
 
       @media (prefers-color-scheme: dark) {
         .html-highlight-fuzzy {
-          background-color: rgba(129, 199, 132, 0.18); /* Brighter green for dark mode */
-          border-color: rgba(129, 199, 132, 0.35);
+          background-color: rgba(129, 199, 132, 0.22) !important; /* Brighter green for dark mode */
+          border-color: rgba(129, 199, 132, 0.40) !important;
         }
       }
 
       .MuiCssBaseline-root[data-mui-color-scheme="dark"] .html-highlight-fuzzy,
       [data-theme="dark"] .html-highlight-fuzzy,
       .dark .html-highlight-fuzzy {
-        background-color: rgba(129, 199, 132, 0.18); /* Brighter green for dark mode */
-        border-color: rgba(129, 199, 132, 0.35);
+        background-color: rgba(129, 199, 132, 0.22) !important; /* Brighter green for dark mode */
+        border-color: rgba(129, 199, 132, 0.40) !important;
       }
 
       .html-highlight-fuzzy:hover {
-        background-color: rgba(76, 175, 80, 0.20);
-        border-color: rgba(76, 175, 80, 0.40);
+        background-color: rgba(76, 175, 80, 0.25) !important;
+        border-color: rgba(76, 175, 80, 0.45) !important;
         box-shadow: 0 2px 4px rgba(76, 175, 80, 0.15);
       }
 
       @media (prefers-color-scheme: dark) {
         .html-highlight-fuzzy:hover {
-          background-color: rgba(129, 199, 132, 0.25);
-          border-color: rgba(129, 199, 132, 0.50);
+          background-color: rgba(129, 199, 132, 0.30) !important;
+          border-color: rgba(129, 199, 132, 0.55) !important;
           box-shadow: 0 2px 4px rgba(129, 199, 132, 0.20);
         }
       }
@@ -356,13 +664,13 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
       .MuiCssBaseline-root[data-mui-color-scheme="dark"] .html-highlight-fuzzy:hover,
       [data-theme="dark"] .html-highlight-fuzzy:hover,
       .dark .html-highlight-fuzzy:hover {
-        background-color: rgba(129, 199, 132, 0.25);
-        border-color: rgba(129, 199, 132, 0.50);
+        background-color: rgba(129, 199, 132, 0.30) !important;
+        border-color: rgba(129, 199, 132, 0.55) !important;
         box-shadow: 0 2px 4px rgba(129, 199, 132, 0.20);
       }
 
       .html-highlight-fuzzy.html-highlight-active {
-        background-color: rgba(67, 160, 71, 0.30) !important; /* Stronger green for active fuzzy */
+        background-color: rgba(67, 160, 71, 0.35) !important; /* Stronger green for active fuzzy */
         border-color: rgba(67, 160, 71, 0.8) !important;
         border-style: dashed !important;
         box-shadow: 0 3px 8px rgba(67, 160, 71, 0.25) !important;
@@ -371,7 +679,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
 
       @media (prefers-color-scheme: dark) {
         .html-highlight-fuzzy.html-highlight-active {
-          background-color: rgba(129, 199, 132, 0.35) !important; /* Brighter green for dark mode */
+          background-color: rgba(129, 199, 132, 0.40) !important; /* Brighter green for dark mode */
           border-color: rgba(129, 199, 132, 0.9) !important;
           box-shadow: 0 3px 8px rgba(129, 199, 132, 0.30) !important;
         }
@@ -380,7 +688,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
       .MuiCssBaseline-root[data-mui-color-scheme="dark"] .html-highlight-fuzzy.html-highlight-active,
       [data-theme="dark"] .html-highlight-fuzzy.html-highlight-active,
       .dark .html-highlight-fuzzy.html-highlight-active {
-        background-color: rgba(129, 199, 132, 0.35) !important; /* Brighter green for dark mode */
+        background-color: rgba(129, 199, 132, 0.40) !important; /* Brighter green for dark mode */
         border-color: rgba(129, 199, 132, 0.9) !important;
         box-shadow: 0 3px 8px rgba(129, 199, 132, 0.30) !important;
       }
@@ -474,6 +782,15 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
       const highlightTypeClass = `html-highlight-${matchType}`;
       const fullHighlightClass = `${highlightBaseClass} ${highlightIdClass} ${highlightTypeClass}`;
 
+      // First, try to find text in the element using enhanced extraction
+      const elementText = extractTextContent(element);
+      const normalizedElementText = normalizeText(elementText);
+      
+      // Check if the text exists in this element
+      if (!normalizedElementText.includes(normalizedTextToHighlight) && matchType === 'exact') {
+        return { success: false };
+      }
+
       const walker = document.createTreeWalker(searchRoot, NodeFilter.SHOW_TEXT, (node) => {
         const parent = node.parentElement;
         if (!parent) return NodeFilter.FILTER_REJECT;
@@ -504,6 +821,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
             searchIndex
           );
           if (startIndexInNormalized === -1) break;
+          
           let originalIndex = -1;
           let normalizedCharsCount = 0;
           let originalCharsCount = 0;
@@ -653,13 +971,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
         } catch (wrapError) {
           console.error(
             `Error surrounding content for highlight ${highlightId} (matchType: ${matchType}):`,
-            wrapError,
-            'Normalized Text:',
-            normalizedTextToHighlight,
-            'Node Content:',
-            `${textNode.nodeValue?.substring(0, 100)}...`,
-            'Range:',
-            `[${startIndex}, ${safeEndIndex}]`
+            wrapError
           );
           return { success: false };
         }
@@ -738,16 +1050,12 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
 
     const remainingSpans = scope.querySelectorAll('.html-highlight');
     if (remainingSpans.length > 0) {
-      console.warn(
-        `Found ${remainingSpans.length} HTML highlight spans remaining after cleanup. Forcing removal.`
-      );
       remainingSpans.forEach((span) => {
         if (span.parentNode) {
           const textContent = span.textContent || '';
           try {
             span.parentNode.replaceChild(document.createTextNode(textContent), span);
           } catch (replaceError) {
-            console.error('Error during fallback removal of span:', replaceError, span);
             if (span.parentNode)
               try {
                 span.parentNode.removeChild(span);
@@ -796,8 +1104,9 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
           let appliedCount = 0;
           const newCleanups = new Map<string, () => void>();
 
+          // Enhanced selector that includes table rows and cells
           const selector =
-            'p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th, pre, span:not(:has(p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th, pre, div)), div:not(:has(p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th, pre, div))';
+            'p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th, tr, pre, div:not(:has(p, li, blockquote, h1, h2, h3, h4, h5, h6, table, td, th, tr, pre, div))';
           const candidateElements = Array.from(currentScope.querySelectorAll(selector));
 
           if (candidateElements.length === 0) {
@@ -807,7 +1116,6 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
             );
             if (currentScope.hasChildNodes()) {
               candidateElements.push(currentScope);
-              console.log('Using content wrapper as fallback candidate element.');
             }
           }
 
@@ -821,6 +1129,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
 
             let matchFoundInIteration = false;
 
+            // Try exact match first
             const exactMatchApplied = candidateElements.some((element) => {
               if (
                 element.classList.contains(`highlight-${highlightId}`) ||
@@ -829,7 +1138,8 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
                 return false;
               }
 
-              const normalizedElementText = normalizeText(element.textContent);
+              const elementText = extractTextContent(element);
+              const normalizedElementText = normalizeText(elementText);
 
               if (normalizedElementText.includes(normalizedText)) {
                 const result = highlightTextInElement(
@@ -848,6 +1158,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
               return false;
             });
 
+            // Try fuzzy match if exact match failed
             if (!matchFoundInIteration && candidateElements.length > 0) {
               const similarityScores = candidateElements
                 .map((el) => {
@@ -857,9 +1168,10 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
                   ) {
                     return { element: el, score: -1 };
                   }
+                  const elementText = extractTextContent(el);
                   return {
                     element: el,
-                    score: calculateSimilarity(normalizedText, el.textContent),
+                    score: calculateSimilarity(normalizedText, elementText),
                   };
                 })
                 .filter((item) => item.score >= SIMILARITY_THRESHOLD)
@@ -1111,7 +1423,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
           }
 
           const selector =
-            'p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th, pre, span:not(:has(p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th, pre, div)), div:not(:has(p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th, pre, div))';
+            'p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th, tr, pre, div:not(:has(p, li, blockquote, h1, h2, h3, h4, h5, h6, table, td, th, tr, pre, div))';
           const candidateElements = Array.from(
             contentWrapperRef.current.querySelectorAll(selector)
           );
@@ -1126,8 +1438,9 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
             if (!normalizedText || !citationId) return;
 
             const exactMatch = candidateElements.find((element) => {
-              const elementText = normalizeText(element.textContent);
-              return elementText.includes(normalizedText);
+              const elementText = extractTextContent(element);
+              const normalizedElementText = normalizeText(elementText);
+              return normalizedElementText.includes(normalizedText);
             });
 
             if (exactMatch) {
@@ -1145,10 +1458,13 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
               }
             } else {
               const fuzzyMatches = candidateElements
-                .map((el) => ({
-                  element: el,
-                  score: calculateSimilarity(normalizedText, el.textContent),
-                }))
+                .map((el) => {
+                  const elementText = extractTextContent(el);
+                  return {
+                    element: el,
+                    score: calculateSimilarity(normalizedText, elementText),
+                  };
+                })
                 .filter((item) => item.score > SIMILARITY_THRESHOLD)
                 .sort((a, b) => b.score - a.score);
 
@@ -1190,7 +1506,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
                 inline: 'nearest',
               });
             } else if (attempts < maxAttempts) {
-              setTimeout(attemptHighlightAndScroll, baseDelay * attempts); // Increasing delay
+              setTimeout(attemptHighlightAndScroll, baseDelay * attempts);
             }
           }, 100);
         });
@@ -1209,7 +1525,6 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
     clearHighlights,
   ]);
 
-  // Scrolling Logic
   const scrollToHighlight = useCallback(
     (highlight: HighlightType | null): void => {
       if (!containerRef.current || !highlight || !highlight.id) return;
@@ -1288,18 +1603,30 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
           rawHtml = '';
         }
 
+        // Enhanced DOMPurify configuration - strip inline styles
         const sanitizedHtml = DOMPurify.sanitize(rawHtml, {
           USE_PROFILES: { html: true },
-          ADD_ATTR: ['target', 'id', 'class', 'style', 'href', 'src', 'alt', 'title'],
-          ADD_TAGS: ['iframe', 'figure', 'figcaption'], // Add tags if needed
-          FORBID_TAGS: ['script', 'style', 'link', 'base'], // Keep style forbidden to avoid conflicts
-          FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'autofocus'], // Forbid event handlers
+          ADD_ATTR: ['target', 'id', 'class', 'href', 'src', 'alt', 'title'], // Removed 'style'
+          ADD_TAGS: ['iframe', 'figure', 'figcaption'],
+          FORBID_TAGS: ['script', 'style', 'link', 'base', 'meta'],
+          FORBID_ATTR: [
+            'onerror', 
+            'onload', 
+            'onclick', 
+            'onmouseover', 
+            'onfocus', 
+            'autofocus',
+            'style' // Forbid inline styles
+          ],
           ALLOWED_URI_REGEXP:
             /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp|data):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
         });
 
+        // Clean email HTML artifacts
+        const cleanedHtml = cleanEmailHtml(sanitizedHtml);
+
         if (isMounted) {
-          setDocumentHtml(sanitizedHtml);
+          setDocumentHtml(cleanedHtml);
           setLoading(false);
         }
       } catch (err: any) {
@@ -1400,7 +1727,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
     };
   }, [documentReady, documentHtml, citations, processCitations]);
 
-  // STEP 5: Re-process citations if the `citations` prop changes *content* (like MarkdownViewer)
+  // STEP 5: Re-process citations if the `citations` prop changes
   useEffect(() => {
     const currentCitationsContent = JSON.stringify(
       citations?.map((c) => normalizeText(c?.content)).sort() ?? []
@@ -1467,7 +1794,6 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
         </ErrorOverlay>
       )}
 
-      {/* Container for main content and sidebar */}
       <Box
         sx={{
           display: 'flex',
@@ -1476,7 +1802,6 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
           visibility: loading || error ? 'hidden' : 'visible',
         }}
       >
-        {/* HTML Content Area */}
         <Box
           sx={{
             height: '100%',

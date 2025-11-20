@@ -104,6 +104,10 @@ const Connectors: React.FC = () => {
     totalPages: undefined,
     totalItems: undefined,
   });
+  const [scopeCounts, setScopeCounts] = useState<{ personal: number; team: number }>({
+    personal: 0,
+    team: 0,
+  });
 
   // Loading States - Separate and clear
   const [isFirstLoad, setIsFirstLoad] = useState(true); // Only true on very first load
@@ -335,6 +339,11 @@ const Connectors: React.FC = () => {
           totalItems: paginationData.totalItems,
         });
 
+        // Update scope counts (only on first page to avoid unnecessary updates)
+        if (page === INITIAL_PAGE && result.scopeCounts) {
+          setScopeCounts(result.scopeCounts);
+        }
+
         // Check if more pages exist
         const hasMore =
           paginationData.hasNext === true ||
@@ -516,19 +525,40 @@ const Connectors: React.FC = () => {
                   />
                 </Box>
                 <Box>
-                  <Typography
-                    variant="h5"
-                    sx={{
-                      fontWeight: 700,
-                      fontSize: '1.5rem',
-                      color: theme.palette.text.primary,
-                      mb: 0.5,
-                    }}
-                  >
-                    {isBusiness && isAdmin && effectiveScope === 'team'
-                      ? 'Team Connectors'
-                      : 'My Connectors'}
-                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                    <Typography
+                      variant="h5"
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '1.5rem',
+                        color: theme.palette.text.primary,
+                      }}
+                    >
+                      {isBusiness && isAdmin && effectiveScope === 'team'
+                        ? 'Team Connectors'
+                        : 'My Connectors'}
+                    </Typography>
+                    {!showScopeTabs && scopeCounts.personal > 0 && (
+                      <Chip
+                        label={scopeCounts.personal}
+                        size="small"
+                        icon={<Iconify icon={accountIcon} width={14} height={14} />}
+                        sx={{
+                          height: 24,
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          backgroundColor: isDark
+                            ?  alpha(theme.palette.primary.contrastText, 0.9)
+                            : alpha(theme.palette.primary.main, 0.12),
+                          color: theme.palette.primary.main,
+                          border: `1px solid ${alpha(theme.palette.primary.main, 0.3)}`,
+                          '& .MuiChip-icon': {
+                            color: theme.palette.primary.main,
+                          },
+                        }}
+                      />
+                    )}
+                  </Box>
                   <Typography
                     variant="body2"
                     sx={{
@@ -596,14 +626,78 @@ const Connectors: React.FC = () => {
                   <Tab
                     icon={<Iconify icon={accountIcon} width={18} height={18} />}
                     iconPosition="start"
-                    label="Personal"
+                    label={
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                        <span>Personal</span>
+                        {scopeCounts.personal > 0 && (
+                          <Chip
+                            label={scopeCounts.personal}
+                            size="small"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.6875rem',
+                              fontWeight: 700,
+                              minWidth: 20,
+                              '& .MuiChip-label': {
+                                px: 0.75,
+                              },
+                              backgroundColor: effectiveScope === 'personal'
+                              ? isDark
+                              ? alpha(theme.palette.primary.contrastText, 0.9)
+                              : alpha(theme.palette.primary.main, 0.8)
+                            : isDark
+                              ? alpha(theme.palette.text.primary, 0.4)
+                              : alpha(theme.palette.text.primary, 0.12),
+                              color: effectiveScope === 'personal'
+                                ? theme.palette.primary.contrastText
+                                : theme.palette.text.primary,
+                              border: effectiveScope === 'personal'
+                                ? `1px solid ${alpha(theme.palette.primary.contrastText, 0.3)}`
+                                : `1px solid ${alpha(theme.palette.text.primary, 0.2)}`,
+                            }}
+                          />
+                        )}
+                      </Box>
+                    }
                     value="personal"
                     sx={{ mr: 1 }}
                   />
                   <Tab
                     icon={<Iconify icon={accountGroupIcon} width={18} height={18} />}
                     iconPosition="start"
-                    label="Team"
+                    label={
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                        <span>Team</span>
+                        {scopeCounts.team > 0 && (
+                          <Chip
+                            label={scopeCounts.team}
+                            size="small"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.6875rem',
+                              fontWeight: 700,
+                              minWidth: 20,
+                              '& .MuiChip-label': {
+                                px: 0.75,
+                              },
+                              backgroundColor: effectiveScope === 'team'
+                                ? isDark
+                                  ? alpha(theme.palette.primary.contrastText, 0.9)
+                                  : alpha(theme.palette.primary.main, 0.8)
+                                : isDark
+                                  ? alpha(theme.palette.text.primary, 0.4)
+                                  : alpha(theme.palette.text.primary, 0.12),
+                              color: effectiveScope === 'team'
+                                ? theme.palette.primary.contrastText
+                                : theme.palette.text.primary,
+                              border: effectiveScope === 'team'
+                                ? `1px solid ${alpha(theme.palette.primary.contrastText, 0.3)}`
+                                : `1px solid ${alpha(theme.palette.text.primary, 0.2)}`,
+                            }}
+                          />
+                        )}
+                      </Box>
+                    }
                     value="team"
                   />
                 </Tabs>

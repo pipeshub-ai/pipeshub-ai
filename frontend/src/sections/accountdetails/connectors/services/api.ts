@@ -28,7 +28,7 @@ export class ConnectorApiService {
     page?: number,
     limit?: number,
     search?: string
-  ): Promise<{ connectors: ConnectorRegistry[]; pagination: any }> {
+  ): Promise<{ connectors: ConnectorRegistry[]; pagination: any; registryCountsByScope?: { personal: number; team: number } }> {
     const params: any = {};
     if (scope) params.scope = scope;
     if (typeof page === 'number' && Number.isFinite(page)) params.page = page;
@@ -39,7 +39,8 @@ export class ConnectorApiService {
     if (!response.data) throw new Error('Failed to fetch connector registry');
     return {
       connectors: response.data.connectors || [],
-      pagination: response.data.pagination || {}
+      pagination: response.data.pagination || {},
+      registryCountsByScope: response.data.registryCountsByScope || { personal: 0, team: 0 }
     };
   }
 
@@ -68,7 +69,7 @@ export class ConnectorApiService {
     page?: number,
     limit?: number,
     search?: string
-  ): Promise<{ connectors: Connector[]; pagination: any }> {
+  ): Promise<{ connectors: Connector[]; pagination: any; scopeCounts?: { personal: number; team: number } }> {
     const params: any = {};
     if (scope) params.scope = scope;
     if (typeof page === 'number' && Number.isFinite(page)) params.page = page;
@@ -79,7 +80,8 @@ export class ConnectorApiService {
     if (!response.data) throw new Error('Failed to fetch connector instances');
     return {
       connectors: response.data.connectors || [],
-      pagination: response.data.pagination || {}
+      pagination: response.data.pagination || {},
+      scopeCounts: response.data.scopeCounts || { personal: 0, team: 0 }
     };
   }
 
