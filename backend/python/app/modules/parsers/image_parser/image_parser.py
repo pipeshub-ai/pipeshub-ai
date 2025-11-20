@@ -65,17 +65,16 @@ class ImageParser:
 
     def _is_valid_image_content_type(self, content_type: str) -> bool:
         """
-        Validate content type and return (is_valid, extension).
-        Returns (False, '') for invalid or unsupported image types.
+        Validate content type and return True for valid image types.
         """
         if not content_type:
-            return False, ''
+            return False
 
         content_type = content_type.lower().split(';')[0].strip()
 
         # Must be an image content type
         if not content_type.startswith('image/'):
-            return False, ''
+            return False
 
         return True
 
@@ -99,8 +98,8 @@ class ImageParser:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
                 response.raise_for_status()
 
-                # Re-verify content-type from GET response (in case it differs)
-                get_content_type = response.headers.get('content-type', '').lower()
+                get_content_type_header = response.headers.get('content-type', '').lower()
+                get_content_type = get_content_type_header.split(';')[0].strip()
                 is_valid = self._is_valid_image_content_type(get_content_type)
                 self.logger.debug(f"GET content-type for URL {url[:200]}... => {get_content_type}")
 
@@ -139,7 +138,7 @@ class ImageParser:
             # Handle HTTP errors specifically
             if e.status == 403:
                 # Check if this is a signed URL that might have expired
-                if 'X-Amz-Expires' in str(e) or 's3.amazonaws.com' in str(e) or 'amazonaws.com' in url:
+                if 'X-Amz-Expires' in str(e):
                     self.logger.warning(
                         f"⚠️ Access denied (403) for signed URL - likely expired or invalid signature: {url[:150]}... "
                         f"(Original error: {e.status}, {e.message})"
