@@ -20,6 +20,8 @@ import xlsIcon from '@iconify-icons/vscode-icons/file-type-excel';
 import docIcon from '@iconify-icons/vscode-icons/file-type-word';
 import pptIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
 import txtIcon from '@iconify-icons/vscode-icons/file-type-text';
+import websiteIcon from '@iconify-icons/mdi/web';
+import ticketIcon from '@iconify-icons/mdi/ticket-outline';
 
 import {
   Box,
@@ -47,6 +49,7 @@ import TextViewer from '../qna/chatbot/components/text-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { KnowledgeBaseAPI } from './services/api';
 import ImageHighlighter from '../qna/chatbot/components/image-highlighter';
+import { getExtensionFromMimeType } from './utils/utils';
 
 // Simplified state management for viewport mode
 interface DocumentViewerState {
@@ -64,6 +67,12 @@ const getFileIcon = (extension: string, recordType?: string) => {
   // Handle mail records
   if (recordType === 'MAIL') {
     return emailIcon;
+  }
+  if (recordType === 'WEBPAGE') {
+    return websiteIcon;
+  }
+  if (recordType === 'TICKET') {
+    return ticketIcon;
   }
 
   const ext = extension?.replace('.', '').toLowerCase();
@@ -111,7 +120,7 @@ const getFileIcon = (extension: string, recordType?: string) => {
 
 const getExtensionColor = (extension: string, recordType?: string) => {
   // Handle mail records
-  if (recordType === 'MAIL') {
+  if (recordType === 'MAIL' || recordType === 'WEBPAGE') {
     return '#1976d2'; // Blue for emails
   }
 
@@ -140,11 +149,6 @@ const getExtensionColor = (extension: string, recordType?: string) => {
 };
 
 function getDocumentType(extension: string, recordType?: string) {
-  // Handle mail records - treat as HTML for rendering
-  if (recordType === 'MAIL') {
-    return 'html';
-  }
-
   if (extension === 'pdf') return 'pdf';
   if (['xlsx', 'xls', 'csv'].includes(extension)) return 'excel';
   if (extension === 'docx') return 'docx';
@@ -473,11 +477,12 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   );
 
   // Fixed early return - check for either fileRecord OR mailRecord
-  if (!record?.fileRecord && !record?.mailRecord) return null;
+  // if (!record?.fileRecord && !record?.mailRecord) return null;
 
   const {
     recordName,
     externalRecordId,
+    createdAtTimestamp,
     sourceCreatedAtTimestamp,
     fileRecord,
     mailRecord,
@@ -487,7 +492,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
 
   // Get the appropriate record data and extension
   const currentRecord = fileRecord || mailRecord;
-  const extension = fileRecord?.extension || 'eml'; // Use 'eml' for email records
+  const extension = getExtensionFromMimeType(record?.mimeType || ''); // Use 'eml' for email records
   const recordTypeForDisplay = recordType || 'FILE';
 
   const handleDownload = async () => {
@@ -653,7 +658,9 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
         }, 800);
 
         // Support mail records in addition to existing types
-        if (!['pdf', 'excel', 'docx', 'html', 'text', 'md', 'mdx', 'image'].includes(documentType)) {
+        if (
+          !['pdf', 'excel', 'docx', 'html', 'text', 'md', 'mdx', 'image'].includes(documentType)
+        ) {
           setSnackbar({
             open: true,
             message: `Unsupported document type: ${extension}`,
@@ -797,12 +804,16 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             style={{ color: getExtensionColor(extension, recordTypeForDisplay) }}
           />
           <Box sx={{ flexGrow: 1 }}>
-            <Typography variant="h6" gutterBottom>
-              {recordName}
-            </Typography>
+            <Tooltip title={recordName} arrow placement="top">
+              <Box>
+                <Typography variant="h6" gutterBottom>
+                  {recordName.length > 60 ? `${recordName.substring(0, 60)}...` : recordName}
+                </Typography>
+              </Box>
+            </Tooltip>
             <Typography variant="body2" color="text.secondary">
               {recordTypeForDisplay === 'MAIL' ? 'Email received' : 'Added'} on{' '}
-              {dayjs(sourceCreatedAtTimestamp).format('MMM DD, YYYY')}
+              {dayjs(sourceCreatedAtTimestamp || createdAtTimestamp).format('MMM DD, YYYY')}
             </Typography>
             {/* Show additional info for email records */}
             {recordTypeForDisplay === 'MAIL' && mailRecord && (

@@ -1,8 +1,14 @@
-import React, { createContext, useContext, useReducer, ReactNode, useMemo, useCallback, useRef, useEffect } from 'react';
+/**
+ * Connector Context
+ *
+ * Global state management for connector instances.
+ * Provides centralized access to connector data across the application.
+ */
+
+import React, { createContext, useContext, useReducer, useCallback, useMemo } from 'react';
 import { Connector } from '../types/types';
 import { ConnectorApiService } from '../services/api';
 
-// State interface
 interface ConnectorState {
   activeConnectors: Connector[];
   inactiveConnectors: Connector[];
@@ -11,17 +17,26 @@ interface ConnectorState {
   lastFetched: number | null;
 }
 
-// Action types
 type ConnectorAction =
-  | { type: 'SET_LOADING'; payload: boolean }
-  | { type: 'SET_ERROR'; payload: string | null }
-  | { type: 'SET_ACTIVE_CONNECTORS'; payload: Connector[] }
-  | { type: 'SET_INACTIVE_CONNECTORS'; payload: Connector[] }
-  | { type: 'SET_CONNECTORS'; payload: { active: Connector[]; inactive: Connector[] } }
-  | { type: 'UPDATE_CONNECTOR'; payload: { name: string; updates: Partial<Connector> } }
-  | { type: 'RESET' };
+  | { type: 'FETCH_START' }
+  | {
+      type: 'FETCH_SUCCESS';
+      payload: { active: Connector[]; inactive: Connector[] };
+    }
+  | { type: 'FETCH_ERROR'; payload: string }
+  | { type: 'UPDATE_CONNECTOR'; payload: Connector }
+  | { type: 'DELETE_CONNECTOR'; payload: string };
 
-// Initial state
+interface ConnectorContextType {
+  state: ConnectorState;
+  dispatch: React.Dispatch<ConnectorAction>;
+  refreshConnectors: () => Promise<void>;
+  updateConnector: (connector: Connector) => void;
+  deleteConnector: (connectorId: string) => void;
+}
+
+const ConnectorContext = createContext<ConnectorContextType | undefined>(undefined);
+
 const initialState: ConnectorState = {
   activeConnectors: [],
   inactiveConnectors: [],
@@ -30,143 +45,93 @@ const initialState: ConnectorState = {
   lastFetched: null,
 };
 
-// Reducer
-function connectorReducer(state: ConnectorState, action: ConnectorAction): ConnectorState {
+const connectorReducer = (state: ConnectorState, action: ConnectorAction): ConnectorState => {
   switch (action.type) {
-    case 'SET_LOADING':
-      return { ...state, loading: action.payload };
-    
-    case 'SET_ERROR':
-      return { ...state, error: action.payload, loading: false };
-    
-    case 'SET_ACTIVE_CONNECTORS':
-      return { 
-        ...state, 
-        activeConnectors: action.payload, 
-        loading: false, 
-        error: null,
-        lastFetched: Date.now()
-      };
-    
-    case 'SET_INACTIVE_CONNECTORS':
-      return { 
-        ...state, 
-        inactiveConnectors: action.payload, 
-        loading: false, 
-        error: null,
-        lastFetched: Date.now()
-      };
-    
-    case 'SET_CONNECTORS':
+    case 'FETCH_START':
+      return { ...state, loading: true, error: null };
+
+    case 'FETCH_SUCCESS':
       return {
         ...state,
+        loading: false,
         activeConnectors: action.payload.active,
         inactiveConnectors: action.payload.inactive,
-        loading: false,
+        lastFetched: Date.now(),
         error: null,
-        lastFetched: Date.now()
       };
-    
+
+    case 'FETCH_ERROR':
+      return { ...state, loading: false, error: action.payload };
+
     case 'UPDATE_CONNECTOR': {
-      const { name, updates } = action.payload;
+      const updatedConnector = action.payload;
+      const updateList = (list: Connector[]) =>
+        list.map((c) => (c._key === updatedConnector._key ? updatedConnector : c));
+
       return {
         ...state,
-        activeConnectors: state.activeConnectors.map(connector =>
-          connector.name === name ? { ...connector, ...updates } : connector
-        ),
-        inactiveConnectors: state.inactiveConnectors.map(connector =>
-          connector.name === name ? { ...connector, ...updates } : connector
-        ),
+        activeConnectors: updateList(state.activeConnectors),
+        inactiveConnectors: updateList(state.inactiveConnectors),
       };
     }
-    
-    case 'RESET':
-      return initialState;
-    
+
+    case 'DELETE_CONNECTOR': {
+      const connectorId = action.payload;
+      return {
+        ...state,
+        activeConnectors: state.activeConnectors.filter((c) => c._key !== connectorId),
+        inactiveConnectors: state.inactiveConnectors.filter((c) => c._key !== connectorId),
+      };
+    }
+
     default:
       return state;
   }
-}
+};
 
-// Context interface
-interface ConnectorContextType {
-  state: ConnectorState;
-  dispatch: React.Dispatch<ConnectorAction>;
-  refreshConnectors: () => Promise<void>;
-  updateConnector: (name: string, updates: Partial<Connector>) => void;
-  clearError: () => void;
-}
-
-// Create context
-const ConnectorContext = createContext<ConnectorContextType | undefined>(undefined);
-
-// Provider component
-interface ConnectorProviderProps {
-  children: ReactNode;
-}
-
-export const ConnectorProvider: React.FC<ConnectorProviderProps> = ({ children }) => {
+export const ConnectorProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, dispatch] = useReducer(connectorReducer, initialState);
 
-  // Prevent concurrent/duplicate fetches
-  const isFetchingRef = useRef(false);
-  const hasMountedFetchedRef = useRef(false);
-
   const refreshConnectors = useCallback(async () => {
-    if (isFetchingRef.current) return;
-    isFetchingRef.current = true;
-
-    dispatch({ type: 'SET_LOADING', payload: true });
-    dispatch({ type: 'SET_ERROR', payload: null });
+    dispatch({ type: 'FETCH_START' });
 
     try {
       const [active, inactive] = await Promise.all([
-        ConnectorApiService.getActiveConnectors(),
-        ConnectorApiService.getInactiveConnectors(),
+        ConnectorApiService.getActiveConnectorInstances(),
+        ConnectorApiService.getInactiveConnectorInstances(),
       ]);
-      dispatch({ type: 'SET_CONNECTORS', payload: { active, inactive } });
+
+      dispatch({ type: 'FETCH_SUCCESS', payload: { active, inactive } });
     } catch (error) {
-      dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Failed to fetch connectors' });
-    } finally {
-      isFetchingRef.current = false;
+      console.error('Error fetching connectors:', error);
+      dispatch({ type: 'FETCH_ERROR', payload: 'Failed to fetch connectors' });
     }
   }, []);
 
-  // Initial fetch once on mount
-  useEffect(() => {
-    if (hasMountedFetchedRef.current) return;
-    hasMountedFetchedRef.current = true;
-    refreshConnectors();
-  }, [refreshConnectors]);
-
-  const updateConnector = useCallback((name: string, updates: Partial<Connector>) => {
-    dispatch({ type: 'UPDATE_CONNECTOR', payload: { name, updates } });
+  const updateConnector = useCallback((connector: Connector) => {
+    dispatch({ type: 'UPDATE_CONNECTOR', payload: connector });
   }, []);
 
-  const clearError = useCallback(() => {
-    dispatch({ type: 'SET_ERROR', payload: null });
+  const deleteConnector = useCallback((connectorId: string) => {
+    dispatch({ type: 'DELETE_CONNECTOR', payload: connectorId });
   }, []);
-
-  const value: ConnectorContextType = useMemo(() => ({
-    state,
-    dispatch,
-    refreshConnectors,
-    updateConnector,
-    clearError,
-  }), [state, refreshConnectors, updateConnector, clearError]);
 
   return (
-    <ConnectorContext.Provider value={value}>
+    <ConnectorContext.Provider
+      value={useMemo(
+        () => ({ state, dispatch, refreshConnectors, updateConnector, deleteConnector }),
+        [state, dispatch, refreshConnectors, updateConnector, deleteConnector]
+      )}
+    >
       {children}
     </ConnectorContext.Provider>
   );
 };
 
-// Hook to use the context
-export const useConnectorContext = (): ConnectorContextType => {
+export const useConnectorContext = () => {
   const context = useContext(ConnectorContext);
-  if (context === undefined) {
-    throw new Error('useConnectorContext must be used within a ConnectorProvider');
+  if (!context) {
+    throw new Error('useConnectorContext must be used within ConnectorProvider');
   }
   return context;
 };

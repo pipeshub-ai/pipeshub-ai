@@ -87,27 +87,6 @@ export default function UploadManager({
   });
   const [maxFileSize, setMaxFileSize] = useState<number>(DEFAULT_MAX_FILE_SIZE);
 
-  // Load platform settings for max upload size
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const res = await axios.get('/api/v1/configurationManager/platform/settings');
-        const value = Number(res.data?.fileUploadMaxSizeBytes);
-        if (mounted && Number.isFinite(value) && value > 0) {
-          setMaxFileSize(value);
-        }
-      } catch (e) {
-        // Keep default, but log for visibility
-        // eslint-disable-next-line no-console
-        console.warn('[UploadManager] Failed to fetch platform settings; using defaults', e);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
   // Refs for file inputs
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);

@@ -3,6 +3,8 @@ Client factories for PostHog.
 """
 
 
+from typing import Optional
+
 from app.agents.tools.factories.base import ClientFactory
 from app.sources.client.posthog.posthog import PostHogClient
 
@@ -13,10 +15,11 @@ from app.sources.client.posthog.posthog import PostHogClient
 class PostHogClientFactory(ClientFactory):
     """Factory for creating PostHog clients"""
 
-    async def create_client(self, config_service, logger) -> PostHogClient:
+    async def create_client(self, config_service, logger, state=None, connector_instance_id: Optional[str] = None) -> PostHogClient:
         """Create PostHog client instance"""
 
         return await PostHogClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
+            connector_instance_id=connector_instance_id
         )

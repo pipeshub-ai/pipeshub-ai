@@ -224,22 +224,100 @@ interface Connector {
   name: string;
   type: string;
   appGroup: string;
-  appGroupId: string;
+  appGroupId?: string;
   authType: string;
   appDescription: string;
   appCategories: string[];
   iconPath: string;
   isActive: boolean;
   isConfigured: boolean;
+  isAgentActive: boolean;
+  isAuthenticated?: boolean;
   supportsRealtime: boolean;
+  supportsSync: boolean;
+  supportsAgent: boolean;
+  scope: 'personal' | 'team';
+  createdBy?: string;
+  updatedBy?: string;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
 }
 
+/**
+ * Connector registry entry (available connector types)
+ */
+interface ConnectorRegistry {
+  name: string;
+  type: string;
+  appGroup: string;
+  authType: string;
+  appDescription: string;
+  appCategories: string[];
+  iconPath: string;
+  supportsRealtime: boolean;
+  supportsSync: boolean;
+  supportsAgent: boolean;
+  connectorScopes?: ('personal' | 'team')[];
+  config: {
+    auth: any;
+    sync: any;
+    filters: any;
+    documentationLinks?: DocumentationLink[];
+  };
+}
+
+interface IndexingStatusStats {
+  NOT_STARTED: number;
+  IN_PROGRESS: number;
+  COMPLETED: number;
+  FAILED: number;
+  FILE_TYPE_NOT_SUPPORTED: number;
+  AUTO_INDEX_OFF: number;
+}
+
+interface BasicStats {
+  total: number;
+  indexingStatus: IndexingStatusStats;
+}
+
+interface RecordTypeStats {
+  recordType: string;
+  total: number;
+  indexingStatus: IndexingStatusStats;
+}
+
+// For individual Knowledge Base details
+interface KnowledgeBaseStats {
+  kbId: string;
+  kbName: string;
+  total: number;
+  indexingStatus: IndexingStatusStats;
+  byRecordType: RecordTypeStats[];
+}
+
+// Main connector stats data structure
+interface ConnectorStatsData {
+  orgId: string;
+  origin: 'CONNECTOR';
+  stats: BasicStats;
+  byRecordType: RecordTypeStats[];
+  connectorId: string;
+}
+
+interface ConnectorStatsResponse {
+  success: boolean;
+  message?: string; // Present when success is false
+  data: ConnectorStatsData | null;
+}
+
+type ConnectorToggleType = 'sync' | 'agent';
+
+
 // Export all types
 export type { 
-  Connector, 
-  ConnectorConfig, 
+  Connector,
+  ConnectorConfig,
+  ConnectorRegistry,
   ConnectorAuthConfig,
   ConnectorSyncConfig,
   ConnectorFiltersConfig,
@@ -255,5 +333,8 @@ export type {
   FieldValidation,
   BaseField,
   ConditionalDisplayRule,
-  ConditionalDisplayConfig
+  ConditionalDisplayConfig,
+  ConnectorStatsData,
+  ConnectorStatsResponse,
+  ConnectorToggleType
 };

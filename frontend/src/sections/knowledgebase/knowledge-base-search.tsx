@@ -713,6 +713,7 @@ export default function KnowledgeBaseSearch() {
         onFilterChange={handleFilterChange}
         openSidebar={openSidebar}
         onToggleSidebar={toggleSidebar}
+        activeConnectors={activeConnectors}
       />
 
       <Box

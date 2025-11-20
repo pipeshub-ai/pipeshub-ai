@@ -28,12 +28,14 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
     userId: string,
     config: ICrawlingSchedule,
     connector: string,
+    connectorId: string,
   ): Promise<CrawlingResult> {
     this.logger.info('Starting Connectors crawling', {
       orgId,
       userId,
       config,
       connector,
+      connectorId,
     });
 
     try {
@@ -42,12 +44,14 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
         orgId,
         userId,
         connector,
+        connectorId,
       });
 
       // Construct the payload for the sync event using the connector information
       const event = constructSyncConnectorEvent(
         orgId,
         connector,
+        connectorId,
       );
 
       await this.syncEventsService.publishEvent(event);
@@ -55,6 +59,7 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
       this.logger.info('Sync event published successfully', {
         orgId,
         connector,
+        connectorId,
       });
 
       return {
@@ -66,6 +71,7 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
         userId,
         connector,
         error: error instanceof Error ? error.message : 'Unknown error',
+        connectorId,
       });
       throw error;
     }

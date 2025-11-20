@@ -54,17 +54,17 @@ class GoogleAdminService:
         self.admin_directory_service = None
         self.credentials = None
 
-    async def connect_admin(self, org_id: str, app_name: str = "DRIVE") -> bool:
+    async def connect_admin(self, org_id: str, connector_id: str) -> bool:
         """Initialize admin service with domain-wide delegation"""
         try:
             SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES + GOOGLE_PARSER_SCOPES
 
             try:
                 credentials_json = await self.google_token_handler.get_enterprise_token(
-                    org_id, app_name
+                    connector_id
                 )
 
-                self.logger.info(f"🔍 Retrieved credentials for org {org_id}, app {app_name}")
+                self.logger.info(f"🔍 Retrieved credentials for org {org_id}, app {connector_id}")
                 self.logger.info(f"🔍 Credentials keys: {list(credentials_json.keys())}")
                 self.logger.info(f"🔍 Admin email: {credentials_json.get('adminEmail')}")
                 self.logger.info(f"🔍 Client email: {credentials_json.get('client_email')}")
@@ -405,7 +405,7 @@ class GoogleAdminService:
                 details={"group_email": group_email, "error": str(e)},
             )
 
-    async def handle_new_user(self, org_id: str, user_email: str) -> None:
+    async def handle_new_user(self, org_id: str, user_email: str, connector_id: str) -> None:
         """Handle new user creation event"""
         try:
             self.logger.info(f"Handling new user creation for {user_email}")
@@ -413,7 +413,7 @@ class GoogleAdminService:
             current_timestamp = get_epoch_timestamp_in_ms()
 
             # Get user info from Google Admin API
-            user_info = await self.get_user_info(org_id, user_email)
+            user_info = await self.get_user_info(org_id, user_email, connector_id)
             if not user_info:
                 self.logger.error(f"Failed to get user info for {user_email}")
                 return
@@ -475,13 +475,13 @@ class GoogleAdminService:
             )
             raise
 
-    async def handle_new_group(self, org_id: str, group_email: str) -> None:
+    async def handle_new_group(self, org_id: str, group_email: str, connector_id: str) -> None:
         """Handle new group creation event"""
         try:
             self.logger.info(f"Handling new group creation for {group_email}")
 
             # Get group info from Google Admin API
-            group_info = await self.get_group_info(org_id, group_email)
+            group_info = await self.get_group_info(org_id, group_email, connector_id)
             if not group_info:
                 self.logger.error(f"Failed to get group info for {group_email}")
                 return
@@ -541,7 +541,7 @@ class GoogleAdminService:
             raise
 
     async def handle_group_member_added(
-        self, org_id: str, group_email: str, user_email: str
+        self, org_id: str, group_email: str, user_email: str, connector_id: str
     ) -> None:
         """Handle group member addition event"""
         try:
@@ -580,7 +580,7 @@ class GoogleAdminService:
             raise
 
     async def handle_group_member_removed(
-        self, org_id: str, group_email: str, user_email: str
+        self, org_id: str, group_email: str, user_email: str, connector_id: str
     ) -> None:
         """Handle group member removal event"""
         try:
@@ -628,10 +628,10 @@ class GoogleAdminService:
             raise
 
     @exponential_backoff()
-    async def get_user_info(self, org_id: str, user_email: str) -> Optional[Dict]:
+    async def get_user_info(self, org_id: str, user_email: str, connector_id: str) -> Optional[Dict]:
         """Get user information from Google Admin API"""
         try:
-            if not await self.connect_admin(org_id):
+            if not await self.connect_admin(org_id, connector_id):
                 raise AdminServiceError(
                     "Failed to connect admin service for user info retrieval",
                     details={"org_id": org_id},
@@ -669,10 +669,10 @@ class GoogleAdminService:
             return None
 
     @exponential_backoff()
-    async def get_group_info(self, org_id: str, group_email: str) -> Optional[Dict]:
+    async def get_group_info(self, org_id: str, group_email: str, connector_id: str) -> Optional[Dict]:
         """Get group information from Google Admin API"""
         try:
-            if not await self.connect_admin(org_id):
+            if not await self.connect_admin(org_id, connector_id):
                 raise AdminServiceError(
                     "Failed to connect admin service for group info retrieval",
                     details={"org_id": org_id},
@@ -701,12 +701,12 @@ class GoogleAdminService:
             return None
 
     @exponential_backoff()
-    async def create_admin_watch(self, org_id: str, app_name: str) -> None:
+    async def create_admin_watch(self, org_id: str, connector_id: str) -> None:
         """Create a watch for admin activities (user creation/deletion)"""
         try:
             self.logger.info("🔍 Setting up admin activity watch")
 
-            if not await self.connect_admin(org_id, app_name):
+            if not await self.connect_admin(org_id, connector_id):
                 raise AdminServiceError(
                     "Failed to connect admin service for watch creation",
                     details={"org_id": org_id},
@@ -760,7 +760,7 @@ class GoogleAdminService:
                     (
                         self.admin_reports_service.activities()
                         .watch(
-                            userKey="all", applicationName="admin", body=channel_body
+                            userKey="all", applicationName="admin", body=channel_body, connector_id=connector_id
                         )
                         .execute()
                     )
@@ -785,7 +785,7 @@ class GoogleAdminService:
             raise
 
     async def create_drive_user_service(
-        self, user_email: str
+        self, user_email: str, connector_id: str
     ) -> Optional[DriveUserService]:
         """Get or create a DriveUserService for a specific user"""
         try:
@@ -794,7 +794,7 @@ class GoogleAdminService:
                 user_key = await self.arango_service.get_entity_id_by_email(user_email)
                 user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value,)
                 if self.credentials is None:
-                    await self.connect_admin(user.get("orgId"), app_name="DRIVE")
+                    await self.connect_admin(user.get("orgId"), connector_id=connector_id)
                 user_credentials = self.credentials.with_subject(user_email)
             except Exception as e:
                 raise AdminDelegationError(
@@ -808,6 +808,7 @@ class GoogleAdminService:
                 config_service=self.config_service,
                 rate_limiter=self.rate_limiter,
                 google_token_handler=self.google_token_handler,
+                connector_id=connector_id,
                 credentials=user_credentials,
             )
 
@@ -840,7 +841,7 @@ class GoogleAdminService:
             )
 
     async def create_gmail_user_service(
-        self, user_email: str
+        self, user_email: str, connector_id: str
     ) -> Optional[GmailUserService]:
         """Get or create a GmailUserService for a specific user"""
         try:
@@ -849,7 +850,7 @@ class GoogleAdminService:
                 user_key = await self.arango_service.get_entity_id_by_email(user_email)
                 user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value)
                 if self.credentials is None:
-                    await self.connect_admin(user.get("orgId"), app_name="GMAIL")
+                    await self.connect_admin(user.get("orgId"), connector_id=connector_id)
                 user_credentials = self.credentials.with_subject(user_email)
             except Exception as e:
                 raise AdminDelegationError(
@@ -863,6 +864,7 @@ class GoogleAdminService:
                 config_service=self.config_service,
                 rate_limiter=self.rate_limiter,
                 google_token_handler=self.google_token_handler,
+                connector_id=connector_id,
                 credentials=user_credentials,
                 admin_service=self,  # Pass the current GoogleAdminService instance
             )
@@ -893,7 +895,7 @@ class GoogleAdminService:
             )
 
     async def create_parser_user_service(
-        self, user_email: str
+        self, user_email: str, connector_id: str
     ) -> Optional[ParserUserService]:
         """Create a ParserUserService for a specific user"""
         try:
@@ -902,7 +904,7 @@ class GoogleAdminService:
                 user_key = await self.arango_service.get_entity_id_by_email(user_email)
                 user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value)
                 if self.credentials is None:
-                    await self.connect_admin(user.get("orgId"))
+                    await self.connect_admin(user.get("orgId"), connector_id=connector_id)
                 user_credentials = self.credentials.with_subject(user_email)
             except Exception as e:
                 raise AdminDelegationError(
@@ -915,6 +917,7 @@ class GoogleAdminService:
                 config_service=self.config_service,
                 rate_limiter=self.rate_limiter,
                 google_token_handler=self.google_token_handler,
+                connector_id=connector_id,
                 credentials=user_credentials,
             )
             org_id = user.get("orgId")

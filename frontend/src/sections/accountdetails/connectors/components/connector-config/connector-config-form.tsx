@@ -14,11 +14,16 @@ import {
   useTheme,
   IconButton,
   Chip,
+  TextField,
+  Stack,
+  Paper
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import { useAccountType } from 'src/hooks/use-account-type';
+import settingsIcon from '@iconify-icons/mdi/settings';
 import closeIcon from '@iconify-icons/mdi/close';
 import saveIcon from '@iconify-icons/eva/save-outline';
+import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 import { useConnectorConfig } from '../../hooks/use-connector-config';
 import AuthSection from './auth-section';
 import SyncSection from './sync-section';
@@ -30,16 +35,20 @@ interface ConnectorConfigFormProps {
   connector: Connector;
   onClose: () => void;
   onSuccess?: () => void;
+  initialInstanceName?: string;
 }
 
 const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   connector,
   onClose,
   onSuccess,
+  initialInstanceName,
 }) => {
   const theme = useTheme();
-  const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
   const isDark = theme.palette.mode === 'dark';
+  const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
+  const scrollableStyles = createScrollableContainerStyle(theme);
+
   const {
     // State
     connectorConfig,
@@ -50,7 +59,10 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     formErrors,
     saveError,
     conditionalDisplay,
-
+    isCreateMode,
+    instanceName,
+    instanceNameError,
+    
     // Business OAuth state
     adminEmail,
     adminEmailError,
@@ -64,6 +76,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     handleNext,
     handleBack,
     handleSave,
+    setInstanceName,
     handleFileSelect,
     handleFileUpload,
     handleFileChange,
@@ -71,7 +84,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     validateAdminEmail,
     isBusinessGoogleOAuthValid,
     fileInputRef,
-  } = useConnectorConfig({ connector, onClose, onSuccess });
+  } = useConnectorConfig({ connector, onClose, onSuccess, initialInstanceName });
 
   // Skip auth step if authType is 'NONE'
   const isNoAuthType = isNoneAuthType(connector.authType);
@@ -185,31 +198,23 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             sx={{
               p: 1,
               borderRadius: 1.5,
-              bgcolor: isDark ? alpha(theme.palette.common.white, 0.9) : alpha(theme.palette.grey[100], 0.8),
+              backgroundColor: isDark
+                ? alpha(theme.palette.common.white, 0.9)
+                : alpha(theme.palette.grey[100], 0.8),
+              border: `1px solid ${theme.palette.divider}`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
             }}
           >
-
-            <img
-              src={connector.iconPath}
-              alt={connector.name}
-              width={32}
-              height={32}
-              style={{ objectFit: 'contain' }}
-              onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
-                const target = e.target as HTMLImageElement;
-                target.src = '/assets/icons/connectors/default.svg';
-              }}
-            />
+            <img src={connector.iconPath} alt={connector.name} width={28} height={28} />
           </Box>
           <Box>
             <Typography
               variant="h5"
               sx={{ fontWeight: 700, mb: 0.25, color: theme.palette.text.primary }}
             >
-              Configure {connector.name}
+              Configure {(connector.name)[0].toUpperCase() + (connector.name).slice(1).toLowerCase()}
             </Typography>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Chip
@@ -253,7 +258,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         </IconButton>
       </DialogTitle>
 
-      <DialogContent sx={{ p: 0, overflow: 'auto', flex: 1 }}>
+      <DialogContent sx={{ p: 0, ...scrollableStyles, flex: 1 }}>
         {saveError && (
           <Alert
             severity="error"
@@ -273,6 +278,33 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         )}
 
         <Box sx={{ p: 3 }}>
+          {isCreateMode && (
+            <Paper
+              variant="outlined"
+              sx={{
+                p: 2,
+                mb: 2,
+                borderRadius: 1.5,
+                borderColor: alpha(theme.palette.primary.main, 0.12),
+                bgcolor: alpha(theme.palette.primary.main, 0.02),
+              }}
+            >
+              <Stack spacing={1}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 600, fontSize: '0.8125rem' }}>
+                  Connector Name
+                </Typography>
+                <TextField
+                  fullWidth
+                  size="small"
+                  placeholder={`e.g., ${(connector.name)[0].toUpperCase() + (connector.name).slice(1).toLowerCase()} - Production`}
+                  value={instanceName}
+                  onChange={(e) => setInstanceName(e.target.value)}
+                  error={!!instanceNameError}
+                  helperText={instanceNameError || 'Give this connector a unique, descriptive name'}
+                />
+              </Stack>
+            </Paper>
+          )}
           <ConfigStepper activeStep={activeStep} steps={steps} />
           {renderStepContent()}
         </Box>
@@ -338,6 +370,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           {!isNoAuthType && activeStep < 1 ? (
             <Button
               variant="contained"
+              color="primary"
               onClick={handleNext}
               disabled={saving}
               sx={{
@@ -363,6 +396,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           ) : (
             <Button
               variant="contained"
+              color="primary"
               onClick={handleSave}
               disabled={saving}
               startIcon={

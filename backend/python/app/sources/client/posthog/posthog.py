@@ -138,6 +138,7 @@ class PostHogClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "PostHogClient":
         """Build PostHogClient using configuration service
         Args:
@@ -147,7 +148,7 @@ class PostHogClient(IClient):
             PostHogClient instance
         """
 
-        config = await cls._get_connector_config(logger, config_service)
+        config = await cls._get_connector_config(logger, config_service, connector_instance_id)
         if not config:
             raise ValueError("Failed to get PostHog connector configuration")
         auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
@@ -165,14 +166,16 @@ class PostHogClient(IClient):
         return cls(client)
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for PostHog."""
         try:
-            config = await config_service.get_config("/services/connectors/posthog/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get PostHog connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get PostHog connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get PostHog connector configuration for instance {connector_instance_id}")
 
     async def close(self) -> None:
         """Close the client and cleanup resources"""

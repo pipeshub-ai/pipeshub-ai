@@ -26,66 +26,18 @@ import {
 
 import axios from 'src/utils/axios';
 import { Iconify } from 'src/components/iconify';
-import { useConnectors } from '../context';
-
-interface IndexingStatusStats {
-  NOT_STARTED: number;
-  IN_PROGRESS: number;
-  COMPLETED: number;
-  FAILED: number;
-  FILE_TYPE_NOT_SUPPORTED: number;
-  AUTO_INDEX_OFF: number;
-}
-
-interface BasicStats {
-  total: number;
-  indexing_status: IndexingStatusStats;
-}
-
-interface RecordTypeStats {
-  record_type: string;
-  total: number;
-  indexing_status: IndexingStatusStats;
-}
-
-interface KnowledgeBaseStats {
-  kb_id: string;
-  kb_name: string;
-  total: number;
-  indexing_status: IndexingStatusStats;
-  by_record_type: RecordTypeStats[];
-}
-
-export interface ConnectorStatsData {
-  org_id: string;
-  connector: string;
-  origin: 'UPLOAD' | 'CONNECTOR';
-  stats: BasicStats;
-  by_record_type: RecordTypeStats[];
-  knowledge_bases?: KnowledgeBaseStats[];
-}
+import { ConnectorStatsData, Connector } from '../types/types';
 
 type SnackbarSeverity = 'success' | 'error' | 'warning' | 'info';
 
-// Helper function to get connector data dynamically
-const getConnectorData = (connectorName: string, allConnectors: any[]) => {
-  const connector = allConnectors.find(c => 
-    c.name.toUpperCase() === connectorName.toUpperCase() || 
-    c.name === connectorName
-  );
-  
-  return {
-    displayName: connector?.name || connectorName,
-    iconPath: connector?.iconPath || '/assets/icons/connectors/default.svg',
-    appGroup: connector?.appGroup || ''
-  };
-};
 
 export const ConnectorStatsCard = ({
+  connectorStatsData,
   connector,
   showActions = true,
 }: {
-  connector: ConnectorStatsData;
+  connectorStatsData: ConnectorStatsData;
+  connector: Connector;
   showActions?: boolean;
 }): JSX.Element => {
   const theme = useTheme();
@@ -97,29 +49,26 @@ export const ConnectorStatsCard = ({
     severity: SnackbarSeverity;
   }>({ open: false, message: '', severity: 'success' });
 
-  // Get connector data from the hook
-  const { activeConnectors, inactiveConnectors } = useConnectors();
-  const allConnectors = [...activeConnectors, ...inactiveConnectors];
+  const { stats, connectorId } = connectorStatsData;
+  const { total, indexingStatus } = stats;
 
-  const { connector: connectorName, stats } = connector;
-  const { total, indexing_status } = stats;
-
-  // Get dynamic connector data
-  const connectorData = getConnectorData(connectorName, allConnectors);
-  const displayName = connectorData.displayName;
-  const iconName = connectorData.iconPath;
+  const displayName = connector.name;
+  const iconName = connector.iconPath;
 
   const percentComplete =
-    total > 0 ? Math.round(((indexing_status.COMPLETED || 0) / total) * 100) : 0;
+    total > 0 ? Math.round(((indexingStatus.COMPLETED || 0) / total) * 100) : 0;
   const isComplete = percentComplete === 100;
-  const failedCount = indexing_status.FAILED || 0;
+  const failedCount = indexingStatus.FAILED || 0;
   const canShowSync = showActions;
   const canShowReindex = failedCount > 0;
 
   const handleReindex = async (): Promise<void> => {
     try {
       setIsReindexing(true);
-      await axios.post('/api/v1/knowledgeBase/reindex-all/connector', { app: connectorName });
+      await axios.post('/api/v1/knowledgeBase/reindex-failed/connector', {
+        app: connector.type,
+        connectorId,
+      });
       setSnackbar({
         open: true,
         message: `Reindexing started for ${displayName}`,
@@ -139,7 +88,10 @@ export const ConnectorStatsCard = ({
   const handleResync = async (): Promise<void> => {
     try {
       setIsResyncing(true);
-      await axios.post('/api/v1/knowledgeBase/resync/connector', { connectorName });
+      await axios.post('/api/v1/knowledgeBase/resync/connector', {
+        connectorName: connector.type,
+        connectorId,
+      });
       setSnackbar({
         open: true,
         message: `Resync started for ${displayName}`,
@@ -189,28 +141,28 @@ export const ConnectorStatsCard = ({
   const statusItems = [
     {
       label: 'Indexed',
-      count: indexing_status.COMPLETED || 0,
+      count: indexingStatus.COMPLETED || 0,
       icon: checkCircleOutlineIcon,
       tooltip: 'Indexed Records',
       key: 'completed',
     },
     {
       label: 'Failed',
-      count: indexing_status.FAILED || 0,
+      count: indexingStatus.FAILED || 0,
       icon: alertCircleOutlineIcon,
       tooltip: 'Failed Records',
       key: 'failed',
     },
     {
       label: 'In Progress',
-      count: indexing_status.IN_PROGRESS || 0,
+      count: indexingStatus.IN_PROGRESS || 0,
       icon: progressClockIcon,
       tooltip: 'In Progress Records',
       key: 'inProgress',
     },
     {
       label: 'Not Started',
-      count: indexing_status.NOT_STARTED || 0,
+      count: indexingStatus.NOT_STARTED || 0,
       icon: clockOutlineIcon,
       tooltip: 'Not Started Records',
       key: 'notStarted',
@@ -218,22 +170,22 @@ export const ConnectorStatsCard = ({
   ] as const;
 
   const optionalStatusItems = [
-    ...(indexing_status.FILE_TYPE_NOT_SUPPORTED > 0
+    ...(indexingStatus.FILE_TYPE_NOT_SUPPORTED > 0
       ? [
           {
             label: 'Unsupported',
-            count: indexing_status.FILE_TYPE_NOT_SUPPORTED,
+            count: indexingStatus.FILE_TYPE_NOT_SUPPORTED,
             icon: fileCancelOutlineIcon,
             tooltip: 'Unsupported File Types',
             key: 'unsupported' as const,
           },
         ]
       : []),
-    ...(indexing_status.AUTO_INDEX_OFF > 0
+    ...(indexingStatus.AUTO_INDEX_OFF > 0
       ? [
           {
             label: 'Manual Sync',
-            count: indexing_status.AUTO_INDEX_OFF,
+            count: indexingStatus.AUTO_INDEX_OFF,
             icon: fileCancelOutlineIcon,
             tooltip: 'Auto Index Off',
             key: 'autoIndexOff' as const,
@@ -432,7 +384,7 @@ export const ConnectorStatsCard = ({
                     fontSize: '0.7rem',
                   }}
                 >
-                  {indexing_status.COMPLETED.toLocaleString()}
+                  {indexingStatus.COMPLETED.toLocaleString()}
                 </Typography>
                 <Box component="span" sx={{ mx: 0.25, color: textSecondary }}>
                   /

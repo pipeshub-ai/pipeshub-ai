@@ -1,7 +1,13 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 
+
+class ConnectorScope(str, Enum):
+    """Connector scope types."""
+    PERSONAL = "personal"
+    TEAM = "team"
 
 @dataclass
 class AuthField:
@@ -66,6 +72,7 @@ class ConnectorConfigBuilder:
             "iconPath": "/assets/icons/connectors/default.svg",
             "supportsRealtime": False,
             "supportsSync": True,
+            "supportsAgent": True,
             "documentationLinks": [],
             "auth": {
                 "type": "OAUTH",
@@ -130,6 +137,11 @@ class ConnectorConfigBuilder:
     def with_sync_support(self, supported: bool = True) -> 'ConnectorConfigBuilder':
         """Enable or disable sync support"""
         self.config["supportsSync"] = supported
+        return self
+
+    def with_agent_support(self, supported: bool = True) -> 'ConnectorConfigBuilder':
+        """Enable or disable agent support"""
+        self.config["supportsAgent"] = supported
         return self
 
     def add_documentation_link(self, link: DocumentationLink) -> 'ConnectorConfigBuilder':
@@ -271,10 +283,16 @@ class ConnectorBuilder:
         self.app_description = ""
         self.app_categories = []
         self.config_builder = ConnectorConfigBuilder()
+        self.connector_scopes: List[ConnectorScope] = []
 
     def in_group(self, app_group: str) -> 'ConnectorBuilder':
         """Set the app group"""
         self.app_group = app_group
+        return self
+
+    def with_scopes(self, scopes: List[ConnectorScope]) -> 'ConnectorBuilder':
+        """Set the connector scopes"""
+        self.connector_scopes = scopes
         return self
 
     def with_auth_type(self, auth_type: str) -> 'ConnectorBuilder':
@@ -313,7 +331,8 @@ class ConnectorBuilder:
             auth_type=self.auth_type,
             app_description=self.app_description,
             app_categories=self.app_categories,
-            config=config
+            config=config,
+            connector_scopes=self.connector_scopes
         )
 
     def _validate_oauth_requirements(self, config: Dict[str, Any]) -> None:

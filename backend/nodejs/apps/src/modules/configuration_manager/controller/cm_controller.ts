@@ -412,8 +412,14 @@ export const setPlatformSettings =
       const encryptedPlatformSettings = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ fileUploadMaxSizeBytes, featureFlags, updatedAt: new Date().toISOString() }));
-      
+      ).encrypt(
+        JSON.stringify({
+          fileUploadMaxSizeBytes,
+          featureFlags,
+          updatedAt: new Date().toISOString(),
+        }),
+      );
+
       await keyValueStoreService.set<string>(
         configPaths.platform.settings,
         encryptedPlatformSettings,
@@ -451,7 +457,6 @@ export const getAvailablePlatformFeatureFlags =
   ) => {
     res.status(200).json({ flags: PLATFORM_FEATURE_FLAGS }).end();
   };
-
 
 export const getAzureAdAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>

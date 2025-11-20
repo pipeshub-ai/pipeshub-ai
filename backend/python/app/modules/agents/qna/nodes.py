@@ -756,6 +756,13 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
             arango_service=arango_service,
         )
 
+        # Handle case where retrieval service returns None (shouldn't happen, but safety check)
+        if results is None:
+            logger.warning("Retrieval service returned None, treating as empty results")
+            state["search_results"] = []
+            state["final_results"] = []
+            return state
+
         status_code = results.get("status_code", 200)
         if status_code in [202, 500, 503]:
             state["error"] = {

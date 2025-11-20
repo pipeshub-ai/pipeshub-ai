@@ -32,6 +32,7 @@ import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
 import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
 import databaseIcon from '@iconify-icons/mdi/database';
 import infoIcon from '@iconify-icons/mdi/information-outline';
+import ticketIcon from '@iconify-icons/mdi/ticket-outline';
 
 import {
   Box,
@@ -312,12 +313,13 @@ export default function RecordDetails() {
   }
 
   const { record, knowledgeBase, permissions, metadata } = recordData;
-  const createdAt = new Date(record.sourceCreatedAtTimestamp).toLocaleString();
-  const updatedAt = new Date(record.sourceLastModifiedTimestamp).toLocaleString();
+  const createdAt = new Date(record.sourceCreatedAtTimestamp || record.createdAtTimestamp).toLocaleString();
+  const updatedAt = new Date(record.sourceLastModifiedTimestamp || record.updatedAtTimestamp).toLocaleString();
 
   // Check record type
   const isFileRecord = record.recordType === 'FILE' && record.fileRecord;
   const isMailRecord = record.recordType === 'MAIL' && record.mailRecord;
+  const isTicketRecord = record.recordType === 'TICKET' && record.ticketRecord;
 
   // Get file information if it's a file record
   let fileSize = 'N/A';
@@ -335,6 +337,11 @@ export default function RecordDetails() {
     fileIconColor = '#2196f3';
     fileType = 'EMAIL';
     // We don't have a size for emails, so leave fileSize as N/A
+  } else if (isTicketRecord) {
+    fileIcon = ticketIcon;
+    fileIconColor = '#ff9800';
+    fileType = 'TICKET';
+    // We don't have a size for tickets, so leave fileSize as N/A
   }
   // Check all possible sources for webUrl
   const webUrl = record.webUrl || record.fileRecord?.webUrl || record.mailRecord?.webUrl;
@@ -1645,6 +1652,28 @@ export default function RecordDetails() {
                           </Box>
                         )}
 
+                        {isTicketRecord && record.ticketRecord && (
+                          <Box>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              gutterBottom
+                              sx={{
+                                textTransform: 'uppercase',
+                                fontWeight: 500,
+                                letterSpacing: '0.5px',
+                                display: 'block',
+                                mb: 0.75,
+                              }}
+                            >
+                              Summary
+                            </Typography>
+                            <Typography variant="body2">
+                              {record.ticketRecord?.summary || record.ticketRecord?.name || 'N/A'}
+                            </Typography>
+                          </Box>
+                        )}
+
                         <Box>
                           <Typography
                             variant="caption"
@@ -1807,6 +1836,171 @@ export default function RecordDetails() {
                                 </Typography>
                                 <Typography variant="body2">
                                   {record.mailRecord.cc.join(', ')}
+                                </Typography>
+                              </Box>
+                            )}
+                          </>
+                        )}
+
+                        {isTicketRecord && record.ticketRecord && (
+                          <>
+                            <Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                gutterBottom
+                                sx={{
+                                  textTransform: 'uppercase',
+                                  fontWeight: 500,
+                                  letterSpacing: '0.5px',
+                                  display: 'block',
+                                  mb: 0.75,
+                                }}
+                              >
+                                Status
+                              </Typography>
+                              <Chip
+                                label={record.ticketRecord.status || 'N/A'}
+                                size="small"
+                                sx={{
+                                  height: 22,
+                                  fontSize: '0.75rem',
+                                  fontWeight: 500,
+                                  borderRadius: '4px',
+                                  // Clean, professional styling for both modes
+                                  bgcolor: (themeVal) =>
+                                    themeVal.palette.mode !== 'dark'
+                                      ? alpha(themeVal.palette.grey[800], 0.1)
+                                      : alpha(themeVal.palette.grey[100], 0.8),
+                                  color: (themeVal) =>
+                                    themeVal.palette.mode === 'dark'
+                                      ? themeVal.palette.grey[100]
+                                      : themeVal.palette.grey[800],
+                                  border: (themeVal) =>
+                                    themeVal.palette.mode === 'dark'
+                                      ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                                      : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                  '& .MuiChip-label': {
+                                    px: 1,
+                                    py: 0.25,
+                                  },
+                                  '&:hover': {
+                                    bgcolor: (themeVal) =>
+                                      themeVal.palette.mode !== 'dark'
+                                        ? alpha(themeVal.palette.grey[700], 0.1)
+                                        : alpha(themeVal.palette.grey[200], 0.1),
+                                  },
+                                }}
+                              />
+                            </Box>
+                            <Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                gutterBottom
+                                sx={{
+                                  textTransform: 'uppercase',
+                                  fontWeight: 500,
+                                  letterSpacing: '0.5px',
+                                  display: 'block',
+                                  mb: 0.75,
+                                }}
+                              >
+                                Priority
+                              </Typography>
+                              <Chip
+                                label={record.ticketRecord.priority || 'N/A'}
+                                size="small"
+                                sx={{
+                                  height: 22,
+                                  fontSize: '0.75rem',
+                                  fontWeight: 500,
+                                  borderRadius: '4px',
+                                  bgcolor: (themeVal) =>
+                                    themeVal.palette.mode !== 'dark'
+                                      ? alpha(themeVal.palette.warning.main, 0.4)
+                                      : alpha(themeVal.palette.warning.main, 0.8),
+                                  color: (themeVal) =>
+                                    themeVal.palette.mode === 'dark'
+                                      ? themeVal.palette.warning.light
+                                      : themeVal.palette.warning.dark,
+                                  border: (themeVal) =>
+                                    `1px solid ${alpha(themeVal.palette.warning.main, 0.3)}`,
+                                  '& .MuiChip-label': {
+                                    px: 1,
+                                    py: 0.25,
+                                  },
+                                }}
+                              />
+                            </Box>
+                            {record.ticketRecord.assignee && (
+                              <Box>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  gutterBottom
+                                  sx={{
+                                    textTransform: 'uppercase',
+                                    fontWeight: 500,
+                                    letterSpacing: '0.5px',
+                                    display: 'block',
+                                    mb: 0.75,
+                                  }}
+                                >
+                                  Assignee
+                                </Typography>
+                                <Typography variant="body2">
+                                  {record.ticketRecord.assignee}
+                                  {record.ticketRecord.assigneeEmail && (
+                                    <span style={{ color: 'text.secondary', marginLeft: '8px' }}>
+                                      ({record.ticketRecord.assigneeEmail})
+                                    </span>
+                                  )}
+                                </Typography>
+                              </Box>
+                            )}
+                            <Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                gutterBottom
+                                sx={{
+                                  textTransform: 'uppercase',
+                                  fontWeight: 500,
+                                  letterSpacing: '0.5px',
+                                  display: 'block',
+                                  mb: 0.75,
+                                }}
+                              >
+                                Creator
+                              </Typography>
+                              <Typography variant="body2">
+                                {record.ticketRecord.creatorName || 'N/A'}
+                                {record.ticketRecord.creatorEmail && (
+                                  <span style={{ color: 'text.secondary', marginLeft: '8px' }}>
+                                    ({record.ticketRecord.creatorEmail})
+                                  </span>
+                                )}
+                              </Typography>
+                            </Box>
+                            {record.ticketRecord.reporterEmail && (
+                              <Box>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  gutterBottom
+                                  sx={{
+                                    textTransform: 'uppercase',
+                                    fontWeight: 500,
+                                    letterSpacing: '0.5px',
+                                    display: 'block',
+                                    mb: 0.75,
+                                  }}
+                                >
+                                  Reporter
+                                </Typography>
+                                <Typography variant="body2">
+                                  {record.ticketRecord.reporterEmail}
                                 </Typography>
                               </Box>
                             )}
@@ -2025,6 +2219,38 @@ export default function RecordDetails() {
                           }}
                         >
                           {record.mailRecord.date}
+                        </Typography>
+                      </Box>
+                    )}
+
+                    {isTicketRecord && record.ticketRecord && record.ticketRecord.description && (
+                      <Box>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          gutterBottom
+                          sx={{
+                            textTransform: 'uppercase',
+                            fontWeight: 600,
+                            letterSpacing: '0.8px',
+                            fontSize: '0.6875rem',
+                            display: 'block',
+                            mb: 1.25,
+                            opacity: 0.85,
+                          }}
+                        >
+                          Description
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontWeight: 400,
+                            color: 'text.primary',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {record.ticketRecord.description}
                         </Typography>
                       </Box>
                     )}

@@ -1,4 +1,4 @@
-  import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Handle, Position, useStore, useReactFlow } from '@xyflow/react';
 import {
   Box,
@@ -28,22 +28,13 @@ import packageIcon from '@iconify-icons/mdi/package-variant';
 import cogIcon from '@iconify-icons/mdi/cog';
 import cloudIcon from '@iconify-icons/mdi/cloud-outline';
 import tuneIcon from '@iconify-icons/mdi/tune';
+import deleteIcon from '@iconify-icons/mdi/delete-outline';
 import { formattedProvider, normalizeDisplayName } from '../../utils/agent';
-
-interface FlowNodeData extends Record<string, unknown> {
-  id: string;
-  type: string;
-  label: string;
-  config: Record<string, any>;
-  description?: string;
-  icon?: any;
-  inputs?: string[];
-  outputs?: string[];
-  isConfigured?: boolean;
-}
+import { NodeData } from '../../types/agent';
+import { NodeHandles, NodeIcon } from './nodes';
 
 interface FlowNodeProps {
-  data: FlowNodeData;
+  data: NodeData;
   selected: boolean;
 }
 
@@ -52,8 +43,25 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
   const isDark = theme.palette.mode === 'dark';
   const storeNodes = useStore((s) => s.nodes);
   const storeEdges = useStore((s) => s.edges);
-  const { setNodes } = useReactFlow();
+  const { setNodes, setEdges } = useReactFlow();
   const [lastClickTime, setLastClickTime] = useState(0);
+
+  // Handle delete button click - open confirmation
+  const handleDeleteClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setDeleteDialogOpen(true);
+  }, []);
+
+  // Delete dialog state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+  // Handle confirmed deletion
+  const handleConfirmDelete = useCallback(() => {
+    setNodes((nodes) => nodes.filter((node) => node.id !== data.id));
+    setEdges((edges) => edges.filter((edge) => edge.source !== data.id && edge.target !== data.id));
+    setDeleteDialogOpen(false);
+  }, [data.id, setNodes, setEdges]);
 
   // Editing state
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
@@ -109,7 +117,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
     setDescriptionValue(data.config?.description || 'AI agent for task automation and assistance');
     setPromptDialogOpen(false);
   }, [data.config?.systemPrompt, data.config?.startMessage, data.config?.description]);
-
 
   // Sync local state with node data changes
   useEffect(() => {
@@ -503,7 +510,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 id="llms"
                 style={{
                   top: '50%',
-                  left: -7,
+                  left: -9,
                   background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.secondary} 100%)`,
                   width: 14,
                   height: 14,
@@ -511,6 +518,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                   borderRadius: '50%',
                   boxShadow: `0 2px 8px ${alpha(colors.primary, 0.4)}`,
                   zIndex: 10,
+                  transformOrigin: 'center',
                 }}
               />
               {connectedNodesByHandle.llms?.length > 0 ? (
@@ -570,15 +578,21 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                         height: 22, // Keep comfortable size
                         fontSize: '0.7rem', // Keep comfortable size
                         fontWeight: 600,
-                        backgroundColor: isDark ? alpha('#ffffff', 0.2) : alpha(colors.text.secondary, 0.1),
+                        backgroundColor: isDark
+                          ? alpha('#ffffff', 0.2)
+                          : alpha(colors.text.secondary, 0.1),
                         color: colors.text.secondary,
                         border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
                         mt: 1, // Keep comfortable margin
                         '&:hover': {
-                          backgroundColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          backgroundColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                           transform: 'scale(1.05)',
                           color: isDark ? colors.text.secondary : colors.text.secondary,
-                          borderColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          borderColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                         },
                         transition: 'all 0.2s ease',
                       }}
@@ -631,7 +645,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 id="knowledge"
                 style={{
                   top: '50%',
-                  left: -7,
+                  left: -9,
                   background: `linear-gradient(135deg, ${colors.warning} 0%, #f59e0b 100%)`,
                   width: 14,
                   height: 14,
@@ -639,63 +653,181 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                   borderRadius: '50%',
                   boxShadow: `0 2px 8px ${alpha(colors.warning, 0.4)}`,
                   zIndex: 10,
+                  transformOrigin: 'center',
                 }}
               />
               {connectedNodesByHandle.knowledge?.length > 0 ? (
                 <Box>
-                  {connectedNodesByHandle.knowledge.slice(0, 2).map((knowledgeNode, index) => (
-                    <Box
-                      key={index}
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.5, // Keep comfortable gap
-                        mt: index > 0 ? 1.5 : 0, // Keep comfortable margin
-                      }}
-                    >
+                  {connectedNodesByHandle.knowledge.slice(0, 2).map((knowledgeNode, index) => {
+                    if (knowledgeNode.type.startsWith('app-group')) {
+                      console.log(knowledgeNode);
+                      return (
+                        <Box key={`app-group-${index}`}>
+                          {knowledgeNode.config.apps.slice(0, 3).map((app: any, appIndex: number) => (
+                            <Box
+                              key={appIndex}
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 1.5,
+                                mt: appIndex > 0 ? 1.5 : (index > 0 ? 1.5 : 0),
+                              }}
+                            >
+                              <Box
+                                sx={{
+                                  width: 24,
+                                  height: 24,
+                                  borderRadius: 1.5,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  backgroundColor: alpha(colors.info, 0.1),
+                                  boxShadow: `0 2px 4px ${alpha(colors.info, 0.2)}`,
+                                }}
+                              >
+                                <img
+                                  src={
+                                    app.iconPath ||
+                                    `/assets/icons/connectors/${(app.type || app.name || '').replace(/\s+/g, '').toLowerCase()}.svg`
+                                  }
+                                  alt={app.name || app.type}
+                                  width={14}
+                                  height={14}
+                                  style={{
+                                    objectFit: 'contain',
+                                  }}
+                                  onError={(e) => {
+                                    e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                                  }}
+                                />
+                              </Box>
+                              <Box sx={{ flex: 1, minWidth: 0 }}>
+                                <Typography
+                                  sx={{
+                                    fontSize: '0.85rem',
+                                    fontWeight: 600,
+                                    color: colors.text.primary,
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  {normalizeDisplayName(
+                                    app.displayName || app.name || app.type || 'Unknown'
+                                  )}
+                                </Typography>
+                                <Typography
+                                  sx={{
+                                    fontSize: '0.7rem',
+                                    color: colors.text.secondary,
+                                    fontWeight: 500,
+                                    mt: 0.25,
+                                  }}
+                                >
+                                  {app.scope === 'team' ? 'Team' : 'Personal'} • {app.type || 'App'}
+                                </Typography>
+                              </Box>
+                            </Box>
+                          ))}
+                          {knowledgeNode.config.apps.length > 3 && (
+                            <Chip
+                              label={`+${knowledgeNode.config.apps.length - 3} more`}
+                              size="small"
+                              sx={{
+                                height: 22,
+                                fontSize: '0.7rem',
+                                fontWeight: 600,
+                                backgroundColor: isDark
+                                  ? alpha('#ffffff', 0.2)
+                                  : alpha(colors.text.secondary, 0.1),
+                                color: colors.text.secondary,
+                                border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
+                                mt: 1.5,
+                                '&:hover': {
+                                  backgroundColor: isDark
+                                    ? alpha('#ffffff', 0.2)
+                                    : alpha(colors.text.secondary, 0.2),
+                                  transform: 'scale(1.05)',
+                                  borderColor: isDark
+                                    ? alpha(colors.text.secondary, 0.2)
+                                    : alpha(colors.text.secondary, 0.2),
+                                },
+                                transition: 'all 0.2s ease',
+                              }}
+                            />
+                          )}
+                        </Box>
+                      );
+                    }
+                    return (
                       <Box
+                        key={index}
                         sx={{
-                          width: 24, // Keep comfortable size
-                          height: 24, // Keep comfortable size
-                          borderRadius: 1.5,
-                          background: `linear-gradient(135deg, ${colors.warning} 0%, #f59e0b 100%)`,
                           display: 'flex',
                           alignItems: 'center',
-                          justifyContent: 'center',
-                          boxShadow: `0 2px 4px ${alpha(colors.warning, 0.3)}`,
+                          gap: 1.5, // Keep comfortable gap
+                          mt: index > 0 ? 1.5 : 0, // Keep comfortable margin
                         }}
                       >
-                        <Icon
+                        <Box
+                          sx={{
+                            width: 24, // Keep comfortable size
+                            height: 24, // Keep comfortable size
+                            borderRadius: 1.5,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            boxShadow: `0 2px 4px ${alpha(colors.primary, 0.3)}`,
+                          }}
+                        >
+                          {/* <Icon
                           icon={databaseIcon}
                           width={12}
                           height={12} // Keep comfortable size
                           style={{ color: '#ffffff' }}
-                        />
+                        /> */}
+                          <img
+                            src={
+                              knowledgeNode.config?.iconPath ||
+                              '/assets/icons/connectors/default.svg'
+                            }
+                            alt=""
+                            style={{
+                              width: 14,
+                              height: 14,
+                              objectFit: 'contain',
+                            }}
+                          />
+                        </Box>
+                        <Box>
+                          <Typography
+                            sx={{
+                              fontSize: '0.85rem',
+                              fontWeight: 600,
+                              color: colors.text.primary,
+                            }} // Keep comfortable size
+                          >
+                            {knowledgeNode.config?.kbName ||
+                              knowledgeNode.config?.appName ||
+                              knowledgeNode.label}
+                          </Typography>
+                          <Typography
+                            sx={{
+                              fontSize: '0.75rem', // Keep comfortable size
+                              color: colors.text.secondary,
+                              fontWeight: 500,
+                            }}
+                          >
+                            {knowledgeNode.type.startsWith('kb-')
+                              ? 'Knowledge Base'
+                              : knowledgeNode.type.startsWith('knowledge-hub')
+                                ? 'Knowledge Hub'
+                                : 'Knowledge'}
+                          </Typography>
+                        </Box>
                       </Box>
-                      <Box>
-                        <Typography
-                          sx={{ fontSize: '0.85rem', fontWeight: 600, color: colors.text.primary }} // Keep comfortable size
-                        >
-                          {knowledgeNode.config?.kbName ||
-                            knowledgeNode.config?.appName ||
-                            knowledgeNode.label}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            fontSize: '0.75rem', // Keep comfortable size
-                            color: colors.text.secondary,
-                            fontWeight: 500,
-                          }}
-                        >
-                          {knowledgeNode.type.startsWith('kb-')
-                            ? 'Knowledge Base'
-                            : knowledgeNode.type.startsWith('knowledge-hub')
-                              ? 'Knowledge Hub'
-                              : 'Knowledge'}
-                        </Typography>
-                      </Box>
-                    </Box>
-                  ))}
+                    );
+                  })}
                   {connectedNodesByHandle.knowledge.length > 2 && (
                     <Chip
                       label={`+${connectedNodesByHandle.knowledge.length - 2} more`}
@@ -704,15 +836,21 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                         height: 22, // Keep comfortable size
                         fontSize: '0.7rem', // Keep comfortable size
                         fontWeight: 600,
-                        backgroundColor: isDark ? alpha('#ffffff', 0.2) : alpha(colors.text.secondary, 0.1),
+                        backgroundColor: isDark
+                          ? alpha('#ffffff', 0.2)
+                          : alpha(colors.text.secondary, 0.1),
                         color: colors.text.secondary,
                         border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
                         mt: 1, // Keep comfortable margin
                         '&:hover': {
-                          backgroundColor: isDark ? alpha('#ffffff', 0.2) : alpha(colors.text.secondary, 0.2),
+                          backgroundColor: isDark
+                            ? alpha('#ffffff', 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                           transform: 'scale(1.05)',
                           color: isDark ? colors.text.secondary : colors.text.secondary,
-                          borderColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          borderColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                         },
                         transition: 'all 0.2s ease',
                       }}
@@ -765,7 +903,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 id="actions"
                 style={{
                   top: '50%',
-                  left: -7,
+                  left: -9,
                   background: `linear-gradient(135deg, ${colors.info} 0%, #06b6d4 100%)`,
                   width: 14,
                   height: 14,
@@ -773,59 +911,111 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                   borderRadius: '50%',
                   boxShadow: `0 2px 8px ${alpha(colors.info, 0.4)}`,
                   zIndex: 10,
+                  transformOrigin: 'center',
                 }}
               />
               {connectedNodesByHandle.actions?.length > 0 ? (
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                  {' '}
-                  {/* Keep comfortable gap */}
-                  {connectedNodesByHandle.actions.slice(0, 3).map((actionNode, index) => (
-                    <Chip
+                <Box>
+                  {connectedNodesByHandle.actions.slice(0, 2).map((actionNode, index) => (
+                    <Box
                       key={index}
-                      label={
-                        actionNode.label.length > 12
-                          ? `${actionNode.label.slice(0, 12)}...`
-                          : actionNode.label
-                      }
-                      size="small"
                       sx={{
-                        height: 24, // Keep comfortable size
-                        fontSize: '0.7rem', // Keep comfortable size
-                        fontWeight: 600,
-                        backgroundColor: isDark ? alpha(colors.info, 0.9) : alpha(colors.info, 0.1),
-                        color: colors.info,
-                        border: `1px solid ${alpha(colors.info, 0.3)}`,
-                        '&:hover': {
-                          backgroundColor: isDark ? alpha(colors.info, 0.2) : alpha(colors.info, 0.2),
-                          borderColor: colors.info,
-                          transform: 'scale(1.05)',
-                          boxShadow: `0 2px 8px ${alpha(colors.info, 0.3)}`,
-                          color: isDark ? colors.info : colors.info,
-                        },
-                        transition: 'all 0.2s ease',
-                        '& .MuiChip-label': { px: 1 }, // Keep comfortable padding
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1.5, // Keep comfortable gap
+                        mt: index > 0 ? 1.5 : 0, // Keep comfortable margin
                       }}
-                    />
+                    >
+                      <Box
+                        sx={{
+                          width: 24, // Keep comfortable size
+                          height: 24, // Keep comfortable size
+                          borderRadius: 1.5,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          boxShadow: `0 2px 4px ${alpha(colors.info, 0.3)}`,
+                        }}
+                      >
+                        {actionNode.config?.iconPath ? (
+                          <img
+                            src={actionNode.config.iconPath}
+                            alt=""
+                            style={{
+                              width: 14,
+                              height: 14,
+                              objectFit: 'contain',
+                            }}
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                              e.currentTarget.nextElementSibling?.setAttribute(
+                                'style',
+                                'display: block; color: #ffffff;'
+                              );
+                            }}
+                          />
+                        ) : null}
+                        <Icon
+                          icon={toolIcon}
+                          width={12}
+                          height={12} // Keep comfortable size
+                          style={{
+                            color: '#ffffff',
+                            display: actionNode.config?.iconPath ? 'none' : 'block',
+                          }}
+                        />
+                      </Box>
+                      <Box>
+                        <Typography
+                          sx={{ fontSize: '0.85rem', fontWeight: 600, color: colors.text.primary }} // Keep comfortable size
+                        >
+                          {actionNode.config?.name ||
+                            actionNode.config?.appName ||
+                            actionNode.label}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            fontSize: '0.75rem', // Keep comfortable size
+                            color: colors.text.secondary,
+                            fontWeight: 500,
+                          }}
+                        >
+                          {actionNode.type.startsWith('tool-group-')
+                            ? 'Tool Group'
+                            : actionNode.type.startsWith('tool-individual-')
+                              ? 'Individual Tool'
+                              : actionNode.type.startsWith('connector-group-')
+                                ? 'Connector Group'
+                                : 'Action'}
+                        </Typography>
+                      </Box>
+                    </Box>
                   ))}
-                  {connectedNodesByHandle.actions.length > 3 && (
+                  {connectedNodesByHandle.actions.length > 2 && (
                     <Chip
-                      label={`+${connectedNodesByHandle.actions.length - 3}`}
+                      label={`+${connectedNodesByHandle.actions.length - 2} more`}
                       size="small"
                       sx={{
-                        height: 24, // Keep comfortable size
+                        height: 22, // Keep comfortable size
                         fontSize: '0.7rem', // Keep comfortable size
                         fontWeight: 600,
-                        backgroundColor: isDark ? alpha(colors.text.secondary, 0.1) : alpha(colors.text.secondary, 0.1),
+                        backgroundColor: isDark
+                          ? alpha('#ffffff', 0.2)
+                          : alpha(colors.text.secondary, 0.1),
                         color: colors.text.secondary,
                         border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
+                        mt: 1, // Keep comfortable margin
                         '&:hover': {
-                            backgroundColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          backgroundColor: isDark
+                            ? alpha('#ffffff', 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                           transform: 'scale(1.05)',
                           color: isDark ? colors.text.secondary : colors.text.secondary,
-                          borderColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          borderColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                         },
                         transition: 'all 0.2s ease',
-                        '& .MuiChip-label': { px: 1 }, // Keep comfortable padding
                       }}
                     />
                   )}
@@ -876,7 +1066,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 id="input"
                 style={{
                   top: '50%',
-                  left: -7,
+                  left: -9,
                   background: `linear-gradient(135deg, ${colors.secondary} 0%, #a855f7 100%)`,
                   width: 14,
                   height: 14,
@@ -884,6 +1074,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                   borderRadius: '50%',
                   boxShadow: `0 2px 8px ${alpha(colors.secondary, 0.4)}`,
                   zIndex: 10,
+                  transformOrigin: 'center',
                 }}
               />
               {connectedNodesByHandle.input?.length > 0 ? (
@@ -903,11 +1094,15 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                         height: 24, // Keep comfortable size
                         fontSize: '0.7rem', // Keep comfortable size
                         fontWeight: 600,
-                        backgroundColor: isDark ? alpha(colors.secondary, 0.8) : alpha(colors.secondary, 0.1),
+                        backgroundColor: isDark
+                          ? alpha(colors.secondary, 0.8)
+                          : alpha(colors.secondary, 0.1),
                         color: colors.secondary,
                         border: `1px solid ${alpha(colors.secondary, 0.3)}`,
                         '&:hover': {
-                          backgroundColor: isDark ? alpha('#ffffff', 0.2) : alpha(colors.secondary, 0.2),
+                          backgroundColor: isDark
+                            ? alpha('#ffffff', 0.2)
+                            : alpha(colors.secondary, 0.2),
                           borderColor: colors.secondary,
                           transform: 'scale(1.05)',
                           boxShadow: `0 2px 8px ${alpha(colors.secondary, 0.3)}`,
@@ -926,14 +1121,20 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                         height: 24, // Keep comfortable size
                         fontSize: '0.7rem', // Keep comfortable size
                         fontWeight: 600,
-                        backgroundColor: isDark ? alpha('#ffffff', 0.2) : alpha(colors.text.secondary, 0.1),
+                        backgroundColor: isDark
+                          ? alpha('#ffffff', 0.2)
+                          : alpha(colors.text.secondary, 0.1),
                         color: colors.text.secondary,
                         border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
                         '&:hover': {
-                          backgroundColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          backgroundColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                           transform: 'scale(1.05)',
                           color: isDark ? colors.text.secondary : colors.text.secondary,
-                          borderColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          borderColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                         },
                         transition: 'all 0.2s ease',
                         '& .MuiChip-label': { px: 1 }, // Keep comfortable padding
@@ -985,7 +1186,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 id="response"
                 style={{
                   top: '50%',
-                  right: -7,
+                  right: -9,
                   background: `linear-gradient(135deg, ${colors.success} 0%, #16a34a 100%)`,
                   width: 14,
                   height: 14,
@@ -993,6 +1194,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                   borderRadius: '50%',
                   boxShadow: `0 2px 8px ${alpha(colors.success, 0.4)}`,
                   zIndex: 10,
+                  transformOrigin: 'center',
                 }}
               />
               <Typography
@@ -1092,12 +1294,14 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                   rows={4}
                   value={systemPromptValue}
                   onChange={(e) => setSystemPromptValue(e.target.value)}
-                  placeholder="Define the agent&apos;s role, capabilities, and behavior instructions..."
+                  placeholder="Define the agent's role, capabilities, and behavior instructions..."
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
                       '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: isDark ? theme.palette.primary.main : theme.palette.primary.main,
+                        borderColor: isDark
+                          ? theme.palette.primary.main
+                          : theme.palette.primary.main,
                       },
                       '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
                         borderWidth: 1,
@@ -1117,12 +1321,14 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                   rows={2}
                   value={descriptionValue}
                   onChange={(e) => setDescriptionValue(e.target.value)}
-                  placeholder="Enter a brief description for the agent&apos;s behavior..."
+                  placeholder="Enter a brief description for the agent's behavior..."
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
                       '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: isDark ? theme.palette.primary.main : theme.palette.primary.main,
+                        borderColor: isDark
+                          ? theme.palette.primary.main
+                          : theme.palette.primary.main,
                       },
                       '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
                         borderWidth: 1,
@@ -1142,12 +1348,14 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                   rows={2}
                   value={startMessageValue}
                   onChange={(e) => setStartMessageValue(e.target.value)}
-                  placeholder="Enter the agent&apos;s greeting message to users..."
+                  placeholder="Enter the agent's greeting message to users..."
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
                       '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: isDark ? theme.palette.primary.main : theme.palette.primary.main,
+                        borderColor: isDark
+                          ? theme.palette.primary.main
+                          : theme.palette.primary.main,
                       },
                       '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
                         borderWidth: 1,
@@ -1198,7 +1406,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
             </Button>
           </DialogActions>
         </Dialog>
-
       </Card>
     );
   }
@@ -1272,34 +1479,18 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
         sx={{
           p: 2.5,
           borderBottom: `1px solid ${colors.border.subtle}`,
-          background: isDark
-            ? `linear-gradient(135deg, ${alpha('#2a2a2a', 0.8)} 0%, ${alpha('#1e1e1e', 0.9)} 100%)`
-            : `linear-gradient(135deg, ${alpha('#f8fafc', 0.8)} 0%, ${alpha('#ffffff', 0.9)} 100%)`,
+          // background: isDark
+          //   ? `linear-gradient(135deg, ${alpha('#2a2a2a', 0.8)} 0%, ${alpha('#1e1e1e', 0.9)} 100%)`
+          //   : `linear-gradient(135deg, ${alpha('#f8fafc', 0.8)} 0%, ${alpha('#ffffff', 0.9)} 100%)`,
           borderRadius: '12px 12px 0 0',
           position: 'relative',
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-            <Box
-              sx={{
-                width: 28,
-                height: 28,
-                borderRadius: 2,
-                background: `linear-gradient(135deg, ${colors.info} 0%, ${colors.primary} 100%)`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: `0 2px 8px ${alpha(colors.info, 0.3)}`,
-              }}
-            >
-              <Icon
-                icon={data.icon || toolIcon}
-                width={14}
-                height={14}
-                style={{ color: '#ffffff' }}
-              />
-            </Box>
+            {/* Icon - uses modular NodeIcon component */}
+            <NodeIcon data={data} toolIcon={toolIcon} size={24} />
+
             <Typography
               variant="h6"
               sx={{
@@ -1313,6 +1504,22 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
               {normalizeDisplayName(data.label)}
             </Typography>
           </Box>
+          {/* Delete button */}
+          <IconButton
+            size="small"
+            onClick={handleDeleteClick}
+            sx={{
+              opacity: 0.6,
+              transition: 'all 0.2s',
+              '&:hover': {
+                opacity: 1,
+                backgroundColor: alpha(theme.palette.error.main, 0.1),
+                color: theme.palette.error.main,
+              },
+            }}
+          >
+            <Icon icon={deleteIcon} width={22} height={22} />
+          </IconButton>
         </Box>
         {data.description && (
           <Typography
@@ -1356,12 +1563,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 gap: 1,
               }}
             >
-              <Icon
-                icon={packageIcon}
-                width={12}
-                height={12}
-                style={{ color: colors.info }}
-              />
+              <Icon icon={packageIcon} width={12} height={12} style={{ color: colors.info }} />
               Tool Bundle
             </Typography>
             <Box
@@ -1470,8 +1672,8 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
           </Box>
         )}
 
-        {/* App Memory Section for app memory nodes */}
-        {data.type.startsWith('app-') && (
+        {/* Connector Group Section for connector group nodes */}
+        {data.type.startsWith('connector-group-') && (
           <Box sx={{ mb: 2 }}>
             <Typography
               variant="body2"
@@ -1487,12 +1689,325 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 gap: 1,
               }}
             >
-              <Icon
-                icon={cloudIcon}
-                width={12}
-                height={12}
-                style={{ color: colors.warning }}
-              />
+              <img src={data.config?.iconPath} alt={data.label} width={12} height={12} />
+              Connector
+            </Typography>
+            <Box
+              sx={{
+                p: 2,
+                backgroundColor: colors.background.section,
+                borderRadius: 2,
+                border: `1px solid ${colors.border.subtle}`,
+                transition: 'all 0.2s ease',
+                minHeight: 45,
+                position: 'relative',
+                '&:hover': {
+                  backgroundColor: colors.background.hover,
+                  borderColor: colors.border.main,
+                },
+              }}
+            >
+              <Typography
+                sx={{
+                  fontSize: '0.75rem',
+                  color: colors.text.primary,
+                  fontWeight: 600,
+                  lineHeight: 1.3,
+                }}
+              >
+                {data.config?.name || data.label}
+              </Typography>
+              {/* Show connected tools */}
+              {(() => {
+                // Flow: Tool (source) → Connector Instance (target)
+                const connectedTools = storeEdges
+                  .filter((e: any) => {
+                    const sourceNode = storeNodes.find((n: any) => n.id === e.source);
+                    const sourceType = sourceNode?.data?.type;
+                    return (
+                      e.target === data.id &&
+                      typeof sourceType === 'string' &&
+                      sourceType.startsWith('tool-')
+                    );
+                  })
+                  .map((e: any) => {
+                    const toolNode = storeNodes.find((n: any) => n.id === e.source);
+                    return toolNode?.data as any;
+                  })
+                  .filter(Boolean);
+
+                if (connectedTools.length > 0) {
+                  return (
+                    <Box sx={{ mt: 1.5, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                      {connectedTools.slice(0, 3).map((tool: any, index: number) => (
+                        <Chip
+                          key={index}
+                          label={
+                            tool.label.length > 12 ? `${tool.label.slice(0, 12)}...` : tool.label
+                          }
+                          size="small"
+                          sx={{
+                            height: 20,
+                            fontSize: '0.65rem',
+                            fontWeight: 600,
+                            backgroundColor: isDark
+                              ? alpha(colors.info, 0.9)
+                              : alpha(colors.info, 0.1),
+                            color: colors.info,
+                            border: `1px solid ${alpha(colors.info, 0.3)}`,
+                            '&:hover': {
+                              backgroundColor: isDark
+                                ? alpha(colors.info, 0.2)
+                                : alpha(colors.info, 0.2),
+                              borderColor: colors.info,
+                              transform: 'scale(1.05)',
+                            },
+                            transition: 'all 0.2s ease',
+                            '& .MuiChip-label': { px: 0.75 },
+                          }}
+                        />
+                      ))}
+                      {connectedTools.length > 3 && (
+                        <Chip
+                          label={`+${connectedTools.length - 3}`}
+                          size="small"
+                          sx={{
+                            height: 20,
+                            fontSize: '0.65rem',
+                            fontWeight: 600,
+                            backgroundColor: isDark
+                              ? alpha(colors.text.secondary, 0.1)
+                              : alpha(colors.text.secondary, 0.1),
+                            color: colors.text.secondary,
+                            border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
+                            '&:hover': {
+                              backgroundColor: isDark
+                                ? alpha(colors.text.secondary, 0.2)
+                                : alpha(colors.text.secondary, 0.2),
+                            },
+                            transition: 'all 0.2s ease',
+                            '& .MuiChip-label': { px: 0.75 },
+                          }}
+                        />
+                      )}
+                    </Box>
+                  );
+                }
+                return (
+                  <Typography
+                    sx={{
+                      fontSize: '0.65rem',
+                      color: colors.text.secondary,
+                      fontWeight: 500,
+                      mt: 0.5,
+                      fontStyle: 'italic',
+                    }}
+                  >
+                    No tools connected
+                  </Typography>
+                );
+              })()}
+            </Box>
+          </Box>
+        )}
+
+        {/* App Memory Group Section */}
+        {data.type === 'app-group' && (
+          <Box sx={{ mb: 2 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                fontWeight: 700,
+                color: colors.text.primary,
+                fontSize: '0.75rem',
+                mb: 1.5,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+              }}
+            >
+              <Icon icon={cloudIcon} width={12} height={12} style={{ color: colors.info }} />
+              Apps
+            </Typography>
+            <Box
+              sx={{
+                p: 2,
+                backgroundColor: colors.background.section,
+                borderRadius: 2,
+                border: `1px solid ${colors.border.subtle}`,
+                transition: 'all 0.2s ease',
+                '&:hover': {
+                  backgroundColor: colors.background.hover,
+                  borderColor: colors.border.main,
+                },
+              }}
+            >
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  mb: 1.5,
+                }}
+              >
+                <Typography
+                  sx={{
+                    fontSize: '0.75rem',
+                    color: colors.text.primary,
+                    fontWeight: 600,
+                    lineHeight: 1.3,
+                  }}
+                >
+                  Connected Applications
+                </Typography>
+                <Chip
+                  label={`${data.config?.apps?.length || 0}`}
+                  size="small"
+                  sx={{
+                    height: 20,
+                    fontSize: '0.65rem',
+                    fontWeight: 600,
+                    backgroundColor: alpha(colors.info, 0.15),
+                    color: colors.info,
+                    '& .MuiChip-label': {
+                      px: 1,
+                    },
+                  }}
+                />
+              </Box>
+
+              {data.config?.apps && data.config.apps.length > 0 ? (
+                <Box>
+                  {data.config.apps.slice(0, 3).map((app: any, index: number) => (
+                    <Box
+                      key={index}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1.5,
+                        mt: index > 0 ? 1.5 : 0,
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: 1.5,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: alpha(colors.info, 0.1),
+                          boxShadow: `0 2px 4px ${alpha(colors.info, 0.2)}`,
+                        }}
+                      >
+                        <img
+                          src={
+                            app.iconPath ||
+                            `/assets/icons/connectors/${(app.type || app.name || '').replace(/\s+/g, '').toLowerCase()}.svg`
+                          }
+                          alt={app.name || app.type}
+                          width={14}
+                          height={14}
+                          style={{
+                            objectFit: 'contain',
+                          }}
+                          onError={(e) => {
+                            e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                          }}
+                        />
+                      </Box>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            fontSize: '0.85rem',
+                            fontWeight: 600,
+                            color: colors.text.primary,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {normalizeDisplayName(
+                            app.displayName || app.name || app.type || 'Unknown'
+                          )}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            fontSize: '0.7rem',
+                            color: colors.text.secondary,
+                            fontWeight: 500,
+                            mt: 0.25,
+                          }}
+                        >
+                          {app.scope === 'team' ? 'Team' : 'Personal'} • {app.type || 'App'}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  ))}
+                  {data.config.apps.length > 3 && (
+                    <Chip
+                      label={`+${data.config.apps.length - 3} more`}
+                      size="small"
+                      sx={{
+                        height: 22,
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        backgroundColor: isDark
+                          ? alpha('#ffffff', 0.2)
+                          : alpha(colors.text.secondary, 0.1),
+                        color: colors.text.secondary,
+                        border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
+                        mt: 1.5,
+                        '&:hover': {
+                          backgroundColor: isDark
+                            ? alpha('#ffffff', 0.2)
+                            : alpha(colors.text.secondary, 0.2),
+                          transform: 'scale(1.05)',
+                          borderColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
+                        },
+                        transition: 'all 0.2s ease',
+                      }}
+                    />
+                  )}
+                </Box>
+              ) : (
+                <Typography
+                  sx={{
+                    fontSize: '0.7rem',
+                    color: colors.text.secondary,
+                    fontStyle: 'italic',
+                    mt: 1,
+                  }}
+                >
+                  No applications connected
+                </Typography>
+              )}
+            </Box>
+          </Box>
+        )}
+
+        {/* App Memory Section for app memory nodes */}
+        {data.type.startsWith('app-') && !data.type.startsWith('app-group') && (
+          <Box sx={{ mb: 2 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                fontWeight: 700,
+                color: colors.text.primary,
+                fontSize: '0.75rem',
+                mb: 1.5,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+              }}
+            >
+              <img src={data.config?.iconPath} alt={data.label} width={12} height={12} />
               App
             </Typography>
             <Box
@@ -1523,69 +2038,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
           </Box>
         )}
 
-        {/* App Memory Group Section */}
-        {data.type === 'app-group' && (
-          <Box sx={{ mb: 2 }}>
-            <Typography
-              variant="body2"
-              sx={{
-                fontWeight: 700,
-                color: colors.text.primary,
-                fontSize: '0.75rem',
-                mb: 1.5,
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 1,
-              }}
-            >
-              <Icon
-                icon={cloudIcon}
-                width={12}
-                height={12}
-                style={{ color: colors.info }}
-              />
-              Apps
-            </Typography>
-            <Box
-              sx={{
-                p: 2,
-                backgroundColor: colors.background.section,
-                borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
-                transition: 'all 0.2s ease',
-                minHeight: 45,
-                '&:hover': {
-                  backgroundColor: colors.background.hover,
-                  borderColor: colors.border.main,
-                },
-              }}
-            >
-              <Typography
-                sx={{
-                  fontSize: '0.75rem',
-                  color: colors.text.primary,
-                  fontWeight: 600,
-                  lineHeight: 1.3,
-                }}
-              >
-                Connected Applications
-              </Typography>
-              <Typography
-                sx={{
-                  fontSize: '0.65rem',
-                  color: colors.text.secondary,
-                  fontWeight: 500,
-                  mt: 0.5,
-                }}
-              >
-                {data.config?.apps?.length || 0} apps available
-              </Typography>
-            </Box>
-          </Box>
-        )}
-
         {/* Knowledge Base Group Section */}
         {data.type === 'kb-group' && (
           <Box sx={{ mb: 2 }}>
@@ -1603,12 +2055,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 gap: 1,
               }}
             >
-              <Icon
-                icon={databaseIcon}
-                width={12}
-                height={12}
-                style={{ color: colors.warning }}
-              />
+              <Icon icon={databaseIcon} width={12} height={12} style={{ color: colors.warning }} />
               Knowledge Base Group
             </Typography>
             <Box
@@ -1700,7 +2147,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
               >
                 {data.config?.kbName || data.config?.name || data.label}
               </Typography>
-
             </Box>
           </Box>
         )}
@@ -1785,49 +2231,31 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
         </Box>
       </Box>
 
-      {/* Enhanced Input Handles */}
-      {data.inputs?.map((input, index) => (
-        <Handle
-          key={`input-${index}`}
-          type="target"
-          position={Position.Left}
-          id={input}
-          style={{
-            top: `${45 + index * 25}%`,
-            left: -7,
-            background: `linear-gradient(135deg, ${colors.info} 0%, ${colors.primary} 100%)`,
-            width: 14,
-            height: 14,
-            border: `2px solid ${colors.background.card}`,
-            borderRadius: '50%',
-            boxShadow: `0 2px 8px ${alpha(colors.info, 0.4)}`,
-            zIndex: 10,
-            transition: 'all 0.2s ease',
-          }}
-        />
-      ))}
+      {/* Handles - uses modular NodeHandles component */}
+      <NodeHandles data={data} />
 
-      {/* Enhanced Output Handles */}
-      {data.outputs?.map((output, index) => (
-        <Handle
-          key={`output-${index}`}
-          type="source"
-          position={Position.Right}
-          id={output}
-          style={{
-            top: `${45 + index * 25}%`,
-            right: -7,
-            background: `linear-gradient(135deg, ${colors.success} 0%, #16a34a 100%)`,
-            width: 14,
-            height: 14,
-            border: `2px solid ${colors.background.card}`,
-            borderRadius: '50%',
-            boxShadow: `0 2px 8px ${alpha(colors.success, 0.4)}`,
-            zIndex: 10,
-            transition: 'all 0.2s ease',
-          }}
-        />
-      ))}
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={() => setDeleteDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Delete Node</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete this node? This action cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteDialogOpen(false)} color="inherit">
+            Cancel
+          </Button>
+          <Button onClick={handleConfirmDelete} color="error" variant="contained">
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Card>
   );
 };
