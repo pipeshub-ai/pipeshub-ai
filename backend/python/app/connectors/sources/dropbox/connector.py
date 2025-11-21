@@ -2639,7 +2639,7 @@ class DropboxConnector(BaseConnector):
         self.logger.info("Dropbox webhook received. Triggering incremental sync.")
         asyncio.create_task(self.run_incremental_sync())
 
-    def cleanup(self) -> None:
+    async def cleanup(self) -> None:
         self.logger.info("Cleaning up Dropbox connector resources.")
         self.data_source = None
 
