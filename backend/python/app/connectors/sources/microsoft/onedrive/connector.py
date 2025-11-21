@@ -171,12 +171,13 @@ class OneDriveConnector(BaseConnector):
             has_admin_consent=has_admin_consent,
         )
          # Initialize MS Graph client
-        credential = ClientSecretCredential(
+        # Store credential as instance variable to prevent it from being garbage collected
+        self.credential = ClientSecretCredential(
             tenant_id=credentials.tenant_id,
             client_id=credentials.client_id,
             client_secret=credentials.client_secret,
         )
-        self.client = GraphServiceClient(credential, scopes=["https://graph.microsoft.com/.default"])
+        self.client = GraphServiceClient(self.credential, scopes=["https://graph.microsoft.com/.default"])
         self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
         return True
 
@@ -983,6 +984,11 @@ class OneDriveConnector(BaseConnector):
             # Clear caches
             # self.processed_items.clear()
             # self.permission_cache.clear()
+
+            # Close the credential to properly close the HTTP transport
+            if hasattr(self, 'credential') and self.credential:
+                await self.credential.close()
+                self.credential = None
 
             # Close any open connections
             if hasattr(self, 'client') and self.client:

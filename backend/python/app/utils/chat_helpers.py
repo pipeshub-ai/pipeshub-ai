@@ -359,14 +359,14 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                     block_num = [block.get("index", 0) + 1]
 
             enhanced_metadata = {
-                        "orgId": meta.get("orgId", "") if meta.get("orgId") else record.get("org_id", ""),
-                        "recordId": record.get("id", ""),
+                        "orgId": meta.get("orgId") or record.get("org_id", ""),
+                        "recordId": meta.get("recordId") or record.get("id", ""),
                         "virtualRecordId": virtual_record_id,
-                        "recordName": record.get("record_name",""),
-                        "recordType": record.get("record_type",""),
-                        "recordVersion": record.get("version",""),
-                        "origin": record.get("origin",""),
-                        "connector": record.get("connector_name",""),
+                        "recordName": meta.get("recordName") or record.get("record_name", ""),
+                        "recordType": record.get("record_type", ""),
+                        "recordVersion": record.get("version", ""),
+                        "origin": meta.get("origin") or record.get("origin", ""),
+                        "connector": meta.get("connector") or record.get("connector_name", ""),
                         "blockText": block_text,
                         "blockType": str(block_type),
                         "bounding_box": extract_bounding_boxes(block.get("citation_metadata")),
@@ -374,7 +374,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "extension": extension,
                         "mimeType": mime_type,
                         "blockNum":block_num,
-                        "webUrl": record.get("weburl",""),
+                        "webUrl": meta.get("webUrl") or record.get("weburl", ""),
                     }
             if extension == "xlsx" or meta.get("sheetName"):
                 if isinstance(data, dict):
@@ -1222,8 +1222,6 @@ def block_group_to_message_content(tool_result: Dict[str, Any], final_results: L
     return content
 
 
-
-
 def count_tokens_in_messages(messages: List[Any],enc) -> int:
     """
     Count the total number of tokens in a messages array.
@@ -1239,8 +1237,6 @@ def count_tokens_in_messages(messages: List[Any],enc) -> int:
         "count_tokens_in_messages: starting token count for %d messages",
         len(messages) if messages else 0,
     )
-
-
 
     total_tokens = 0
 

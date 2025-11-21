@@ -159,7 +159,7 @@ class OutlookCalendarContactsDataSource:
                 success = False
                 error_msg = f"{response.code}: {response.message}"
 
-            # Extract pagination links and data - handle both object and dict responses
+            # Check if this is a COLLECTION response or SINGLE ENTITY response
             if isinstance(response, dict):
                 # Response is already a dict
                 response_data = {
@@ -167,13 +167,16 @@ class OutlookCalendarContactsDataSource:
                     'odata_next_link': response.get('@odata.nextLink') or response.get('odata_next_link'),
                     'odata_delta_link': response.get('@odata.deltaLink') or response.get('odata_delta_link'),
                 }
-            else:
-                # Response is an object with attributes
+            elif hasattr(response, 'value'):
+                # COLLECTION response - has 'value' attribute
                 response_data = {
-                    'value': response.value if hasattr(response, 'value') else [],
+                    'value': response.value if response.value is not None else [],
                     'odata_next_link': response.odata_next_link if hasattr(response, 'odata_next_link') else None,
                     'odata_delta_link': response.odata_delta_link if hasattr(response, 'odata_delta_link') else None,
                 }
+            else:
+                # SINGLE ENTITY response - return the object itself
+                response_data = response
 
             return OutlookCalendarContactsResponse(
                 success=success,

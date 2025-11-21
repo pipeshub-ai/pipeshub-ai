@@ -6,9 +6,6 @@ from typing import Any, Dict, List, Optional
 from app.config.configuration_service import ConfigurationService
 
 try:
-    from azure.identity import (  #type: ignore
-        InteractiveBrowserCredential,
-    )
     from azure.identity.aio import ClientSecretCredential  #type: ignore
     from kiota_authentication_azure.azure_identity_authentication_provider import (  #type: ignore
         AzureIdentityAuthenticationProvider,
@@ -77,32 +74,30 @@ class MSGraphClientWithClientIdSecret:
         mode: GraphMode = GraphMode.APP
     ) -> None:
         self.mode = mode
-        if mode == GraphMode.DELEGATED:
-            #Delegated (user) auth using Interactive Browser
-            #Scopes: use Graph permissions you actually need (read/write as needed).
-            credential = InteractiveBrowserCredential(
-                client_id=client_id,
-                tenant_id=tenant_id,
-                redirect_uri="http://localhost:8080" #TODO: change to the actual redirect uri
-                # No client_secret needed for public clients doing delegated auth
-            )
-            auth_provider = AzureIdentityAuthenticationProvider(credential, scopes=scopes)
-            adapter = HttpxRequestAdapter(auth_provider)
-            self.client = GraphServiceClient(request_adapter=adapter)
-        elif mode == GraphMode.APP:
+        # Store credential as instance variable to prevent HTTP transport from being closed prematurely
+        self.credential: Optional[Any] = None
+
+        if mode == GraphMode.APP:
             # App-only (client credentials) auth for enterprise/service scenarios
             # Requires Application permissions + Admin consent.
-            credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
-            auth_provider = AzureIdentityAuthenticationProvider(credential, scopes=scopes)
+            self.credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
+            auth_provider = AzureIdentityAuthenticationProvider(self.credential, scopes=scopes)
             adapter = HttpxRequestAdapter(auth_provider)
             self.client = GraphServiceClient(request_adapter=adapter)
-
+        else:
+            raise ValueError(f"Invalid mode: {mode}")
 
     def get_ms_graph_service_client(self) -> GraphServiceClient:
         return self.client
 
     def get_mode(self) -> GraphMode:
         return self.mode
+
+    async def close(self) -> None:
+        """Close the credential and release resources."""
+        if self.credential and hasattr(self.credential, 'close'):
+            await self.credential.close()
+            self.credential = None
 
 @dataclass
 class MSGraphUsernamePasswordConfig:
