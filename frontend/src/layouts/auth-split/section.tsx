@@ -31,7 +31,7 @@ export function Section({
   layoutQuery,
   methods,
   title = 'Manage the job',
-  imgUrl = `/logo/welcomegif.gif`,
+  imgUrl = `/logo/signinpage.png`,
   subtitle = 'More effectively with optimized workflows.',
   ...other
 }: SectionProps) {
@@ -92,10 +92,10 @@ export function Section({
         src={imgUrl}
         sx={{
           width: 'auto', // Auto width
-          height: '100vh', // Full viewport height
+          height: '100%', // Full viewport height
           display: 'block', // Block display
-          objectFit: 'contain', // Maintain aspect ratio
-          position: 'fixed', // Fixed position relative to viewport
+          objectFit: 'cover', // Maintain aspect ratio
+          position: 'absolute', // Fixed position relative to viewport
           top: 0, // Top of viewport
           left: 0, // Left side of viewport
           marginLeft: '0', // No margin on left

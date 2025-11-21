@@ -180,7 +180,7 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                   <Box
                     component="img"
                     onClick={() => navigate('/')}
-                    src="/logo/logo-blue.svg"
+                    src="/logo/logo.svg"
                     alt="Logo"
                     sx={{
                       display: 'none',
