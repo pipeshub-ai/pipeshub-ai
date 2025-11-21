@@ -137,9 +137,10 @@ class SiteMetadata:
             name="clientSecret",
             display_name="Client Secret",
             placeholder="Enter your Azure AD Client Secret",
-            description="The Client Secret from Azure AD App Registration",
+            description="The Client Secret from Azure AD App Registration (Optional if using certificate)",
             field_type="PASSWORD",
-            is_secret=True
+            is_secret=True,
+            required=False
         ))
         .add_auth_field(AuthField(
             name="tenantId",
@@ -182,6 +183,7 @@ class SharePointConnector(BaseConnector):
     """
     Complete SharePoint Online Connector implementation with robust error handling,
     proper URL encoding, and comprehensive data synchronization.
+    Supports both Client Secret and Certificate-based authentication.
     """
 
     def __init__(
@@ -231,13 +233,10 @@ class SharePointConnector(BaseConnector):
         }
 
     async def init(self) -> None:
-        # --- NEW CODE: Hardcoded Certificate Setup (FOR TESTING ONLY) ---
-        # NOTE: In a production environment, these must be loaded securely from a configuration store.
-        # Set self.certificate_path to the absolute path of your .pfx or .pem file.
-        # Set self.certificate_password if your certificate file is password-protected.
-        self.certificate_path = "/home/rogue/Programs/cert-pipeshub/certificate.pfx"  # Replace with "/path/to/your/certificate.pfx" for testing
-        self.certificate_password = ""  # Replace with "your-certificate-password" for testing
-        # --- END HARDCODED SETUP ---
+        """Initialize SharePoint connector with certificate or client secret authentication."""
+        import tempfile
+        import os
+        from azure.identity.aio import CertificateCredential, ClientSecretCredential
 
         # Load configuration from service
         config = await self.config_service.get_config("/services/connectors/sharepointonline/config") or \
@@ -247,7 +246,7 @@ class SharePointConnector(BaseConnector):
             self.logger.error("❌ SharePoint Online credentials not found")
             raise ValueError("SharePoint Online credentials not found")
 
-        credentials_config = config.get("auth",{})
+        credentials_config = config.get("auth", {})
         if not credentials_config:
             self.logger.error("❌ SharePoint Online credentials not found")
             raise ValueError("SharePoint Online credentials not found")
@@ -258,12 +257,15 @@ class SharePointConnector(BaseConnector):
         client_secret = credentials_config.get("clientSecret")
         sharepoint_domain = credentials_config.get("sharepointDomain")
 
-        # --- NEW CODE: Load certificate details from config (if fields are added to ConnectorBuilder) ---
-        # Only load from config if not hardcoded for testing
-        if not self.certificate_path:
-            self.certificate_path = credentials_config.get("certificatePath")
-            self.certificate_password = credentials_config.get("certificatePassword")
-        # --- END NEW CODE ---
+        # Load certificate data from config
+        # Try both field names for backward compatibility
+        certificate_data = credentials_config.get("certificate")
+        private_key_data = credentials_config.get("privateKey")
+
+        # Debug logging
+        self.logger.info(f"🔍 Certificate data present: {bool(certificate_data)}")
+        self.logger.info(f"🔍 Private key data present: {bool(private_key_data)}")
+        self.logger.info(f"🔍 Client secret present: {bool(client_secret)}")
 
         # Normalize SharePoint domain to scheme+host (no path)
         try:
@@ -291,12 +293,14 @@ class SharePointConnector(BaseConnector):
             raise ValueError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
 
         # Check for one valid authentication method
-        if not (self.certificate_path or client_secret):
-            self.logger.error("❌ Authentication credentials missing. Provide either clientSecret or certificatePath.")
-            raise ValueError("Authentication credentials missing.")
+        has_certificate = certificate_data and private_key_data
+        has_client_secret = client_secret
+
+        if not (has_certificate or has_client_secret):
+            self.logger.error("❌ Authentication credentials missing. Provide either clientSecret or certificate + private key.")
+            raise ValueError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
 
         has_admin_consent = credentials_config.get("hasAdminConsent", False)
-
 
         credentials = SharePointCredentials(
             tenant_id=tenant_id,
@@ -306,33 +310,91 @@ class SharePointConnector(BaseConnector):
             has_admin_consent=has_admin_consent,
         )
 
-        # --- NEW CODE: Choose Credential based on availability ---
-        from azure.identity.aio import CertificateCredential, ClientSecretCredential
-        # Initialize base credential for MS Graph Client (prioritizing certificate)
-        if self.certificate_path:
-             credential = CertificateCredential(
-                 tenant_id=credentials.tenant_id,
-                 client_id=credentials.client_id,
-                 certificate_path=self.certificate_path,
-                 client_certificate_password=self.certificate_password,
-             )
-             self.logger.info("✅ Using CertificateCredential for MS Graph client.")
-        elif client_secret:
-            credential = ClientSecretCredential(
-                tenant_id=credentials.tenant_id,
-                client_id=credentials.client_id,
-                client_secret=credentials.client_secret,
-            )
-            self.logger.info("✅ Using ClientSecretCredential for MS Graph client.")
-        else:
-            # Should be caught by the earlier check, but kept for robustness
-            raise ValueError("No valid credential (Certificate or Client Secret) found.")
-
         # Store class attributes
         self.sharepoint_domain = credentials.sharepoint_domain
         self.tenant_id = credentials.tenant_id
         self.client_id = credentials.client_id
         self.client_secret = credentials.client_secret
+
+        # Initialize credential based on available authentication method
+        credential = None
+        self.temp_cert_file = None
+        self.temp_key_file = None
+
+        if has_certificate:
+            try:
+                # Decode certificate and private key if they're base64 encoded
+                if isinstance(certificate_data, str):
+                    # Check if it's base64 encoded or raw PEM
+                    if not certificate_data.strip().startswith("-----BEGIN CERTIFICATE-----"):
+                        import base64
+                        certificate_pem = base64.b64decode(certificate_data).decode('utf-8')
+                    else:
+                        certificate_pem = certificate_data
+                else:
+                    # Assume it's already bytes or dict with content
+                    certificate_pem = certificate_data
+
+                if isinstance(private_key_data, str):
+                    # Check if it's base64 encoded or raw PEM
+                    if not private_key_data.strip().startswith("-----BEGIN PRIVATE KEY-----"):
+                        import base64
+                        private_key_pem = base64.b64decode(private_key_data).decode('utf-8')
+                    else:
+                        private_key_pem = private_key_data
+                else:
+                    private_key_pem = private_key_data
+
+                # Azure SDK requires certificate and private key in a SINGLE PEM file
+                # Combine them: private key first, then certificate
+                combined_pem = f"{private_key_pem.strip()}\n{certificate_pem.strip()}\n"
+
+                # Create a single temporary file with both private key and certificate
+                self.temp_cert_file = tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False)
+                
+                # Write combined PEM to temp file
+                self.temp_cert_file.write(combined_pem)
+                self.temp_cert_file.flush()
+                self.temp_cert_file.close()
+
+                self.logger.info(f"✅ Created combined PEM file at: {self.temp_cert_file.name}")
+
+                # Create credential with the combined certificate file
+                credential = CertificateCredential(
+                    tenant_id=credentials.tenant_id,
+                    client_id=credentials.client_id,
+                    certificate_path=self.temp_cert_file.name,
+                )
+                
+                # Store path for later use in REST API calls
+                self.certificate_path = self.temp_cert_file.name
+                self.certificate_password = None
+                
+                self.logger.info("✅ Using CertificateCredential for MS Graph client.")
+            except Exception as cert_error:
+                import traceback
+                self.logger.error(f"❌ Error setting up certificate authentication: {cert_error}")
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                # Clean up temp file if created
+                if self.temp_cert_file:
+                    try:
+                        os.unlink(self.temp_cert_file.name)
+                    except:
+                        pass
+                raise ValueError(f"Failed to set up certificate authentication: {cert_error}")
+
+        elif has_client_secret:
+            credential = ClientSecretCredential(
+                tenant_id=credentials.tenant_id,
+                client_id=credentials.client_id,
+                client_secret=credentials.client_secret,
+            )
+            self.certificate_path = None
+            self.certificate_password = None
+            self.logger.info("✅ Using ClientSecretCredential for MS Graph client.")
+        else:
+            # Should be caught by the earlier check, but kept for robustness
+            raise ValueError("No valid credential (Certificate or Client Secret) found.")
 
         # Initialize Graph Client
         self.client = GraphServiceClient(
@@ -340,6 +402,7 @@ class SharePointConnector(BaseConnector):
             scopes=["https://graph.microsoft.com/.default"]
         )
         self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
+
 
     def _construct_site_url(self, site_id: str) -> str:
         """
@@ -2018,15 +2081,12 @@ class SharePointConnector(BaseConnector):
             self.logger.info("Starting SharePoint group synchronization")
 
             # Part 1: Sync Azure AD groups
-            # Get Microsoft 365 Groups instead of trying to access site groups directly
-            # Microsoft Graph API doesn't expose site groups directly through sites.groups
             try:
                 await self._sync_azure_ad_groups_delta()
             except Exception as groups_error:
                 self.logger.error(f"❌ Error syncing Azure AD Groups with delta: {groups_error}")
 
             # Part 2: Sync SharePoint groups
-            # Fetch SharePoint site groups and store them as user groups
             self.logger.info("Starting SharePoint Site Groups fetch...")
 
             sharepoint_groups_with_members = []
@@ -2060,15 +2120,15 @@ class SharePointConnector(BaseConnector):
                         sharepoint_resource = f"https://{parsed_url.netloc}"
 
                         # Get token for SharePoint using certificate or client secret
-                        if hasattr(self, 'certificate_path') and self.certificate_path:
+                        # Use the same credential type that was initialized
+                        if self.certificate_path:
                             from azure.identity.aio import CertificateCredential
 
                             credential = CertificateCredential(
                                 tenant_id=self.tenant_id,
                                 client_id=self.client_id,
-                                certificate_path=self.certificate_path
+                                certificate_path=self.certificate_path,
                             )
-
                         else:
                             from azure.identity.aio import ClientSecretCredential
 
