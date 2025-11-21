@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from langchain.output_parsers import PydanticOutputParser
 
 import aiohttp
 from fastapi import HTTPException
