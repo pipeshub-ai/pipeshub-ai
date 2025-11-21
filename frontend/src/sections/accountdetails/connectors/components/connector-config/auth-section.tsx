@@ -23,6 +23,7 @@ import openInNewIcon from '@iconify-icons/mdi/open-in-new';
 import { FieldRenderer } from '../field-renderers';
 import { shouldShowElement } from '../../utils/conditional-display';
 import BusinessOAuthSection from './business-oauth-section';
+import SharePointOAuthSection from './sharepoint-oauth-section'; // NEW IMPORT
 import { Connector, ConnectorConfig } from '../../types/types';
 
 interface AuthSectionProps {
@@ -34,7 +35,7 @@ interface AuthSectionProps {
   accountTypeLoading: boolean;
   isBusiness: boolean;
   
-  // Business OAuth props
+  // Business OAuth props (Google Workspace)
   adminEmail: string;
   adminEmailError: string | null;
   selectedFile: File | null;
@@ -45,6 +46,23 @@ interface AuthSectionProps {
   onFileUpload: () => void;
   onFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   fileInputRef: React.RefObject<HTMLInputElement>;
+  
+  // NEW: SharePoint Certificate OAuth props
+  certificateFile: File | null;
+  certificateFileName: string | null;
+  certificateError: string | null;
+  certificateData: Record<string, any> | null;
+  privateKeyFile: File | null;
+  privateKeyFileName: string | null;
+  privateKeyError: string | null;
+  privateKeyData: string | null;
+  onCertificateUpload: () => void;
+  onCertificateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onPrivateKeyUpload: () => void;
+  onPrivateKeyChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  certificateInputRef: React.RefObject<HTMLInputElement>;
+  privateKeyInputRef: React.RefObject<HTMLInputElement>;
+  
   onFieldChange: (section: string, fieldName: string, value: any) => void;
 }
 
@@ -66,6 +84,21 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   onFileUpload,
   onFileChange,
   fileInputRef,
+  // NEW: SharePoint props
+  certificateFile,
+  certificateFileName,
+  certificateError,
+  certificateData,
+  privateKeyFile,
+  privateKeyFileName,
+  privateKeyError,
+  privateKeyData,
+  onCertificateUpload,
+  onCertificateChange,
+  onPrivateKeyUpload,
+  onPrivateKeyChange,
+  certificateInputRef,
+  privateKeyInputRef,
   onFieldChange,
 }) => {
   const theme = useTheme();
@@ -73,14 +106,22 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   if (!connectorConfig) return null;
   const { auth } = connectorConfig.config;
   let { documentationLinks } = connectorConfig.config;
-  // Simplified helper function for business OAuth support
+  
+  // Simplified helper function for business OAuth support (Google Workspace)
   const customGoogleBusinessOAuth = (connectorParam: Connector, accountType: string): boolean => 
     accountType === 'business' && 
     (connectorParam.appGroup === 'Google Workspace') && 
     connectorParam.authType === 'OAUTH';
+  
+  // NEW: Helper function for SharePoint certificate authentication
+  const isSharePointCertificateAuth = (connectorParam: Connector): boolean => 
+    connectorParam.name === 'SharePoint Online' && 
+    (connectorParam.authType === 'OAUTH_CERTIFICATE' || connectorParam.authType === 'OAUTH_ADMIN_CONSENT');
+  
   const pipeshubDocumentationUrl = documentationLinks?.find((link) => link.type === 'pipeshub')?.url || `https://docs.pipeshub.com/connectors/overview`;
 
   documentationLinks = documentationLinks?.filter((link) => link.type !== 'pipeshub');
+  
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       {/* Documentation Alert */}
@@ -372,7 +413,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
         </Box>
       )}
 
-      {/* Business OAuth Section */}
+      {/* Business OAuth Section (Google Workspace) */}
       {!accountTypeLoading && customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') && (
         <BusinessOAuthSection
           adminEmail={adminEmail}
@@ -385,6 +426,37 @@ const AuthSection: React.FC<AuthSectionProps> = ({
           onFileUpload={onFileUpload}
           onFileChange={onFileChange}
           fileInputRef={fileInputRef}
+        />
+      )}
+
+      {/* NEW: SharePoint Certificate OAuth Section */}
+      {!accountTypeLoading && isSharePointCertificateAuth(connector) && (
+        <SharePointOAuthSection
+          clientId={formData.clientId || ''}
+          tenantId={formData.tenantId || ''}
+          sharepointDomain={formData.sharepointDomain || ''}
+          hasAdminConsent={formData.hasAdminConsent || false}
+          clientIdError={formErrors.clientId || null}
+          tenantIdError={formErrors.tenantId || null}
+          sharepointDomainError={formErrors.sharepointDomain || null}
+          certificateFile={certificateFile}
+          certificateFileName={certificateFileName}
+          certificateError={certificateError}
+          certificateData={certificateData}
+          privateKeyFile={privateKeyFile}
+          privateKeyFileName={privateKeyFileName}
+          privateKeyError={privateKeyError}
+          privateKeyData={privateKeyData}
+          onClientIdChange={(value) => onFieldChange('auth', 'clientId', value)}
+          onTenantIdChange={(value) => onFieldChange('auth', 'tenantId', value)}
+          onSharePointDomainChange={(value) => onFieldChange('auth', 'sharepointDomain', value)}
+          onAdminConsentChange={(value) => onFieldChange('auth', 'hasAdminConsent', value)}
+          onCertificateUpload={onCertificateUpload}
+          onCertificateChange={onCertificateChange}
+          onPrivateKeyUpload={onPrivateKeyUpload}
+          onPrivateKeyChange={onPrivateKeyChange}
+          certificateInputRef={certificateInputRef}
+          privateKeyInputRef={privateKeyInputRef}
         />
       )}
 
@@ -465,11 +537,20 @@ const AuthSection: React.FC<AuthSectionProps> = ({
               shouldShow = shouldShowElement(auth.conditionalDisplay, field.name, formData);
             }
 
-            // Hide client_id and client_secret fields for business OAuth
+            // Hide client_id and client_secret fields for business OAuth (Google)
             const isBusinessOAuthField = customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
               (field.name === 'clientId' || field.name === 'clientSecret');
 
-            if (!shouldShow || isBusinessOAuthField) return null;
+            // NEW: Hide SharePoint certificate fields as they're handled by SharePointOAuthSection
+            const isSharePointCertField = isSharePointCertificateAuth(connector) &&
+              (field.name === 'clientId' || 
+               field.name === 'tenantId' || 
+               field.name === 'sharepointDomain' || 
+               field.name === 'hasAdminConsent' ||
+               field.name === 'certificate' || 
+               field.name === 'privateKey');
+
+            if (!shouldShow || isBusinessOAuthField || isSharePointCertField) return null;
 
             return (
               <Grid item xs={12} key={field.name}>
@@ -490,11 +571,20 @@ const AuthSection: React.FC<AuthSectionProps> = ({
               !auth.conditionalDisplay[field.name] ||
               shouldShowElement(auth.conditionalDisplay, field.name, formData);
 
-            // Hide client_id and client_secret fields for business OAuth
+            // Hide client_id and client_secret fields for business OAuth (Google)
             const isBusinessOAuthField = customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
               (field.name === 'clientId' || field.name === 'clientSecret');
 
-            if (!shouldShow || isBusinessOAuthField) return null;
+            // NEW: Hide SharePoint certificate fields
+            const isSharePointCertField = isSharePointCertificateAuth(connector) &&
+              (field.name === 'clientId' || 
+               field.name === 'tenantId' || 
+               field.name === 'sharepointDomain' || 
+               field.name === 'hasAdminConsent' ||
+               field.name === 'certificate' || 
+               field.name === 'privateKey');
+
+            if (!shouldShow || isBusinessOAuthField || isSharePointCertField) return null;
 
             return (
               <Grid item xs={12} key={field.name}>
