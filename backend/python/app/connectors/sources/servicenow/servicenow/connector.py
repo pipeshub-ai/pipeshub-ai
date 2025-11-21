@@ -640,7 +640,7 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"❌ Error handling webhook: {e}", exc_info=True)
             return False
 
-    def cleanup(self) -> None:
+    async def cleanup(self) -> None:
         """
         Clean up resources used by the connector.
 
