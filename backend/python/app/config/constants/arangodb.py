@@ -52,6 +52,7 @@ class Connectors(Enum):
     BOOKSTACK = "BOOKSTACK"
 
     SERVICENOW = "SERVICENOW"
+    ZAMMAD = "ZAMMAD"
 
     UNKNOWN = "UNKNOWN"
 
@@ -64,7 +65,7 @@ class AppGroups(Enum):
     SERVICENOW = "Servicenow"
     WEB = "Web"
     BOOKSTACK = "BookStack"
-
+    ZAMMAD = "Zammad"
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"
