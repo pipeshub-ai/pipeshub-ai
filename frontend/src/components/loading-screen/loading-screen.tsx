@@ -79,10 +79,10 @@ export function LoadingScreen({ portal, sx, ...other }: Props) {
           <Box
             key={i}
             sx={{
-              width: 8,
-              height: 8,
+              width: 12,
+              height: 12,
               borderRadius: '50%',
-              backgroundColor: 'primary.main',
+              backgroundColor: '#70CDA7',
               opacity: dotOpacity[i],
               transition: 'opacity 0.3s ease',
             }}

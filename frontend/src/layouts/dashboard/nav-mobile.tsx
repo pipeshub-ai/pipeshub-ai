@@ -48,11 +48,11 @@ export function NavMobile({ data, open, onClose, slots, sx, ...other }: NavMobil
         <Box sx={{ pl: 3.5, pt: 2.5, pb: 1 }}>
            <Box
             component="img"
-            src="/logo/logo-blue.svg"
+            src="/logo/logo.svg"
             alt="Logo"
             sx={{
-              width: 60,
-              height: 30,
+              width: 40,
+              height: 40,
             }}
           />
         </Box>
