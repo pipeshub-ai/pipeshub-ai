@@ -242,6 +242,7 @@ qna_prompt_instructions_2 = """
   - Provide detailed answers using all highly relevant information, ensuring the response is clear and self-contained.
   - Include every key point that addresses the query directly
   - Generate answer in fully valid markdown format with proper headings and formatting
+  - Generate rich markdown text for the answer including tables, lists, bold, italic, sub sections, etc.
   - Do not summarize or omit important details
 
   2. Citations (REQUIRED for all block-derived answers, including follow-ups):
@@ -348,6 +349,7 @@ Query: {{ query }}
 - Include citations using [1], [2], etc., based on the block number referenced.
 - Format citations in square brackets, following the ISO 8061 format of the block number: [1], [2], etc. [1, 2], [1-2], are not valid citation formats.
 - Ensure your answer is clear and adheres to the instructions above.
+- CROSS VERIFY THE CITATIONS FORMAT AND IT FOLLOWS THE ISO 8061 FORMAT OF THE BLOCK NUMBER.
 </instructions>
 Your answer: """
 
