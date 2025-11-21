@@ -26,7 +26,6 @@ from app.utils.citations import (
 from app.utils.logger import create_logger
 
 MAX_TOKENS_THRESHOLD = 80000
-DEFAULT_CONTEXT_LENGTH = 128000
 TOOL_EXECUTION_TOKEN_RATIO = 0.7
 
 # Create a logger for this module
@@ -135,19 +134,19 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
         raise
 
 # Configuration for Qdrant limits based on context length.
-QDRANT_LIMIT_TIERS = [
+VECTOR_DB_LIMIT_TIERS = [
     (17000, 187),  # For context lengths up to 17k
     (33000, 231),  # For context lengths up to 33k
     (65000, 320),  # For context lengths up to 65k
 ]
-DEFAULT_QDRANT_LIMIT = 500
+DEFAULT_VECTOR_DB_LIMIT = 400
 
-def get_qdrant_limit(context_length: int) -> int:
-    """Determines the Qdrant search limit based on the LLM's context length."""
-    for length_threshold, limit in QDRANT_LIMIT_TIERS:
+def get_vectorDb_limit(context_length: int) -> int:
+    """Determines the vector db search limit based on the LLM's context length."""
+    for length_threshold, limit in VECTOR_DB_LIMIT_TIERS:
         if context_length <= length_threshold:
             return limit
-    return DEFAULT_QDRANT_LIMIT
+    return DEFAULT_VECTOR_DB_LIMIT
 
 async def execute_tool_calls(
     llm,
@@ -399,8 +398,7 @@ async def execute_tool_calls(
             message_contents.append(message_content)
 
         current_message_tokens, new_tokens = count_tokens(messages,message_contents)
-        if context_length is None:
-            context_length = DEFAULT_CONTEXT_LENGTH
+
         MAX_TOKENS_THRESHOLD = int(context_length * TOOL_EXECUTION_TOKEN_RATIO)
 
         logger.debug(
@@ -418,12 +416,12 @@ async def execute_tool_calls(
             )
 
             virtual_record_ids = [r.get("virtual_record_id") for r in records if r.get("virtual_record_id")]
-            qdrant_limit =  get_qdrant_limit(context_length)
+            vector_db_limit =  get_vectorDb_limit(context_length)
             result = await retrieval_service.search_with_filters(
                 queries=[all_queries[0]],
                 org_id=org_id,
                 user_id=user_id,
-                limit=qdrant_limit,
+                limit=vector_db_limit,
                 filter_groups=None,
                 virtual_record_ids_from_tool=virtual_record_ids,
             )

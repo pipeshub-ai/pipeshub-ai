@@ -31,7 +31,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.modules.extraction.prompt_template import prompt
-from app.modules.transformers.document_extraction import DocumentClassification
+from app.modules.transformers.document_extraction import DEFAULT_CONTEXT_LENGTH, DocumentClassification
 from app.utils.chat_helpers import count_tokens_text
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -202,7 +202,7 @@ class DomainExtractor:
         self.logger.info("🎯 Extracting domain metadata")
         try:
             self.llm, config = await get_llm(self.config_service)
-            context_length = config.get("contextLength",None)
+            context_length = config.get("contextLength",DEFAULT_CONTEXT_LENGTH)
 
             self.logger.info("✅ LLM initialized successfully")
         except Exception as e:
@@ -228,8 +228,6 @@ class DomainExtractor:
             ).replace("{sentiment_list}", sentiment_list)
             self.prompt_template = PromptTemplate.from_template(filled_prompt)
             token_count = count_tokens_text(content,None)
-            if context_length is None:
-                context_length = 128000
 
             MAX_CONTENT_TOKENS = int(context_length * 0.85)
 

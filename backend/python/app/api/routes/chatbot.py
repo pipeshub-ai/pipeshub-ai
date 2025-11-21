@@ -25,6 +25,8 @@ from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
 from app.utils.streaming import create_sse_event, stream_llm_response_with_tools
 
+DEFAULT_CONTEXT_LENGTH = 128000
+
 router = APIRouter()
 
 # Pydantic models
@@ -463,7 +465,7 @@ async def askAIStream(
                     query_info.chatMode
                 )
                 is_multimodal_llm = config.get("isMultimodal")
-                context_length = config.get("contextLength",None)
+                context_length = config.get("contextLength",DEFAULT_CONTEXT_LENGTH)
 
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
