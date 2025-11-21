@@ -21,6 +21,7 @@ class RecordType(str, Enum):
     FILE = "FILE"
     DRIVE = "DRIVE"
     WEBPAGE = "WEBPAGE"
+    COMMENT = "COMMENT"
     MESSAGE = "MESSAGE"
     MAIL = "MAIL"
     OTHERS = "OTHERS"

@@ -104,6 +104,7 @@ class CollectionNames(Enum):
     MAILS = "mails"
     #MESSAGES = "messages"
     WEBPAGES = "webpages"
+    COMMENTS = "comments"
     TICKETS = "tickets"
 
     # Users and groups
@@ -238,6 +239,7 @@ class RecordTypes(Enum):
     MAIL = "MAIL"
     DRIVE = "DRIVE"
     WEBPAGE = "WEBPAGE"
+    COMMENT = "COMMENT"
     TICKET = "TICKET"
     MESSAGE = "MESSAGE"
     WEBPAGE_COMMENT = "WEBPAGE_COMMENT"

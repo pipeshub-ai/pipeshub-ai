@@ -1,5 +1,5 @@
 // Enumerations for the RecordDocument model
-export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET' | 'OTHERS';
+export type RecordType = 'FILE' | 'WEBPAGE' | 'COMMENT' | 'MESSAGE' | 'EMAIL' | 'TICKET' | 'OTHERS';
 export type OriginType = 'UPLOAD' | 'CONNECTOR';
 export type ConnectorName =
   | 'ONEDRIVE'

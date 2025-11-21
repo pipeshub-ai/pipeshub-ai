@@ -42,6 +42,7 @@ from app.schema.arango.documents import (
     agent_template_schema,
     app_role_schema,
     app_schema,
+    comment_record_schema,
     department_schema,
     file_record_schema,
     mail_record_schema,
@@ -74,6 +75,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.LINKS.value, None),
     (CollectionNames.MAILS.value, mail_record_schema),
     (CollectionNames.WEBPAGES.value, webpage_record_schema),
+    (CollectionNames.COMMENTS.value, comment_record_schema),
     (CollectionNames.PEOPLE.value, None),
     (CollectionNames.USERS.value, user_schema),
     (CollectionNames.GROUPS.value, None),
@@ -4793,7 +4795,8 @@ class BaseArangoService:
                     FILTER belongs_to_org == true
 
                     RETURN MERGE(user, {
-                        sourceUserId: edge.sourceUserId
+                        sourceUserId: edge.sourceUserId,
+                        appName: UPPER(app.name)
                     })
             """
 
@@ -4805,8 +4808,7 @@ class BaseArangoService:
                 "@belongs_to": CollectionNames.BELONGS_TO.value
             })
 
-            user_data_list  = list(cursor)
-            users = [AppUser.from_arango_user(user_data) for user_data in user_data_list]
+            users  = list(cursor)
             self.logger.info(f"✅ Successfully fetched {len(users)} users for {app_name.value}")
             return users
 

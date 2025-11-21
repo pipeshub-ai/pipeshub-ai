@@ -270,8 +270,20 @@ class ArangoTransactionStore(TransactionStore):
                     RecordType.WEBPAGE: {
                         "collection": CollectionNames.WEBPAGES.value,
                     },
+                    RecordType.CONFLUENCE_PAGE: {
+                        "collection": CollectionNames.WEBPAGES.value,
+                    },
+                    RecordType.CONFLUENCE_BLOGPOST: {
+                        "collection": CollectionNames.WEBPAGES.value,
+                    },
                     RecordType.TICKET: {
                         "collection": CollectionNames.TICKETS.value,
+                    },
+                    RecordType.COMMENT: {
+                        "collection": CollectionNames.COMMENTS.value,
+                    },
+                    RecordType.INLINE_COMMENT: {
+                        "collection": CollectionNames.COMMENTS.value,
                     },
                 }
 

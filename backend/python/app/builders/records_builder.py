@@ -58,7 +58,7 @@ class RecordBuilder:
         return self
 
     def with_type(self, record_type: str) -> 'RecordBuilder':
-        if record_type not in ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS"]:
+        if record_type not in ["FILE", "DRIVE", "WEBPAGE", "COMMENT", "MESSAGE", "MAIL", "OTHERS"]:
             raise ValueError(f"Invalid record type: {record_type}")
         self._record_type = record_type
         return self
