@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -410,17 +411,12 @@ class DataSourceEntitiesProcessor:
         Returns:
             Properly typed Record instance (FileRecord, MailRecord, etc.)
         """
-        from app.config.constants.arangodb import (
-            RECORD_TYPE_COLLECTION_MAPPING,
-            CollectionNames,
-        )
-
         record_type = record_dict.get("recordType")
 
         # Check if this record type has a type collection
         if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
             # No type collection or no type doc - use base Record
-            return Record.from_arango_base_record(record_dict)
+            return Record.from_arango_record(record_dict)
 
         try:
             # Determine which collection this type uses
@@ -428,23 +424,23 @@ class DataSourceEntitiesProcessor:
 
             # Map collections to their corresponding Record classes
             if collection == CollectionNames.FILES.value:
-                return FileRecord.from_arango_base_file_record(type_doc, record_dict)
+                return FileRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.MAILS.value:
-                return MailRecord.from_arango_base_mail_record(type_doc, record_dict)
+                return MailRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.WEBPAGES.value:
-                return WebpageRecord.from_arango_base_webpage_record(type_doc, record_dict)
+                return WebpageRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.TICKETS.value:
-                return TicketRecord.from_arango_base_ticket_record(type_doc, record_dict)
+                return TicketRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.COMMENTS.value:
-                return CommentRecord.from_arango_base_comment_record(type_doc, record_dict)
+                return CommentRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
-                return Record.from_arango_base_record(record_dict)
+                return Record.from_arango_record(record_dict)
         except Exception as e:
             self.logger.warning(
                 f"Failed to create typed record for {record_type}, falling back to base Record: {str(e)}"
             )
-            return Record.from_arango_base_record(record_dict)
+            return Record.from_arango_record(record_dict)
 
     async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
         try:

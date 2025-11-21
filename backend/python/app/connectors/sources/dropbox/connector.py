@@ -1,5 +1,6 @@
 import asyncio
 import mimetypes
+import re
 import uuid
 
 # from datetime import datetime
@@ -404,7 +405,6 @@ class DropboxConnector(BaseConnector):
 
                         if 'shared_link_already_exists' in second_error_str:
                             # Extract URL using regex
-                            import re
 
                             # Pattern to match url='...' in the error string
                             url_pattern = r"url='(https://[^']+)'"

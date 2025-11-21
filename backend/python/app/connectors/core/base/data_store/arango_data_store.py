@@ -4,7 +4,11 @@ from typing import AsyncContextManager, Dict, List, Optional
 
 from arango.database import TransactionDatabase
 
-from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.arangodb import (
+    RECORD_TYPE_COLLECTION_MAPPING,
+    CollectionNames,
+    Connectors,
+)
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
@@ -260,9 +264,6 @@ class ArangoTransactionStore(TransactionStore):
         try:
             for record in records:
                 # Define record type configurations
-                # Use centralized mapping from constants - dynamically build config
-                from app.config.constants.arangodb import RECORD_TYPE_COLLECTION_MAPPING
-
                 record_type_config = {
                     RecordType(record_type_str): {"collection": collection}
                     for record_type_str, collection in RECORD_TYPE_COLLECTION_MAPPING.items()

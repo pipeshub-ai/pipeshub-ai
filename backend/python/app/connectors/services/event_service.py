@@ -2,11 +2,12 @@
 
 import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from dependency_injector import providers
 
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.services.base_arango_service import BaseArangoService
@@ -25,6 +26,19 @@ class EventService:
         self.logger = logger
         self.arango_service = arango_service
         self.app_container = app_container
+
+    def _get_connector(self, connector_name: str) -> Optional[BaseConnector]:
+        """
+        Get connector instance from app_container.
+        """
+        connector_key = f"{connector_name}_connector"
+
+        if hasattr(self.app_container, connector_key):
+            return getattr(self.app_container, connector_key)()
+        elif hasattr(self.app_container, 'connectors_map'):
+            return self.app_container.connectors_map.get(connector_name)
+
+        return None
 
     async def process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
         """Handle connector-specific events - implementing abstract method"""
@@ -104,28 +118,17 @@ class EventService:
                 raise ValueError("orgId is required")
 
             self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}")
-            connector_name = connector_name.replace(" ", "").lower()
+            connector_name_normalized = connector_name.replace(" ", "").lower()
 
-            try:
-                # Try to get connector from specific container attribute first
-                connector_key = f"{connector_name}_connector"
-                connector = None
-
-                if hasattr(self.app_container, connector_key):
-                    connector = getattr(self.app_container, connector_key)()
-                elif hasattr(self.app_container, 'connectors_map'):
-                    connector = self.app_container.connectors_map.get(connector_name)
-
-                if connector:
-                    asyncio.create_task(connector.run_sync())
-                    self.logger.info(f"Started sync for {connector_name} connector")
-                    return True
-                else:
-                    self.logger.error(f"{connector_name.capitalize()} connector not initialized")
-                    return False
-            except Exception as e:
-                self.logger.error(f"Failed to get {connector_name.capitalize()} connector: {str(e)}")
+            connector = self._get_connector(connector_name_normalized)
+            if not connector:
+                self.logger.error(f"{connector_name.capitalize()} connector not initialized")
                 return False
+
+            asyncio.create_task(connector.run_sync())
+            self.logger.info(f"Started sync for {connector_name} connector")
+            return True
+
         except Exception as e:
             self.logger.error(f"Failed to queue {connector_name.capitalize()} sync service start: {str(e)}")
             return False
@@ -134,7 +137,7 @@ class EventService:
         """Handle reindex event for a connector with pagination support"""
         try:
             org_id = payload.get("orgId")
-            status_filters = payload.get("statusFilters", ["FAILED"])  # Default to FAILED
+            status_filters = payload.get("statusFilters", ["FAILED"])
 
             if not org_id:
                 raise ValueError("orgId is required")
@@ -142,15 +145,7 @@ class EventService:
             self.logger.info(f"Starting reindex for {connector_name} connector with status filters: {status_filters}")
             connector_name_normalized = connector_name.replace(" ", "").lower()
 
-            # Get connector instance
-            connector_key = f"{connector_name_normalized}_connector"
-            connector = None
-
-            if hasattr(self.app_container, connector_key):
-                connector = getattr(self.app_container, connector_key)()
-            elif hasattr(self.app_container, 'connectors_map'):
-                connector = self.app_container.connectors_map.get(connector_name_normalized)
-
+            connector = self._get_connector(connector_name_normalized)
             if not connector:
                 self.logger.error(f"{connector_name.capitalize()} connector not initialized")
                 return False
