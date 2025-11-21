@@ -1297,7 +1297,7 @@ class ConfluenceConnector(BaseConnector):
                 record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,
-                author_id=author,
+                author_source_id=author,
                 resolution_status=resolution_status,
                 comment_selection=inline_original_selection,
             )

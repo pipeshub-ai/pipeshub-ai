@@ -331,8 +331,7 @@ comment_record_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "orgId": {"type": "string"},
-            "authorId": {"type": "string"},
+            "authorSourceId": {"type": "string"},
             "resolutionStatus": {"type": ["string", "null"]},
             "commentSelection": {"type": ["string", "null"]},
         },
