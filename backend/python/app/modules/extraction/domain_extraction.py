@@ -31,7 +31,10 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.modules.extraction.prompt_template import prompt
-from app.modules.transformers.document_extraction import DEFAULT_CONTEXT_LENGTH, DocumentClassification
+from app.modules.transformers.document_extraction import (
+    DEFAULT_CONTEXT_LENGTH,
+    DocumentClassification,
+)
 from app.utils.chat_helpers import count_tokens_text
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
