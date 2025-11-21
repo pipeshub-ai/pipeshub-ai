@@ -3,11 +3,11 @@ import json
 import logging
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
-from langchain.output_parsers import PydanticOutputParser
 
 import aiohttp
 from fastapi import HTTPException
 from langchain.chat_models.base import BaseChatModel
+from langchain.output_parsers import PydanticOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
@@ -1254,7 +1254,7 @@ async def call_aiter_llm_stream(
                 "call_aiter_llm_stream: No answer field found in LLM response. Using reflection to guide LLM to proper format. Retry count: %d",
                 reflection_retry_count
             )
-            
+
             response_text = state.full_json_buf.strip()
             if response_text.startswith("```json"):
                 response_text = response_text.replace("```json", "", 1)
@@ -1291,7 +1291,7 @@ async def call_aiter_llm_stream(
                     max_reflection_retries,
                 ):
                     yield event
-                    
+
             return
         else:
             logger.error(
