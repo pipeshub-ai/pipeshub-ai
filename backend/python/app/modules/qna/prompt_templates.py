@@ -347,9 +347,9 @@ Query: {{ query }}
 - Use only the provided context to answer the query.
 - While referencing block numbers in your answer, use the ISO 8061 format of the block number like Block [2].
 - Include citations using [1], [2], etc., based on the block number referenced.
-- Format citations in square brackets, following the ISO 8061 format of the block number: [1], [2], etc. [1, 2], [1-2], are not valid citation formats.
+- Format citations in square brackets, with one block number per bracket: [1], [2], etc. Formats like [1, 2] or [1-2] are not valid citation formats.
 - Ensure your answer is clear and adheres to the instructions above.
-- CROSS VERIFY THE CITATIONS FORMAT AND IT FOLLOWS THE ISO 8061 FORMAT OF THE BLOCK NUMBER.
+- CROSS VERIFY THAT THE CITATION FORMAT FOLLOWS THE SPECIFIED FORMAT OF ONE BLOCK NUMBER PER BRACKET.
 </instructions>
 Your answer: """
 
