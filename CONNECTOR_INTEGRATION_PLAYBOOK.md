@@ -809,7 +809,7 @@ class YourConnector(BaseConnector):
             self.logger.error(f"Error handling webhook: {e}")
             return False
 
-    def cleanup(self) -> None:
+    async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
         try:
             # TODO: Clean up external clients, caches, etc.

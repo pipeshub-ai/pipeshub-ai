@@ -34,10 +34,12 @@ class DoclingClient:
         Returns:
             BlocksContainer if successful, None if failed
         """
+
         # Validate pdf_binary type
         if not isinstance(pdf_binary, bytes):
             self.logger.error(f"❌ Invalid pdf_binary type: expected bytes, got {type(pdf_binary).__name__}")
             return None
+
 
         # Validate payload size
         if len(pdf_binary) > 100 * 1024 * 1024:  # 100MB limit

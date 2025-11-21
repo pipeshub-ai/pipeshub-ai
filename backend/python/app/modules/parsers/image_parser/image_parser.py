@@ -84,24 +84,23 @@ class ImageParser:
         return True, extension
 
     async def _fetch_single_url(self, session: aiohttp.ClientSession, url: str) -> str | None:
-        # Check if already a base64 data URL
-        self.logger.debug(f"_fetch_single_url start for URL: {url[:200]}...")
-        if url.startswith('data:image/'):
-            # Skip SVG images - check the MIME type in the data URL
-            if url.startswith('data:image/svg+xml'):
-                self.logger.debug("Data URL is SVG; converting SVG base64 to PNG base64")
-                return f"data:image/png;base64,{self.svg_base64_to_png_base64(url)}"
-
-            self.logger.debug("URL is already base64 encoded")
-            return url
-
-        # Validate URL format before attempting to fetch
-        if not self._is_valid_image_url(url):
-            self.logger.warning(f"URL does not appear to be an image URL: {url[:100]}...")
-            return None
-
         try:
-            # First do a HEAD request to check content-type without downloading
+            # Check if already a base64 data URL
+            self.logger.debug(f"_fetch_single_url start for URL: {url[:200]}...")
+            if url.startswith('data:image/'):
+                # Skip SVG images - check the MIME type in the data URL
+                if url.startswith('data:image/svg+xml'):
+                    self.logger.debug("Data URL is SVG; converting SVG base64 to PNG base64")
+                    return f"data:image/png;base64,{self.svg_base64_to_png_base64(url)}"
+
+                self.logger.debug("URL is already base64 encoded")
+                return url
+
+            # Validate URL format before attempting to fetch
+            if not self._is_valid_image_url(url):
+                self.logger.warning(f"URL does not appear to be an image URL: {url[:100]}...")
+                return None
+
             self.logger.debug(f"HEAD request for URL: {url[:200]}...")
             async with session.head(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as head_response:
                 head_response.raise_for_status()

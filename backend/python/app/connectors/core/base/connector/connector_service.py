@@ -61,7 +61,7 @@ class BaseConnector(ABC):
         NotImplementedError("This method is not supported")
 
     @abstractmethod
-    def cleanup(self) -> None:
+    async def cleanup(self) -> None:
         NotImplementedError("This method should be implemented by the subclass")
 
     @classmethod

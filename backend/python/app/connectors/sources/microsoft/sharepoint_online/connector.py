@@ -270,7 +270,8 @@ class SharePointConnector(BaseConnector):
             sharepoint_domain=normalized_sharepoint_domain,
             has_admin_consent=has_admin_consent,
         )
-        credential = ClientSecretCredential(
+        # Store credential as instance variable to prevent it from being garbage collected
+        self.credential = ClientSecretCredential(
                 tenant_id=credentials.tenant_id,
                 client_id=credentials.client_id,
                 client_secret=credentials.client_secret,
@@ -280,7 +281,7 @@ class SharePointConnector(BaseConnector):
         self.client_id = credentials.client_id
         self.client_secret = credentials.client_secret
         self.client = GraphServiceClient(
-            credential,
+            self.credential,
             scopes=["https://graph.microsoft.com/.default"]
         )
         self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
@@ -364,22 +365,22 @@ class SharePointConnector(BaseConnector):
                 error_str = str(e).lower()
 
                 # Don't retry on permission errors
-                if any(term in error_str for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", "forbidden"]):
-                    self.logger.debug(f"Permission denied on API call (attempt {attempt + 1}): {e}")
+                if any(term in error_str for term in [str(HttpStatusCode.FORBIDDEN.value), "accessdenied", "forbidden"]):
+                    self.logger.error(f"Permission denied on API call (attempt {attempt + 1}): {e}")
                     return None
 
                 # Don't retry on 404 errors
-                if any(term in error_str for term in [HttpStatusCode.NOT_FOUND.value, "notfound"]):
-                    self.logger.debug(f"Resource not found on API call (attempt {attempt + 1}): {e}")
+                if any(term in error_str for term in [str(HttpStatusCode.NOT_FOUND.value), "notfound"]):
+                    self.logger.error(f"Resource not found on API call (attempt {attempt + 1}): {e}")
                     return None
 
                 # Don't retry on 400 bad request errors (like invalid hostname)
-                if any(term in error_str for term in [HttpStatusCode.BAD_REQUEST.value, "badrequest", "invalid"]):
+                if any(term in error_str for term in [str(HttpStatusCode.BAD_REQUEST.value), "badrequest", "invalid"]):
                     self.logger.warning(f"⚠️ Bad request on API call (attempt {attempt + 1}): {e}")
                     return None
 
                 # Retry on rate limiting and server errors
-                if any(term in error_str for term in [HttpStatusCode.TOO_MANY_REQUESTS.value, HttpStatusCode.SERVICE_UNAVAILABLE.value, HttpStatusCode.BAD_GATEWAY.value, HttpStatusCode.INTERNAL_SERVER_ERROR.value, "throttle", "timeout"]):
+                if any(term in error_str for term in [str(HttpStatusCode.TOO_MANY_REQUESTS.value), str(HttpStatusCode.SERVICE_UNAVAILABLE.value), str(HttpStatusCode.BAD_GATEWAY.value), str(HttpStatusCode.INTERNAL_SERVER_ERROR.value), "throttle", "timeout"]):
                     if attempt < max_retries:
                         wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
                         self.logger.warning(f"⚠️ Retryable error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s...")
@@ -2301,17 +2302,18 @@ class SharePointConnector(BaseConnector):
             if hasattr(self, 'site_cache'):
                 self.site_cache.clear()
 
+            # Close the credential to properly close the HTTP transport
+            if hasattr(self, 'credential') and self.credential:
+                try:
+                    await self.credential.close()
+                except Exception as credential_error:
+                    self.logger.debug(f"❌ Error closing credential: {credential_error}")
+                finally:
+                    self.credential = None
+
             # Close client connections
             if hasattr(self, 'client') and self.client:
-                try:
-                    if hasattr(self.client, '_credential'):
-                        credential = self.client._credential
-                        if hasattr(credential, 'close'):
-                            await credential.close()
-                except Exception as client_error:
-                    self.logger.debug(f"❌ Error closing Graph client: {client_error}")
-                finally:
-                    self.client = None
+                self.client = None
 
             # Clean up MSGraph client
             if hasattr(self, 'msgraph_client') and self.msgraph_client:

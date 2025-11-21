@@ -422,6 +422,7 @@ async def execute_tool_calls(
                 org_id=org_id,
                 user_id=user_id,
                 limit=vector_db_limit,
+
                 filter_groups=None,
                 virtual_record_ids_from_tool=virtual_record_ids,
             )

@@ -187,8 +187,8 @@ class OutlookConnector(BaseConnector):
             # Load credentials
             self.credentials = await self._get_credentials(org_id)
 
-            # Create shared MSGraph client
-            external_client: ExternalMSGraphClient = ExternalMSGraphClient.build_with_config(
+            # Create shared MSGraph client - store as instance variable for proper cleanup
+            self.external_client: ExternalMSGraphClient = ExternalMSGraphClient.build_with_config(
                 MSGraphClientWithClientIdSecretConfig(
                     self.credentials.client_id,
                     self.credentials.client_secret,
@@ -198,8 +198,8 @@ class OutlookConnector(BaseConnector):
             )
 
             # Create both data source clients
-            self.external_outlook_client = OutlookCalendarContactsDataSource(external_client)
-            self.external_users_client = UsersGroupsDataSource(external_client)
+            self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
+            self.external_users_client = UsersGroupsDataSource(self.external_client)
 
 
             # Test connection
@@ -1066,9 +1066,20 @@ class OutlookConnector(BaseConnector):
             return False
 
 
-    def cleanup(self) -> None:
+    async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
         try:
+            # Close the MSGraph client to properly close the HTTP transport
+            if hasattr(self, 'external_client') and self.external_client:
+                try:
+                    underlying_client = self.external_client.get_client()
+                    if hasattr(underlying_client, 'close'):
+                        await underlying_client.close()
+                except Exception as client_error:
+                    self.logger.debug(f"Error closing MSGraph client: {client_error}")
+                finally:
+                    self.external_client = None
+
             self.external_outlook_client = None
             self.external_users_client = None
             self.credentials = None

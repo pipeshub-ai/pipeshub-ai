@@ -1830,7 +1830,7 @@ class BookStackConnector(BaseConnector):
         # Could potentially trigger an incremental sync if webhooks are added
         asyncio.create_task(self.run_incremental_sync())
 
-    def cleanup(self) -> None:
+    async def cleanup(self) -> None:
         """
         Cleanup resources used by the connector.
         """
