@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from langchain.output_parsers import PydanticOutputParser
 
 import aiohttp
 from fastapi import HTTPException
@@ -1253,37 +1254,44 @@ async def call_aiter_llm_stream(
                 "call_aiter_llm_stream: No answer field found in LLM response. Using reflection to guide LLM to proper format. Retry count: %d",
                 reflection_retry_count
             )
-
-            # Create reflection message to guide the LLM
-            reflection_message = HumanMessage(
-                content=(
-                    "Error: Your response did not include the required JSON format with an 'answer' field."
-                    "IMPORTANT: Your entire response must be a single JSON object. Do NOT wrap it in markdown code blocks or any other formatting."
-                    "The JSON must be valid and parseable. Start directly with the opening brace '{'."
+            
+            response_text = state.full_json_buf.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text.replace("```json", "", 1)
+            if response_text.endswith("```"):
+                response_text = response_text.rsplit("```", 1)[0]
+            response_text = response_text.strip()
+            try:
+                parser = PydanticOutputParser(pydantic_object=AnswerWithMetadata)
+                parsed = parser.parse(response_text)
+            except Exception as e:
+                parse_error = str(e)
+                # Create reflection message to guide the LLM
+                reflection_message = HumanMessage(
+                    content=(f"""The previous response failed validation with the following error: {str(parse_error)} \n\nPlease correct your response to match the expected schema. Ensure all fields are properly formatted and all required fields are present. Respond only with valid JSON that matches the AnswerWithMetadata schema.""")
                 )
-            )
+                # Add the reflection message to the messages list
+                updated_messages = messages.copy()
+                if ai is not None:
+                    ai_message = AIMessage(
+                        content=ai.content,
+                    )
+                    updated_messages.append(ai_message)
 
-            # Add the reflection message to the messages list
-            updated_messages = messages.copy()
-            if ai is not None:
-                ai_message = AIMessage(
-                    content=ai.content,
-                )
-                updated_messages.append(ai_message)
+                updated_messages.append(reflection_message)
 
-            updated_messages.append(reflection_message)
-
-            # Recursively call the function with updated messages
-            async for event in call_aiter_llm_stream(
-                llm,
-                updated_messages,
-                final_results,
-                records,
-                target_words_per_chunk,
-                reflection_retry_count + 1,
-                max_reflection_retries,
-            ):
-                yield event
+                # Recursively call the function with updated messages
+                async for event in call_aiter_llm_stream(
+                    llm,
+                    updated_messages,
+                    final_results,
+                    records,
+                    target_words_per_chunk,
+                    reflection_retry_count + 1,
+                    max_reflection_retries,
+                ):
+                    yield event
+                    
             return
         else:
             logger.error(
