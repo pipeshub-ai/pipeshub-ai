@@ -184,8 +184,8 @@ async def execute_tool_calls(
 
 
             ai = AIMessage(
-                content= ai.content,
-                tool_calls=getattr(ai, 'tool_calls', []),
+                content = ai.content,
+                tool_calls = getattr(ai, 'tool_calls', []),
             )
         except Exception as e:
             logger.debug("Error in llm call with tools: %s", str(e))
@@ -1268,7 +1268,9 @@ async def call_aiter_llm_stream(
                 parse_error = str(e)
                 # Create reflection message to guide the LLM
                 reflection_message = HumanMessage(
-                    content=(f"""The previous response failed validation with the following error: {str(parse_error)} \n\nPlease correct your response to match the expected schema. Ensure all fields are properly formatted and all required fields are present. Respond only with valid JSON that matches the AnswerWithMetadata schema.""")
+                    content=(f"""The previous response failed validation with the following error: {parse_error}
+                    
+                    Please correct your response to match the expected schema. Ensure all fields are properly formatted and all required fields are present. Respond only with valid JSON that matches the AnswerWithMetadata schema.""")
                 )
                 # Add the reflection message to the messages list
                 updated_messages = messages.copy()
