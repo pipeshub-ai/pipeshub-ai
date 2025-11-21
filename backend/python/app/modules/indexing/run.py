@@ -687,6 +687,8 @@ class IndexingPipeline:
 
                 if ids:
                     await self.vector_store.adelete(ids=ids)
+                
+                await self.arango_service.delete_nodes(keys=[virtual_record_id], collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
 
                 self.logger.info(
                     f"✅ Successfully deleted embeddings for record {record_id}"

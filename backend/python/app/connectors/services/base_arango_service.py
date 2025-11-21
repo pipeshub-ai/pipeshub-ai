@@ -5003,7 +5003,7 @@ class BaseArangoService:
         Delete a list of nodes by key
         """
         try:
-            self.logger.info("🚀 Deleting nodes by keys: %s", keys)
+            self.logger.info(f"🚀 Deleting nodes by keys: {keys} from collection: {collection}")
             query = """
             FOR node IN @@collection
                 FILTER node._key IN @keys
