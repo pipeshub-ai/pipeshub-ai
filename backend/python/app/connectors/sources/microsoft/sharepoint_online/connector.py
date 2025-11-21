@@ -1,5 +1,9 @@
 import asyncio
+import base64
+import os
 import re
+import tempfile
+import traceback
 import urllib.parse
 import uuid
 from dataclasses import dataclass
@@ -8,10 +12,11 @@ from enum import Enum
 from http import HTTPStatus
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 from aiolimiter import AsyncLimiter
-from azure.identity.aio import ClientSecretCredential
+from azure.identity.aio import CertificateCredential, ClientSecretCredential
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from msgraph import GraphServiceClient
@@ -234,9 +239,6 @@ class SharePointConnector(BaseConnector):
 
     async def init(self) -> None:
         """Initialize SharePoint connector with certificate or client secret authentication."""
-        import tempfile
-        import os
-        from azure.identity.aio import CertificateCredential, ClientSecretCredential
 
         # Load configuration from service
         config = await self.config_service.get_config("/services/connectors/sharepointonline/config") or \
@@ -269,7 +271,6 @@ class SharePointConnector(BaseConnector):
 
         # Normalize SharePoint domain to scheme+host (no path)
         try:
-            import urllib.parse
             parsed_domain = urllib.parse.urlparse(sharepoint_domain or "")
             host = parsed_domain.hostname
             scheme = parsed_domain.scheme or "https"
@@ -317,7 +318,6 @@ class SharePointConnector(BaseConnector):
         self.client_secret = credentials.client_secret
 
         # Initialize credential based on available authentication method
-        credential = None
         self.temp_cert_file = None
         self.temp_key_file = None
 
@@ -327,7 +327,7 @@ class SharePointConnector(BaseConnector):
                 if isinstance(certificate_data, str):
                     # Check if it's base64 encoded or raw PEM
                     if not certificate_data.strip().startswith("-----BEGIN CERTIFICATE-----"):
-                        import base64
+
                         certificate_pem = base64.b64decode(certificate_data).decode('utf-8')
                     else:
                         certificate_pem = certificate_data
@@ -338,7 +338,6 @@ class SharePointConnector(BaseConnector):
                 if isinstance(private_key_data, str):
                     # Check if it's base64 encoded or raw PEM
                     if not private_key_data.strip().startswith("-----BEGIN PRIVATE KEY-----"):
-                        import base64
                         private_key_pem = base64.b64decode(private_key_data).decode('utf-8')
                     else:
                         private_key_pem = private_key_data
@@ -351,7 +350,7 @@ class SharePointConnector(BaseConnector):
 
                 # Create a single temporary file with both private key and certificate
                 self.temp_cert_file = tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False)
-                
+
                 # Write combined PEM to temp file
                 self.temp_cert_file.write(combined_pem)
                 self.temp_cert_file.flush()
@@ -360,31 +359,30 @@ class SharePointConnector(BaseConnector):
                 self.logger.info(f"✅ Created combined PEM file at: {self.temp_cert_file.name}")
 
                 # Create credential with the combined certificate file
-                credential = CertificateCredential(
+                self.credential = CertificateCredential(
                     tenant_id=credentials.tenant_id,
                     client_id=credentials.client_id,
                     certificate_path=self.temp_cert_file.name,
                 )
-                
+
                 # Store path for later use in REST API calls
                 self.certificate_path = self.temp_cert_file.name
                 self.certificate_password = None
-                
+
                 self.logger.info("✅ Using CertificateCredential for MS Graph client.")
             except Exception as cert_error:
-                import traceback
                 self.logger.error(f"❌ Error setting up certificate authentication: {cert_error}")
                 self.logger.error(f"Traceback: {traceback.format_exc()}")
                 # Clean up temp file if created
                 if self.temp_cert_file:
                     try:
                         os.unlink(self.temp_cert_file.name)
-                    except:
+                    except OSError:  # <--- The fix
                         pass
                 raise ValueError(f"Failed to set up certificate authentication: {cert_error}")
 
         elif has_client_secret:
-            credential = ClientSecretCredential(
+            self.credential = ClientSecretCredential(
                 tenant_id=credentials.tenant_id,
                 client_id=credentials.client_id,
                 client_secret=credentials.client_secret,
@@ -2092,79 +2090,69 @@ class SharePointConnector(BaseConnector):
             sharepoint_groups_with_members = []
             total_groups = 0
 
+            if self.certificate_path:
+                credential = CertificateCredential(
+                    tenant_id=self.tenant_id,
+                    client_id=self.client_id,
+                    certificate_path=self.certificate_path,
+                )
+            else:
+                credential = ClientSecretCredential(
+                    tenant_id=self.tenant_id,
+                    client_id=self.client_id,
+                    client_secret=self.client_secret
+                )
+
             try:
                 # Get all sites
                 sites = await self._get_all_sites()
 
-                for site in sites:
-                    try:
-                        site_id = site.id
-                        site_name = site.display_name or site.name
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
 
-                        self.logger.info(f"Fetching site groups for site: {site_name}")
+                    for site in sites:
+                        try:
+                            site_id = site.id
+                            site_name = site.display_name or site.name
+                            self.logger.info(f"Fetching site groups for site: {site_name}")
 
-                        # Get site details
-                        async with self.rate_limiter:
-                            site_details = await self.client.sites.by_site_id(site_id).get()
+                            async with self.rate_limiter:
+                                site_details = await self.client.sites.by_site_id(site_id).get()
 
-                        if not site_details or not site_details.web_url:
-                            self.logger.debug(f"No web URL available for site: {site_name}")
-                            continue
+                            if not site_details or not site_details.web_url:
+                                self.logger.debug(f"No web URL available for site: {site_name}")
+                                continue
 
-                        site_web_url = site_details.web_url
-                        rest_api_url = f"{site_web_url}/_api/web/sitegroups"
+                            site_web_url = site_details.web_url
+                            rest_api_url = f"{site_web_url}/_api/web/sitegroups"
+                            parsed_url = urlparse(site_web_url)
+                            sharepoint_resource = f"https://{parsed_url.netloc}"
 
-                        # Extract SharePoint domain from site URL
-                        from urllib.parse import urlparse
-                        parsed_url = urlparse(site_web_url)
-                        sharepoint_resource = f"https://{parsed_url.netloc}"
+                            # Reuse credential to get a specific token for this site
+                            token_response = await credential.get_token(f"{sharepoint_resource}/.default")
+                            access_token = token_response.token
 
-                        # Get token for SharePoint using certificate or client secret
-                        # Use the same credential type that was initialized
-                        if self.certificate_path:
-                            from azure.identity.aio import CertificateCredential
+                            headers = {
+                                'Authorization': f'Bearer {access_token}',
+                                'Accept': 'application/json;odata=verbose',
+                                'Content-Type': 'application/json;odata=verbose'
+                            }
 
-                            credential = CertificateCredential(
-                                tenant_id=self.tenant_id,
-                                client_id=self.client_id,
-                                certificate_path=self.certificate_path,
-                            )
-                        else:
-                            from azure.identity.aio import ClientSecretCredential
-
-                            credential = ClientSecretCredential(
-                                tenant_id=self.tenant_id,
-                                client_id=self.client_id,
-                                client_secret=self.client_secret
-                            )
-
-                        # Request token with SharePoint scope
-                        token_response = await credential.get_token(f"{sharepoint_resource}/.default")
-                        access_token = token_response.token
-
-                        headers = {
-                            'Authorization': f'Bearer {access_token}',
-                            'Accept': 'application/json;odata=verbose',
-                            'Content-Type': 'application/json;odata=verbose'
-                        }
-
-                        async with httpx.AsyncClient(timeout=30.0) as http_client:
+                            # Reuse http_client
                             response = await http_client.get(rest_api_url, headers=headers)
 
                             if response.status_code == HTTPStatus.OK:
                                 data = response.json()
                                 site_groups = data.get('d', {}).get('results', [])
 
-                                print(f"\n{'='*80}")
-                                print(f"Site Groups for: {site_name} (Total: {len(site_groups)})")
-                                print(f"{'='*80}")
+                                self.logger.info(f"\n{'='*80}")
+                                self.logger.info(f"Site Groups for: {site_name} (Total: {len(site_groups)})")
+                                self.logger.info(f"{'='*80}")
 
                                 for idx, group in enumerate(site_groups, 1):
                                     group_title = group.get('Title', 'N/A')
                                     group_id = group.get('Id', 'N/A')
                                     description = group.get('Description', 'N/A')
 
-                                    # Create AppUserGroup for SharePoint site group
                                     user_group = AppUserGroup(
                                         id=str(uuid.uuid4()),
                                         source_user_group_id=str(group_id),
@@ -2173,11 +2161,11 @@ class SharePointConnector(BaseConnector):
                                         description=description if description != 'N/A' else None,
                                     )
 
-                                    # Fetch users for this group
                                     app_users = []
                                     users_url = f"{site_web_url}/_api/web/sitegroups/GetById({group_id})/users"
 
                                     try:
+                                        # Reuse http_client
                                         users_response = await http_client.get(users_url, headers=headers)
 
                                         if users_response.status_code == HTTPStatus.OK:
@@ -2185,14 +2173,13 @@ class SharePointConnector(BaseConnector):
                                             users = users_data.get('d', {}).get('results', [])
 
                                             if users:
-                                                print(f"   - Total Users: {len(users)}")
+                                                self.logger.info(f"   - Total Users: {len(users)}")
                                                 for user_idx, user in enumerate(users, 1):
                                                     user_id = user.get('Id')
                                                     user_title = user.get('Title', 'N/A')
                                                     user_email = user.get('Email')
                                                     user_principal = user.get('UserPrincipalName')
 
-                                                    # Only create AppUser if email exists
                                                     if user_email or user_principal:
                                                         app_user = AppUser(
                                                             source_user_id=str(user_id) if user_id else None,
@@ -2209,27 +2196,20 @@ class SharePointConnector(BaseConnector):
                                     except Exception as user_error:
                                         self.logger.info(f"   - Exception fetching users: {user_error}")
 
-                                    # Add group with members to list
                                     sharepoint_groups_with_members.append((user_group, app_users))
                                     total_groups += 1
-
-                                print(f"\n{'='*80}\n")
+                                self.logger.info(f"\n{'='*80}\n")
 
                             elif response.status_code == HTTPStatus.UNAUTHORIZED:
                                 self.logger.info(" 401 Unauthorized Error")
-                                self.logger.info(f" Response: {response.text[:500]}")
                             else:
                                 self.logger.info(f" Error: {response.status_code}")
-                                self.logger.info(f" Response: {response.text[:500]}")
 
-                        # Close credential
-                        await credential.close()
+                            # Note: Do NOT close credential here anymore
 
-                    except Exception as site_error:
-                        import traceback
-                        self.logger.info(f" Error processing site {site_name}: {traceback.format_exc()}")
-                        self.logger.debug(f"Error fetching site groups for {site_name}: {site_error}")
-                        continue
+                        except Exception:
+                            self.logger.info(f" Error processing site {site_name}: {traceback.format_exc()}")
+                            continue
 
                 # Process all SharePoint site groups
                 if sharepoint_groups_with_members:
@@ -2240,6 +2220,9 @@ class SharePointConnector(BaseConnector):
 
             except Exception as outer_error:
                 self.logger.debug(f"Site groups fetch wrapper error: {outer_error}")
+            finally:
+                # --- CLEANUP: Close credential once at the very end ---
+                await credential.close()
 
             self.logger.info(f"Completed SharePoint group synchronization - processed {total_groups} groups")
 
@@ -2637,40 +2620,41 @@ class SharePointConnector(BaseConnector):
         try:
             self.logger.info("🧹 Starting SharePoint connector cleanup")
 
-            # Clean up temporary certificate file if it exists
-            if hasattr(self, 'temp_cert_path') and self.temp_cert_path:
+            # 1. Clean up temporary certificate file
+            # usage matches 'self.certificate_path' from your init method
+            if hasattr(self, 'certificate_path') and self.certificate_path:
                 try:
-                    import os
-                    if os.path.exists(self.temp_cert_path):
-                        os.remove(self.temp_cert_path)
-                        self.logger.info("✅ Removed temporary certificate file")
+                    if os.path.exists(self.certificate_path):
+                        os.remove(self.certificate_path)
+                        self.logger.info(f"✅ Removed temporary certificate file: {self.certificate_path}")
                 except Exception as cert_error:
-                    self.logger.debug(f"❌ Error removing temporary certificate: {cert_error}")
+                    self.logger.warning(f"❌ Error removing temporary certificate: {cert_error}")
 
-            # Clear caches
-            if hasattr(self, 'site_cache'):
-                self.site_cache.clear()
-
-            # Close the credential to properly close the HTTP transport
+            # 2. Close the credential (closes HTTP transport/sessions)
             if hasattr(self, 'credential') and self.credential:
                 try:
                     await self.credential.close()
+                    self.logger.info("✅ Authentication credential closed")
                 except Exception as credential_error:
-                    self.logger.debug(f"❌ Error closing credential: {credential_error}")
+                    self.logger.warning(f"❌ Error closing credential: {credential_error}")
                 finally:
                     self.credential = None
 
-            # Close client connections
-            if hasattr(self, 'client') and self.client:
+            # 3. Clear caches
+            if hasattr(self, 'site_cache'):
+                self.site_cache.clear()
+
+            # 4. Release Graph Client reference
+            if hasattr(self, 'client'):
                 self.client = None
 
-            # Clean up MSGraph client
+            # 5. Clean up MSGraph helper client
             if hasattr(self, 'msgraph_client') and self.msgraph_client:
                 try:
                     if hasattr(self.msgraph_client, 'cleanup'):
                         await self.msgraph_client.cleanup()
                 except Exception as msgraph_error:
-                    self.logger.debug(f"❌ Error cleaning up MSGraph client: {msgraph_error}")
+                    self.logger.warning(f"❌ Error cleaning up MSGraph client: {msgraph_error}")
 
             self.logger.info("✅ SharePoint connector cleanup completed")
 

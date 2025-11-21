@@ -157,7 +157,7 @@ class ConnectorConfigBuilder:
 
         if field.field_type == "CHECKBOX":
             field.min_length = 0
-            
+
         field_config = {
             "name": field.name,
             "displayName": field.display_name,
