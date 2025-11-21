@@ -26,7 +26,7 @@ from app.utils.citations import (
 from app.utils.logger import create_logger
 
 MAX_TOKENS_THRESHOLD = 80000
-RETRIEVAL_LIMIT_AFTER_TOOL_CALL = 400
+TOOL_EXECUTION_TOKEN_RATIO = 0.7
 
 # Create a logger for this module
 logger = create_logger("streaming")
@@ -133,6 +133,20 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
         raise
 
+# Configuration for Qdrant limits based on context length.
+VECTOR_DB_LIMIT_TIERS = [
+    (17000, 187),  # For context lengths up to 17k
+    (33000, 231),  # For context lengths up to 33k
+    (65000, 320),  # For context lengths up to 65k
+]
+DEFAULT_VECTOR_DB_LIMIT = 400
+
+def get_vectorDb_limit(context_length: int) -> int:
+    """Determines the vector db search limit based on the LLM's context length."""
+    for length_threshold, limit in VECTOR_DB_LIMIT_TIERS:
+        if context_length <= length_threshold:
+            return limit
+    return DEFAULT_VECTOR_DB_LIMIT
 
 async def execute_tool_calls(
     llm,
@@ -146,10 +160,10 @@ async def execute_tool_calls(
     retrieval_service: RetrievalService,
     user_id: str,
     org_id: str,
+    context_length:int|None,
     target_words_per_chunk: int = 1,
     is_multimodal_llm: Optional[bool] = False,
     max_hops: int = 1,
-
 ) -> AsyncGenerator[Dict[str, Any], tuple[List[Dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -195,7 +209,7 @@ async def execute_tool_calls(
 
         # Check if there are tool calls
         if not (isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None)):
-            logger.debug("execute_tool_calls: no tool_calls returned; exiting tool loop without adding AI message (will be streamed)")
+            logger.debug("execute_tool_calls: no tool_calls returned; exiting tool loop")
             messages.append(ai)
             break
 
@@ -385,6 +399,8 @@ async def execute_tool_calls(
 
         current_message_tokens, new_tokens = count_tokens(messages,message_contents)
 
+        MAX_TOKENS_THRESHOLD = int(context_length * TOOL_EXECUTION_TOKEN_RATIO)
+
         logger.debug(
             "execute_tool_calls: token_count | current_messages=%d new_records=%d threshold=%d",
             current_message_tokens,
@@ -400,12 +416,13 @@ async def execute_tool_calls(
             )
 
             virtual_record_ids = [r.get("virtual_record_id") for r in records if r.get("virtual_record_id")]
-
+            vector_db_limit =  get_vectorDb_limit(context_length)
             result = await retrieval_service.search_with_filters(
                 queries=[all_queries[0]],
                 org_id=org_id,
                 user_id=user_id,
-                limit=RETRIEVAL_LIMIT_AFTER_TOOL_CALL,
+                limit=vector_db_limit,
+
                 filter_groups=None,
                 virtual_record_ids_from_tool=virtual_record_ids,
             )
@@ -1017,10 +1034,12 @@ async def stream_llm_response_with_tools(
     virtual_record_id_to_result,
     blob_store,
     is_multimodal_llm,
+    context_length:int|None,
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
     target_words_per_chunk: int = 1,
     mode: Optional[str] = "json",
+
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1052,7 +1071,22 @@ async def stream_llm_response_with_tools(
         tools_were_called = False
         try:
             logger.info(f"executing tool calls with tools={tools}")
-            async for tool_event in execute_tool_calls(llm, final_messages, tools, tool_runtime_kwargs, final_results,virtual_record_id_to_result, blob_store, all_queries, retrieval_service, user_id, org_id, is_multimodal_llm):
+
+            async for tool_event in execute_tool_calls(
+                llm=llm,
+                messages=final_messages,
+                tools=tools,
+                tool_runtime_kwargs=tool_runtime_kwargs,
+                final_results=final_results,
+                virtual_record_id_to_result=virtual_record_id_to_result,
+                blob_store=blob_store,
+                all_queries=all_queries,
+                retrieval_service=retrieval_service,
+                user_id=user_id,
+                org_id=org_id,
+                context_length=context_length,
+                is_multimodal_llm=is_multimodal_llm
+            ):
 
                 if tool_event.get("event") == "tool_execution_complete":
                     # Extract the final messages and tools_executed status

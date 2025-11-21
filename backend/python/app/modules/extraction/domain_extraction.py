@@ -31,7 +31,10 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.modules.extraction.prompt_template import prompt
-from app.modules.transformers.document_extraction import DocumentClassification
+from app.modules.transformers.document_extraction import (
+    DEFAULT_CONTEXT_LENGTH,
+    DocumentClassification,
+)
 from app.utils.chat_helpers import count_tokens_text
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -201,7 +204,9 @@ class DomainExtractor:
         """
         self.logger.info("🎯 Extracting domain metadata")
         try:
-            self.llm, _ = await get_llm(self.config_service)
+            self.llm, config = await get_llm(self.config_service)
+            context_length = config.get("contextLength",DEFAULT_CONTEXT_LENGTH)
+
             self.logger.info("✅ LLM initialized successfully")
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize LLM: {str(e)}")
@@ -226,6 +231,9 @@ class DomainExtractor:
             ).replace("{sentiment_list}", sentiment_list)
             self.prompt_template = PromptTemplate.from_template(filled_prompt)
             token_count = count_tokens_text(content,None)
+
+            MAX_CONTENT_TOKENS = int(context_length * 0.85)
+
             if token_count > MAX_CONTENT_TOKENS:
                 self.logger.info("🎯 Prompt exceeds MAX_CONTENT_TOKENS tokens, truncating content")
                 content = get_first_n_tokens(content,MAX_CONTENT_TOKENS)
