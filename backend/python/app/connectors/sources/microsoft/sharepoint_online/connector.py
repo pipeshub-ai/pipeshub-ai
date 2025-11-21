@@ -319,7 +319,6 @@ class SharePointConnector(BaseConnector):
 
         # Initialize credential based on available authentication method
         self.temp_cert_file = None
-        self.temp_key_file = None
 
         if has_certificate:
             try:
@@ -331,9 +330,12 @@ class SharePointConnector(BaseConnector):
                         certificate_pem = base64.b64decode(certificate_data).decode('utf-8')
                     else:
                         certificate_pem = certificate_data
+                elif certificate_data is not None:
+                    # Explicitly reject non-string types as requested
+                    raise TypeError(f"Certificate data must be a string, but received type {type(certificate_data)}")
                 else:
-                    # Assume it's already bytes or dict with content
-                    certificate_pem = certificate_data
+                    # Should technically be unreachable due to has_certificate check, but safe to keep
+                    raise ValueError("Certificate data is missing")
 
                 if isinstance(private_key_data, str):
                     # Check if it's base64 encoded or raw PEM
@@ -341,8 +343,11 @@ class SharePointConnector(BaseConnector):
                         private_key_pem = base64.b64decode(private_key_data).decode('utf-8')
                     else:
                         private_key_pem = private_key_data
+                elif private_key_data is not None:
+                    # Explicitly reject non-string types
+                    raise TypeError(f"Private key data must be a string, but received type {type(private_key_data)}")
                 else:
-                    private_key_pem = private_key_data
+                    raise ValueError("Private key data is missing")
 
                 # Azure SDK requires certificate and private key in a SINGLE PEM file
                 # Combine them: private key first, then certificate
@@ -2090,19 +2095,6 @@ class SharePointConnector(BaseConnector):
             sharepoint_groups_with_members = []
             total_groups = 0
 
-            if self.certificate_path:
-                credential = CertificateCredential(
-                    tenant_id=self.tenant_id,
-                    client_id=self.client_id,
-                    certificate_path=self.certificate_path,
-                )
-            else:
-                credential = ClientSecretCredential(
-                    tenant_id=self.tenant_id,
-                    client_id=self.client_id,
-                    client_secret=self.client_secret
-                )
-
             try:
                 # Get all sites
                 sites = await self._get_all_sites()
@@ -2128,7 +2120,7 @@ class SharePointConnector(BaseConnector):
                             sharepoint_resource = f"https://{parsed_url.netloc}"
 
                             # Reuse credential to get a specific token for this site
-                            token_response = await credential.get_token(f"{sharepoint_resource}/.default")
+                            token_response = await self.credential.get_token(f"{sharepoint_resource}/.default")
                             access_token = token_response.token
 
                             headers = {
@@ -2207,8 +2199,8 @@ class SharePointConnector(BaseConnector):
 
                             # Note: Do NOT close credential here anymore
 
-                        except Exception:
-                            self.logger.info(f" Error processing site {site_name}: {traceback.format_exc()}")
+                        except Exception as e:
+                            self.logger.info(f" Error processing site {site_name}: {e}\n{traceback.format_exc()}")
                             continue
 
                 # Process all SharePoint site groups
@@ -2220,9 +2212,7 @@ class SharePointConnector(BaseConnector):
 
             except Exception as outer_error:
                 self.logger.debug(f"Site groups fetch wrapper error: {outer_error}")
-            finally:
-                # --- CLEANUP: Close credential once at the very end ---
-                await credential.close()
+
 
             self.logger.info(f"Completed SharePoint group synchronization - processed {total_groups} groups")
 
