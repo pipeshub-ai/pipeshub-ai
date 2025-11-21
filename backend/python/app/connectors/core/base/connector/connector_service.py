@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from fastapi.responses import StreamingResponse
 
@@ -62,6 +62,10 @@ class BaseConnector(ABC):
 
     @abstractmethod
     async def cleanup(self) -> None:
+        NotImplementedError("This method should be implemented by the subclass")
+
+    @abstractmethod
+    async def reindex_records(self, record_results: List[Dict]) -> None:
         NotImplementedError("This method should be implemented by the subclass")
 
     @classmethod

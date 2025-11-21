@@ -198,10 +198,19 @@ class KafkaUtils:
                     return True
                 event_type = message.get("eventType")
                 payload = message.get("payload", {})
-                connector = payload.get("connector")
+
+                if not event_type:
+                    logger.error("Missing event_type in sync message")
+                    return False
+
+                connector = None
+                if "." in event_type:
+                    connector = event_type.split(".")[0].lower()
+                else:
+                    connector = payload.get("connector")
 
                 sync_tasks_registry = getattr(app_container, 'sync_tasks_registry', {})
-                # TODO: Handle connectorPublicUrlChanged correctly
+
                 if event_type == "connectorPublicUrlChanged":
                     logger.info(f"Processing connectorPublicUrlChanged event: {payload}")
                     drive_sync_tasks = sync_tasks_registry.get('drive')
@@ -217,27 +226,20 @@ class KafkaUtils:
                     )
                     logger.info(f"Processing sync event: {event_type} for GOOGLE DRIVE")
                     return await google_drive_event_service.process_event(event_type, payload)
-                    return True
-
-                if not event_type:
-                    logger.error("Missing event_type in sync message")
-                    return False
 
                 if not connector:
-                    logger.error("Missing connector in sync message")
+                    logger.error("Missing connector in event_type or payload")
                     return False
 
                 logger.info(f"Processing sync event: {event_type} for connector {connector}")
 
+                connector_normalized = connector.lower().replace(" ", "")
 
-                # Route sync events to appropriate connectors
-                if connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
-                    # Create the sync event service
+                if connector_normalized == Connectors.GOOGLE_MAIL.value.lower():
                     gmail_sync_tasks = sync_tasks_registry.get('gmail')
                     if not gmail_sync_tasks:
                         logger.error("Gmail sync tasks not found in registry")
                         return False
-
 
                     gmail_event_service = GmailEventService(
                         logger=logger,
@@ -247,13 +249,12 @@ class KafkaUtils:
                     logger.info(f"Processing sync event: {event_type} for GMAIL")
                     return await gmail_event_service.process_event(event_type, payload)
 
-                elif connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
+                elif connector_normalized == Connectors.GOOGLE_DRIVE.value.lower():
                     drive_sync_tasks = sync_tasks_registry.get('drive')
                     if not drive_sync_tasks:
                         logger.error("Drive sync tasks not found in registry")
                         return False
 
-                    # Handle drive sync events
                     google_drive_event_service = GoogleDriveEventService(
                         logger=logger,
                         sync_tasks=drive_sync_tasks,
@@ -268,7 +269,6 @@ class KafkaUtils:
                         arango_service=arango_service,
                         app_container=app_container,
                     )
-
                     logger.info(f"Processing sync event: {event_type} for {connector}")
                     return await event_service.process_event(event_type, payload)
 
