@@ -50,9 +50,7 @@ from app.connectors.core.registry.connector_builder import (
 
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox.common.apps import DropboxApp
-from app.connectors.sources.microsoft.common.msgraph_client import (
-    RecordUpdate,
-)
+from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
 # Model imports
 from app.models.entities import (
@@ -407,6 +405,7 @@ class DropboxConnector(BaseConnector):
                         if 'shared_link_already_exists' in second_error_str:
                             # Extract URL using regex
                             import re
+
                             # Pattern to match url='...' in the error string
                             url_pattern = r"url='(https://[^']+)'"
                             url_match = re.search(url_pattern, second_error_str)
@@ -2642,6 +2641,11 @@ class DropboxConnector(BaseConnector):
     async def cleanup(self) -> None:
         self.logger.info("Cleaning up Dropbox connector resources.")
         self.data_source = None
+
+    async def reindex_records(self, record_results: List[Dict]) -> None:
+        """Reindex records - not implemented for Dropbox yet."""
+        self.logger.warning("Reindex not implemented for Dropbox connector")
+        pass
 
     # @classmethod
     # async def create_connector(

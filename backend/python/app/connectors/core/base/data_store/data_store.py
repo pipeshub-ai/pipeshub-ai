@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncContextManager, List, Optional
+from typing import TYPE_CHECKING, AsyncContextManager, Dict, List, Optional
 
 from app.config.constants.arangodb import Connectors
 from app.models.entities import (
@@ -63,6 +63,11 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def get_record_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[Record]:
+        pass
+
+    @abstractmethod
+    async def get_records_by_status(self, org_id: str, connector_name: Connectors, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Dict]:
+        """Get records by their indexing status with pagination support. Returns raw record dictionaries."""
         pass
 
     @abstractmethod

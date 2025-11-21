@@ -56,6 +56,9 @@ class ArangoTransactionStore(TransactionStore):
     async def get_record_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_external_id(connector_name, external_id, transaction=self.txn)
 
+    async def get_records_by_status(self, org_id: str, connector_name: Connectors, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Dict]:
+        return await self.arango_service.get_records_by_status(org_id, connector_name, status_filters, limit, offset, transaction=self.txn)
+
     async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
         return await self.arango_service.get_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
 
@@ -257,22 +260,12 @@ class ArangoTransactionStore(TransactionStore):
         try:
             for record in records:
                 # Define record type configurations
+                # Use centralized mapping from constants - dynamically build config
+                from app.config.constants.arangodb import RECORD_TYPE_COLLECTION_MAPPING
+
                 record_type_config = {
-                    RecordType.FILE: {
-                        "collection": CollectionNames.FILES.value,
-                    },
-                    RecordType.MAIL: {
-                        "collection": CollectionNames.MAILS.value,
-                    },
-                    # RecordType.MESSAGE.value: {
-                    #     "collection": CollectionNames.MESSAGES.value,
-                    # },
-                    RecordType.WEBPAGE: {
-                        "collection": CollectionNames.WEBPAGES.value,
-                    },
-                    RecordType.TICKET: {
-                        "collection": CollectionNames.TICKETS.value,
-                    },
+                    RecordType(record_type_str): {"collection": collection}
+                    for record_type_str, collection in RECORD_TYPE_COLLECTION_MAPPING.items()
                 }
 
                 # Get the configuration for the current record type

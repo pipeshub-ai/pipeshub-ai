@@ -7,7 +7,12 @@ import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
 export interface Event {
   eventType: string;
   timestamp: number;
-  payload: ReindexAllRecordEvent;
+  payload: ReindexAllRecordEvent | ReindexEventPayload | any;
+}
+
+export interface ReindexEventPayload {
+  orgId: string;
+  statusFilters: string[];
 }
 
 export interface ReindexAllRecordEvent {

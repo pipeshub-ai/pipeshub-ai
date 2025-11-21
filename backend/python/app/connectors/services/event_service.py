@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from dependency_injector import providers
 
+from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.services.base_arango_service import BaseArangoService
@@ -28,22 +29,30 @@ class EventService:
     async def process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
         """Handle connector-specific events - implementing abstract method"""
         try:
-            connector_name = event_type.split(".")[0]
-            connector_name = connector_name.replace(" ", "").lower()
-            self.logger.info(f"Handling {connector_name} connector event: {event_type}")
-            event_type = event_type.split(".")[1]
-            if event_type == "init":
-                return await self._handle_init(connector_name, payload)
-            elif event_type == "start":
-                return await self._handle_start_sync(connector_name, payload)
-            elif event_type.lower() == "resync":
-                return await self._handle_start_sync(connector_name, payload)
+            if "." in event_type:
+                parts = event_type.split(".")
+                connector_name = parts[0].replace(" ", "").lower()
+                action = parts[1].lower()
             else:
-                self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {event_type}")
+                self.logger.error(f"Invalid event type format (missing connector prefix): {event_type}")
+                return False
+
+            self.logger.info(f"Handling {connector_name} connector event: {action}")
+
+            if action == "init":
+                return await self._handle_init(connector_name, payload)
+            elif action == "start":
+                return await self._handle_start_sync(connector_name, payload)
+            elif action == "resync":
+                return await self._handle_start_sync(connector_name, payload)
+            elif action == "reindex":
+                return await self._handle_reindex(connector_name, payload)
+            else:
+                self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {action}")
                 return False
 
         except Exception as e:
-            self.logger.error(f"Error handling {connector_name.capitalize()} connector event {event_type}: {e}", exc_info=True)
+            self.logger.error(f"Error handling connector event {event_type}: {e}", exc_info=True)
             return False
 
     async def _handle_init(self, connector_name: str, payload: Dict[str, Any]) -> bool:
@@ -119,4 +128,72 @@ class EventService:
                 return False
         except Exception as e:
             self.logger.error(f"Failed to queue {connector_name.capitalize()} sync service start: {str(e)}")
+            return False
+
+    async def _handle_reindex(self, connector_name: str, payload: Dict[str, Any]) -> bool:
+        """Handle reindex event for a connector with pagination support"""
+        try:
+            org_id = payload.get("orgId")
+            status_filters = payload.get("statusFilters", ["FAILED"])  # Default to FAILED
+
+            if not org_id:
+                raise ValueError("orgId is required")
+
+            self.logger.info(f"Starting reindex for {connector_name} connector with status filters: {status_filters}")
+            connector_name_normalized = connector_name.replace(" ", "").lower()
+
+            # Get connector instance
+            connector_key = f"{connector_name_normalized}_connector"
+            connector = None
+
+            if hasattr(self.app_container, connector_key):
+                connector = getattr(self.app_container, connector_key)()
+            elif hasattr(self.app_container, 'connectors_map'):
+                connector = self.app_container.connectors_map.get(connector_name_normalized)
+
+            if not connector:
+                self.logger.error(f"{connector_name.capitalize()} connector not initialized")
+                return False
+
+            # Get connector enum value
+            connector_enum = getattr(Connectors, connector_name.upper().replace(" ", ""), None)
+            if not connector_enum:
+                self.logger.error(f"Unknown connector name: {connector_name}")
+                return False
+
+            # Fetch and process records in batches of 100
+            batch_size = 100
+            offset = 0
+            total_processed = 0
+
+            while True:
+                # Fetch batch of records
+                records = await self.arango_service.get_records_by_status(
+                    org_id=org_id,
+                    connector_name=connector_enum,
+                    status_filters=status_filters,
+                    limit=batch_size,
+                    offset=offset
+                )
+
+                if not records:
+                    break
+
+                self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
+
+                # Process this batch
+                await connector.reindex_records(records)
+
+                total_processed += len(records)
+                offset += batch_size
+
+                # If we got fewer records than batch_size, we've reached the end
+                if len(records) < batch_size:
+                    break
+
+            self.logger.info(f"✅ Completed reindex for {connector_name} connector. Total records processed: {total_processed}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to handle reindex for {connector_name.capitalize()}: {str(e)}", exc_info=True)
             return False

@@ -375,6 +375,11 @@ class ConfluenceConnector(BaseConnector):
     async def run_incremental_sync(self) -> None:
         pass
 
+    async def reindex_records(self, record_results: List[Dict]) -> None:
+        """Reindex records - not implemented for Confluence yet."""
+        self.logger.warning("Reindex not implemented for Confluence connector")
+        pass
+
     async def cleanup(self) -> None:
         pass
 
