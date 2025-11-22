@@ -678,6 +678,10 @@ class SharePointConnector(BaseConnector):
             async for record, permissions, record_update in self._process_site_drives(site_id, internal_site_record_group_id=site_record_group.id):
                 if record_update.is_deleted:
                     await self._handle_record_updates(record_update)
+                    continue
+                if record_update.is_updated:
+                    await self._handle_record_updates(record_update)
+                    continue
                 elif record:
                     batch_records.append((record, permissions))
                     total_processed += 1
@@ -2095,10 +2099,25 @@ class SharePointConnector(BaseConnector):
             sharepoint_groups_with_members = []
             total_groups = 0
 
+            # --- OPTIMIZATION 1: Initialize Credential ONCE ---
+            if self.certificate_path:
+                credential = CertificateCredential(
+                    tenant_id=self.tenant_id,
+                    client_id=self.client_id,
+                    certificate_path=self.certificate_path,
+                )
+            else:
+                credential = ClientSecretCredential(
+                    tenant_id=self.tenant_id,
+                    client_id=self.client_id,
+                    client_secret=self.client_secret
+                )
+
             try:
                 # Get all sites
                 sites = await self._get_all_sites()
 
+                # --- OPTIMIZATION 2: Open HTTP Client ONCE ---
                 async with httpx.AsyncClient(timeout=30.0) as http_client:
 
                     for site in sites:
@@ -2120,7 +2139,7 @@ class SharePointConnector(BaseConnector):
                             sharepoint_resource = f"https://{parsed_url.netloc}"
 
                             # Reuse credential to get a specific token for this site
-                            token_response = await self.credential.get_token(f"{sharepoint_resource}/.default")
+                            token_response = await credential.get_token(f"{sharepoint_resource}/.default")
                             access_token = token_response.token
 
                             headers = {
@@ -2136,9 +2155,9 @@ class SharePointConnector(BaseConnector):
                                 data = response.json()
                                 site_groups = data.get('d', {}).get('results', [])
 
-                                self.logger.info(f"\n{'='*80}")
+                                self.logger.info(f"\n{'='*180}")
                                 self.logger.info(f"Site Groups for: {site_name} (Total: {len(site_groups)})")
-                                self.logger.info(f"{'='*80}")
+                                self.logger.info(f"{'='*100}")
 
                                 for idx, group in enumerate(site_groups, 1):
                                     group_title = group.get('Title', 'N/A')
@@ -2190,7 +2209,7 @@ class SharePointConnector(BaseConnector):
 
                                     sharepoint_groups_with_members.append((user_group, app_users))
                                     total_groups += 1
-                                self.logger.info(f"\n{'='*80}\n")
+                                self.logger.info(f"\n{'='*180}\n")
 
                             elif response.status_code == HTTPStatus.UNAUTHORIZED:
                                 self.logger.info(" 401 Unauthorized Error")
@@ -2199,8 +2218,8 @@ class SharePointConnector(BaseConnector):
 
                             # Note: Do NOT close credential here anymore
 
-                        except Exception as e:
-                            self.logger.info(f" Error processing site {site_name}: {e}\n{traceback.format_exc()}")
+                        except Exception:
+                            self.logger.info(f" Error processing site {site_name}: {traceback.format_exc()}")
                             continue
 
                 # Process all SharePoint site groups
@@ -2212,7 +2231,9 @@ class SharePointConnector(BaseConnector):
 
             except Exception as outer_error:
                 self.logger.debug(f"Site groups fetch wrapper error: {outer_error}")
-
+            finally:
+                # --- CLEANUP: Close credential once at the very end ---
+                await credential.close()
 
             self.logger.info(f"Completed SharePoint group synchronization - processed {total_groups} groups")
 
@@ -2399,8 +2420,7 @@ class SharePointConnector(BaseConnector):
                     record_id=record_update.external_record_id
                 )
             elif record_update.is_updated:
-                if record_update.content_changed:
-                    await self.data_entities_processor.on_record_content_update(record_update.record)
+
                 if record_update.metadata_changed:
                     await self.data_entities_processor.on_record_metadata_update(record_update.record)
                 if record_update.permissions_changed:
@@ -2408,6 +2428,8 @@ class SharePointConnector(BaseConnector):
                         record_update.record,
                         record_update.new_permissions
                     )
+                if record_update.content_changed:
+                    await self.data_entities_processor.on_record_content_update(record_update.record)
         except Exception as e:
             self.logger.error(f"❌ Error handling record updates: {e}")
 
