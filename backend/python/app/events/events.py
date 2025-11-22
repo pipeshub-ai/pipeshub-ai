@@ -239,6 +239,8 @@ class EventProcessor:
                     # Add indexingStatus to initial duplicate check to find in-progress files
                     duplicate_files = await self.arango_service.find_duplicate_files(file_doc.get('_key'), md5_checksum, size_in_bytes)
                     duplicate_files = [f for f in duplicate_files if f is not None]
+                    current_file_key = file_doc.get('_key')
+
                     if duplicate_files:
                         # Wait and check for processed duplicates
                         for attempt in range(60):
@@ -268,20 +270,37 @@ class EventProcessor:
                                 return
 
                             # Check if any duplicate is in progress
-                            in_progress = next(
-                                (f for f in duplicate_files if f.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value),
-                                None
-                            )
+                            in_progress_files = [
+                                f for f in duplicate_files
+                                if f.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value
+                            ]
 
-                            if in_progress:
-                                self.logger.info(f"🚀 Duplicate file {in_progress.get('_key')} is being processed, waiting...")
-                                self.logger.info(f"Retried {attempt} times")
-                                # TODO: Remove this sleep
-                                await asyncio.sleep(30)
-                                # Refresh duplicate files list
-                                duplicate_files = await self.arango_service.find_duplicate_files(
-                                    file_doc.get('_key'), md5_checksum, size_in_bytes
+                            if in_progress_files:
+                                # To avoid deadlock when multiple files are IN_PROGRESS simultaneously,
+                                # only wait if there's a file with a lexicographically smaller key.
+                                # This ensures a consistent processing order and breaks circular waits.
+                                should_wait = any(
+                                    f.get('_key') < current_file_key for f in in_progress_files
                                 )
+
+                                if should_wait:
+                                    in_progress_keys = [f.get('_key') for f in in_progress_files if f.get('_key') < current_file_key]
+                                    self.logger.info(
+                                        f"🚀 Duplicate file(s) {in_progress_keys} with lower keys are being processed, waiting... "
+                                        f"(attempt {attempt + 1}/60)"
+                                    )
+                                    await asyncio.sleep(30)
+                                    # Refresh duplicate files list
+                                    duplicate_files = await self.arango_service.find_duplicate_files(
+                                        file_doc.get('_key'), md5_checksum, size_in_bytes
+                                    )
+                                    duplicate_files = [f for f in duplicate_files if f is not None]
+                                else:
+                                    # We have the lowest key among in-progress files, proceed
+                                    self.logger.info(
+                                        f"🚀 Current file {current_file_key} has priority over other in-progress duplicates, proceeding..."
+                                    )
+                                    break
                             else:
                                 # No file is being processed, we can proceed
                                 break
