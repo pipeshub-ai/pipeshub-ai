@@ -517,10 +517,6 @@ class OneDriveConnector(BaseConnector):
 
             elif record_update.is_updated:
                 # Handle updates based on what changed
-                if record_update.content_changed:
-                    self.logger.info(f"Content changed for record: {record_update.record.record_name}")
-                    await self.data_entities_processor.on_record_content_update(record_update.record)
-
                 if record_update.metadata_changed:
                     self.logger.info(f"Metadata changed for record: {record_update.record.record_name}")
                     await self.data_entities_processor.on_record_metadata_update(record_update.record)
@@ -531,6 +527,10 @@ class OneDriveConnector(BaseConnector):
                         record_update.record,
                         record_update.new_permissions
                     )
+
+                if record_update.content_changed:
+                    self.logger.info(f"Content changed for record: {record_update.record.record_name}")
+                    await self.data_entities_processor.on_record_content_update(record_update.record)
 
         except Exception as e:
             self.logger.error(f"❌ Error handling record updates: {e}", exc_info=True)

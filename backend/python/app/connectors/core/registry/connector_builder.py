@@ -154,6 +154,10 @@ class ConnectorConfigBuilder:
 
     def add_auth_field(self, field: AuthField) -> 'ConnectorConfigBuilder':
         """Add an authentication field"""
+
+        if field.field_type == "CHECKBOX":
+            field.min_length = 0
+
         field_config = {
             "name": field.name,
             "displayName": field.display_name,
