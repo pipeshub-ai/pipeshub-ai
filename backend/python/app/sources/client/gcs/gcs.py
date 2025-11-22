@@ -1,22 +1,23 @@
 import json
 import os
-from typing import Any, Dict, Optional, Union
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional
 
-try:
-    # Async GCS client
-    import aiohttp  # type: ignore
-    from gcloud.aio.storage import Storage  # type: ignore
-    from google.auth.credentials import Credentials  # type: ignore
-    from google.oauth2 import service_account  # type: ignore
-except ImportError:
-    raise ImportError(
-        "gcloud-aio-storage or google-auth is not installed. Please install with `pip install gcloud-aio-storage google-auth`."
-    )
-
+import google.auth.exceptions  # type: ignore
+from google.cloud import storage  # type: ignore
+from google.cloud.exceptions import NotFound  # type: ignore
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+
+try:
+    # Official GCS client
+    pass
+except ImportError:
+    raise ImportError(
+        "google-cloud-storage is not installed. Please install with `pip install google-cloud-storage`."
+    )
 
 
 class GCSConfigurationError(Exception):
@@ -45,16 +46,36 @@ class GCSResponse(BaseModel):
         return self.model_dump_json()
 
 
-# HTTP status codes used
-HTTP_CONFLICT = 409
+# --- Configuration Models ---
 
+class BaseGCSConfig(BaseModel, ABC):
+    """Base configuration class for shared fields and logic."""
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra='ignore')
 
-class GCSServiceAccountJsonConfig(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    serviceAccountJson: str
     bucketName: str
     projectId: Optional[str] = None
+
+    @abstractmethod
+    def create_storage_client(self) -> storage.Client:
+        """Create and return an authenticated storage client."""
+        pass
+
+    @abstractmethod
+    def get_authentication_method(self) -> str:
+        """Return the name of the authentication method."""
+        pass
+
+    def to_dict(self) -> dict:
+        """Standardized dictionary representation of the config."""
+        return {
+            "authentication_method": self.get_authentication_method(),
+            "project_id": self.projectId,
+            "bucket_name": self.bucketName
+        }
+
+
+class GCSServiceAccountJsonConfig(BaseGCSConfig):
+    serviceAccountJson: str
 
     @field_validator('serviceAccountJson')
     @classmethod
@@ -62,36 +83,28 @@ class GCSServiceAccountJsonConfig(BaseModel):
         try:
             json.loads(v)
             return v
-        except json.JSONDecodeError:
-            raise ValueError('serviceAccountJson is not valid JSON')
+        except json.JSONDecodeError as e:
+            raise ValueError('serviceAccountJson is not valid JSON') from e
 
-    def _get_credentials(self) -> Credentials:
+    def _get_client_from_info(self) -> storage.Client:
         try:
             info = json.loads(self.serviceAccountJson)
-            return service_account.Credentials.from_service_account_info(info)
+            return storage.Client.from_service_account_info(info, project=self.projectId)
         except (json.JSONDecodeError, ValueError) as e:
             raise GCSConfigurationError("Invalid serviceAccountJson provided", {"error": str(e)}) from e
 
-    async def create_storage_client(self) -> Storage:
+    def create_storage_client(self) -> storage.Client:
         try:
-            creds = self._get_credentials()
-            return Storage(credentials=creds)
+            return self._get_client_from_info()
         except Exception as e:
-            raise GCSConfigurationError(f"Failed to create Storage client: {e}")
+            raise GCSConfigurationError(f"Failed to create Storage client: {e}") from e
 
     def get_authentication_method(self) -> str:
         return "service_account_json"
 
-    def to_dict(self) -> dict:
-        return {"authentication_method": "service_account_json", "project_id": self.projectId, "bucket_name": self.bucketName}
 
-
-class GCSServiceAccountFileConfig(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
+class GCSServiceAccountFileConfig(BaseGCSConfig):
     serviceAccountFile: str
-    bucketName: str
-    projectId: Optional[str] = None
 
     @field_validator('serviceAccountFile')
     @classmethod
@@ -100,123 +113,101 @@ class GCSServiceAccountFileConfig(BaseModel):
             raise ValueError(f'serviceAccountFile not found at path: {v}')
         return v
 
-    def _get_credentials(self) -> Credentials:
+    def create_storage_client(self) -> storage.Client:
         try:
-            return service_account.Credentials.from_service_account_file(self.serviceAccountFile)
+            return storage.Client.from_service_account_json(self.serviceAccountFile, project=self.projectId)
+        except (FileNotFoundError, google.auth.exceptions.GoogleAuthError, ValueError) as e:
+            raise GCSConfigurationError("Invalid serviceAccountFile provided", {"error": str(e)}) from e
         except Exception as e:
-            raise GCSConfigurationError("Invalid serviceAccountFile provided", {"error": str(e)})
-
-    async def create_storage_client(self) -> Storage:
-        try:
-            creds = self._get_credentials()
-            return Storage(credentials=creds)
-        except Exception as e:
-            raise GCSConfigurationError(f"Failed to create Storage client: {e}")
+            raise GCSConfigurationError(f"Failed to create Storage client: {e}") from e
 
     def get_authentication_method(self) -> str:
         return "service_account_file"
 
-    def to_dict(self) -> dict:
-        return {"authentication_method": "service_account_file", "project_id": self.projectId, "bucket_name": self.bucketName}
 
-
-class GCSADCConfig(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    bucketName: str
-    projectId: Optional[str] = None
-
-    async def create_storage_client(self) -> Storage:
+class GCSADCConfig(BaseGCSConfig):
+    def create_storage_client(self) -> storage.Client:
         try:
-            return Storage()
+            return storage.Client(project=self.projectId)
+        except google.auth.exceptions.GoogleAuthError as e:
+            raise GCSConfigurationError(f"Failed to create Storage client via ADC (Auth Error): {e}") from e
         except Exception as e:
-            raise GCSConfigurationError(f"Failed to create Storage client via ADC: {e}")
+            raise GCSConfigurationError(f"Failed to create Storage client via ADC: {e}") from e
 
     def get_authentication_method(self) -> str:
         return "adc"
 
-    def to_dict(self) -> dict:
-        return {"authentication_method": "adc", "project_id": self.projectId, "bucket_name": self.bucketName}
 
+# --- Core Client Logic ---
 
-class GCSRESTClient:
-    def __init__(self, config: Union[GCSServiceAccountJsonConfig, GCSServiceAccountFileConfig, GCSADCConfig]) -> None:  # type: ignore
+class GCSCoreClient:
+    def __init__(self, config: BaseGCSConfig) -> None:
         self.config = config
-        self._storage_client: Optional[Storage] = None
+        self._storage_client: Optional[storage.Client] = None
 
-    async def get_storage_client(self) -> Storage:
+    def get_storage_client(self) -> storage.Client:
         if self._storage_client is None:
-            self._storage_client = await self.config.create_storage_client()
+            self._storage_client = self.config.create_storage_client()
         return self._storage_client
 
     def get_bucket_name(self) -> str:
-        return getattr(self.config, "bucketName")
+        return self.config.bucketName
 
     def get_project_id(self) -> Optional[str]:
-        return getattr(self.config, "projectId", None)
+        return self.config.projectId
 
     def get_authentication_method(self) -> str:
-        return self.config.get_authentication_method()  # type: ignore
+        return self.config.get_authentication_method()
 
     def get_credentials_info(self) -> Dict[str, Any]:
-        return self.config.to_dict()  # type: ignore
+        return self.config.to_dict()
 
     async def ensure_bucket_exists(self) -> GCSResponse:
+        """
+        Checks if the configured bucket exists.
+        """
         bucket_name = self.get_bucket_name()
         try:
-            client = await self.get_storage_client()
-            await client.list_objects(bucket_name)
-            return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "exists"}, message=f"Bucket \"{bucket_name}\" already exists")
-        except Exception as e:
-            emulator = os.environ.get("STORAGE_EMULATOR_HOST")
-            if emulator:
-                project = self.get_project_id() or "demo-project"
-                url = f"{emulator.rstrip('/')}/storage/v1/b?project={project}"
-                payload = {"name": bucket_name}
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(url, json=payload) as resp:
-                            if resp.status in (200, 201):
-                                return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "created"}, message=f"Bucket \"{bucket_name}\" created successfully (emulator)")
-                            if resp.status == HTTP_CONFLICT:
-                                return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "exists"}, message=f"Bucket \"{bucket_name}\" already exists (emulator)")
-                            text = await resp.text()
-                            raise GCSBucketError(f"Emulator bucket create failed: HTTP {resp.status} {text}", bucket_name=bucket_name)
-                except Exception as ce:
-                    raise GCSBucketError(f"Error creating bucket in emulator: {ce}", bucket_name=bucket_name)
+            client = self.get_storage_client()
+            bucket = client.bucket(bucket_name)
 
+            if bucket.exists():
+                return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "exists"}, message=f"Bucket \"{bucket_name}\" already exists")
+
+            # Handle Emulator Creation logic
+            if os.environ.get("STORAGE_EMULATOR_HOST"):
+                try:
+                    bucket.create()
+                    return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "created"}, message=f"Bucket \"{bucket_name}\" created successfully (emulator)")
+                except Exception:
+                    # Race condition or eventual consistency in emulator
+                    return GCSResponse(success=True, data={"bucket_name": bucket_name, "action": "exists"}, message=f"Bucket \"{bucket_name}\" already exists (emulator)")
+
+            raise NotFound(f"Bucket {bucket_name} not found")
+
+        except NotFound:
             raise GCSBucketError(
-                f"Bucket '{bucket_name}' not found or inaccessible. Create it or grant access.",
+                f"Bucket '{bucket_name}' not found or inaccessible. Please ensure the bucket exists and you have permissions.",
+                bucket_name=bucket_name
+            )
+        except Exception as e:
+            raise GCSBucketError(
+                f"Error checking bucket '{bucket_name}': {str(e)}",
                 bucket_name=bucket_name,
                 details={"error": str(e)}
             )
 
     async def close_async_client(self) -> None:
-        if self._storage_client is not None:
-            await self._storage_client.close()
-            self._storage_client = None
+        self._storage_client = None
 
 
-class SAJsonAuth(BaseModel):
-    serviceAccountJson: str
-    bucketName: str
-    projectId: Optional[str] = None
-
-class SAFileAuth(BaseModel):
-    serviceAccountFile: str
-    bucketName: str
-    projectId: Optional[str] = None
-
-class ADCAuth(BaseModel):
-    bucketName: str
-    projectId: Optional[str] = None
-
+# --- Main Client Wrapper ---
 
 class GCSClient(IClient):
-    def __init__(self, client: GCSRESTClient) -> None:  # type: ignore
+    def __init__(self, client: GCSCoreClient) -> None:
         self.client = client
 
-    def get_client(self) -> GCSRESTClient:
+    def get_client(self) -> GCSCoreClient:
         return self.client
 
     def get_bucket_name(self) -> str:
@@ -231,30 +222,30 @@ class GCSClient(IClient):
     async def ensure_bucket_exists(self) -> GCSResponse:
         return await self.client.ensure_bucket_exists()
 
-    async def get_storage_client(self) -> Storage:
-        return await self.client.get_storage_client()
+    async def get_storage_client(self) -> storage.Client:
+        return self.client.get_storage_client()
 
     async def close_async_client(self) -> None:
         await self.client.close_async_client()
 
     @classmethod
-    def build_with_service_account_json_config(cls, config: GCSServiceAccountJsonConfig) -> "GCSClient":  # type: ignore
-        return cls(GCSRESTClient(config))
+    def build_with_service_account_json_config(cls, config: GCSServiceAccountJsonConfig) -> "GCSClient":
+        return cls(GCSCoreClient(config))
 
     @classmethod
-    def build_with_service_account_file_config(cls, config: GCSServiceAccountFileConfig) -> "GCSClient":  # type: ignore
-        return cls(GCSRESTClient(config))
+    def build_with_service_account_file_config(cls, config: GCSServiceAccountFileConfig) -> "GCSClient":
+        return cls(GCSCoreClient(config))
 
     @classmethod
-    def build_with_adc_config(cls, config: GCSADCConfig) -> "GCSClient":  # type: ignore
-        return cls(GCSRESTClient(config))
+    def build_with_adc_config(cls, config: GCSADCConfig) -> "GCSClient":
+        return cls(GCSCoreClient(config))
 
     @classmethod
     async def build_from_services(
         cls,
         logger,
         config_service: ConfigurationService,
-    ) -> "GCSClient":  # type: ignore
+    ) -> "GCSClient":
         try:
             config_data = await cls._get_connector_config(config_service, "gcs")
 
@@ -262,36 +253,22 @@ class GCSClient(IClient):
             auth_config = config_data.get("auth", {})
 
             if auth_type == "SERVICE_ACCOUNT_JSON":
-                parsed_auth = SAJsonAuth.model_validate(auth_config)
-                config = GCSServiceAccountJsonConfig(
-                    serviceAccountJson=parsed_auth.serviceAccountJson,
-                    bucketName=parsed_auth.bucketName,
-                    projectId=parsed_auth.projectId
-                )
+                config = GCSServiceAccountJsonConfig.model_validate(auth_config)
                 return cls.build_with_service_account_json_config(config)
 
             if auth_type == "SERVICE_ACCOUNT_FILE":
-                parsed_auth = SAFileAuth.model_validate(auth_config)
-                config = GCSServiceAccountFileConfig(
-                    serviceAccountFile=parsed_auth.serviceAccountFile,
-                    bucketName=parsed_auth.bucketName,
-                    projectId=parsed_auth.projectId
-                )
+                config = GCSServiceAccountFileConfig.model_validate(auth_config)
                 return cls.build_with_service_account_file_config(config)
 
             if auth_type == "ADC":
-                parsed_auth = ADCAuth.model_validate(auth_config)
-                config = GCSADCConfig(
-                    bucketName=parsed_auth.bucketName,
-                    projectId=parsed_auth.projectId
-                )
+                config = GCSADCConfig.model_validate(auth_config)
                 return cls.build_with_adc_config(config)
 
             raise GCSConfigurationError(f"Unsupported authType: {auth_type}")
 
         except ValidationError as e:
             logger.error(f"Invalid GCS configuration provided: {e}")
-            raise GCSConfigurationError("Invalid GCS configuration", details=e.errors())
+            raise GCSConfigurationError("Invalid GCS configuration", details=e.errors()) from e
 
         except Exception as e:
             logger.error(f"Failed to build GCS client from services: {e}", exc_info=True)
@@ -304,4 +281,4 @@ class GCSClient(IClient):
             config_data = await config_service.get_config(config_path)
             return config_data or {}
         except Exception as e:
-            raise GCSConfigurationError(f"Failed to get {connector_name} configuration: {e}")
+            raise GCSConfigurationError(f"Failed to get {connector_name} configuration: {e}") from e
