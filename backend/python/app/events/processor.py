@@ -1233,8 +1233,6 @@ class Processor:
                 for i, image in enumerate(images):
                     if base64_urls[i]:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
-                    else:
-                        self.logger.warning(f"⚠️ Failed to convert image URL to base64: {image['url']}")
 
             md_bytes = parser.parse_string(modified_markdown)
 
