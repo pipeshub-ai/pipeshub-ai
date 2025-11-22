@@ -95,7 +95,7 @@ export function Section({
           height: '100%', // Full viewport height
           display: 'block', // Block display
           objectFit: 'cover', // Maintain aspect ratio
-          position: 'absolute', // Fixed position relative to viewport
+          position: 'fixed', // Fixed position relative to viewport
           top: 0, // Top of viewport
           left: 0, // Left side of viewport
           marginLeft: '0', // No margin on left
