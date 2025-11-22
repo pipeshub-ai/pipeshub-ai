@@ -221,9 +221,10 @@ class BlobStorage(Transformer):
                     self.logger.exception("Detailed error trace:")
                     raise e
             else:
+                # Use unique documentPath for each record to ensure separate S3 locations
                 placeholder_data = {
                     "documentName": f"record_{record_id}",
-                    "documentPath": "records",
+                    "documentPath": f"records/{virtual_record_id}",  # Make path unique per record
                     "extension": "json"
                 }
 
@@ -350,7 +351,7 @@ class BlobStorage(Transformer):
                                 signed_url = data.get("signedUrl")
                                 # Reuse the same session for signed URL fetch
                                 async with session.get(signed_url, headers=headers) as resp:
-                                        if resp.status == HttpStatusCode.OK.value:
+                                        if resp.status == HttpStatusCode.SUCCESS.value:
                                             data = await resp.json()
                             self.logger.info("✅ Successfully retrieved record for virtual_record_id from blob storage: %s", virtual_record_id)
                             return data.get("record")
@@ -372,14 +373,15 @@ class BlobStorage(Transformer):
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
-            # Create a unique key for the mapping using both IDs
-            mapping_key = f"{virtual_record_id}_{document_id}"
+            # Use virtual_record_id as the key to ensure one mapping per virtual_record_id
+            # This prevents duplicate entries when the same record is processed multiple times
+            mapping_key = virtual_record_id
 
             mapping_document = {
                 "_key": mapping_key,
                 "virtualRecordId": virtual_record_id,
                 "documentId": document_id,
-                "createdAt": get_epoch_timestamp_in_ms()
+                "updatedAt": get_epoch_timestamp_in_ms()
             }
 
             success = await self.arango_service.batch_upsert_nodes(
@@ -398,60 +400,3 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Failed to store virtual record mapping: %s", str(e))
             self.logger.exception("Detailed error trace:")
             raise e
-
-
-# async def store_virtual_record_mapping_standalone(
-#     arango_service: ArangoService,
-#     virtual_record_id: str,
-#     document_id: str,
-#     logger=None
-# ) -> bool:
-#     """
-#     Standalone function to store the mapping between virtual_record_id and document_id in ArangoDB.
-
-#     Args:
-#         arango_service (ArangoService): The ArangoDB service instance
-#         virtual_record_id (str): The virtual record ID
-#         document_id (str): The document ID from blob storage
-#         logger: Optional logger instance for logging
-
-#     Returns:
-#         bool: True if successful, False otherwise.
-#     """
-#     if not arango_service:
-#         if logger:
-#             logger.warning("ArangoService not provided, cannot store virtual record mapping.")
-#         return False
-
-#     try:
-#         collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-
-#         # Create a unique key for the mapping using both IDs
-#         mapping_key = f"{virtual_record_id}_{document_id}"
-
-#         mapping_document = {
-#             "_key": mapping_key,
-#             "virtualRecordId": virtual_record_id,
-#             "documentId": document_id,
-#             "createdAt": get_epoch_timestamp_in_ms()
-#         }
-
-#         success = await arango_service.batch_upsert_nodes(
-#             [mapping_document],
-#             collection_name
-#         )
-
-#         if success:
-#             if logger:
-#                 logger.info("✅ Successfully stored virtual record mapping: virtual_record_id=%s, document_id=%s", virtual_record_id, document_id)
-#             return True
-#         else:
-#             if logger:
-#                 logger.error("❌ Failed to store virtual record mapping")
-#             return False
-
-#     except Exception as e:
-#         if logger:
-#             logger.error("❌ Failed to store virtual record mapping: %s", str(e))
-#             logger.exception("Detailed error trace:")
-#         return False
