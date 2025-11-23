@@ -333,7 +333,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
       'endpoint',
       'apiKey',
       'model',
-      { name: 'isMultimodal', required: false, defaultValue: true },
+      { name: 'isMultimodal', required: false, defaultValue: false },
     ],
     customFields: {
       endpoint: {
