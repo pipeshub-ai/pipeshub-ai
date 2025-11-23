@@ -1,0 +1,29 @@
+# Integration Test Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core testing framework
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+pytest-env>=1.1.3
+pytest-mock>=3.12.0
+pytest-timeout>=2.2.0
+pytest-xdist>=3.5.0
+
+# HTTP client
+httpx>=0.27.0
+
+# Test data generation
+faker>=24.0.0
+
+# Response mocking
+responses>=0.25.0
+
+# Reporting
+pytest-html>=4.1.0
+pytest-json-report>=1.5.0
+
+# Configuration management
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
