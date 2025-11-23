@@ -324,6 +324,23 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'isMultimodal', required: false, defaultValue: false },
     ],
   },
+  {
+    id: 'openAICompatible',
+    label: 'OpenAI API Compatible',
+    description: 'Enter your OpenAI-compatible API credentials to get started.',
+    modelPlaceholder: 'e.g., text-embedding-3-small',
+    fields: [
+      'endpoint',
+      'apiKey',
+      'model',
+      { name: 'isMultimodal', required: false, defaultValue: true },
+    ],
+    customFields: {
+      endpoint: {
+        placeholder: 'e.g., https://api.openai.com/v1',
+      },
+    },
+  },
 ] as const;
 
 // STORAGE PROVIDERS
@@ -369,6 +386,6 @@ export const URL_PROVIDERS: readonly ProviderConfig[] = [
     id: 'urls',
     label: 'Public URLs',
     description: 'Configure the public URLs for your services.',
-    fields: ['frontendUrl',   { name: 'connectorUrl', required: false, defaultValue: '' }],
+    fields: ['frontendUrl', { name: 'connectorUrl', required: false, defaultValue: '' }],
   },
 ] as const;
