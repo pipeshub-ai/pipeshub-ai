@@ -1262,7 +1262,10 @@ const ChatInterface = () => {
     const recordId = citationMeta?.recordId;
 
     if (currentOpenDocumentRef.current === recordId) {
-      setHighlightedCitation(citation || null);
+      // Same document is already open - just update the citation and citations
+      setAggregatedCitations(citations);
+      setHighlightedCitation(citation);
+      setOpenPdfView(true);
       return;
     }
 

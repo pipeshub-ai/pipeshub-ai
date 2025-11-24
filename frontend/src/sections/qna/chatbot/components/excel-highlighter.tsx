@@ -13,7 +13,7 @@ import fullScreenIcon from '@iconify-icons/mdi/fullscreen';
 import citationIcon from '@iconify-icons/mdi/format-quote-close';
 import fileExcelIcon from '@iconify-icons/mdi/file-excel-outline';
 import fullScreenExitIcon from '@iconify-icons/mdi/fullscreen-exit';
-import React, { useRef, useMemo, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useMemo, useState, useEffect, useCallback, useReducer, memo } from 'react';
 
 import {
   Box,
@@ -42,13 +42,45 @@ import {
 
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
+type CitationUnion = SearchResult | CustomCitation;
+
 type ExcelViewerProps = {
   citations: DocumentContent[] | CustomCitation[];
   fileUrl: string | null;
   excelBuffer?: ArrayBuffer | null;
-  highlightCitation?: SearchResult | CustomCitation | null;
+  highlightCitation?: CitationUnion | null;
   onClosePdf: () => void;
 };
+
+/**
+ * Safely extracts the ID from a citation object.
+ * Handles both SearchResult and CustomCitation types.
+ */
+function getCitationId(citation: CitationUnion | null | undefined): string | undefined {
+  if (!citation) return undefined;
+  
+  // CustomCitation has both id and _id directly
+  if ('_id' in citation && typeof citation._id === 'string') {
+    return citation._id;
+  }
+  
+  // Both types may have id
+  if ('id' in citation && typeof citation.id === 'string') {
+    return citation.id;
+  }
+  
+  // SearchResult may have citationId
+  if ('citationId' in citation && typeof citation.citationId === 'string') {
+    return citation.citationId;
+  }
+  
+  // Both types have metadata._id
+  if (citation.metadata && '_id' in citation.metadata && typeof citation.metadata._id === 'string') {
+    return citation.metadata._id;
+  }
+  
+  return undefined;
+}
 
 interface StyleProps {
   theme?: Theme;
@@ -64,33 +96,6 @@ interface TableRowType {
   __sheetName?: string;
 }
 
-interface RichTextStyle {
-  fontWeight?: 'bold';
-  fontStyle?: 'italic';
-  textDecoration?: 'underline' | 'line-through';
-  color?: string;
-}
-
-interface RichTextFragment {
-  t: string;
-  s?: {
-    bold?: boolean;
-    italic?: boolean;
-    underline?: boolean;
-    strike?: boolean;
-    color?: {
-      rgb: string;
-    };
-  };
-}
-
-interface CellData {
-  r?: RichTextFragment[];
-  w?: string;
-  v?: string | number;
-  s?: any;
-}
-
 interface WorkbookData {
   [sheetName: string]: {
     headers: string[];
@@ -104,7 +109,103 @@ interface WorkbookData {
   };
 }
 
-// Styled components for Excel-like appearance (from paste 1)
+// State management with useReducer for better performance
+type ViewerState = {
+  loading: boolean;
+  sheetTransition: boolean;
+  error: string | null;
+  workbookData: WorkbookData | null;
+  selectedSheet: string;
+  availableSheets: string[];
+  highlightedRow: number | null;
+  selectedCitation: string | null;
+  isInitialized: boolean;
+  isFullscreen: boolean;
+  loadingMessage: string;
+  highlightPulse: boolean;
+  isHighlighting: boolean;
+  rowMapping: Map<number, number>;
+};
+
+type ViewerAction =
+  | { type: 'SET_LOADING'; loading: boolean; message?: string }
+  | { type: 'SET_ERROR'; error: string | null }
+  | {
+      type: 'SET_WORKBOOK_DATA';
+      data: WorkbookData;
+      sheets: string[];
+      rowMapping: Map<number, number>;
+    }
+  | { type: 'SET_SELECTED_SHEET'; sheet: string; programmatic?: boolean }
+  | { type: 'SET_HIGHLIGHT'; row: number | null; citationId: string | null; pulse: boolean }
+  | { type: 'SET_INITIALIZED'; initialized: boolean }
+  | { type: 'SET_FULLSCREEN'; fullscreen: boolean }
+  | { type: 'SET_SHEET_TRANSITION'; transitioning: boolean }
+  | { type: 'SET_HIGHLIGHTING'; highlighting: boolean }
+  | { type: 'RESET' };
+
+const initialState: ViewerState = {
+  loading: true,
+  sheetTransition: false,
+  error: null,
+  workbookData: null,
+  selectedSheet: '',
+  availableSheets: [],
+  highlightedRow: null,
+  selectedCitation: null,
+  isInitialized: false,
+  isFullscreen: false,
+  loadingMessage: 'Loading Excel file...',
+  highlightPulse: false,
+  isHighlighting: false,
+  rowMapping: new Map(),
+};
+
+function viewerReducer(state: ViewerState, action: ViewerAction): ViewerState {
+  switch (action.type) {
+    case 'SET_LOADING':
+      return {
+        ...state,
+        loading: action.loading,
+        loadingMessage: action.message || state.loadingMessage,
+      };
+    case 'SET_ERROR':
+      return { ...state, error: action.error, loading: false };
+    case 'SET_WORKBOOK_DATA':
+      return {
+        ...state,
+        workbookData: action.data,
+        availableSheets: action.sheets,
+        rowMapping: action.rowMapping,
+        selectedSheet: action.sheets[0] || '',
+        isInitialized: true,
+        loading: false,
+      };
+    case 'SET_SELECTED_SHEET':
+      return { ...state, selectedSheet: action.sheet };
+    case 'SET_HIGHLIGHT':
+      return {
+        ...state,
+        highlightedRow: action.row,
+        selectedCitation: action.citationId,
+        highlightPulse: action.pulse,
+      };
+    case 'SET_INITIALIZED':
+      return { ...state, isInitialized: action.initialized };
+    case 'SET_FULLSCREEN':
+      return { ...state, isFullscreen: action.fullscreen };
+    case 'SET_SHEET_TRANSITION':
+      return { ...state, sheetTransition: action.transitioning };
+    case 'SET_HIGHLIGHTING':
+      return { ...state, isHighlighting: action.highlighting };
+    case 'RESET':
+      return { ...initialState };
+    default:
+      return state;
+  }
+}
+
+// Styled components (unchanged for compatibility)
 const HeaderRowNumberCell = styled(TableCell)(({ theme }) => ({
   backgroundColor: theme.palette.mode === 'dark' ? '#2a2d32' : '#f8f9fa',
   minWidth: '80px',
@@ -170,6 +271,7 @@ const ResizableTableCell = styled(TableCell, {
   minWidth: '80px',
   maxWidth: '280px',
   width: '120px',
+  transition: 'background-color 0.3s ease',
   '&:hover': {
     backgroundColor: isHeaderRow
       ? theme.palette.mode === 'dark'
@@ -186,13 +288,37 @@ const ResizableTableCell = styled(TableCell, {
 }));
 
 const StyledTableRow = styled(TableRow, {
-  shouldForwardProp: (prop) => prop !== 'highlighted',
-})<StyleProps>(({ theme, highlighted }) => ({
+  shouldForwardProp: (prop) => prop !== 'highlighted' && prop !== 'pulse',
+})<StyleProps & { pulse?: boolean }>(({ theme, highlighted, pulse }) => ({
   backgroundColor: highlighted
     ? theme.palette.mode === 'dark'
       ? alpha(theme.palette.primary.dark, 0.15)
       : 'rgba(46, 125, 50, 0.1)'
     : 'transparent',
+  transition: 'background-color 0.3s ease, box-shadow 0.3s ease',
+  boxShadow:
+    highlighted && pulse
+      ? theme.palette.mode === 'dark'
+        ? `0 0 8px ${alpha(theme.palette.primary.main, 0.4)}`
+        : `0 0 8px ${alpha(theme.palette.primary.main, 0.3)}`
+      : 'none',
+  animation: highlighted && pulse ? 'pulseHighlight 1.5s ease-in-out 2' : 'none',
+  '@keyframes pulseHighlight': {
+    '0%, 100%': {
+      backgroundColor: highlighted
+        ? theme.palette.mode === 'dark'
+          ? alpha(theme.palette.primary.dark, 0.15)
+          : 'rgba(46, 125, 50, 0.1)'
+        : 'transparent',
+    },
+    '50%': {
+      backgroundColor: highlighted
+        ? theme.palette.mode === 'dark'
+          ? alpha(theme.palette.primary.main, 0.25)
+          : 'rgba(46, 125, 50, 0.2)'
+        : 'transparent',
+    },
+  },
   '&:hover': {
     backgroundColor: highlighted
       ? theme.palette.mode === 'dark'
@@ -229,6 +355,7 @@ const ViewerContainer = styled(Box)(({ theme }) => ({
   height: '100%',
   width: '100%',
   overflow: 'hidden',
+  position: 'relative',
   backgroundColor: theme.palette.mode === 'dark' ? '#1e2125' : '#ffffff',
   border: theme.palette.mode === 'dark' ? '1px solid #404448' : '1px solid #e1e5e9',
   '&:fullscreen': {
@@ -256,8 +383,6 @@ const MainContainer = styled(Box)(({ theme }) => ({
   },
 }));
 
-// Sidebar components
-// Excel viewer inspired styling
 const StyledSidebar = styled(Box)(({ theme }) => ({
   width: '300px',
   borderLeft: theme.palette.mode === 'dark' ? '1px solid #404448' : '1px solid #e1e5e9',
@@ -267,7 +392,6 @@ const StyledSidebar = styled(Box)(({ theme }) => ({
   backgroundColor: theme.palette.mode === 'dark' ? '#1e2125' : '#ffffff',
   overflow: 'hidden',
   flexShrink: 0,
-  // Scrollbar styling to match Excel viewer
   '& *::-webkit-scrollbar': {
     width: '8px',
     height: '8px',
@@ -354,42 +478,143 @@ const MetaLabel = styled(Typography)(({ theme }) => ({
   marginRight: theme.spacing(1),
 }));
 
-const FullLoadingOverlay = ({
-  isVisible,
-  message = 'Loading...',
-}: {
-  isVisible: boolean;
-  message?: string;
-}) => {
-  const theme = useTheme();
+const FullLoadingOverlay = memo(
+  ({ isVisible, message = 'Loading...' }: { isVisible: boolean; message?: string }) => {
+    const theme = useTheme();
 
-  return (
-    <Backdrop
-      open={isVisible}
-      sx={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor:
-          theme.palette.mode === 'dark' ? 'rgba(0, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.1)',
-        backdropFilter: 'blur(0.5px)',
-        zIndex: 1500,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 2,
-      }}
-    >
-      <CircularProgress size={40} sx={{ color: '#0066cc' }} />
-      <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
-        {message}
-      </Typography>
-    </Backdrop>
-  );
-};
+    if (!isVisible) return null;
+
+    return (
+      <Backdrop
+        open={isVisible}
+        sx={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor:
+            theme.palette.mode === 'dark' ? 'rgba(0, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.1)',
+          backdropFilter: 'blur(0.5px)',
+          zIndex: 1500,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 2,
+        }}
+      >
+        <CircularProgress size={40} sx={{ color: '#0066cc' }} />
+        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+          {message}
+        </Typography>
+      </Backdrop>
+    );
+  }
+);
+
+const HighlightIndicator = styled(Box)(({ theme }) => ({
+  position: 'absolute',
+  top: 12,
+  right: 12,
+  zIndex: 1000,
+  display: 'flex',
+  alignItems: 'center',
+  gap: theme.spacing(0.75),
+  padding: theme.spacing(0.5, 1),
+  borderRadius: '6px',
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.background.paper, 0.95)
+      : alpha(theme.palette.background.paper, 0.98),
+  backdropFilter: 'blur(8px)',
+  boxShadow: theme.shadows[2],
+  border: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
+  fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+  fontSize: '11px',
+  fontWeight: 500,
+  color: theme.palette.mode === 'dark' ? theme.palette.text.secondary : theme.palette.text.primary,
+  opacity: 0,
+  transform: 'translateY(-4px)',
+  transition: 'opacity 0.2s ease, transform 0.2s ease',
+  pointerEvents: 'none',
+  '&.visible': {
+    opacity: 1,
+    transform: 'translateY(0)',
+  },
+}));
+
+// Memoized cell component for better rendering performance
+const TableCellMemo = memo(
+  ({
+    value,
+    columnWidth,
+    isHeaderRow,
+    highlighted,
+    isFullscreen,
+  }: {
+    value: any;
+    columnWidth: string;
+    isHeaderRow: boolean;
+    highlighted: boolean;
+    isFullscreen: boolean;
+  }) => {
+    const renderValue = useCallback((val: any, returnFull = false): string => {
+      if (val == null || val === undefined) return '';
+      if (val instanceof Date) return val.toLocaleDateString();
+      if (typeof val === 'object') return JSON.stringify(val);
+
+      const stringValue = String(val).trim();
+      if (returnFull) return stringValue;
+      return stringValue.length > 50 ? `${stringValue.substring(0, 47)}...` : stringValue;
+    }, []);
+
+    const displayValue = renderValue(value);
+    const fullValue = renderValue(value, true);
+    const isTruncated = displayValue !== fullValue || displayValue.includes('...');
+
+    return (
+      <ResizableTableCell
+        sx={{ width: columnWidth, minWidth: columnWidth }}
+        isHeaderRow={isHeaderRow}
+        highlighted={highlighted}
+      >
+        {isTruncated ? (
+          <Tooltip
+            title={fullValue}
+            arrow
+            placement="top"
+            enterDelay={300}
+            leaveDelay={200}
+            PopperProps={{
+              sx: {
+                zIndex: isFullscreen ? 2000 : 1500,
+                '& .MuiTooltip-tooltip': {
+                  maxWidth: '400px',
+                  fontSize: '12px',
+                  backgroundColor: 'rgba(0, 0, 0, 0.9)',
+                  color: '#ffffff',
+                  wordBreak: 'break-word',
+                  whiteSpace: 'pre-wrap',
+                  padding: '8px 12px',
+                  borderRadius: '4px',
+                },
+                '& .MuiTooltip-arrow': {
+                  color: 'rgba(0, 0, 0, 0.9)',
+                },
+              },
+              container: document.fullscreenElement || document.body,
+            }}
+          >
+            <span>{displayValue}</span>
+          </Tooltip>
+        ) : (
+          displayValue
+        )}
+      </ResizableTableCell>
+    );
+  }
+);
 
 const ExcelViewer = ({
   citations,
@@ -398,71 +623,384 @@ const ExcelViewer = ({
   highlightCitation,
   onClosePdf,
 }: ExcelViewerProps) => {
-  const [loading, setLoading] = useState<boolean>(true);
-  const [sheetTransition, setSheetTransition] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [workbookData, setWorkbookData] = useState<WorkbookData | null>(null);
-  const [selectedSheet, setSelectedSheet] = useState<string>('');
-  const [availableSheets, setAvailableSheets] = useState<string[]>([]);
-  const [highlightedRow, setHighlightedRow] = useState<number | null>(null);
-  const [selectedCitation, setSelectedCitation] = useState<string | null>(null);
-  const [isInitialized, setIsInitialized] = useState<boolean>(false);
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [loadingMessage, setLoadingMessage] = useState<string>('Loading Excel file...');
+  const [state, dispatch] = useReducer(viewerReducer, initialState);
 
   const tableRef = useRef<HTMLDivElement>(null);
-  const processingRef = useRef<boolean>(false);
-  const mountedRef = useRef<boolean>(true);
   const containerRef = useRef<HTMLDivElement>(null);
-  const workbookRef = useRef<XLSX.WorkBook | null>(null);
-  const lastSelectedSheet = useRef<string>(selectedSheet);
-  const animationFrameRef = useRef<number | null>(null);
+  const mountedRef = useRef<boolean>(true);
+  const workerRef = useRef<Worker | null>(null);
+  const lastSelectedSheet = useRef<string>('');
+  const programmaticSheetChangeRef = useRef<boolean>(false);
+  const isInitialLoadRef = useRef<boolean>(true);
+  const scrollTimeoutRef = useRef<number | null>(null);
+  const lastHighlightCitationRef = useRef<CitationUnion | null>(null);
+  const isManualSheetChangeRef = useRef<boolean>(false);
 
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
   const scrollableStyles = createScrollableContainerStyle(theme);
 
-  // Store mapping between original Excel row numbers and displayed indices
-  const [rowMapping, setRowMapping] = useState<Map<number, number>>(new Map());
-
+  // Memoized column width calculator
   const getColumnWidth = useCallback((columnIndex: number, headerValue: string) => {
-    let width = 120;
-    if (headerValue && typeof headerValue === 'string') {
-      const headerLength = headerValue.length;
-      if (headerLength > 20) width = 180;
-      else if (headerLength > 15) width = 150;
-      else if (headerLength < 8) width = 100;
-    }
-    return `${Math.min(Math.max(width, 80), 200)}px`;
+    if (!headerValue || typeof headerValue !== 'string') return '120px';
+    const len = headerValue.length;
+    if (len > 20) return '180px';
+    if (len > 15) return '150px';
+    if (len < 8) return '100px';
+    return '120px';
   }, []);
 
-  // Handle sheet transitions
-  useEffect(() => {
-    if (selectedSheet !== lastSelectedSheet.current && workbookData && isInitialized) {
-      setSheetTransition(true);
-      setLoadingMessage('Switching sheets...');
+  // Optimized cell value renderer
+  const renderCellValue = useCallback((value: any, returnFullValue = false): string => {
+    if (value == null || value === undefined) return '';
+    if (value instanceof Date) return value.toLocaleDateString();
+    if (typeof value === 'object') return JSON.stringify(value);
 
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
+    const stringValue = String(value).trim();
+    if (returnFullValue) return stringValue;
+    return stringValue.length > 50 ? `${stringValue.substring(0, 47)}...` : stringValue;
+  }, []);
+
+  // Initialize Web Worker
+  useEffect(() => {
+    // Only initialize worker if Web Workers are supported
+    if (typeof Worker !== 'undefined') {
+      try {
+        // Note: In production, you'd need to properly bundle the worker
+        // For now, we'll fall back to synchronous processing
+        workerRef.current = new Worker(new URL('./excel-worker.ts', import.meta.url));
+      } catch (err) {
+        console.warn('Web Worker not available, using synchronous processing');
+      }
+    }
+
+    return () => {
+      if (workerRef.current) {
+        workerRef.current.terminate();
+      }
+    };
+  }, []);
+
+  // Process Excel data (fallback to synchronous if no worker)
+  const processExcelData = useCallback(
+    async (workbook: XLSX.WorkBook): Promise<void> => {
+      try {
+        dispatch({ type: 'SET_LOADING', loading: true, message: 'Processing Excel data...' });
+
+        const processedWorkbook: WorkbookData = {};
+        const totalSheets = workbook.SheetNames.length;
+        const newRowMapping = new Map<number, number>();
+
+        for (let sheetIndex = 0; sheetIndex < totalSheets; sheetIndex += 1) {
+          if (!mountedRef.current) break;
+
+          const sheetName = workbook.SheetNames[sheetIndex];
+          const worksheet = workbook.Sheets[sheetName];
+          if (worksheet['!ref']) {
+            const range = XLSX.utils.decode_range(worksheet['!ref']);
+            const headerRowIndex = range.s.r;
+
+            const hiddenRows = new Set<number>();
+            if (worksheet['!rows']) {
+              worksheet['!rows'].forEach((row, index) => {
+                if (row?.hidden) hiddenRows.add(index + range.s.r);
+              });
+            }
+
+            const actualCols = range.e.c + 1;
+            const totalCols = Math.min(Math.max(actualCols, 13), 500);
+            const visibleColumns = Array.from({ length: totalCols }, (_, i) => i);
+
+            // Optimized header processing with pre-allocation
+            const headers = new Array(visibleColumns.length);
+            for (let i = 0; i < visibleColumns.length; i += 1) {
+              const colIndex = visibleColumns[i];
+              const cellAddress = XLSX.utils.encode_cell({ r: headerRowIndex, c: colIndex });
+              const cell = worksheet[cellAddress];
+              const cellValue = cell?.w || cell?.v;
+              headers[i] =
+                cellValue?.toString().trim() || `Column ${String.fromCharCode(65 + colIndex)}`;
+            }
+
+            // Optimized row processing with batch operations
+            const data: TableRowType[] = [];
+            const MAX_ROWS = 100000;
+            const maxRows = Math.min(Math.max(range.e.r + 2, 30), headerRowIndex + MAX_ROWS);
+            let displayIndex = 0;
+
+            for (let rowIndex = headerRowIndex; rowIndex < maxRows; rowIndex += 1) {
+              if (!hiddenRows.has(rowIndex)) {
+                const excelRowNum = rowIndex + 1;
+                const rowData: TableRowType = {
+                  __rowNum: excelRowNum,
+                  __isHeaderRow: rowIndex === headerRowIndex,
+                  __sheetName: sheetName,
+                };
+
+                // Batch cell processing
+                for (let i = 0; i < visibleColumns.length; i += 1) {
+                  const colIndex = visibleColumns[i];
+                  const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: colIndex });
+                  const cell = worksheet[cellAddress];
+                  const cellValue = cell?.w || cell?.v;
+                  rowData[headers[i]] = cellValue?.toString().trim() || '';
+                }
+
+                newRowMapping.set(excelRowNum, displayIndex);
+                displayIndex += 1;
+                data.push(rowData);
+              }
+            }
+
+            processedWorkbook[sheetName] = {
+              headers,
+              data,
+              headerRowIndex: headerRowIndex + 1,
+              totalColumns: visibleColumns.length,
+              hiddenColumns: [],
+              visibleColumns,
+              columnMapping: Object.fromEntries(visibleColumns.map((col, idx) => [idx, col])),
+              originalTotalColumns: totalCols,
+            };
+          }
+        }
+
+        if (mountedRef.current) {
+          const sheets = Object.keys(processedWorkbook);
+          dispatch({
+            type: 'SET_WORKBOOK_DATA',
+            data: processedWorkbook,
+            sheets,
+            rowMapping: newRowMapping,
+          });
+        }
+      } catch (err: any) {
+        if (mountedRef.current) {
+          dispatch({ type: 'SET_ERROR', error: `Error processing Excel data: ${err.message}` });
+        }
+      }
+    },
+    [dispatch]
+  );
+
+  // Load Excel file with optimization
+  const loadExcelFile = useCallback(async (): Promise<void> => {
+    if (!fileUrl && !excelBuffer) return;
+
+    try {
+      dispatch({ type: 'SET_LOADING', loading: true, message: 'Downloading Excel file...' });
+
+      let workbook: XLSX.WorkBook;
+      const xlsxOptions = {
+        type: 'array' as const,
+        cellFormula: false,
+        cellHTML: false,
+        cellStyles: false, // Disable for performance
+        cellText: false,
+        cellDates: true,
+        cellNF: false,
+        sheetStubs: false,
+        WTF: false,
+        raw: false,
+        dense: false,
+      };
+
+      if (excelBuffer) {
+        workbook = XLSX.read(new Uint8Array(excelBuffer.slice(0)), xlsxOptions);
+      } else if (fileUrl) {
+        const response = await fetch(fileUrl);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const arrayBuffer = await response.arrayBuffer();
+        if (!mountedRef.current) return;
+        workbook = XLSX.read(arrayBuffer, xlsxOptions);
+      } else {
+        throw new Error('No data source provided');
       }
 
-      animationFrameRef.current = requestAnimationFrame(() => {
-        setTimeout(() => {
-          setSheetTransition(false);
-          lastSelectedSheet.current = selectedSheet;
-        }, 150);
+      if (!mountedRef.current) return;
+      await processExcelData(workbook);
+
+      // Fast completion
+      requestAnimationFrame(() => {
+        if (mountedRef.current) {
+          isInitialLoadRef.current = false;
+        }
       });
+    } catch (err: any) {
+      if (mountedRef.current) {
+        dispatch({ type: 'SET_ERROR', error: `Error loading Excel file: ${err.message}` });
+      }
     }
-  }, [selectedSheet, workbookData, isInitialized]);
+  }, [fileUrl, excelBuffer, processExcelData]);
 
+  // Current sheet data with memoization
+  const currentSheetData = useMemo(() => {
+    if (!state.workbookData || !state.selectedSheet || !state.workbookData[state.selectedSheet]) {
+      return { headers: [], data: [] };
+    }
+    return state.workbookData[state.selectedSheet];
+  }, [state.workbookData, state.selectedSheet]);
+
+  // Optimized scroll to row with direct DOM manipulation
+  const scrollToRow = useCallback(
+    (originalRowNum: number, targetSheetName?: string): void => {
+      if (!mountedRef.current) return;
+
+      // Don't scroll if user manually switched sheets (unless it's a programmatic scroll)
+      if (isManualSheetChangeRef.current && !programmaticSheetChangeRef.current) {
+        return;
+      }
+
+      // Clear any pending scroll
+      if (scrollTimeoutRef.current) {
+        window.clearTimeout(scrollTimeoutRef.current);
+      }
+
+      // Switch sheet if needed
+      if (targetSheetName && targetSheetName !== state.selectedSheet) {
+        programmaticSheetChangeRef.current = true;
+        isManualSheetChangeRef.current = false;
+        dispatch({ type: 'SET_SELECTED_SHEET', sheet: targetSheetName, programmatic: true });
+
+        // Schedule scroll after sheet change
+        scrollTimeoutRef.current = window.setTimeout(() => {
+          scrollToRow(originalRowNum);
+        }, 50);
+        return;
+      }
+
+      // Find display index
+      const displayIndex = state.rowMapping.get(originalRowNum);
+      if (displayIndex === undefined) {
+        // Retry if mapping not ready
+        scrollTimeoutRef.current = window.setTimeout(() => {
+          if (mountedRef.current) scrollToRow(originalRowNum);
+        }, 50);
+        return;
+      }
+
+      const tableRows = tableRef.current?.getElementsByTagName('tr');
+      if (!tableRows) {
+        scrollTimeoutRef.current = window.setTimeout(() => {
+          if (mountedRef.current) scrollToRow(originalRowNum);
+        }, 50);
+        return;
+      }
+
+      const rowIndex = displayIndex + 2;
+      const targetRow = tableRows[rowIndex];
+
+      if (targetRow) {
+        // Instant position, then smooth center
+        targetRow.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+
+        requestAnimationFrame(() => {
+          if (mountedRef.current && targetRow) {
+            targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            // Hide indicator after scroll and reset programmatic flag
+            scrollTimeoutRef.current = window.setTimeout(() => {
+              if (mountedRef.current) {
+                dispatch({ type: 'SET_HIGHLIGHTING', highlighting: false });
+                // Reset programmatic flag after scroll completes
+                programmaticSheetChangeRef.current = false;
+              }
+            }, 600);
+          }
+        });
+      }
+    },
+    [state.rowMapping, state.selectedSheet]
+  );
+
+  // Apply highlight immediately
+  const applyHighlight = useCallback(
+    (rowNum: number, citationId?: string, sheetName?: string) => {
+      if (!mountedRef.current) return;
+
+      // Don't apply highlight if user manually switched sheets (unless it's programmatic)
+      if (isManualSheetChangeRef.current && !programmaticSheetChangeRef.current) {
+        return;
+      }
+
+      dispatch({ type: 'SET_HIGHLIGHTING', highlighting: true });
+      dispatch({ type: 'SET_HIGHLIGHT', row: rowNum, citationId: citationId || null, pulse: true });
+
+      // Auto-dismiss pulse
+      // setTimeout(() => {
+      //   if (mountedRef.current) {
+      //     dispatch({ type: 'SET_HIGHLIGHT', row: rowNum, citationId: citationId || null, pulse: false });
+      //   }
+      // }, 3000);
+
+      if (sheetName && sheetName !== state.selectedSheet) {
+        programmaticSheetChangeRef.current = true;
+        isManualSheetChangeRef.current = false;
+        dispatch({ type: 'SET_SELECTED_SHEET', sheet: sheetName });
+      }
+    },
+    [state.selectedSheet]
+  );
+
+  // Handle citation click
+  const handleCitationClick = useCallback(
+    (citation: DocumentContent): void => {
+      if (!mountedRef.current) return;
+
+      // Clear any pending scroll operations
+      if (scrollTimeoutRef.current) {
+        window.clearTimeout(scrollTimeoutRef.current);
+        scrollTimeoutRef.current = null;
+      }
+
+      // Mark as programmatic change (citation click)
+      programmaticSheetChangeRef.current = true;
+      isManualSheetChangeRef.current = false;
+
+      const { blockNum, extension, sheetName, _id } = citation.metadata;
+
+      if (blockNum && blockNum[0]) {
+        const highlightedRowNum = extension === 'csv' ? blockNum[0] + 1 : blockNum[0];
+        const citationId = _id || citation.id;
+
+        applyHighlight(highlightedRowNum, citationId, sheetName);
+        scrollToRow(highlightedRowNum, sheetName);
+      }
+    },
+    [applyHighlight, scrollToRow]
+  );
+
+  // Handle sheet change
+  const handleSheetChange = useCallback(
+    (event: React.SyntheticEvent, newValue: string) => {
+      if (newValue !== state.selectedSheet) {
+        // Clear any pending scroll operations
+        if (scrollTimeoutRef.current) {
+          window.clearTimeout(scrollTimeoutRef.current);
+          scrollTimeoutRef.current = null;
+        }
+
+        // Mark as manual sheet change (not programmatic)
+        // This flag will remain true until a citation is explicitly clicked
+        programmaticSheetChangeRef.current = false;
+        isManualSheetChangeRef.current = true;
+        lastSelectedSheet.current = state.selectedSheet;
+
+        // Clear highlight when manually switching sheets
+        // This prevents auto-scrolling to citations when user wants to browse
+        dispatch({ type: 'SET_HIGHLIGHT', row: null, citationId: null, pulse: false });
+        dispatch({ type: 'SET_HIGHLIGHTING', highlighting: false });
+
+        dispatch({ type: 'SET_SELECTED_SHEET', sheet: newValue });
+      }
+    },
+    [state.selectedSheet]
+  );
+
+  // Handle fullscreen
   const handleFullscreenChange = useCallback((): void => {
-    setIsFullscreen(!!document.fullscreenElement);
+    dispatch({ type: 'SET_FULLSCREEN', fullscreen: !!document.fullscreenElement });
   }, []);
-
-  useEffect(() => {
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, [handleFullscreenChange]);
 
   const toggleFullscreen = useCallback(async (): Promise<void> => {
     try {
@@ -476,389 +1014,149 @@ const ExcelViewer = ({
     }
   }, []);
 
-  const renderCellValue = useCallback((value: any, returnFullValue = false): string => {
-    if (value == null || value === undefined) return '';
-    if (value instanceof Date) return value.toLocaleDateString();
-    if (typeof value === 'object') return JSON.stringify(value);
-
-    const stringValue = String(value).trim();
-    if (returnFullValue) return stringValue;
-    return `${stringValue.length > 50 ? `${stringValue.substring(0, 47)}...` : stringValue}`;
-  }, []);
-
-  // Type guard function for Date checking
-  const isDate = (value: any): value is Date =>
-    value instanceof Date ||
-    (typeof value === 'object' && Object.prototype.toString.call(value) === '[object Date]');
-
-  const processRichText = useCallback(
-    (cell: CellData): React.ReactNode => {
-      if (!cell) return '';
-
-      try {
-        if (cell.r && Array.isArray(cell.r)) {
-          return (
-            <div className="rich-text-container">
-              {cell.r.map((fragment: RichTextFragment, index: number) => {
-                const styles: RichTextStyle = {};
-                if (fragment.s) {
-                  if (fragment.s.bold) styles.fontWeight = 'bold';
-                  if (fragment.s.italic) styles.fontStyle = 'italic';
-                  if (fragment.s.underline) styles.textDecoration = 'underline';
-                  if (fragment.s.strike) styles.textDecoration = 'line-through';
-                  if (fragment.s.color?.rgb) {
-                    if (isDarkMode && fragment.s.color.rgb.toLowerCase() === '000000') {
-                      styles.color = theme.palette.text.primary;
-                    } else {
-                      styles.color = `#${fragment.s.color.rgb}`;
-                    }
-                  }
-                }
-                return (
-                  <span key={index} style={styles}>
-                    {fragment.t}
-                  </span>
-                );
-              })}
-            </div>
-          );
-        }
-
-        if (cell.w) return String(cell.w).trim();
-        if (cell.v !== undefined && cell.v !== null) {
-          // Fix: Type-safe date check using type guard
-          if (isDate(cell.v)) {
-            return cell.v.toLocaleDateString();
-          }
-          if (typeof cell.v === 'number') return cell.v.toString();
-          return String(cell.v).trim();
-        }
-      } catch (err) {
-        console.warn('Error processing rich text:', err);
-      }
-
-      return '';
-    },
-    [isDarkMode, theme.palette.text.primary]
-  );
-
-  const processExcelData = useCallback(
-    async (workbook: XLSX.WorkBook): Promise<void> => {
-      if (processingRef.current || !mountedRef.current) return;
-      processingRef.current = true;
-
-      try {
-        setLoadingMessage('Processing Excel data...');
-        const processedWorkbook: WorkbookData = {};
-        const totalSheets = workbook.SheetNames.length;
-        const newRowMapping = new Map<number, number>();
-
-        for (let sheetIndex = 0; sheetIndex < totalSheets; sheetIndex += 1) {
-          if (!mountedRef.current) break;
-
-          const sheetName = workbook.SheetNames[sheetIndex];
-          setLoadingMessage(`Processing sheet ${sheetIndex + 1} of ${totalSheets}...`);
-
-          const worksheet = workbook.Sheets[sheetName];
-          // eslint-disable-next-line
-          if (!worksheet['!ref']) continue;
-
-          const range = XLSX.utils.decode_range(worksheet['!ref']);
-          const headerRowIndex = range.s.r;
-
-          // Track hidden rows for this sheet
-          const hiddenRows = new Set<number>();
-          if (worksheet['!rows']) {
-            worksheet['!rows'].forEach((row, index) => {
-              if (row?.hidden) hiddenRows.add(index + range.s.r);
-            });
-          }
-
-          const actualCols = range.e.c + 1;
-          const maxAllowedCols = 1000;
-          const totalCols = Math.min(Math.max(actualCols, 13), maxAllowedCols);
-
-          // Get visible columns (no hidden column detection for now)
-          const visibleColumns = Array.from({ length: totalCols }, (_, i) => i);
-          const hiddenColumns: number[] = [];
-
-          // Read headers
-          const headers = visibleColumns.map((colIndex) => {
-            const cellAddress = XLSX.utils.encode_cell({
-              r: headerRowIndex,
-              c: colIndex,
-            });
-            const cell = worksheet[cellAddress] as CellData;
-            const actualCellValue = processRichText(cell);
-
-            return actualCellValue && actualCellValue.toString().trim() !== ''
-              ? actualCellValue.toString().trim()
-              : `Column ${String.fromCharCode(65 + colIndex)}`;
-          });
-
-          // Process all rows including the header row
-          const data: TableRowType[] = [];
-          const MAX_ROWS_TO_DISPLAY = 100000; // Adjust as needed
-          const maxRows = Math.min(range.e.r + 2, headerRowIndex + MAX_ROWS_TO_DISPLAY);
-          let displayIndex = 0;
-
-          for (let rowIndex = headerRowIndex; rowIndex < maxRows; rowIndex += 1) {
-            const excelRowNum = rowIndex + 1;
-
-            // Skip hidden rows
-            // eslint-disable-next-line
-            if (hiddenRows.has(rowIndex)) continue;
-
-            const rowData: TableRowType = {
-              __rowNum: excelRowNum,
-              __isHeaderRow: rowIndex === headerRowIndex,
-              __sheetName: sheetName,
-            };
-
-            visibleColumns.forEach((colIndex, visibleIndex) => {
-              const cellAddress = XLSX.utils.encode_cell({
-                r: rowIndex,
-                c: colIndex,
-              });
-              const cell = worksheet[cellAddress] as CellData;
-              const cellValue = processRichText(cell);
-              const headerKey = headers[visibleIndex];
-              rowData[headerKey] = cellValue;
-            });
-
-            // Map the original Excel row number to the display index for this sheet
-            newRowMapping.set(excelRowNum, displayIndex);
-            displayIndex += 1;
-
-            data.push(rowData);
-          }
-
-          processedWorkbook[sheetName] = {
-            headers,
-            data,
-            headerRowIndex: headerRowIndex + 1,
-            totalColumns: visibleColumns.length,
-            hiddenColumns,
-            visibleColumns,
-            columnMapping: Object.fromEntries(visibleColumns.map((col, idx) => [idx, col])),
-            originalTotalColumns: totalCols,
-          };
-        }
-
-        if (mountedRef.current) {
-          setWorkbookData(processedWorkbook);
-          const sheets = Object.keys(processedWorkbook);
-          setAvailableSheets(sheets);
-          if (sheets.length > 0 && !selectedSheet) {
-            setSelectedSheet(sheets[0]);
-          }
-          setRowMapping(newRowMapping);
-          setIsInitialized(true);
-          setLoadingMessage('Excel data loaded successfully!');
-        }
-      } catch (err: any) {
-        if (mountedRef.current) {
-          console.error('Excel processing error:', err);
-          throw new Error(`Error processing Excel data: ${err.message}`);
-        }
-      } finally {
-        processingRef.current = false;
-      }
-    },
-    // eslint-disable-next-line
-    [processRichText]
-  );
-
-  const loadExcelFile = useCallback(async (): Promise<void> => {
-    if (!fileUrl && !excelBuffer) return;
-
-    try {
-      setLoading(true);
-      setError(null);
-      setLoadingMessage('Downloading Excel file...');
-
-      let workbook: XLSX.WorkBook;
-      const xlsxOptions = {
-        type: 'array' as const,
-        cellFormula: false,
-        cellHTML: false,
-        cellStyles: true,
-        cellText: false,
-        cellDates: true,
-        cellNF: false,
-        sheetStubs: false,
-        WTF: false,
-        raw: false,
-        dense: false,
-      };
-
-      if (excelBuffer) {
-        setLoadingMessage('Processing Excel buffer...');
-        const bufferCopy = excelBuffer.slice(0);
-        workbook = XLSX.read(new Uint8Array(bufferCopy), xlsxOptions);
-      } else if (fileUrl) {
-        setLoadingMessage('Fetching Excel file...');
-        const response = await fetch(fileUrl);
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const arrayBuffer = await response.arrayBuffer();
-        if (!mountedRef.current) return;
-
-        setLoadingMessage('Reading Excel file...');
-        workbook = XLSX.read(arrayBuffer, xlsxOptions);
-      } else {
-        throw new Error('No data source provided');
-      }
-
-      if (!mountedRef.current) return;
-
-      workbookRef.current = workbook;
-      await processExcelData(workbook);
-    } catch (err: any) {
-      if (mountedRef.current) {
-        setError(`Error loading Excel file: ${err.message}`);
-        setLoadingMessage('Failed to load Excel file');
-      }
-    } finally {
-      if (mountedRef.current) {
-        setLoading(false);
-      }
-    }
-  }, [fileUrl, excelBuffer, processExcelData]);
-
-  const currentSheetData = useMemo(() => {
-    if (!workbookData || !selectedSheet || !workbookData[selectedSheet]) {
-      return { headers: [], data: [] };
-    }
-    return workbookData[selectedSheet];
-  }, [workbookData, selectedSheet]);
-
-  // Updated to use rowMapping to find the correct row to scroll to
-  const scrollToRow = useCallback(
-    (originalRowNum: number, targetSheetName?: string): void => {
-      if (!tableRef.current || !mountedRef.current) return;
-
-      // If target sheet is different from current, switch sheets first
-      if (targetSheetName && targetSheetName !== selectedSheet) {
-        setSelectedSheet(targetSheetName);
-        // Schedule the scroll after sheet switch
-        setTimeout(() => scrollToRow(originalRowNum), 300);
-        return;
-      }
-
-      // Find the index of the row element in the table that corresponds to this original row number
-      const displayIndex = Array.from(rowMapping.entries()).find(
-        ([orig, index]) => orig === originalRowNum
-      )?.[1];
-
-      if (displayIndex === undefined) {
-        console.warn(`Could not find table row for Excel row number ${originalRowNum}`);
-        return;
-      }
-
-      const tableRows = tableRef.current.getElementsByTagName('tr');
-      // Account for header row (+1) and zero-indexing adjustment (+1)
-      const rowIndex = displayIndex + 2;
-
-      if (tableRows[rowIndex]) {
-        requestAnimationFrame(() => {
-          if (!mountedRef.current) return;
-
-          tableRows[rowIndex].scrollIntoView({
-            behavior: 'smooth',
-            block: 'center',
-          });
-        });
-      }
-    },
-    [rowMapping, selectedSheet]
-  );
-
-  const handleCitationClick = useCallback(
-    (citation: DocumentContent): void => {
-      if (!mountedRef.current) return;
-      const { blockNum, extension, sheetName } = citation.metadata;
-      if (blockNum[0]) {
-        const highlightedRowNum = extension === 'csv' ? blockNum[0] + 1 : blockNum[0];
-
-        setSelectedCitation(citation.metadata._id);
-        setHighlightedRow(highlightedRowNum);
-        scrollToRow(highlightedRowNum, sheetName);
-      }
-    },
-    [scrollToRow]
-  );
-
-  const handleSheetChange = useCallback(
-    (event: React.SyntheticEvent, newValue: string) => {
-      if (newValue !== selectedSheet) {
-        setSheetTransition(true);
-        setSelectedSheet(newValue);
-      }
-    },
-    [selectedSheet]
-  );
-
+  // Header row info
   const getHeaderRowInfo = useMemo(() => {
-    if (!workbookData || !selectedSheet || !workbookData[selectedSheet]) {
+    if (!state.workbookData || !state.selectedSheet || !state.workbookData[state.selectedSheet]) {
       return null;
     }
-    return workbookData[selectedSheet].headerRowIndex || null;
-  }, [workbookData, selectedSheet]);
+    return state.workbookData[state.selectedSheet].headerRowIndex || null;
+  }, [state.workbookData, state.selectedSheet]);
 
-  // Handle initial load and cleanup
+  // Setup and cleanup
   useEffect(() => {
     mountedRef.current = true;
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
 
     return () => {
       mountedRef.current = false;
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-      workbookRef.current = null;
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      if (scrollTimeoutRef.current) {
+        window.clearTimeout(scrollTimeoutRef.current);
+      }
     };
-  }, []);
+  }, [handleFullscreenChange]);
 
-  // Handle file URL or buffer changes
+  // Load file on mount or change
   useEffect(() => {
-    setWorkbookData(null);
-    setError(null);
-    setIsInitialized(false);
-    setAvailableSheets([]);
-    setSelectedSheet('');
-    setHighlightedRow(null);
-    setSelectedCitation(null);
-    setRowMapping(new Map());
+    dispatch({ type: 'RESET' });
+    isInitialLoadRef.current = true;
+    programmaticSheetChangeRef.current = false;
+    isManualSheetChangeRef.current = false;
+    lastSelectedSheet.current = '';
+    lastHighlightCitationRef.current = null;
     loadExcelFile();
   }, [fileUrl, excelBuffer, loadExcelFile]);
 
   // Handle initial citation highlight
   useEffect(() => {
-    if (!isInitialized || !citations.length || highlightedRow || !mountedRef.current) {
+    if (!state.workbookData || !citations.length || state.highlightedRow || !mountedRef.current) {
       return;
     }
-    const sourceCitation = highlightCitation?.metadata || citations[0].metadata;
-    const { blockNum, extension, sheetName } = sourceCitation;
 
+    // Don't auto-highlight if user just manually switched sheets
+    if (isManualSheetChangeRef.current) {
+      return;
+    }
+
+    const sourceCitation = highlightCitation?.metadata || citations[0].metadata;
+    const { blockNum, extension, sheetName, _id } = sourceCitation;
+
+    if (!blockNum || !blockNum.length) return;
+
+    const highlightedRowNum = extension === 'csv' ? blockNum[0] + 1 : blockNum[0];
+    const citationId = _id || highlightCitation?.citationId || highlightCitation?.id;
+
+    dispatch({ type: 'SET_HIGHLIGHTING', highlighting: true });
+    applyHighlight(highlightedRowNum, citationId, sheetName);
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (mountedRef.current) {
+          scrollToRow(highlightedRowNum, sheetName);
+        }
+      });
+    });
+  }, [
+    state.workbookData,
+    citations,
+    state.highlightedRow,
+    highlightCitation,
+    applyHighlight,
+    scrollToRow,
+  ]);
+
+  // Handle highlightCitation changes
+  useEffect(() => {
+    if (
+      !state.isInitialized ||
+      !citations.length ||
+      !mountedRef.current ||
+      !highlightCitation ||
+      !state.workbookData
+    ) {
+      lastHighlightCitationRef.current = highlightCitation || null;
+      return;
+    }
+
+    // Only react to actual highlightCitation changes, not sheet changes
+    // Check if highlightCitation actually changed
+    const prevCitation = lastHighlightCitationRef.current;
+    const prevId = getCitationId(prevCitation);
+    const currentId = getCitationId(highlightCitation);
+    const citationChanged =
+      !prevCitation || prevCitation !== highlightCitation || prevId !== currentId;
+
+    if (!citationChanged) {
+      return;
+    }
+
+    // Don't auto-scroll if user just manually switched sheets
+    if (isManualSheetChangeRef.current) {
+      lastHighlightCitationRef.current = highlightCitation;
+      return;
+    }
+
+    const sourceCitation = highlightCitation.metadata;
+    if (!sourceCitation) {
+      lastHighlightCitationRef.current = highlightCitation;
+      return;
+    }
+
+    const { blockNum, extension, sheetName } = sourceCitation;
+    const _id = '_id' in sourceCitation && typeof sourceCitation._id === 'string' 
+      ? sourceCitation._id 
+      : undefined;
     if (!blockNum || !blockNum.length) {
+      lastHighlightCitationRef.current = highlightCitation;
+      return;
+    }
+
+    // Don't auto-scroll if user manually switched sheets (user is browsing)
+    // Only allow auto-scroll if it's a programmatic change (citation was explicitly clicked)
+    if (isManualSheetChangeRef.current && !programmaticSheetChangeRef.current) {
+      lastHighlightCitationRef.current = highlightCitation;
       return;
     }
 
     const highlightedRowNum = extension === 'csv' ? blockNum[0] + 1 : blockNum[0];
+    const citationId = _id || getCitationId(highlightCitation);
 
-    setHighlightedRow(highlightedRowNum);
-    setSelectedCitation(sourceCitation._id);
+    // Update the ref to track this citation
+    lastHighlightCitationRef.current = highlightCitation;
 
-    // Switch to the correct sheet if needed, then scroll
-    if (sheetName && sheetName !== selectedSheet) {
-      setSelectedSheet(sheetName);
-      setTimeout(() => scrollToRow(highlightedRowNum), 300);
-    } else {
-      scrollToRow(highlightedRowNum);
-    }
-  }, [citations, isInitialized, highlightedRow, scrollToRow, highlightCitation, selectedSheet]);
+    dispatch({ type: 'SET_HIGHLIGHTING', highlighting: true });
+    applyHighlight(highlightedRowNum, citationId, sheetName);
+    scrollToRow(highlightedRowNum, sheetName);
+  }, [
+    highlightCitation,
+    state.isInitialized,
+    citations.length,
+    state.workbookData,
+    applyHighlight,
+    scrollToRow,
+  ]);
 
-  if (loading) {
+  if (state.loading) {
     return (
       <Box
         display="flex"
@@ -870,13 +1168,13 @@ const ExcelViewer = ({
       >
         <CircularProgress size={32} thickness={3} />
         <Typography variant="body2" color="text.secondary">
-          Loading Excel data...
+          {state.loadingMessage}
         </Typography>
       </Box>
     );
   }
 
-  if (error) {
+  if (state.error) {
     return (
       <Alert
         severity="error"
@@ -889,7 +1187,7 @@ const ExcelViewer = ({
           },
         }}
       >
-        {error}
+        {state.error}
       </Alert>
     );
   }
@@ -909,20 +1207,22 @@ const ExcelViewer = ({
         },
       }}
     >
-      <FullLoadingOverlay isVisible={loading} message={loadingMessage} />
-      <FullLoadingOverlay isVisible={sheetTransition && !loading} message="Switching sheets..." />
+      <FullLoadingOverlay isVisible={state.loading} message={state.loadingMessage} />
 
       <ViewerContainer>
-        <MainContainer sx={{ width: '100%', overflow: 'auto' }}>
-          {workbookData && Object.keys(workbookData).length > 1 && (
-            <Box
-              sx={{
-                borderBottom: isDarkMode ? '1px solid #404448' : '1px solid #e1e5e9',
-                mb: 0,
-              }}
-            >
+        <MainContainer sx={{ width: '100%', overflow: 'hidden', position: 'relative' }}>
+          {state.isHighlighting && !state.loading && (
+            <HighlightIndicator className="visible">
+              <CircularProgress size={12} thickness={4} sx={{ color: 'inherit' }} />
+              <Typography variant="caption" sx={{ fontSize: '11px', fontWeight: 500 }}>
+                Locating citation...
+              </Typography>
+            </HighlightIndicator>
+          )}
+          {state.workbookData && Object.keys(state.workbookData).length > 1 && (
+            <Box sx={{ borderBottom: isDarkMode ? '1px solid #404448' : '1px solid #e1e5e9' }}>
               <Tabs
-                value={selectedSheet || ''}
+                value={state.selectedSheet || ''}
                 onChange={handleSheetChange}
                 variant="scrollable"
                 scrollButtons="auto"
@@ -934,77 +1234,41 @@ const ExcelViewer = ({
                     textTransform: 'none',
                     padding: '6px 16px',
                     fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-                    color: isDarkMode ? '#b8bcc8' : '#495057',
-                    '&.Mui-selected': {
-                      color: '#0066cc',
-                      fontWeight: 600,
-                    },
-                  },
-                  '& .MuiTabs-indicator': {
-                    backgroundColor: '#0066cc',
-                    height: '2px',
                   },
                 }}
               >
-                {Object.keys(workbookData).map((sheetName) => (
-                  <Tab
-                    key={sheetName}
-                    label={sheetName}
-                    value={sheetName}
-                    sx={{
-                      minWidth: 'auto',
-                      whiteSpace: 'nowrap',
-                    }}
-                  />
+                {Object.keys(state.workbookData).map((sheetName) => (
+                  <Tab key={sheetName} label={sheetName} value={sheetName} />
                 ))}
               </Tabs>
             </Box>
           )}
 
-          <Fade in={!sheetTransition && !loading} timeout={300}>
+          <Fade in={!state.sheetTransition && !state.loading} timeout={300}>
             <Box sx={{ height: '100%', width: '100%' }}>
               <TableContainer
                 ref={tableRef}
-                sx={{
-                  overflow: 'auto',
-                  height: '100%',
-                  width: '100%',
-                  '& .MuiTable-root': {
-                    minWidth: 'max-content',
-                  },
-                  ...scrollableStyles,
-                }}
+                sx={{ overflow: 'auto', height: '100%', width: '100%', ...scrollableStyles }}
               >
                 <Table
                   stickyHeader
-                  sx={{
-                    width: 'max-content',
-                    minWidth: '100%',
-                    tableLayout: 'fixed',
-                  }}
+                  sx={{ width: 'max-content', minWidth: '100%', tableLayout: 'fixed' }}
                 >
                   <TableHead>
-                    {/* Column Letter Headers */}
                     <TableRow>
                       <HeaderRowNumberCell sx={{ width: '50px' }}>
                         <Typography sx={{ fontSize: '10px', fontWeight: 600 }}>Col</Typography>
                       </HeaderRowNumberCell>
-                      {currentSheetData.headers.map((header, index) => {
-                        const columnWidth = getColumnWidth(index, header);
-                        const actualColumnLetter = String.fromCharCode(65 + index);
-
-                        return (
-                          <HeaderRowNumberCell
-                            key={index}
-                            sx={{ width: columnWidth, minWidth: columnWidth }}
-                          >
-                            {actualColumnLetter}
-                          </HeaderRowNumberCell>
-                        );
-                      })}
+                      {currentSheetData.headers.map((header, index) => (
+                        <HeaderRowNumberCell
+                          key={index}
+                          sx={{ width: getColumnWidth(index, header) }}
+                        >
+                          {String.fromCharCode(65 + index)}
+                        </HeaderRowNumberCell>
+                      ))}
                     </TableRow>
 
-                    {/* Actual Header Row */}
                     <TableRow>
                       <ResizableHeaderCell sx={{ width: '50px' }}>
                         <Typography sx={{ fontSize: '11px', fontWeight: 600 }}>
@@ -1019,7 +1283,6 @@ const ExcelViewer = ({
                           displayHeaderValue !== fullHeaderValue ||
                           displayHeaderValue.includes('...');
                         const hasHeaderContent = fullHeaderValue && fullHeaderValue.trim() !== '';
-
                         return (
                           <ResizableHeaderCell
                             key={index}
@@ -1044,7 +1307,7 @@ const ExcelViewer = ({
                                 leaveDelay={200}
                                 PopperProps={{
                                   sx: {
-                                    zIndex: isFullscreen ? 2000 : 1500,
+                                    zIndex: state.isFullscreen ? 2000 : 1500,
                                     '& .MuiTooltip-tooltip': {
                                       maxWidth: '300px',
                                       fontSize: '11px',
@@ -1060,7 +1323,7 @@ const ExcelViewer = ({
                                       color: 'rgba(0, 0, 0, 0.9)',
                                     },
                                   },
-                                 container: document.fullscreenElement || document.body,
+                                  container: document.fullscreenElement || document.body,
                                 }}
                               >
                                 <Typography
@@ -1098,79 +1361,25 @@ const ExcelViewer = ({
                   <TableBody>
                     {currentSheetData.data.map((row, displayIndex) => {
                       const isHeaderRow = row.__isHeaderRow;
-                      const isHighlighted = row.__rowNum === highlightedRow;
+                      const isHighlighted = row.__rowNum === state.highlightedRow;
 
                       return (
                         <StyledTableRow
-                          key={`${selectedSheet}-${displayIndex}`}
+                          key={`${state.selectedSheet}-${displayIndex}`}
                           highlighted={isHighlighted}
+                          pulse={isHighlighted && state.highlightPulse}
                         >
-                          <RowNumberCell
-                            sx={{
-                              width: '50px',
-                              ...(isHeaderRow
-                                ? {
-                                    backgroundColor: isDarkMode ? '#3a3d42' : '#e9ecef',
-                                    fontWeight: 600,
-                                  }
-                                : {}),
-                            }}
-                          >
-                            {row.__rowNum}
-                          </RowNumberCell>
-                          {currentSheetData.headers.map((header, colIndex) => {
-                            const columnWidth = getColumnWidth(colIndex, header);
-                            const cellValue = row[header];
-                            const displayValue = renderCellValue(cellValue);
-                            const fullValue = renderCellValue(cellValue, true);
-                            const isTruncated =
-                              displayValue !== fullValue || displayValue.includes('...');
-
-                            return (
-                              <ResizableTableCell
-                                key={`${selectedSheet}-${displayIndex}-${colIndex}`}
-                                sx={{
-                                  width: columnWidth,
-                                  minWidth: columnWidth,
-                                }}
-                                isHeaderRow={isHeaderRow}
-                                highlighted={isHighlighted}
-                              >
-                                {isTruncated ? (
-                                  <Tooltip
-                                    title={fullValue}
-                                    arrow
-                                    placement="top"
-                                    enterDelay={300}
-                                    leaveDelay={200}
-                                    PopperProps={{
-                                      sx: {
-                                        zIndex: isFullscreen ? 2000 : 1500,
-                                        '& .MuiTooltip-tooltip': {
-                                          maxWidth: '400px',
-                                          fontSize: '12px',
-                                          backgroundColor: 'rgba(0, 0, 0, 0.9)',
-                                          color: '#ffffff',
-                                          wordBreak: 'break-word',
-                                          whiteSpace: 'pre-wrap',
-                                          padding: '8px 12px',
-                                          borderRadius: '4px',
-                                        },
-                                        '& .MuiTooltip-arrow': {
-                                          color: 'rgba(0, 0, 0, 0.9)',
-                                        },
-                                      },
-                                      container: document.fullscreenElement || document.body,
-                                    }}
-                                  >
-                                    <span>{displayValue}</span>
-                                  </Tooltip>
-                                ) : (
-                                  displayValue
-                                )}
-                              </ResizableTableCell>
-                            );
-                          })}
+                          <RowNumberCell sx={{ width: '50px' }}>{row.__rowNum}</RowNumberCell>
+                          {currentSheetData.headers.map((header, colIndex) => (
+                            <TableCellMemo
+                              key={`${state.selectedSheet}-${displayIndex}-${colIndex}`}
+                              value={row[header]}
+                              columnWidth={getColumnWidth(colIndex, header)}
+                              isHeaderRow={!!isHeaderRow}
+                              highlighted={isHighlighted}
+                              isFullscreen={state.isFullscreen}
+                            />
+                          ))}
                         </StyledTableRow>
                       );
                     })}
@@ -1206,7 +1415,7 @@ const ExcelViewer = ({
               </Typography>
               <Tooltip
                 placement="top"
-                title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                title={state.isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
               >
                 <IconButton
                   onClick={toggleFullscreen}
@@ -1229,7 +1438,7 @@ const ExcelViewer = ({
                   }}
                 >
                   <Icon
-                    icon={isFullscreen ? fullScreenExitIcon : fullScreenIcon}
+                    icon={state.isFullscreen ? fullScreenExitIcon : fullScreenIcon}
                     width="18"
                     height="18"
                   />
@@ -1290,17 +1499,17 @@ const ExcelViewer = ({
             <List sx={{ flex: 1, overflow: 'auto', p: 1.5, ...scrollableStyles }}>
               {citations.map((citation, index) => (
                 <StyledListItem
-                  key={citation.metadata._id || index}
+                  key={citation.id || index}
                   onClick={() => handleCitationClick(citation)}
                   sx={{
                     bgcolor:
-                      selectedCitation === citation.metadata._id
+                      state.selectedCitation === citation.id
                         ? isDarkMode
                           ? alpha(theme.palette.primary.dark, 0.15)
                           : alpha(theme.palette.primary.lighter, 0.3)
                         : 'transparent',
                     boxShadow:
-                      selectedCitation === citation.metadata._id
+                      state.selectedCitation === citation.id
                         ? isDarkMode
                           ? `0 0 0 1px ${alpha(theme.palette.primary.main, 0.3)}`
                           : `0 0 0 1px ${alpha(theme.palette.primary.main, 0.3)}`
@@ -1314,7 +1523,7 @@ const ExcelViewer = ({
                         fontWeight: 600,
                         fontSize: '0.875rem',
                         color:
-                          selectedCitation === citation.metadata._id
+                          state.selectedCitation === citation.id
                             ? theme.palette.primary.main
                             : theme.palette.text.primary,
                       }}
@@ -1347,7 +1556,6 @@ const ExcelViewer = ({
                           {citation.metadata.sheetName}
                         </MetaLabel>
                       )}
-
                       {citation.metadata.blockNum && citation.metadata.blockNum[0] && (
                         <MetaLabel>
                           <Icon
