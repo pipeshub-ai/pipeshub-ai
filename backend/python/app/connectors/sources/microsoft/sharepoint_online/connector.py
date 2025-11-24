@@ -939,7 +939,7 @@ class SharePointConnector(BaseConnector):
 
             # Get permissions
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
-            
+
             # Todo: Get permissions for the record
             # for user in users:
             #     permissions.append(Permission(
