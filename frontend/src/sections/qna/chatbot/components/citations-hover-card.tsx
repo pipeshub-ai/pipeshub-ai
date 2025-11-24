@@ -233,7 +233,21 @@ const CitationHoverCard = ({
       const blockText = citation?.metadata?.blockText;
       if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
         const textFragment = blockText.trim().split(/\s+/).slice(0, 5).join(' ');
-        return `${webUrl}#:~:text=${encodeURIComponent(textFragment)}`;
+        try {
+          const url = new URL(webUrl);
+          if (url.hash.includes(':~:')) {
+            url.hash += `&text=${encodeURIComponent(textFragment)}`;
+          } else {
+            url.hash += `:~:text=${encodeURIComponent(textFragment)}`;
+          }
+          return url.toString();
+        } catch (e) {
+          // Fallback for cases where webUrl might not be a full URL.
+          if (!webUrl.includes('#')) {
+            return `${webUrl}#:~:text=${encodeURIComponent(textFragment)}`;
+          }
+          return webUrl;
+        }
       }
 
       return webUrl;

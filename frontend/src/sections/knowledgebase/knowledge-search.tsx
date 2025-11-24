@@ -304,7 +304,20 @@ const KnowledgeSearch = ({
     if (content && typeof content === 'string' && content.trim().length > 0) {
       const words = content.trim().split(/\s+/);
       const textFragment = words.slice(0, 5).join(' ');
-      webUrl = `${webUrl}#:~:text=${encodeURIComponent(textFragment)}`;
+      try {
+        const url = new URL(webUrl);
+        if (url.hash.includes(':~:')) {
+          url.hash += `&text=${encodeURIComponent(textFragment)}`;
+        } else {
+          url.hash += `:~:text=${encodeURIComponent(textFragment)}`;
+        }
+        webUrl = url.toString();
+      } catch (e) {
+        // Fallback for cases where webUrl might not be a full URL.
+        if (!webUrl.includes('#')) {
+          webUrl = `${webUrl}#:~:text=${encodeURIComponent(textFragment)}`;
+        }
+      }
     }
 
     window.open(webUrl, '_blank', 'noopener,noreferrer');
