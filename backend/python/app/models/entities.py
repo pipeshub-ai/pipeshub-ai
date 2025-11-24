@@ -32,6 +32,10 @@ class RecordType(str, Enum):
     MESSAGE = "MESSAGE"
     MAIL = "MAIL"
     TICKET = "TICKET"
+    COMMENT = "COMMENT"
+    INLINE_COMMENT = "INLINE_COMMENT"
+    CONFLUENCE_PAGE = "CONFLUENCE_PAGE"
+    CONFLUENCE_BLOGPOST = "CONFLUENCE_BLOGPOST"
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_LIST_ITEM = "SHAREPOINT_LIST_ITEM"
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
@@ -411,12 +415,11 @@ class CommentRecord(Record):
     Comment record for page comments (footer and inline).
 
     Fields:
-    - author_id: User accountId who created the comment
+    - author_source_id: User accountId who created the comment
     - resolution_status: Status of the comment (e.g., "resolved", "open", None)
     - comment_selection: For inline comments, the original text selection (HTML)
-    - record_type: Type of comment (e.g., inline, footer)
     """
-    author_id: str
+    author_source_id: str
     resolution_status: Optional[str] = None
     comment_selection: Optional[str] = None
 
@@ -436,8 +439,7 @@ class CommentRecord(Record):
     def to_arango_record(self) -> Dict:
         return {
             "_key": self.id,
-            "orgId": self.org_id,
-            "authorId": self.author_id,
+            "authorSourceId": self.author_source_id,
             "resolutionStatus": self.resolution_status,
             "commentSelection": self.comment_selection,
         }

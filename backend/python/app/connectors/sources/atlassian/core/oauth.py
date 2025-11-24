@@ -31,24 +31,37 @@ class AtlassianScope(Enum):
     JIRA_PROJECT_WRITE = "write:jira-project"
 
     # Confluence Scopes
-    CONFLUENCE_CONTENT_READ = "read:content.all"
+    CONFLUENCE_CONTENT_READ = "read:confluence-content.all"
     CONFLUENCE_CONTENT_DETAILS_READ = "read:content-details:confluence"
+    CONFLUENCE_AUDIT_LOG_READ = "read:audit-log:confluence"
+    CONFLUENCE_PAGE_READ = "read:page:confluence"
+    CONFLUENCE_ATTACHMENT_READ = "read:attachment:confluence"
+    CONFLUENCE_BLOGPOST_READ = "read:blogpost:confluence"
+    CONFLUENCE_COMMENT_READ = "read:comment:confluence"
+    CONFLUENCE_GROUP_READ = "read:group:confluence"
+    CONFLUENCE_USER_DETAILS_READ = "read:user:confluence"
+    CONFLUENCE_SPACE_DETAILS_READ = "read:space:confluence"
+    CONFLUENCE_PERMISSION_READ = "read:permission:confluence"
+    CONFLUENCE_FOLDER_READ = "read:folder:confluence"
+    CONFLUENCE_EMAIL_ADDRESS_READ = "read:email-address:confluence"
+    # Write/Delete Scopes
     CONFLUENCE_CONTENT_WRITE = "write:confluence:content"
     CONFLUENCE_CONTENT_CREATE = "write:confluence-content"
     CONFLUENCE_CONTENT_DELETE = "delete:confluence-content"
+    CONFLUENCE_CONTENT_PERMISSION = "read:confluence-content.permission"
     CONFLUENCE_SPACE_READ = "read:confluence-space.summary"
     CONFLUENCE_SPACE_READ_ALL = "read:space:confluence"
-    CONFLUENCE_USER_READ = "read:confluence-user"
-    CONFLUENCE_GROUPS_READ = "read:confluence-groups"
-    CONFLUENCE_PROPS_WRITE = "write:confluence-props"
-    CONFLUENCE_PAGE_READ = "read:page:confluence"
+    CONFLUENCE_USER_READ = "read:user:confluence"
+    CONFLUENCE_USER_READ_CLASSIC = "read:confluence-user"
+    CONFLUENCE_GROUPS_READ = "read:group:confluence"
+    CONFLUENCE_GROUPS_READ_CLASSIC = "read:confluence-groups"
+    CONFLUENCE_PROPS_READ = "read:confluence-props"
     CONFLUENCE_PAGE_WRITE = "write:page:confluence"
-    CONFLUENCE_ATTACHMENT_READ = "read:attachment:confluence"
     CONFLUENCE_ATTACHMENT_WRITE = "write:attachment:confluence"
-    CONFLUENCE_BLOGPOST_READ = "read:blogpost:confluence"
     CONFLUENCE_BLOGPOST_WRITE = "write:blogpost:confluence"
-    CONFLUENCE_COMMENT_READ = "read:comment:confluence"
     CONFLUENCE_COMMENT_WRITE = "write:comment:confluence"
+    CONFLUENCE_SEARCH = "search:confluence"
+    CONFLUENCE_EMAIL_READ = "read:email-address:confluence"
 
     # Common Scopes
     ACCOUNT_READ = "read:account"
@@ -79,6 +92,33 @@ class AtlassianScope(Enum):
             cls.OFFLINE_ACCESS.value,
             cls.CONFLUENCE_PAGE_READ.value,
             cls.CONFLUENCE_COMMENT_READ.value,
+        ]
+
+    @classmethod
+    def get_confluence_read_access(cls) -> List[str]:
+        """Get read-only access scopes for Confluence connector"""
+        return [
+            cls.CONFLUENCE_USER_READ.value,
+            cls.CONFLUENCE_USER_READ_CLASSIC.value,
+            cls.CONFLUENCE_GROUPS_READ.value,
+            cls.CONFLUENCE_SPACE_READ.value,
+            cls.CONFLUENCE_SPACE_READ_ALL.value,
+            cls.CONFLUENCE_PAGE_READ.value,
+            cls.CONFLUENCE_BLOGPOST_READ.value,
+            cls.CONFLUENCE_COMMENT_READ.value,
+            cls.CONFLUENCE_ATTACHMENT_READ.value,
+            cls.CONFLUENCE_PERMISSION_READ.value,
+            cls.CONFLUENCE_FOLDER_READ.value,
+            cls.OFFLINE_ACCESS.value,
+            cls.CONFLUENCE_AUDIT_LOG_READ.value,
+            cls.CONFLUENCE_SEARCH.value,
+            cls.CONFLUENCE_CONTENT_DETAILS_READ.value,
+            cls.CONFLUENCE_GROUPS_READ_CLASSIC.value,
+            cls.CONFLUENCE_CONTENT_READ.value,
+            cls.ACCOUNT_READ.value,
+            cls.CONFLUENCE_CONTENT_PERMISSION.value,
+            cls.CONFLUENCE_PROPS_READ.value,
+            cls.CONFLUENCE_EMAIL_READ.value,
         ]
 
     @classmethod
@@ -113,6 +153,7 @@ class AtlassianScope(Enum):
             cls.ACCOUNT_EMAIL_READ.value,
             cls.OFFLINE_ACCESS.value
         ]
+
 @dataclass
 class AtlassianCloudResource:
     """Represents an Atlassian Cloud resource (site)"""

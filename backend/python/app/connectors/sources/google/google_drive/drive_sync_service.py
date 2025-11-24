@@ -98,6 +98,89 @@ class BaseDriveSyncService(ABC):
         """Perform initial sync"""
         pass
 
+    async def ensure_user_app_relation(self, user_email: str, org_id: str) -> Optional[Dict]:
+        """Ensure user-app relation exists for Google Drive. Creates it if missing.
+
+        Returns:
+            Optional[Dict]: The sync_state dict if relation exists or was created, None on error.
+        """
+        try:
+            sync_state = await self.arango_service.get_user_sync_state(
+                user_email, Connectors.GOOGLE_DRIVE.value.lower()
+            )
+            if sync_state:
+                return sync_state  # Relation already exists
+
+            # Relation doesn't exist, create it
+            self.logger.info(
+                "⚠️ User-app relation missing for %s, creating it", user_email
+            )
+            user_id = await self.arango_service.get_entity_id_by_email(user_email)
+            if not user_id:
+                self.logger.error("User %s not found in database", user_email)
+                return None
+
+            user = await self.arango_service.get_document(
+                user_id, CollectionNames.USERS.value
+            )
+            if not user:
+                self.logger.error("User document not found for %s", user_email)
+                return None
+
+            # Get app key
+            apps = await self.arango_service.get_org_apps(org_id)
+            app_key = next(
+                (
+                    a.get("_key")
+                    for a in apps
+                    if (a.get("name", "") or "").lower() == Connectors.GOOGLE_DRIVE.value.lower()
+                ),
+                None,
+            )
+            if not app_key:
+                # Fallback: fetch app doc by name
+                try:
+                    app_doc = await self.arango_service.get_app_by_name(Connectors.GOOGLE_DRIVE.value)
+                    if isinstance(app_doc, dict):
+                        app_key = app_doc.get("_key")
+                except (AttributeError, KeyError, TypeError) as e:
+                    self.logger.warning("Failed to get app by name: %s", str(e))
+                    app_key = None
+
+            if not app_key:
+                self.logger.error("Drive app not found for org %s", org_id)
+                return None
+
+            # Create edge between user and app
+            app_edge_data = {
+                "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
+                "_to": f"{CollectionNames.APPS.value}/{app_key}",
+                "syncState": ProgressStatus.NOT_STARTED.value,
+                "lastSyncUpdate": get_epoch_timestamp_in_ms(),
+            }
+            await self.arango_service.batch_create_edges(
+                [app_edge_data],
+                CollectionNames.USER_APP_RELATION.value,
+            )
+            self.logger.info("✅ Created user-app relation for %s", user_email)
+
+            # Return the newly created sync state
+            return {
+                "syncState": ProgressStatus.NOT_STARTED.value,
+                "lastSyncUpdate": get_epoch_timestamp_in_ms(),
+            }
+
+        except (AttributeError, KeyError, TypeError) as e:
+            self.logger.error(
+                "❌ Failed to ensure user-app relation for %s: %s", user_email, str(e)
+            )
+            return None
+        except Exception as e:
+            self.logger.error(
+                "❌ Unexpected error ensuring user-app relation for %s: %s", user_email, str(e)
+            )
+            return None
+
     async def initialize_workers(self, user_service: DriveUserService) -> bool | None:
         """Initialize workers for root and shared drives"""
         async with self._worker_lock:
@@ -163,10 +246,9 @@ class BaseDriveSyncService(ABC):
             try:
                 users = await self.arango_service.get_users(org_id=org_id)
                 for user in users:
-                    # Check current state using get_user_sync_state
-                    sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_DRIVE.value.lower()
-                    )
+                    # Ensure user-app relation exists
+                    # Ensure user-app relation exists and get sync state
+                    sync_state = await self.ensure_user_app_relation(user["email"], org_id)
                     current_state = (
                         sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
                     )
@@ -205,10 +287,9 @@ class BaseDriveSyncService(ABC):
             try:
                 users = await self.arango_service.get_users(org_id=org_id)
                 for user in users:
-                    # Check current state using get_user_sync_state
-                    sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_DRIVE.value.lower()
-                    )
+                    # Ensure user-app relation exists
+                    # Ensure user-app relation exists and get sync state
+                    sync_state = await self.ensure_user_app_relation(user["email"], org_id)
                     current_state = (
                         sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
                     )
@@ -247,10 +328,9 @@ class BaseDriveSyncService(ABC):
             try:
                 users = await self.arango_service.get_users(org_id=org_id)
                 for current_user in users:
-                    # Check current state using get_user_sync_state
-                    sync_state = await self.arango_service.get_user_sync_state(
-                        current_user["email"], Connectors.GOOGLE_DRIVE.value.lower()
-                    )
+                    # Ensure user-app relation exists
+                    # Ensure user-app relation exists and get sync state
+                    sync_state = await self.ensure_user_app_relation(current_user["email"], org_id)
                     if not sync_state:
                         self.logger.warning("⚠️ No sync state found, starting fresh")
                         return await self.start(org_id)
@@ -925,8 +1005,23 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             return False
 
     async def setup_changes_watch(self, user_email: str) -> Optional[Dict]:
-        """Set up changes.watch after initial sync"""
+        """Set up changes.watch after initial sync completes"""
         try:
+            # Only set up watch if user has completed sync
+            sync_state = await self.arango_service.get_user_sync_state(
+                user_email, Connectors.GOOGLE_DRIVE.value.lower()
+            )
+            current_state = (
+                sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
+            )
+
+            if current_state != ProgressStatus.COMPLETED.value:
+                self.logger.info(
+                    "⏸️ Skipping watch setup for user %s - sync not completed yet (state: %s)",
+                    user_email, current_state
+                )
+                return None
+
             # Set up watch
             user_service = await self.drive_admin_service.create_drive_user_service(
                 user_email
@@ -936,7 +1031,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 user_email=user_email
             )
             if not page_token:
-                self.logger.warning("⚠️ No page token found for user %s", user_email)
+                self.logger.info("📝 No page token found for user %s, creating new watch", user_email)
                 watch = await user_service.create_changes_watch()
                 if not watch:
                     self.logger.error("❌ Failed to create changes watch")
@@ -993,6 +1088,10 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         await self.arango_service.batch_upsert_nodes(
                             [user], collection=CollectionNames.USERS.value
                         )
+                        user_id = user["_key"]
+
+                    # Ensure user-app relation exists
+                    await self.ensure_user_app_relation(user["email"], org_id)
 
             # List and store groups
             groups = await self.drive_admin_service.list_groups(org_id)
@@ -1022,10 +1121,11 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                             None,
                         )
                         if matching_user:
+                            matching_user_key = await self.arango_service.get_entity_id_by_email(matching_user["email"])
                             # Check if the relationship already exists
                             existing_relation = (
                                 await self.arango_service.check_edge_exists(
-                                    f"{CollectionNames.USERS.value}/{matching_user['_key']}",
+                                    f"{CollectionNames.USERS.value}/{matching_user_key}",
                                     f"{CollectionNames.GROUPS.value}/{group['_key']}",
                                     CollectionNames.BELONGS_TO.value,
                                 )
@@ -1058,9 +1158,10 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             # Create relationships between users and orgs
             belongs_to_org_relations = []
             for user in enterprise_users:
+                user_key = await self.arango_service.get_entity_id_by_email(user["email"])
                 # Check if the relationship already exists
                 existing_relation = await self.arango_service.check_edge_exists(
-                    f"{CollectionNames.USERS.value}/{user['_key']}",
+                    f"{CollectionNames.USERS.value}/{user_key}",
                     f"{CollectionNames.ORGS.value}/{org_id}",
                     CollectionNames.BELONGS_TO.value,
                 )
@@ -1085,7 +1186,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             # Initialize Celery
             await self.celery_app.setup_app()
 
-            # Check sync states and update if needed
+            # Ensure user-app relations exist for all active users
             active_users = await self.arango_service.get_users(org_id, active=True)
             for user in active_users:
                 # Check if user exists in enterprise users
@@ -1099,11 +1200,8 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     self.logger.warning(f"User {user['email']} not found in enterprise users")
                     continue
 
-                self.logger.info(f"Found enterprise user {user['email']}, continuing with sync")
-
-                sync_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_DRIVE.value.lower()
-                )
+                # Ensure user-app relation exists and get sync state
+                sync_state = await self.ensure_user_app_relation(user["email"], org_id)
                 current_state = (
                     sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
                 )
@@ -1118,37 +1216,32 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         service_type=Connectors.GOOGLE_DRIVE.value.lower(),
                     )
 
-                try:
-                    self.logger.info(
-                        "🚀 Setting up changes watch for user %s", user["email"]
-                    )
-                    channel_data = await self.setup_changes_watch(user["email"])
-                    if not channel_data:
-                        self.logger.error(
-                            "Token not created for user: %s", user["email"]
+                # Only set up watches for users who have completed sync
+                # Watches will be set up after sync completes in sync_specific_user() or perform_initial_sync()
+                if current_state == ProgressStatus.COMPLETED.value:
+                    try:
+                        self.logger.info(
+                            "🚀 Setting up changes watch for user %s (sync already completed)", user["email"]
                         )
-                        continue
-                    else:
-                        await self.arango_service.store_page_token(
-                            channel_data["channelId"],
-                            channel_data["resourceId"],
+                        channel_data = await self.setup_changes_watch(user["email"])
+                        if channel_data:
+                            await self.arango_service.store_page_token(
+                                channel_data.get("channelId"),
+                                channel_data.get("resourceId"),
+                                user["email"],
+                                channel_data.get("token"),
+                                channel_data.get("expiration"),
+                            )
+                            self.logger.info(
+                                "✅ Changes watch set up successfully for user: %s",
+                                user["email"],
+                            )
+                    except Exception as e:
+                        self.logger.warning(
+                            "⚠️ Could not set up changes watch for user %s (will be set up after sync): %s",
                             user["email"],
-                            channel_data["token"],
-                            channel_data["expiration"],
+                            str(e),
                         )
-
-                    self.logger.info(
-                        "✅ Changes watch set up successfully for user: %s",
-                        user["email"],
-                    )
-
-                except Exception as e:
-                    self.logger.error(
-                        "❌ Error setting up changes watch for user %s: %s",
-                        user["email"],
-                        str(e),
-                    )
-                    return False
 
             self.logger.info("✅ Drive Sync service initialized successfully")
             return True
@@ -1182,48 +1275,8 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
                 self.logger.info(f"Found enterprise user {user['email']}, continuing with sync")
 
-                sync_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_DRIVE.value.lower()
-                )
-                if sync_state is None:
-                    apps = await self.arango_service.get_org_apps(org_id)
-                    app_key = next(
-                        (
-                            a.get("_key")
-                            for a in apps
-                            if (a.get("name", "") or "").lower() == Connectors.GOOGLE_DRIVE.value.lower()
-                        ),
-                        None,
-                    )
-                    if not app_key:
-                        # Fallback: fetch app doc by name (DB may have different casing)
-                        try:
-                            app_doc = await self.arango_service.get_app_by_name(Connectors.GOOGLE_DRIVE.value)
-                            if isinstance(app_doc, dict):
-                                app_key = app_doc.get("_key")
-                        except Exception:
-                            app_key = None
-
-                    if not app_key:
-                        self.logger.warning(
-                            "⚠️ Drive app not found for org %s; skipping relation creation for user %s",
-                            org_id,
-                            user.get("email"),
-                        )
-                        continue
-
-                    # Create edge between user and app
-                    app_edge_data = {
-                        "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-                        "_to": f"{CollectionNames.APPS.value}/{app_key}",
-                        "syncState": ProgressStatus.NOT_STARTED.value,
-                        "lastSyncUpdate": get_epoch_timestamp_in_ms(),
-                    }
-                    await self.arango_service.batch_create_edges(
-                        [app_edge_data],
-                        CollectionNames.USER_APP_RELATION.value,
-                    )
-                    sync_state = app_edge_data
+                # Ensure user-app relation exists and get sync state
+                sync_state = await self.ensure_user_app_relation(user["email"], org_id)
 
                 current_state = sync_state.get("syncState")
                 if current_state == ProgressStatus.COMPLETED.value:
@@ -1456,6 +1509,33 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     service_type=Connectors.GOOGLE_DRIVE.value.lower(),
                 )
 
+                # Set up changes watch AFTER sync completes
+                try:
+                    self.logger.info("🚀 Setting up changes watch for user %s after sync completion", user["email"])
+                    channel_data = await self.setup_changes_watch(user["email"])
+                    if channel_data:
+                        await self.arango_service.store_page_token(
+                            channel_data.get("channelId"),
+                            channel_data.get("resourceId"),
+                            user["email"],
+                            channel_data.get("token"),
+                            channel_data.get("expiration"),
+                        )
+                        self.logger.info(
+                            "✅ Changes watch set up successfully for user: %s",
+                            user["email"],
+                        )
+                    else:
+                        self.logger.warning(
+                            "⚠️ Could not set up changes watch for user %s", user["email"]
+                        )
+                except Exception as e:
+                    self.logger.error(
+                        "❌ Error setting up changes watch for user %s: %s",
+                        user["email"],
+                        str(e),
+                    )
+
             self.is_completed = True
             return True
 
@@ -1473,29 +1553,30 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
         try:
             self.logger.info(f"🚀 Starting sync for specific user: {user_email}")
 
-            # Verify user exists in the database
-            sync_state = await self.arango_service.get_user_sync_state(
-                user_email, Connectors.GOOGLE_DRIVE.value.lower()
+            user_id = await self.arango_service.get_entity_id_by_email(user_email)
+            user = await self.arango_service.get_document(
+                user_id, CollectionNames.USERS.value
             )
+            if not user:
+                self.logger.warning("User does not exist!")
+                return False
+
+            org_id = user["orgId"]
+            if not org_id:
+                self.logger.warning(f"No organization found for user {user_email}")
+                return False
+
+            # Ensure user-app relation exists and get sync state
+            sync_state = await self.ensure_user_app_relation(user_email, org_id)
+            if sync_state is None:
+                self.logger.error("Failed to ensure user-app relation for %s", user_email)
+                return False
+
             current_state = sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
             if current_state == ProgressStatus.IN_PROGRESS.value:
                 self.logger.warning(
                     "💥 Drive sync is already running for user %s", user_email
                 )
-                return False
-
-            user_id = await self.arango_service.get_entity_id_by_email(user_email)
-            user = await self.arango_service.get_document(
-                user_id, CollectionNames.USERS.value
-            )
-            org_id = user["orgId"]
-
-            if not org_id:
-                self.logger.warning(f"No organization found for user {user_email}")
-                return False
-
-            if not user:
-                self.logger.warning("User does not exist!")
                 return False
 
             enterprise_users = await self.drive_admin_service.list_enterprise_users(org_id)
@@ -1530,20 +1611,6 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     user_email, ProgressStatus.FAILED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
                 )
                 return False
-
-            # Set up changes watch for the user
-            channel_data = await self.setup_changes_watch(user_email)
-            if not channel_data:
-                self.logger.error(f"Token not created for user: {user_email}")
-            else:
-                # Store the page token
-                await self.arango_service.store_page_token(
-                    channel_data["channelId"],
-                    channel_data["resourceId"],
-                    user_email,
-                    channel_data["token"],
-                    channel_data["expiration"],
-                )
 
             # Initialize workers and get drive list
             await self.initialize_workers(user_service)
@@ -1729,6 +1796,34 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             await self.arango_service.update_user_sync_state(
                 user_email, ProgressStatus.COMPLETED.value, service_type=Connectors.GOOGLE_DRIVE.value.lower()
             )
+
+            # Set up changes watch AFTER sync completes
+            try:
+                self.logger.info("🚀 Setting up changes watch for user %s after sync completion", user_email)
+                channel_data = await self.setup_changes_watch(user_email)
+                if channel_data:
+                    await self.arango_service.store_page_token(
+                        channel_data.get("channelId"),
+                        channel_data.get("resourceId"),
+                        user_email,
+                        channel_data.get("token"),
+                        channel_data.get("expiration"),
+                    )
+                    self.logger.info(
+                        "✅ Changes watch set up successfully for user: %s",
+                        user_email,
+                    )
+                else:
+                    self.logger.warning(
+                        "⚠️ Could not set up changes watch for user %s", user_email
+                    )
+            except Exception as e:
+                self.logger.error(
+                    "❌ Error setting up changes watch for user %s: %s",
+                    user_email,
+                    str(e),
+                )
+
             self.logger.info(f"✅ Successfully completed sync for user {user_email}")
             return True
 
@@ -1742,6 +1837,10 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
     async def resync_drive(self, org_id, user) -> bool | None:
         try:
             self.logger.info(f"Resyncing drive for user {user['email']}")
+
+            # Ensure user-app relation exists
+            await self.ensure_user_app_relation(user["email"], org_id)
+
             enterprise_users = await self.drive_admin_service.list_enterprise_users(org_id)
 
             # Check if user exists in enterprise users
@@ -1766,8 +1865,12 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             )
 
             if not page_token:
-                self.logger.warning(f"No page token found for user {user['email']}")
-                return True
+                self.logger.warning(
+                    f"No page token found for user {user['email']}. "
+                    f"User has never been synced. Triggering initial sync."
+                )
+                # Trigger initial sync for this user since they've never been synced
+                return await self.sync_specific_user(user["email"])
 
             changes, new_token = await user_service.get_changes(
                 page_token=page_token["token"]
@@ -1961,15 +2064,30 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             return False
 
     async def setup_changes_watch(self, user_email: str) -> Optional[Dict]:
-        """Set up changes.watch after initial sync"""
+        """Set up changes.watch after initial sync completes"""
         try:
+            # Only set up watch if user has completed sync
+            sync_state = await self.arango_service.get_user_sync_state(
+                user_email, Connectors.GOOGLE_DRIVE.value.lower()
+            )
+            current_state = (
+                sync_state.get("syncState") if sync_state else ProgressStatus.NOT_STARTED.value
+            )
+
+            if current_state != ProgressStatus.COMPLETED.value:
+                self.logger.info(
+                    "⏸️ Skipping watch setup for user %s - sync not completed yet (state: %s)",
+                    user_email, current_state
+                )
+                return None
+
             # Set up watch
             user_service = self.drive_user_service
             page_token = await self.arango_service.get_page_token_db(
                 user_email=user_email
             )
             if not page_token:
-                self.logger.warning("⚠️ No page token found for user %s", user_email)
+                self.logger.info("📝 No page token found for user %s, creating new watch", user_email)
                 watch = await user_service.create_changes_watch()
                 if not watch:
                     self.logger.error("❌ Failed to create changes watch")
@@ -2020,6 +2138,20 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                 if not user_id:
                     await self.arango_service.batch_upsert_nodes(
                         user_info, collection=CollectionNames.USERS.value
+                    )
+                    app = await self.arango_service.get_app_by_name(Connectors.GOOGLE_DRIVE.value)
+                    if not app:
+                        raise Exception("Failed to get app by name")
+                    # Create edge between user and app
+                    app_edge_data = {
+                        "_from": f"{CollectionNames.USERS.value}/{user_info[0]['_key']}",
+                        "_to": f"{CollectionNames.APPS.value}/{app['_key']}",
+                        "syncState": "NOT_STARTED",
+                        "lastSyncUpdate": get_epoch_timestamp_in_ms(),
+                    }
+                    await self.arango_service.batch_create_edges(
+                        [app_edge_data],
+                        CollectionNames.USER_APP_RELATION.value,
                     )
                 user_info = user_info[0]
 
@@ -2090,49 +2222,9 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             user = await self.arango_service.get_users(org_id, active=True)
             user = user[0]
 
-            sync_state = await self.arango_service.get_user_sync_state(
-                user["email"], Connectors.GOOGLE_DRIVE.value.lower()
-            )
-
-            if sync_state is None:
-                apps = await self.arango_service.get_org_apps(org_id)
-                app_key = next(
-                    (
-                        a.get("_key")
-                        for a in apps
-                        if (a.get("name", "") or "").lower() == Connectors.GOOGLE_DRIVE.value.lower()
-                    ),
-                    None,
-                )
-                if not app_key:
-                    # Fallback: fetch app doc by name (DB may have different casing)
-                    try:
-                        app_doc = await self.arango_service.get_app_by_name(Connectors.GOOGLE_DRIVE.value)
-                        if isinstance(app_doc, dict):
-                            app_key = app_doc.get("_key")
-                    except Exception:
-                        app_key = None
-
-                if not app_key:
-                    self.logger.warning(
-                        "⚠️ Drive app not found for org %s; skipping relation creation for user %s",
-                        org_id,
-                        user.get("email"),
-                    )
-                    return False
-
-                # Create edge between user and app
-                app_edge_data = {
-                    "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-                    "_to": f"{CollectionNames.APPS.value}/{app_key}",
-                    "syncState": ProgressStatus.NOT_STARTED.value,
-                    "lastSyncUpdate": get_epoch_timestamp_in_ms(),
-                }
-                await self.arango_service.batch_create_edges(
-                    [app_edge_data],
-                    CollectionNames.USER_APP_RELATION.value,
-                )
-                sync_state = app_edge_data
+            # Ensure user-app relation exists
+            # Ensure user-app relation exists and get sync state
+            sync_state = await self.ensure_user_app_relation(user["email"], org_id)
 
             current_state = sync_state.get("syncState")
             if current_state == ProgressStatus.COMPLETED.value:
@@ -2362,6 +2454,9 @@ class DriveSyncIndividualService(BaseDriveSyncService):
 
     async def resync_drive(self, org_id, user) -> bool | None:
         try:
+            # Ensure user-app relation exists
+            await self.ensure_user_app_relation(user["email"], org_id)
+
             user_service = self.drive_user_service
             self.logger.info(f"Resyncing drive for user {user['email']}")
             page_token = await self.arango_service.get_page_token_db(
@@ -2369,8 +2464,12 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             )
 
             if not page_token:
-                self.logger.warning(f"No page token found for user {user['email']}")
-                return True
+                self.logger.warning(
+                    f"No page token found for user {user['email']}. "
+                    f"User has never been synced. Triggering initial sync."
+                )
+                # Trigger initial sync for this user since they've never been synced
+                return await self.sync_specific_user(user["email"])
 
             changes, new_token = await user_service.get_changes(
                 page_token=page_token["token"]
@@ -2489,3 +2588,4 @@ class DriveSyncIndividualService(BaseDriveSyncService):
         except Exception as e:
             self.logger.error(f"❌ Error reindexing failed records: {str(e)}")
             return False
+

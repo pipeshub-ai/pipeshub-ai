@@ -48,10 +48,20 @@ class ConfluenceRESTClientViaToken(HTTPClient):
     def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
         super().__init__(token, token_type)
         self.base_url = base_url
+        self.token = token
 
     def get_base_url(self) -> str:
         """Get the base URL"""
         return self.base_url
+
+    def get_token(self) -> str:
+        """Get the token"""
+        return self.token
+
+    def set_token(self, token: str) -> None:
+        """Set the token"""
+        self.token = token
+        self.headers["Authorization"] = f"Bearer {token}"
 
 @dataclass
 class ConfluenceUsernamePasswordConfig:

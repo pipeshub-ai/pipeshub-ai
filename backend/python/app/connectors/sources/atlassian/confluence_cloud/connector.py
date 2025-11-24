@@ -1,379 +1,2361 @@
+"""
+Confluence Cloud Connector
+
+This connector syncs Confluence Cloud data including:
+- Spaces with permissions
+- Pages with content and metadata
+- Users and their access
+
+Authentication: OAuth 2.0 (3-legged OAuth)
+"""
+
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 from logging import Logger
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
+from urllib.parse import parse_qs, urlparse
 
-import aiohttp
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import (
-    Connectors,
-    MimeTypes,
-    OriginTypes,
-    RecordTypes,
-)
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.sync_point.sync_point import (
+    SyncDataPointType,
+    SyncPoint,
+    generate_record_sync_point_key,
+)
 from app.connectors.core.registry.connector_builder import (
-    AuthField,
+    CommonFields,
     ConnectorBuilder,
     DocumentationLink,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
-from app.connectors.sources.atlassian.core.oauth import (
-    OAUTH_CONFLUENCE_CONFIG_PATH,
-    AtlassianScope,
-)
+from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.models.entities import (
     AppUser,
+    AppUserGroup,
+    CommentRecord,
+    FileRecord,
     Record,
+    RecordGroup,
     RecordGroupType,
     RecordType,
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.confluence.confluence import (
+    ConfluenceClient as ExternalConfluenceClient,
+)
+from app.sources.external.confluence.confluence import ConfluenceDataSource
 
-RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
-BASE_URL = "https://api.atlassian.com/ex/confluence"
+# Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
-
-@dataclass
-class AtlassianCloudResource:
-    """Represents an Atlassian Cloud resource (site)"""
-    id: str
-    name: str
-    url: str
-    scopes: List[str]
-    avatar_url: Optional[str] = None
-
-class ConfluenceClient:
-    def __init__(self, logger: Logger, config_service: ConfigurationService) -> None:
-        self.logger = logger
-        self.config_service = config_service
-        self.base_url = "https://api.atlassian.com/ex/confluence"
-        self.session = aiohttp.ClientSession()
-        self.accessible_resources = None
-        self.cloud_id = None
-
-    async def _ensure_session(self) -> aiohttp.ClientSession:
-        """Ensure session is created and available"""
-        if self.session is None:
-            self.session = aiohttp.ClientSession()
-        return self.session
-
-    async def close(self) -> None:
-        """Close the session"""
-        if self.session:
-            await self.session.close()
-            self.session = None
-
-    async def __aenter__(self) -> "ConfluenceClient":
-        """Async context manager entry"""
-        await self._ensure_session()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Async context manager exit"""
-        await self.close()
-
-    async def initialize(self) -> None:
-        await self._ensure_session()
-
-        self.accessible_resources = await self.get_accessible_resources()
-        if self.accessible_resources:
-            self.cloud_id = self.accessible_resources[0].id
-        else:
-            raise Exception("No accessible resources found")
-
-    async def make_authenticated_json_request(
-        self,
-        method: str,
-        url: str,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """Make authenticated API request and return JSON response"""
-        config = await self.config_service.get_config(f"{OAUTH_CONFLUENCE_CONFIG_PATH}")
-        token = None
-        if not config:
-            self.logger.error("❌ Confluence credentials not found")
-            raise ValueError("Confluence credentials not found")
-        credentials_config = config.get("credentials", {})
-
-        if not credentials_config:
-            self.logger.error("❌ Confluence credentials not found")
-            raise ValueError("Confluence credentials not found")
-
-        token = {
-            "token_type": credentials_config.get("token_type"),
-            "access_token": credentials_config.get("access_token")
-        }
-
-        headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"{token['token_type']} {token['access_token']}"
-
-        session = await self._ensure_session()
-        async with session.request(method, url, headers=headers, **kwargs) as response:
-            response.raise_for_status()
-            return await response.json()
-
-    async def get_accessible_resources(self) -> List[AtlassianCloudResource]:
-        """
-        Get list of Atlassian sites (Confluence/Jira instances) accessible to the user
-        Args:
-            None
-        Returns:
-            List of accessible Atlassian Cloud resources
-        """
-
-        response = await self.make_authenticated_json_request(
-            "GET",
-            RESOURCE_URL
-        )
-
-        return [
-            AtlassianCloudResource(
-                id=resource["id"],
-                name=resource.get("name", ""),
-                url=resource["url"],
-                scopes=resource.get("scopes", []),
-                avatar_url=resource.get("avatarUrl")
-            )
-            for resource in response
-        ]
-
-
-    async def fetch_spaces_with_permissions(
-        self,
-    ) -> Dict[str, Any]:
-        """
-        Get all Confluence spaces
-        Args:
-            None
-        Returns:
-            List of Confluence spaces with permissions
-        """
-        base_url = f"{BASE_URL}/{self.cloud_id}"
-        spaces_url = f"{base_url}/wiki/api/v2/spaces"
-        spaces = []
-        while True:
-            spaces_batch = await self.make_authenticated_json_request("GET", spaces_url)
-            spaces = spaces + spaces_batch.get("results", [])
-            next_url = spaces_batch.get("_links", {}).get("next", None)
-            if not next_url:
-                break
-            spaces_url = f"{base_url}{next_url}"
-
-
-
-        for space in spaces:
-            space_permissions = await self._fetch_space_permission(space["id"])
-            space["permissions"] = space_permissions
-
-        return spaces
-
-    async def _fetch_space_permission(
-        self,
-        space_id: str,
-    ) -> Dict[str, Any]:
-        permissions = []
-        base_url = f"{BASE_URL}/{self.cloud_id}"
-        url = f"{base_url}/wiki/api/v2/spaces/{space_id}/permissions"
-        while True:
-            permissions_batch = await self.make_authenticated_json_request("GET", url)
-            permissions = permissions + permissions_batch.get("results", [])
-            next_url = permissions_batch.get("_links", {}).get("next", None)
-            if not next_url:
-                break
-            url = f"{base_url}/{next_url}"
-
-        return permissions
-
-    async def fetch_page_content(
-        self,
-        page_id: str,
-    ) -> Dict[str, Any]:
-        base_url = f"{BASE_URL}/{self.cloud_id}"
-        url = f"{base_url}/wiki/api/v2/pages/{page_id}"
-        page_details = await self.make_authenticated_json_request("GET", url, params={"body-format": "storage"})
-        html_content = page_details.get("body", {}).get("storage", {}).get("value", "")
-        title = page_details.get("title", "")
-
-        html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>{title}</title>
-                <meta charset="UTF-8">
-            </head>
-            <body>
-                {html_content}
-            </body>
-            </html>
-        """
-
-        return html
-
-    async def _fetch_page_details(
-        self,
-        page_id: str,
-    ) -> Dict[str, Any]:
-        base_url = f"{BASE_URL}/{self.cloud_id}"
-        url = f"{base_url}/wiki/api/v2/pages/{page_id}"
-        return await self.make_authenticated_json_request("GET", url)
-
-    async def fetch_pages_with_permissions(
-        self,
-        space_id: str,
-        users: List[AppUser],
-    ) -> List[WebpageRecord]:
-        base_url = f"{BASE_URL}/{self.cloud_id}"
-        limit = 25
-        pages_url = f"{base_url}/wiki/api/v2/spaces/{space_id}/pages"
-        records = []
-
-        permissions = []
-
-        for user in users:
-            permissions.append(Permission(
-                email=user.email,
-                entity_type=EntityType.USER,
-                type=PermissionType.READ
-            ))
-        while True:
-            pages_batch = await self.make_authenticated_json_request("GET", pages_url, params={"limit": limit})
-            for page in pages_batch.get("results", []):
-                # page_permissions = await self._fetch_page_permission(page["id"])
-                # page["permissions"] = page_permissions
-
-                page_details = await self._fetch_page_details(page["id"])
-
-                created_at = datetime.strptime(page["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
-                modified_at = datetime.strptime(page_details["version"]["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
-                page_link = page_details.get("_links")
-                web_url = ""
-                if page_link:
-                    web_url = page_link.get("base", "") + page_link.get("webui", "")
-
-                record_id=str(uuid.uuid4())
-                record = WebpageRecord(
-                    id=record_id,
-                    external_record_id=page["id"],
-                    external_revision_id=str(page_details["version"]["number"]),
-                    version=0,
-                    record_name=page["title"],
-                    record_type=RecordTypes.WEBPAGE,
-                    origin=OriginTypes.CONNECTOR,
-                    connector_name=Connectors.CONFLUENCE,
-                    record_group_type=RecordGroupType.CONFLUENCE_SPACES,
-                    external_record_group_id=space_id,
-                    parent_record_type=RecordType.WEBPAGE,
-                    parent_external_record_id=page.get('parentId'),
-                    weburl=web_url,
-                    mime_type=MimeTypes.HTML.value,
-                    source_created_at=int(created_at.timestamp() * 1000),
-                    source_modified_at=int(modified_at.timestamp() * 1000),
-                )
-                records.append((record, permissions))
-            next_url = pages_batch.get("_links", {}).get("next", None)
-            if not next_url:
-                break
-            pages_url = f"{base_url}/{next_url}"
-
-        return records
-
-    async def fetch_users(self) -> List[AppUser]:
-        url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/users/search"
-        users = []
-        base_url = f"{BASE_URL}/{self.cloud_id}"
-        while True:
-            users_batch = await self.make_authenticated_json_request("GET", url)
-            users = users + users_batch.get("results", [])
-            next_url = users_batch.get("_links", {}).get("next", None)
-            if not next_url:
-                break
-            url = f"{base_url}/{next_url}"
-        return [AppUser(self.connector_name, email=user["emailAddress"], org_id=self.org_id) for user in users]
+HTTP_STATUS_200 = 200
 
 
 @ConnectorBuilder("Confluence")\
     .in_group("Atlassian")\
     .with_auth_type("OAUTH")\
-    .with_description("Sync pages, spaces from Confluence Cloud")\
-    .with_categories(["Storage"])\
+    .with_description("Sync pages, spaces, and users from Confluence Cloud")\
+    .with_categories(["Knowledge Management", "Collaboration"])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/confluence.svg")
+        .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
-            "Confluence Cloud API Setup",
-            "https://developer.atlassian.com/cloud/confluence/rest/",
+            "Confluence Cloud OAuth Setup",
+            "https://developer.atlassian.com/cloud/confluence/oauth-2-3lo-apps/",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/confluence/confluence',
+            'https://docs.pipeshub.com/connectors/atlassian/confluence',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Confluence", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Atlassian Cloud Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Atlassian Cloud Client Secret",
-            description="The Client Secret from Azure AD App Registration",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="domain",
-            display_name="Atlassian Domain",
-            description="https://your-domain.atlassian.net"
-        ))
+        .with_redirect_uri("connectors/oauth/callback/Confluence", True)
+        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_confluence_read_access())
+        .add_auth_field(CommonFields.client_id("Atlassian OAuth App"))
+        .add_auth_field(CommonFields.client_secret("Atlassian OAuth App"))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access())
-
     )\
     .build_decorator()
 class ConfluenceConnector(BaseConnector):
-    def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
-                 data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
-        super().__init__(ConfluenceApp(), logger, data_entities_processor, data_store_provider, config_service)
+    """
+    Confluence Cloud Connector
 
-    async def init(self) -> None:
-        await self.data_entities_processor.initialize()
+    This connector syncs Confluence Cloud data including:
+    - Spaces with permissions
+    - Pages with content and metadata
+    - Users and their access
 
-        self.confluence_client = await self.get_confluence_client()
+    Authentication: OAuth 2.0 (3LO - 3-legged OAuth)
+    """
 
-        return True
+    def __init__(
+        self,
+        logger: Logger,
+        data_entities_processor: DataSourceEntitiesProcessor,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+    ) -> None:
+        """Initialize the Confluence connector."""
+        super().__init__(
+            ConfluenceApp(),
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service
+        )
+
+        # Client instances
+        self.external_client: Optional[ExternalConfluenceClient] = None
+        self.data_source: Optional[ConfluenceDataSource] = None
+
+        # Initialize sync points for incremental sync
+        def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
+            return SyncPoint(
+                connector_name=self.connector_name,
+                org_id=self.data_entities_processor.org_id,
+                sync_data_point_type=sync_data_point_type,
+                data_store_provider=self.data_store_provider,
+            )
+
+        self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
+
+    async def init(self) -> bool:
+        """Initialize the Confluence connector with credentials and client."""
+        try:
+            self.logger.info("🔧 Initializing Confluence Cloud Connector...")
+
+            # Build client from services (handles config loading, token, base URL internally)
+            self.external_client = await ExternalConfluenceClient.build_from_services(
+                logger=self.logger,
+                config_service=self.config_service,
+            )
+
+            # Initialize data source
+            self.data_source = ConfluenceDataSource(self.external_client)
+
+            # Test connection
+            if not await self.test_connection_and_access():
+                self.logger.error("❌ Confluence connector connection test failed")
+                return False
+
+            self.logger.info("✅ Confluence connector initialized successfully")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to initialize Confluence connector: {e}", exc_info=True)
+            return False
+
+    async def _get_fresh_datasource(self) -> ConfluenceDataSource:
+        """
+        Get ConfluenceDataSource with ALWAYS-FRESH access token.
+
+        This method:
+        1. Fetches current OAuth token from config
+        2. Compares with existing client's token
+        3. Updates client ONLY if token changed (mutation)
+        4. Returns datasource with current token
+
+        Returns:
+            ConfluenceDataSource with current valid token
+        """
+        if not self.external_client:
+            raise Exception("Confluence client not initialized. Call init() first.")
+
+        # Fetch current config from etcd (async I/O)
+        config = await self.config_service.get_config("/services/connectors/confluence/config")
+
+        if not config:
+            raise Exception("Confluence configuration not found")
+
+        # Extract fresh OAuth access token
+        credentials_config = config.get("credentials", {}) or {}
+        fresh_token = credentials_config.get("access_token", "")
+
+        if not fresh_token:
+            raise Exception("No OAuth access token available")
+
+        # Get current token from client
+        internal_client = self.external_client.get_client()
+        current_token = internal_client.get_token()
+
+        # Update client's token if it changed (mutation)
+        if current_token != fresh_token:
+            self.logger.debug("🔄 Updating client with refreshed access token")
+            internal_client.set_token(fresh_token)
+
+        # Return datasource with updated client
+        return ConfluenceDataSource(self.external_client)
+
+    async def test_connection_and_access(self) -> bool:
+        """Test connection and access to Confluence API."""
+        try:
+            if not self.external_client:
+                self.logger.error("External client not initialized")
+                return False
+
+            # Test by fetching spaces with a limit of 1
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_spaces(
+                limit=1
+            )
+
+            if not response or response.status != HTTP_STATUS_200:
+                self.logger.error(f"Connection test failed with status: {response.status if response else 'No response'}")
+                return False
+
+            self.logger.info("✅ Confluence connector connection test passed")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Connection test failed: {e}", exc_info=True)
+            return False
+
+    async def run_sync(self) -> None:
+        """
+        Run full synchronization of Confluence Cloud data.
+
+        Sync order:
+        1. Users and Groups (global, includes group memberships)
+        2. Spaces
+            - Permissions
+        3. Pages (per space)
+            - Permissions
+            - Attachments
+            - Comments (inline, footer)
+        4. Blogposts (per space)
+            - Permissions
+            - Attachments
+            - Comments (inline, footer)
+        """
+        try:
+            org_id = self.data_entities_processor.org_id
+            self.logger.info(f"🚀 Starting Confluence Cloud sync for org: {org_id}")
+
+            # Ensure client is initialized
+            if not self.external_client or not self.data_source:
+                raise Exception("Confluence client not initialized. Call init() first.")
+
+            # Step 1: Sync users
+            await self._sync_users()
+
+            # Step 2: Sync groups and memberships
+            await self._sync_user_groups()
+
+            # Step 3: Sync spaces
+            spaces = await self._sync_spaces()
+
+            # Step 4: Sync pages and blogposts per space
+            for space in spaces:
+                space_key = space.short_name
+
+                # Sync pages (with attachments, comments, permissions)
+                self.logger.info(f"Syncing pages for space: {space.name} ({space_key})")
+                await self._sync_pages(space_key)
+
+                # Sync blogposts (with attachments, comments, permissions)
+                self.logger.info(f"Syncing blogposts for space: {space.name} ({space_key})")
+                await self._sync_blogposts(space_key)
+
+            self.logger.info("✅ Confluence sync completed successfully")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error during Confluence sync: {e}", exc_info=True)
+            raise
+
+    async def _sync_users(self) -> None:
+        """
+        Sync users from Confluence using offset-based pagination.
+
+        Uses CQL search: type=user
+        Filters out users without email addresses.
+        """
+        try:
+            self.logger.info("Starting user synchronization...")
+
+            # Pagination variables
+            batch_size = 100
+            start = 0
+            total_synced = 0
+            total_skipped = 0
+
+            # Paginate through all users
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.search_users(
+                    cql="type=user",
+                    start=start,
+                    limit=batch_size
+                )
+
+                # Check response
+                if not response or response.status != HTTP_STATUS_200:
+                    self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                users_data = response_data.get("results", [])
+
+                if not users_data:
+                    break
+
+                # Transform users (skip users without email)
+                app_users = []
+                for user_result in users_data:
+                    # Flatten: merge nested 'user' dict with top-level fields
+                    user_data = {**user_result.get("user", {}), **{k: v for k, v in user_result.items() if k != "user"}}
+
+                    # Skip if no email
+                    email = user_data.get("email", "").strip()
+                    if not email:
+                        total_skipped += 1
+                        continue
+
+                    app_user = self._transform_to_app_user(user_data)
+                    if app_user:
+                        app_users.append(app_user)
+
+                # Save batch to database
+                if app_users:
+                    await self.data_entities_processor.on_new_app_users(app_users)
+                    total_synced += len(app_users)
+                    self.logger.info(f"Synced {len(app_users)} users (batch starting at {start})")
+
+                # Move to next page
+                start += batch_size
+
+                # Check if we've reached the end
+                total_size = response_data.get("totalSize", 0)
+                if start >= total_size:
+                    break
+
+            self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
+
+        except Exception as e:
+            self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
+            raise
+
+    async def _sync_user_groups(self) -> None:
+        """
+        Sync user groups and their memberships from Confluence.
+
+        Steps:
+        1. Fetch all groups with pagination
+        2. For each group, fetch all members with pagination
+        3. Create group and membership records
+        """
+        try:
+            self.logger.info("Starting user group synchronization...")
+
+            # Pagination variables for groups
+            batch_size = 50
+            start = 0
+            total_groups_synced = 0
+            total_memberships_synced = 0
+
+            # Paginate through all groups
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_groups(
+                    start=start,
+                    limit=batch_size
+                )
+
+                # Check response
+                if not response or response.status != HTTP_STATUS_200:
+                    self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                groups_data = response_data.get("results", [])
+
+                if not groups_data:
+                    break
+
+                # Process each group and its members
+                for group_data in groups_data:
+                    try:
+                        group_id = group_data.get("id")
+                        group_name = group_data.get("name")
+
+                        if not group_id or not group_name:
+                            continue
+
+                        self.logger.debug(f"  Processing group: {group_name} ({group_id})")
+
+                        # Fetch members for this group
+                        member_emails = await self._fetch_group_members(group_id, group_name)
+
+                        # Create user group
+                        user_group = self._transform_to_user_group(group_data, member_emails)
+                        if not user_group:
+                            continue
+
+                        # Get AppUser objects for members
+                        app_users = await self._get_app_users_by_emails(member_emails)
+
+                        # Save group with members
+                        await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
+                        total_groups_synced += 1
+                        total_memberships_synced += len(app_users)
+                        self.logger.debug(f"Group {group_name}: {len(app_users)} members")
+
+                    except Exception as group_error:
+                        self.logger.error(f"❌ Failed to process group {group_data.get('name')}: {group_error}")
+                        continue
+
+                # Move to next page
+                start += batch_size
+
+                # Check if we have more groups
+                size = response_data.get("size", 0)
+                if size < batch_size:
+                    break
+
+            self.logger.info(f"✅ Group sync complete. Groups: {total_groups_synced}, Memberships: {total_memberships_synced}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Group sync failed: {e}", exc_info=True)
+            raise
+
+    async def _sync_spaces(self) -> List[RecordGroup]:
+        """
+        Sync spaces from Confluence with permissions using cursor-based pagination.
+
+        Steps:
+        1. Fetch all spaces with cursor pagination
+        2. For each space, fetch permissions
+        3. Create RecordGroup with Permission objects
+        """
+        try:
+            self.logger.info("Starting space synchronization...")
+
+            # Pagination variables
+            batch_size = 20
+            cursor = None
+            total_spaces_synced = 0
+            total_permissions_synced = 0
+            base_url = None  # Extract from first response
+            record_groups = []
+
+            # Paginate through all spaces using cursor
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_spaces(
+                    limit=batch_size,
+                    cursor=cursor
+                )
+
+                # Check response
+                if not response or response.status != HTTP_STATUS_200:
+                    self.logger.error(f"❌ Failed to fetch spaces: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                spaces_data = response_data.get("results", [])
+
+                # Extract base URL from first response
+                if not base_url and response_data.get("_links", {}).get("base"):
+                    base_url = response_data["_links"]["base"]
+                    self.logger.debug(f"Base URL extracted: {base_url}")
+
+                if not spaces_data:
+                    break
+
+                # Process each space
+                record_groups_with_permissions = []
+                for space_data in spaces_data:
+                    try:
+                        space_id = space_data.get("id")
+                        space_name = space_data.get("name")
+
+                        if not space_id or not space_name:
+                            continue
+
+                        self.logger.debug(f"Processing space: {space_name} ({space_id})")
+
+                        # Fetch permissions for this space
+                        permissions = await self._fetch_space_permissions(space_id, space_name)
+                        total_permissions_synced += len(permissions)
+
+                        # Create RecordGroup for space
+                        record_group = self._transform_to_space_record_group(space_data, base_url)
+                        if not record_group:
+                            continue
+
+                        # Add to batch
+                        record_groups_with_permissions.append((record_group, permissions))
+                        record_groups.append(record_group)
+                        total_spaces_synced += 1
+                        self.logger.debug(f"Space {space_name}: {len(permissions)} permissions")
+
+                    except Exception as space_error:
+                        self.logger.error(f"❌ Failed to process space {space_data.get('name')}: {space_error}")
+                        continue
+
+                # Save batch to database
+                if record_groups_with_permissions:
+                    await self.data_entities_processor.on_new_record_groups(record_groups_with_permissions)
+                    self.logger.info(f"Synced batch of {len(record_groups_with_permissions)} spaces")
+
+                # Extract next cursor from _links.next
+                next_url = response_data.get("_links", {}).get("next")
+                if not next_url:
+                    break
+
+                cursor = self._extract_cursor_from_next_link(next_url)
+                if not cursor:
+                    break
+
+            self.logger.info(f"✅ Space sync complete. Spaces: {total_spaces_synced}, Permissions: {total_permissions_synced}")
+
+            return record_groups
+
+        except Exception as e:
+            self.logger.error(f"❌ Space sync failed: {e}", exc_info=True)
+            raise
+
+    async def _sync_pages(self, space_key: str) -> None:
+        """
+        Sync pages from Confluence using v1 API with CQL search.
+
+        Uses offset-based pagination with modification time filtering for incremental sync.
+        Creates WebpageRecord for each page with proper hierarchy (parent page) and space assignment.
+        """
+        try:
+            self.logger.info("Starting page synchronization...")
+
+            # Get last sync checkpoint
+            sync_point_key = generate_record_sync_point_key(
+                RecordType.WEBPAGE.value, "confluence_pages", space_key
+            )
+            last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
+            last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
+
+            # Build modified_after parameter for incremental sync
+            modified_after = None
+            if last_sync_time:
+                self.logger.info(f"🔄 Incremental sync: Fetching pages modified after {last_sync_time}")
+                modified_after = last_sync_time
+            else:
+                self.logger.info("🆕 Full sync: Fetching all pages (first time)")
+
+            # Pagination variables
+            batch_size = 50
+            cursor = None
+            total_pages_synced = 0
+            total_attachments_synced = 0
+            total_comments_synced = 0
+            total_permissions_synced = 0
+            latest_update_time = None
+
+            # Paginate through all pages
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_pages_v1(
+                    modified_after=modified_after,
+                    cursor=cursor,
+                    limit=batch_size,
+                    space_key=space_key,
+                    order_by="lastModified",
+                    sort_order="asc",
+                    expand="ancestors,history.lastUpdated,space,children.attachment,children.attachment.history.lastUpdated,children.attachment.version,childTypes.comment"
+                )
+
+                # Check response
+                if not response or response.status != HTTP_STATUS_200:
+                    self.logger.error(f"❌ Failed to fetch pages: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                pages_data = response_data.get("results", [])
+
+                if not pages_data:
+                    break
+
+                # Track the latest update timestamp for checkpoint (pages are in ascending order)
+                if pages_data:
+                    last_page = pages_data[-1]
+                    last_updated_when = last_page.get("history", {}).get("lastUpdated", {}).get("when")
+                    if last_updated_when:
+                        latest_update_time = last_updated_when
+
+                # Transform pages to WebpageRecords with permissions
+                records_with_permissions = []
+                for page_data in pages_data:
+                    try:
+                        page_id = page_data.get("id")
+                        page_title = page_data.get("title")
+
+                        if not page_id or not page_title:
+                            continue
+
+                        self.logger.debug(f"Processing page: {page_title} ({page_id})")
+
+                        # Transform page to WebpageRecord
+                        webpage_record = self._transform_to_page_webpage_record(page_data)
+                        if not webpage_record:
+                            continue
+
+                        # Fetch page permissions
+                        permissions = await self._fetch_page_permissions(page_id, page_title)
+                        total_permissions_synced += len(permissions)
+
+                        # Add page to batch
+                        records_with_permissions.append((webpage_record, permissions))
+                        total_pages_synced += 1
+                        self.logger.debug(f"Page {page_title}: {len(permissions)} permissions")
+
+                        # Process attachments for this page
+                        space_data = page_data.get("space", {})
+                        space_id = str(space_data.get("id")) if space_data.get("id") else None
+
+                        children = page_data.get("children", {})
+                        attachment_data = children.get("attachment", {})
+                        attachments = attachment_data.get("results", [])
+
+                        if attachments:
+                            self.logger.debug(f"Found {len(attachments)} attachments for page {page_title}")
+
+                            for attachment in attachments:
+                                try:
+                                    attachment_record = self._transform_to_attachment_file_record(
+                                        attachment,
+                                        page_id,
+                                        space_id
+                                    )
+
+                                    if attachment_record:
+                                        # Attachments inherit permissions from parent page
+                                        records_with_permissions.append((attachment_record, permissions))
+                                        total_attachments_synced += 1
+                                        self.logger.debug(f"Attachment: {attachment_record.record_name}")
+
+                                except Exception as att_error:
+                                    self.logger.error(f"❌ Failed to process attachment: {att_error}")
+                                    continue
+
+                        # Process comments for this page (if enabled)
+                        child_types = page_data.get("childTypes", {})
+                        comment_info = child_types.get("comment", {})
+                        has_comments = comment_info.get("value", False)
+
+                        if has_comments:
+                            self.logger.debug(f"Page {page_title} has comments, fetching...")
+
+                            # Fetch footer comments
+                            footer_comments = await self._fetch_comments_recursive(
+                                page_id,
+                                page_title,
+                                "footer",
+                                permissions,
+                                space_id
+                            )
+                            records_with_permissions.extend(footer_comments)
+
+                            # Fetch inline comments
+                            inline_comments = await self._fetch_comments_recursive(
+                                page_id,
+                                page_title,
+                                "inline",
+                                permissions,
+                                space_id
+                            )
+                            records_with_permissions.extend(inline_comments)
+
+                            total_comments = len(footer_comments) + len(inline_comments)
+                            total_comments_synced += total_comments
+                            self.logger.debug(f"Fetched {total_comments} comments ({len(footer_comments)} footer, {len(inline_comments)} inline)")
+
+                    except Exception as page_error:
+                        self.logger.error(f"❌ Failed to process page {page_data.get('title')}: {page_error}")
+                        continue
+
+                # Save batch to database
+                if records_with_permissions:
+                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    self.logger.info(f"Synced batch of {len(records_with_permissions)} items (pages + attachments + comments)")
+
+                # Extract next cursor from response
+                cursor_url = response_data.get("_links", {}).get("next")
+                if not cursor_url:
+                    break
+
+                cursor = self._extract_cursor_from_next_link(cursor_url)
+                if not cursor:
+                    break
+
+            # Update sync checkpoint with latest modification time
+            if latest_update_time:
+                await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": latest_update_time})
+                self.logger.info(f"Updated pages sync checkpoint to {latest_update_time}")
+
+            self.logger.info(f"✅ Page sync complete. Pages: {total_pages_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Page sync failed: {e}", exc_info=True)
+            raise
+
+    async def _sync_blogposts(self, space_key: str) -> None:
+        """
+        Sync blogposts from Confluence using v1 API with CQL search.
+
+        Uses cursor-based pagination with modification time filtering for incremental sync.
+        Creates WebpageRecord for each blogpost with attachments.
+        Blogposts are flat (no parent hierarchy) and connected directly to space.
+        """
+        try:
+            self.logger.info(f"Starting blogpost synchronization for space {space_key}...")
+
+            # Get last sync checkpoint
+            sync_point_key = generate_record_sync_point_key(
+                RecordType.WEBPAGE.value, "confluence_blogposts", space_key
+            )
+            last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
+            last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
+
+            # Build modified_after parameter for incremental sync
+            modified_after = None
+            if last_sync_time:
+                self.logger.info(f"🔄 Incremental sync: Fetching blogposts modified after {last_sync_time}")
+                modified_after = last_sync_time
+            else:
+                self.logger.info("🆕 Full sync: Fetching all blogposts (first time)")
+
+            # Pagination variables
+            batch_size = 50
+            cursor = None
+            total_blogposts_synced = 0
+            total_attachments_synced = 0
+            total_comments_synced = 0
+            total_permissions_synced = 0
+            latest_update_time = None
+
+            # Paginate through all blogposts
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_blogposts_v1(
+                    modified_after=modified_after,
+                    cursor=cursor,
+                    limit=batch_size,
+                    space_key=space_key,
+                    order_by="lastModified",
+                    sort_order="asc",
+                    expand="history.lastUpdated,space,children.attachment,children.attachment.history.lastUpdated,children.attachment.version"
+                )
+
+                # Check response
+                if not response or response.status != HTTP_STATUS_200:
+                    self.logger.error(f"❌ Failed to fetch blogposts: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                blogposts_data = response_data.get("results", [])
+
+                if not blogposts_data:
+                    break
+
+                # Track the latest update timestamp for checkpoint (blogposts are in ascending order)
+                if blogposts_data:
+                    last_blogpost = blogposts_data[-1]
+                    last_updated_when = last_blogpost.get("history", {}).get("lastUpdated", {}).get("when")
+                    if last_updated_when:
+                        latest_update_time = last_updated_when
+
+                # Transform blogposts to WebpageRecords with permissions
+                records_with_permissions = []
+                for blogpost_data in blogposts_data:
+                    try:
+                        blogpost_id = blogpost_data.get("id")
+                        blogpost_title = blogpost_data.get("title")
+
+                        if not blogpost_id or not blogpost_title:
+                            continue
+
+                        self.logger.debug(f"Processing blogpost: {blogpost_title} ({blogpost_id})")
+
+                        # Transform blogpost to WebpageRecord
+                        webpage_record = self._transform_to_blogpost_webpage_record(blogpost_data)
+                        if not webpage_record:
+                            continue
+
+                        # Fetch blogpost permissions using same method as pages
+                        permissions = await self._fetch_page_permissions(blogpost_id, blogpost_title)
+                        total_permissions_synced += len(permissions)
+
+                        # Add blogpost to batch
+                        records_with_permissions.append((webpage_record, permissions))
+                        total_blogposts_synced += 1
+                        self.logger.debug(f"Blogpost {blogpost_title}: {len(permissions)} permissions")
+
+                        # Extract space_id for use with attachments and comments
+                        space_data = blogpost_data.get("space", {})
+                        space_id = str(space_data.get("id")) if space_data.get("id") else None
+
+                        # Fetch and sync inline comments
+                        inline_comments = await self._fetch_comments_recursive(
+                            page_id=blogpost_id,
+                            page_title=blogpost_title,
+                            comment_type="inline",
+                            page_permissions=permissions,
+                            parent_space_id=space_id,
+                            parent_type="blogpost"
+                        )
+
+                        for comment_record, comment_permissions in inline_comments:
+                            records_with_permissions.append((comment_record, comment_permissions))
+                            total_comments_synced += 1
+
+                        # Fetch and sync footer comments
+                        footer_comments = await self._fetch_comments_recursive(
+                            page_id=blogpost_id,
+                            page_title=blogpost_title,
+                            comment_type="footer",
+                            page_permissions=permissions,
+                            parent_space_id=space_id,
+                            parent_type="blogpost"
+                        )
+
+                        for comment_record, comment_permissions in footer_comments:
+                            records_with_permissions.append((comment_record, comment_permissions))
+                            total_comments_synced += 1
+
+                        # Process attachments for this blogpost
+                        children = blogpost_data.get("children", {})
+                        attachment_data = children.get("attachment", {})
+                        attachments = attachment_data.get("results", [])
+
+                        if attachments:
+                            self.logger.debug(f"Found {len(attachments)} attachments for blogpost {blogpost_title}")
+
+                            for attachment in attachments:
+                                try:
+                                    attachment_record = self._transform_to_attachment_file_record(
+                                        attachment,
+                                        blogpost_id,
+                                        space_id
+                                    )
+
+                                    if attachment_record:
+                                        # Attachments inherit permissions from parent blogpost
+                                        records_with_permissions.append((attachment_record, permissions))
+                                        total_attachments_synced += 1
+                                        self.logger.debug(f"Attachment: {attachment_record.record_name}")
+
+                                except Exception as att_error:
+                                    self.logger.error(f"❌ Failed to process attachment: {att_error}")
+                                    continue
+
+                    except Exception as blogpost_error:
+                        self.logger.error(f"❌ Failed to process blogpost {blogpost_data.get('title')}: {blogpost_error}")
+                        continue
+
+                # Save batch to database
+                if records_with_permissions:
+                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    self.logger.info(f"Synced batch of {len(records_with_permissions)} items (blogposts + attachments)")
+
+                # Extract next cursor from response
+                cursor_url = response_data.get("_links", {}).get("next")
+                if not cursor_url:
+                    break
+
+                cursor = self._extract_cursor_from_next_link(cursor_url)
+                if not cursor:
+                    break
+
+            # Update sync checkpoint with latest modification time
+            if latest_update_time:
+                await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": latest_update_time})
+                self.logger.info(f"Updated blogposts sync checkpoint to {latest_update_time}")
+
+            self.logger.info(f"✅ Blogpost sync complete. Blogposts: {total_blogposts_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Blogpost sync failed: {e}", exc_info=True)
+            raise
+
+    async def _fetch_space_permissions(self, space_id: str, space_name: str) -> List[Permission]:
+        """
+        Fetch all permissions for a space with cursor-based pagination.
+
+        Args:
+            space_id: The space ID
+            space_name: The space name (for logging)
+
+        Returns:
+            List of Permission objects
+        """
+        try:
+            permissions = []
+            batch_size = 100
+            cursor = None
+
+            # Paginate through space permissions
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_space_permissions_assignments(
+                    id=space_id,
+                    limit=batch_size,
+                    cursor=cursor
+                )
+
+                # Check response
+                if not response or response.status != HTTP_STATUS_200:
+                    self.logger.warning(f"⚠️ Failed to fetch permissions for space {space_name}: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                permissions_data = response_data.get("results", [])
+
+                if not permissions_data:
+                    break
+
+                # Transform permissions and add to list
+                for perm_data in permissions_data:
+                    permission = await self._transform_space_permission(perm_data)
+                    if permission:
+                        permissions.append(permission)
+
+                # Extract next cursor
+                next_url = response_data.get("_links", {}).get("next")
+                if not next_url:
+                    break
+
+                cursor = self._extract_cursor_from_next_link(next_url)
+                if not cursor:
+                    break
+
+            return permissions
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch permissions for space {space_name}: {e}")
+            return []  # Return empty list on error, space will be created without permissions
+
+    async def _fetch_page_permissions(self, page_id: str, page_title: str) -> List[Permission]:
+        """
+        Fetch permissions for a Confluence page using v1 API.
+
+        Args:
+            page_id: The page ID
+            page_title: The page title (for logging)
+
+        Returns:
+            List of Permission objects
+        """
+        permissions = []
+
+        try:
+            self.logger.debug(f"Fetching permissions for page: {page_title}")
+
+            # Fetch page restrictions using v1 API
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_page_permissions_v1(
+                page_id=page_id,
+                expand="restrictions.user,restrictions.group"
+            )
+
+            # Check response
+            if not response or response.status != HTTP_STATUS_200:
+                self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_title}: {response.status if response else 'No response'}")
+                return []
+
+            response_data = response.json()
+            restrictions = response_data.get("results", [])
+
+            # Process each restriction (read and update operations)
+            for restriction_data in restrictions:
+                operation_permissions = await self._transform_page_restriction_to_permissions(restriction_data)
+                permissions.extend(operation_permissions)
+
+            self.logger.debug(f"Found {len(permissions)} permissions for page {page_title}")
+            return permissions
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch permissions for page {page_title}: {e}")
+            return []  # Return empty list on error, page will be created without permissions
+
+    async def _fetch_comments_recursive(
+        self,
+        page_id: str,
+        page_title: str,
+        comment_type: str,
+        page_permissions: List[Permission],
+        parent_space_id: Optional[str],
+        parent_type: str = "page"
+    ) -> List[tuple[CommentRecord, List[Permission]]]:
+        """
+        Recursively fetch all comments (footer or inline) for a page or blogpost.
+
+        Fetches top-level comments and all nested replies in a flat list.
+        Each comment inherits permissions from the parent.
+
+        Args:
+            page_id: The page/blogpost ID
+            page_title: The page/blogpost title (for logging)
+            comment_type: "footer" or "inline"
+            page_permissions: Permissions inherited from parent
+            parent_space_id: Space ID for external_record_group_id
+            parent_type: "page" or "blogpost" (determines which API to call)
+
+        Returns:
+            List of tuples (CommentRecord, permissions list)
+        """
+        try:
+            all_comments = []
+            batch_size = 100
+            cursor = None
+
+            self.logger.debug(f"Fetching {comment_type} comments for {parent_type}: {page_title}")
+
+            # Fetch top-level comments
+            while True:
+                datasource = await self._get_fresh_datasource()
+
+                # Route to correct API based on parent_type
+                if parent_type == "page":
+                    if comment_type == "footer":
+                        response = await datasource.get_page_footer_comments(
+                            id=int(page_id),
+                            cursor=cursor,
+                            limit=batch_size,
+                            body_format="storage"
+                        )
+                    else:  # inline
+                        response = await datasource.get_page_inline_comments(
+                            id=int(page_id),
+                            cursor=cursor,
+                            limit=batch_size,
+                            body_format="storage"
+                        )
+                elif parent_type == "blogpost":
+                    if comment_type == "footer":
+                        response = await datasource.get_blog_post_footer_comments(
+                            id=int(page_id),
+                            cursor=cursor,
+                            limit=batch_size,
+                            body_format="storage"
+                        )
+                    else:  # inline
+                        response = await datasource.get_blog_post_inline_comments(
+                            id=int(page_id),
+                            cursor=cursor,
+                            limit=batch_size,
+                            body_format="storage"
+                        )
+                else:
+                    self.logger.error(f"Unknown parent type: {parent_type}")
+                    break
+
+                # Check response
+                if not response or response.status != HTTP_STATUS_200:
+                    self.logger.warning(f"⚠️ Failed to fetch {comment_type} comments for page {page_title}: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                comments_data = response_data.get("results", [])
+
+                if not comments_data:
+                    break
+
+                # Process each comment
+                for comment_data in comments_data:
+                    try:
+                        comment_id = comment_data.get("id")
+
+                        if not comment_id:
+                            continue
+
+                        # Transform comment to CommentRecord
+                        comment_record = self._transform_to_comment_record(
+                            comment_data,
+                            page_id,
+                            parent_space_id,
+                            comment_type,
+                            None  # No parent comment for top-level
+                        )
+
+                        if comment_record:
+                            all_comments.append((comment_record, page_permissions))
+
+                        # Recursively fetch children
+                        children = await self._fetch_comment_children_recursive(
+                            comment_id,
+                            comment_type,
+                            page_id,
+                            parent_space_id,
+                            page_permissions
+                        )
+                        all_comments.extend(children)
+
+                    except Exception as comment_error:
+                        self.logger.error(f"❌ Failed to process comment {comment_data.get('id')}: {comment_error}")
+                        continue
+
+                # Extract next cursor
+                next_url = response_data.get("_links", {}).get("next")
+                if not next_url:
+                    break
+
+                cursor = self._extract_cursor_from_next_link(next_url)
+                if not cursor:
+                    break
+
+            self.logger.debug(f"✓ Fetched {len(all_comments)} {comment_type} comments (including replies) for page {page_title}")
+            return all_comments
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch {comment_type} comments for page {page_title}: {e}")
+            return []
+
+    async def _fetch_comment_children_recursive(
+        self,
+        comment_id: str,
+        comment_type: str,
+        page_id: str,
+        parent_space_id: Optional[str],
+        page_permissions: List[Permission]
+    ) -> List[tuple[CommentRecord, List[Permission]]]:
+        """
+        Recursively fetch all children (replies) of a comment.
+
+        Args:
+            comment_id: The parent comment ID
+            comment_type: "footer" or "inline"
+            page_id: The parent page ID
+            parent_space_id: Space ID for external_record_group_id
+            page_permissions: Permissions inherited from parent page
+
+        Returns:
+            List of tuples (CommentRecord, permissions list)
+        """
+        try:
+            all_children = []
+            batch_size = 100
+            cursor = None
+
+            # Fetch children comments
+            while True:
+                datasource = await self._get_fresh_datasource()
+                if comment_type == "footer":
+                    response = await datasource.get_footer_comment_children(
+                        id=int(comment_id),
+                        cursor=cursor,
+                        limit=batch_size,
+                        body_format="storage"
+                    )
+                else:  # inline
+                    response = await datasource.get_inline_comment_children(
+                        id=int(comment_id),
+                        cursor=cursor,
+                        limit=batch_size,
+                        body_format="storage"
+                    )
+
+                # Check response
+                if not response or response.status != HTTP_STATUS_200:
+                    break
+
+                response_data = response.json()
+                children_data = response_data.get("results", [])
+
+                if not children_data:
+                    break
+
+                # Process each child comment
+                for child_data in children_data:
+                    try:
+                        child_id = child_data.get("id")
+
+                        if not child_id:
+                            continue
+
+                        # Transform child to CommentRecord
+                        child_record = self._transform_to_comment_record(
+                            child_data,
+                            page_id,
+                            parent_space_id,
+                            comment_type,
+                            comment_id  # Parent comment ID
+                        )
+
+                        if child_record:
+                            all_children.append((child_record, page_permissions))
+
+                        # Recursively fetch grandchildren
+                        grandchildren = await self._fetch_comment_children_recursive(
+                            child_id,
+                            comment_type,
+                            page_id,
+                            parent_space_id,
+                            page_permissions
+                        )
+                        all_children.extend(grandchildren)
+
+                    except Exception as child_error:
+                        self.logger.error(f"❌ Failed to process child comment {child_data.get('id')}: {child_error}")
+                        continue
+
+                # Extract next cursor
+                next_url = response_data.get("_links", {}).get("next")
+                if not next_url:
+                    break
+
+                cursor = self._extract_cursor_from_next_link(next_url)
+                if not cursor:
+                    break
+
+            return all_children
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch children for comment {comment_id}: {e}")
+            return []
+
+    def _transform_to_comment_record(
+        self,
+        comment_data: Dict[str, Any],
+        page_id: str,
+        parent_space_id: Optional[str],
+        comment_type: str,
+        parent_comment_id: Optional[str]
+    ) -> Optional[CommentRecord]:
+        """
+        Transform Confluence comment data to CommentRecord entity.
+
+        Args:
+            comment_data: Raw comment data from Confluence API
+            page_id: Parent page external_record_id
+            parent_space_id: Space ID from parent page
+            comment_type: "footer" or "inline"
+            parent_comment_id: Parent comment ID (None for top-level comments)
+
+        Returns:
+            CommentRecord object or None if transformation fails
+        """
+        try:
+            comment_id = comment_data.get("id")
+            title = comment_data.get("title", "")
+
+            if not comment_id:
+                return None
+
+            # Extract author accountId
+            author = comment_data.get("version", {}).get("authorId")
+            if not author:
+                self.logger.warning(f"Comment {comment_id} has no author - skipping")
+                return None
+
+            # Parse timestamps
+            source_created_at = None
+
+            created_at_str = comment_data.get("version", {}).get("createdAt")
+            if created_at_str:
+                source_created_at = self._parse_confluence_datetime(created_at_str)
+
+            # Extract resolution status (for inline comments)
+            resolution_status = None
+            if comment_type == "inline":
+                is_resolved = comment_data.get("resolutionStatus", False)
+                resolution_status = "resolved" if is_resolved else "open"
+
+            # Extract inline original selection (for inline comments)
+            inline_original_selection = None
+            if comment_type == "inline":
+                inline_properties = comment_data.get("properties", {})
+                if inline_properties:
+                    inline_original_selection = inline_properties.get("inlineOriginalSelection")
+
+            # Determine parent record ID and type
+            parent_external_record_id = parent_comment_id if parent_comment_id else page_id
+            parent_record_type = RecordType.COMMENT if parent_comment_id else RecordType.WEBPAGE
+
+            # Generate unique ID for comment
+            comment_record_id = str(uuid.uuid4())
+
+            return CommentRecord(
+                id=comment_record_id,
+                org_id=self.data_entities_processor.org_id,
+                record_name=title,
+                record_type=RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT,
+                external_record_id=comment_id,
+                version=comment_data.get("version", {}).get("number", 0),
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.CONFLUENCE,
+                mime_type=MimeTypes.HTML.value,
+                parent_external_record_id=parent_external_record_id,
+                parent_record_type=parent_record_type,
+                external_record_group_id=parent_space_id,
+                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
+                source_created_at=source_created_at,
+                source_updated_at=source_created_at,
+                author_source_id=author,
+                resolution_status=resolution_status,
+                comment_selection=inline_original_selection,
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform comment: {e}")
+            return None
+
+    def _extract_cursor_from_next_link(self, next_url: str) -> Optional[str]:
+        """
+        Extract cursor value from _links.next URL.
+
+        Args:
+            next_url: The next URL from API response
+            Example: "/wiki/api/v2/spaces?limit=20&cursor=eyJ..."
+
+        Returns:
+            Cursor string or None if not found
+        """
+        try:
+            if not next_url:
+                return None
+
+            parsed = urlparse(next_url)
+            query_params = parse_qs(parsed.query)
+
+            # Get cursor value (could be list if multiple, take first)
+            cursor_values = query_params.get("cursor", [])
+            if cursor_values:
+                return cursor_values[0]
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to extract cursor from URL '{next_url}': {e}")
+            return None
+
+    async def _create_permission_from_principal(
+        self,
+        principal_type: str,
+        principal_id: str,
+        permission_type: PermissionType
+    ) -> Optional[Permission]:
+        """
+        Create Permission object from principal data (user or group).
+
+        This is a common function used by both space and page permission processing.
+
+        Args:
+            principal_type: "user" or "group"
+            principal_id: accountId for users, groupId for groups
+            permission_type: Mapped PermissionType enum
+
+        Returns:
+            Permission object or None if principal not found in DB
+        """
+        try:
+            if principal_type == "user":
+                entity_type = EntityType.USER
+                # Lookup user by source_user_id (accountId) using transaction store
+                async with self.data_store_provider.transaction() as tx_store:
+                    user = await tx_store.get_user_by_source_id(
+                        principal_id,
+                        Connectors.CONFLUENCE,
+                    )
+                    if not user:
+                        self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
+                        return None
+
+                    return Permission(
+                        email=user.email,
+                        type=permission_type,
+                        entity_type=entity_type
+                    )
+
+            elif principal_type == "group":
+                entity_type = EntityType.GROUP
+                # Lookup group by source_user_group_id using transaction store
+                async with self.data_store_provider.transaction() as tx_store:
+                    group = await tx_store.get_user_group_by_external_id(
+                        Connectors.CONFLUENCE,
+                        principal_id,
+                    )
+                    if not group:
+                        self.logger.debug(f"  ⚠️ Group {principal_id} not found in DB, skipping permission")
+                        return None
+
+                    return Permission(
+                        external_id=group.source_user_group_id,
+                        type=permission_type,
+                        entity_type=entity_type
+                    )
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create permission from principal: {e}")
+            return None
+
+    async def _transform_space_permission(self, perm_data: Dict[str, Any]) -> Optional[Permission]:
+        """
+        Transform Confluence space permission to Permission object.
+
+        Maps Confluence operations to PermissionType:
+        - administer → OWNER
+        - read → READ
+        - create/delete (comment) → COMMENT
+        - create/delete/archive (page/blogpost/attachment) → WRITE
+        - restrict_content/export → OTHER
+        - delete (space) → OWNER
+
+        Args:
+            perm_data: Raw permission data from Confluence API
+
+        Returns:
+            Permission object or None if invalid or user/group not found in DB
+        """
+        try:
+            principal = perm_data.get("principal", {})
+            operation = perm_data.get("operation", {})
+
+            principal_type = principal.get("type")  # "user" or "group"
+            principal_id = principal.get("id")  # accountId or groupId
+            operation_key = operation.get("key")  # e.g., "read", "administer"
+            target_type = operation.get("targetType")  # e.g., "space", "page"
+
+            if not principal_type or not principal_id or not operation_key:
+                return None
+
+            # Map Confluence permission to PermissionType
+            permission_type = self._map_confluence_permission(operation_key, target_type)
+
+            # Use common function to create permission
+            return await self._create_permission_from_principal(
+                principal_type,
+                principal_id,
+                permission_type
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform space permission: {e}")
+            return None
+
+    def _map_confluence_permission(self, operation_key: str, target_type: str) -> PermissionType:
+        """
+        Map Confluence operation to PermissionType enum.
+
+        Mapping logic:
+        - administer → OWNER
+        - read → READ
+        - create/delete (comment) → COMMENT
+        - create/delete/archive (page/blogpost/attachment) → WRITE
+        - restrict_content/export → OTHER
+        - delete (space) → OWNER
+
+        Args:
+            operation_key: Operation key (e.g., "read", "create", "delete")
+            target_type: Target type (e.g., "space", "page", "comment")
+
+        Returns:
+            PermissionType enum value
+        """
+        # Administer = OWNER
+        if operation_key == "administer":
+            return PermissionType.OWNER
+
+        # Read = READ
+        if operation_key == "read":
+            return PermissionType.READ
+
+        # Delete space = OWNER
+        if operation_key == "delete" and target_type == "space":
+            return PermissionType.OWNER
+
+        # Comment operations = COMMENT
+        if target_type == "comment" and operation_key in ["create", "delete"]:
+            return PermissionType.COMMENT
+
+        # Page/blogpost/attachment operations = WRITE
+        if target_type in ["page", "blogpost", "attachment"]:
+            if operation_key in ["create", "delete", "archive"]:
+                return PermissionType.WRITE
+
+        # Everything else = OTHER
+        return PermissionType.OTHER
+
+    def _map_page_permission(self, operation: str) -> PermissionType:
+        """
+        Map page restriction operation to PermissionType enum.
+
+        Page restrictions only have two operations:
+        - read → READ
+        - update → WRITE
+
+        Args:
+            operation: Operation string ("read" or "update")
+
+        Returns:
+            PermissionType enum value
+        """
+        if operation == "read":
+            return PermissionType.READ
+        elif operation == "update":
+            return PermissionType.WRITE
+        else:
+            return PermissionType.OTHER
+
+    async def _transform_page_restriction_to_permissions(
+        self,
+        restriction_data: Dict[str, Any]
+    ) -> List[Permission]:
+        """
+        Transform page restriction data (from v1 API) to Permission objects.
+
+        The v1 API returns restrictions in this format:
+        {
+            "operation": "read" | "update",
+            "restrictions": {
+                "user": {
+                    "results": [{"type": "known", "accountId": "...", "displayName": "..."}]
+                },
+                "group": {
+                    "results": [{"type": "group", "name": "...", "id": "..."}]
+                }
+            }
+        }
+
+        Args:
+            restriction_data: Single restriction object with operation and restrictions
+
+        Returns:
+            List of Permission objects
+        """
+        permissions = []
+
+        try:
+            operation = restriction_data.get("operation")
+            if not operation:
+                return permissions
+
+            # Map operation to PermissionType
+            permission_type = self._map_page_permission(operation)
+
+            restrictions = restriction_data.get("restrictions", {})
+
+            # Process user restrictions
+            user_restrictions = restrictions.get("user", {})
+            user_results = user_restrictions.get("results", [])
+
+            for user_data in user_results:
+                # Extract accountId (could be under different keys)
+                principal_id = user_data.get("accountId") or user_data.get("id")
+                if principal_id:
+                    permission = await self._create_permission_from_principal(
+                        "user",
+                        principal_id,
+                        permission_type
+                    )
+                    if permission:
+                        permissions.append(permission)
+
+            # Process group restrictions
+            group_restrictions = restrictions.get("group", {})
+            group_results = group_restrictions.get("results", [])
+
+            for group_data in group_results:
+                principal_id = group_data.get("id")
+                if principal_id:
+                    permission = await self._create_permission_from_principal(
+                        "group",
+                        principal_id,
+                        permission_type
+                    )
+                    if permission:
+                        permissions.append(permission)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform page restriction: {e}")
+
+        return permissions
+
+    def _transform_to_space_record_group(
+        self,
+        space_data: Dict[str, Any],
+        base_url: Optional[str] = None
+    ) -> Optional[RecordGroup]:
+        """
+        Transform Confluence space data to RecordGroup entity.
+
+        Args:
+            space_data: Raw space data from Confluence API
+            base_url: Base URL from API response (_links.base)
+
+        Returns:
+            RecordGroup object or None if transformation fails
+        """
+        try:
+            space_id = space_data.get("id")
+            space_name = space_data.get("name")
+            space_description = space_data.get("description", "")
+            space_key = space_data.get("key", "")
+
+            if not space_id or not space_name:
+                return None
+
+            # Parse timestamps
+            source_created_at = None
+            created_at_str = space_data.get("createdAt")
+            if created_at_str:
+                source_created_at = self._parse_confluence_datetime(created_at_str)
+
+            # Construct web URL: base + webui
+            web_url = None
+            if base_url:
+                webui = space_data.get("_links", {}).get("webui")
+                if webui:
+                    web_url = f"{base_url}{webui}"
+
+            return RecordGroup(
+                org_id=self.data_entities_processor.org_id,
+                name=space_name,
+                short_name=space_key,
+                description=space_description,
+                external_group_id=space_id,
+                connector_name=Connectors.CONFLUENCE,
+                group_type=RecordGroupType.CONFLUENCE_SPACES,
+                web_url=web_url,
+                source_created_at=source_created_at,
+                source_updated_at=source_created_at,  # Confluence doesn't provide updated timestamp for spaces
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform space: {e}")
+            return None
+
+    def _transform_to_page_webpage_record(
+        self,
+        page_data: Dict[str, Any]
+    ) -> Optional[WebpageRecord]:
+        """
+        Transform Confluence page data to WebpageRecord entity.
+
+        Args:
+            page_data: Raw page data from Confluence API
+
+        Returns:
+            WebpageRecord object or None if transformation fails
+        """
+        try:
+            page_id = page_data.get("id")
+            page_title = page_data.get("title")
+
+            if not page_id or not page_title:
+                return None
+
+            # Parse timestamps
+            source_created_at = None
+            source_updated_at = None
+            external_revision_id = None
+
+            history = page_data.get("history", {})
+            created_date = history.get("createdDate")
+            if created_date:
+                source_created_at = self._parse_confluence_datetime(created_date)
+
+            last_updated = history.get("lastUpdated", {})
+            updated_when = last_updated.get("when")
+            if updated_when:
+                source_updated_at = self._parse_confluence_datetime(updated_when)
+            if last_updated:
+                external_revision_id = last_updated.get("number")
+
+            # Extract space ID for external_record_group_id
+            space_data = page_data.get("space", {})
+            space_id = space_data.get("id")
+            external_record_group_id = str(space_id) if space_id else None
+
+            if not external_record_group_id:
+                self.logger.warning(f"Page {page_id} has no space - skipping")
+                return None
+
+            # Extract parent page ID from ancestors (last ancestor is direct parent)
+            parent_external_record_id = None
+            ancestors = page_data.get("ancestors", [])
+            if ancestors and len(ancestors) > 0:
+                # Get the last ancestor (direct parent)
+                direct_parent = ancestors[-1]
+                parent_external_record_id = direct_parent.get("id")
+
+            # Construct web URL from _links.webui
+            # Final URL should be: https://your-domain.atlassian.net/wiki/spaces/{space_alias}/pages/{page_id}/{page_title}
+            web_url = None
+            links = page_data.get("_links", {})
+            webui = links.get("webui")
+            self_link = links.get("self")
+
+            if webui and self_link:
+                # webui is like "/spaces/{space_alias}/pages/{page_id}/{page_title}"
+                # self is like "https://your-domain.atlassian.net/wiki/rest/api/content/{id}"
+                # Extract base URL and trim after "wiki"
+                if "/wiki/" in self_link:
+                    base_url = self_link.split("/wiki/")[0] + "/wiki"
+                    web_url = f"{base_url}{webui}"
+
+            return WebpageRecord(
+                org_id=self.data_entities_processor.org_id,
+                record_name=page_title,
+                record_type=RecordType.CONFLUENCE_PAGE,
+                external_record_id=page_id,
+                external_revision_id=str(external_revision_id) if external_revision_id else None,
+                version=0,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.CONFLUENCE,
+                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
+                external_record_group_id=external_record_group_id,
+                parent_external_record_id=parent_external_record_id,
+                weburl=web_url,
+                mime_type=MimeTypes.HTML.value,
+                source_created_at=source_created_at,
+                source_updated_at=source_updated_at,
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform page: {e}")
+            return None
+
+    def _transform_to_blogpost_webpage_record(
+        self,
+        blogpost_data: Dict[str, Any]
+    ) -> Optional[WebpageRecord]:
+        """
+        Transform Confluence blogpost data to WebpageRecord entity.
+
+        Args:
+            blogpost_data: Raw blogpost data from Confluence API
+
+        Returns:
+            WebpageRecord object or None if transformation fails
+        """
+        try:
+            blogpost_id = blogpost_data.get("id")
+            blogpost_title = blogpost_data.get("title")
+
+            if not blogpost_id or not blogpost_title:
+                return None
+
+            # Parse timestamps
+            source_created_at = None
+            source_updated_at = None
+            external_revision_id = None
+
+            history = blogpost_data.get("history", {})
+            created_date = history.get("createdDate")
+            if created_date:
+                source_created_at = self._parse_confluence_datetime(created_date)
+
+            last_updated = history.get("lastUpdated", {})
+            updated_when = last_updated.get("when")
+            if updated_when:
+                source_updated_at = self._parse_confluence_datetime(updated_when)
+            if last_updated:
+                external_revision_id = last_updated.get("number")
+
+            # Extract space ID for external_record_group_id
+            space_data = blogpost_data.get("space", {})
+            space_id = space_data.get("id")
+            external_record_group_id = str(space_id) if space_id else None
+
+            if not external_record_group_id:
+                self.logger.warning(f"Blogpost {blogpost_id} has no space - skipping")
+                return None
+
+            # Blogposts have no parent hierarchy - they are flat and connected directly to space
+            parent_external_record_id = None
+
+            # Construct web URL from _links.webui
+            web_url = None
+            links = blogpost_data.get("_links", {})
+            webui = links.get("webui")
+            self_link = links.get("self")
+
+            if webui and self_link:
+                # Extract base URL and construct full URL
+                if "/wiki/" in self_link:
+                    base_url = self_link.split("/wiki/")[0] + "/wiki"
+                    web_url = f"{base_url}{webui}"
+
+            return WebpageRecord(
+                org_id=self.data_entities_processor.org_id,
+                record_name=blogpost_title,
+                record_type=RecordType.CONFLUENCE_BLOGPOST,
+                external_record_id=blogpost_id,
+                external_revision_id=str(external_revision_id) if external_revision_id else None,
+                version=0,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.CONFLUENCE,
+                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
+                external_record_group_id=external_record_group_id,
+                parent_external_record_id=parent_external_record_id,
+                weburl=web_url,
+                mime_type=MimeTypes.HTML.value,
+                source_created_at=source_created_at,
+                source_updated_at=source_updated_at,
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform blogpost: {e}")
+            return None
+
+    def _transform_to_attachment_file_record(
+        self,
+        attachment_data: Dict[str, Any],
+        page_id: str,
+        parent_space_id: Optional[str]
+    ) -> Optional[FileRecord]:
+        """
+        Transform Confluence attachment to FileRecord entity.
+
+        Args:
+            attachment_data: Raw attachment data from children.attachment.results
+            page_id: Parent page external_record_id
+            parent_space_id: Space ID from parent page
+
+        Returns:
+            FileRecord object or None if transformation fails
+        """
+        try:
+            attachment_id = attachment_data.get("id")
+            file_name = attachment_data.get("title")
+
+            if not attachment_id or not file_name:
+                return None
+
+            # Parse timestamps
+            source_created_at = None
+            source_updated_at = None
+
+            history = attachment_data.get("history", {})
+            created_date = history.get("createdDate")
+            if created_date:
+                source_created_at = self._parse_confluence_datetime(created_date)
+
+            last_updated = history.get("lastUpdated", {})
+            updated_when = last_updated.get("when")
+            if updated_when:
+                source_updated_at = self._parse_confluence_datetime(updated_when)
+
+            # Extract file size from extensions (already an integer in the API response)
+            extensions = attachment_data.get("extensions", {})
+            file_size = extensions.get("fileSize")
+
+            # Extract mime type from extensions
+            mime_type = None
+            media_type = extensions.get("mediaType")
+
+            if media_type:
+                # Try to map to MimeTypes enum
+                for mime in MimeTypes:
+                    if mime.value == media_type:
+                        mime_type = mime
+                        break
+
+                # If not found in enum, use the raw value
+                if not mime_type:
+                    mime_type = media_type
+
+            # Extract extension from filename
+            extension = None
+            if '.' in file_name:
+                extension = file_name.split('.')[-1].lower()
+
+            # Construct web URL from _links.download
+            # Final URL should be: https://your-domain.atlassian.net/wiki/pages/viewpageattachments.action?pageId={page_id}
+            web_url = None
+            links = attachment_data.get("_links", {})
+            web_path = links.get("webui")
+
+            if web_path:
+                # Extract base URL from self link
+                self_link = links.get("self")
+                if self_link and "https://" in self_link:
+                    # Extract base URL and trim after "wiki"
+                    if "/wiki/" in self_link:
+                        base_url = self_link.split("/wiki/")[0] + "/wiki"
+                        web_url = f"{base_url}{web_path}"
+
+            attachment_version = attachment_data.get("version", {})
+            if attachment_version:
+                version_number = attachment_version.get("number")
+
+            # Generate unique ID for attachment
+            attachment_record_id = str(uuid.uuid4())
+
+            return FileRecord(
+                id=attachment_record_id,
+                org_id=self.data_entities_processor.org_id,
+                record_name=file_name,
+                record_type=RecordType.FILE,
+                external_record_id=attachment_id,
+                version=version_number if attachment_version else 0,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.CONFLUENCE,
+                mime_type=mime_type,
+                parent_external_record_id=page_id,
+                parent_record_type=RecordType.WEBPAGE,
+                external_record_group_id=parent_space_id,
+                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
+                weburl=web_url,
+                is_file=True,
+                size_in_bytes=file_size,
+                extension=extension,
+                source_created_at=source_created_at,
+                source_updated_at=source_updated_at,
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform attachment: {e}")
+            return None
+
+    async def _fetch_group_members(self, group_id: str, group_name: str) -> List[str]:
+        """
+        Fetch all members of a group with pagination.
+
+        Args:
+            group_id: The group ID
+            group_name: The group name (for logging)
+
+        Returns:
+            List of member email addresses
+        """
+        try:
+            member_emails = []
+            batch_size = HTTP_STATUS_200
+            start = 0
+
+            # Paginate through group members
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_group_members(
+                    group_id=group_id,
+                    start=start,
+                    limit=batch_size
+                )
+
+                # Check response
+                if not response or response.status != HTTP_STATUS_200:
+                    self.logger.warning(f"⚠️ Failed to fetch members for group {group_name}: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                members_data = response_data.get("results", [])
+
+                if not members_data:
+                    break
+
+                # Extract emails from members (skip members without email)
+                for member_data in members_data:
+                    email = member_data.get("email", "").strip()
+                    if email:
+                        member_emails.append(email)
+
+                # Move to next page
+                start += batch_size
+
+                # Check if we have more members
+                size = response_data.get("size", 0)
+                if size < batch_size:
+                    break
+
+            return member_emails
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
+            return []
+
+    async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
+        """
+        Get AppUser objects by their email addresses from database.
+
+        Args:
+            emails: List of user email addresses
+
+        Returns:
+            List of AppUser objects found in database
+        """
+        if not emails:
+            return []
+
+        try:
+            # Fetch all users from database
+            all_app_users = await self.data_entities_processor.get_all_app_users(
+                app_name=Connectors.CONFLUENCE
+            )
+
+            self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup : {all_app_users}")
+
+            # Create email lookup map
+            email_set = set(emails)
+
+            # Filter users by email
+            filtered_users = [user for user in all_app_users if user.email in email_set]
+
+            if len(filtered_users) < len(emails):
+                missing_count = len(emails) - len(filtered_users)
+                self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
+
+            return filtered_users
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get users by emails: {e}")
+            return []
+
+    def _transform_to_app_user(self, user_data: Dict[str, Any]) -> Optional[AppUser]:
+        """
+        Transform Confluence user data to AppUser entity.
+
+        Args:
+            user_data: Raw user data from Confluence API
+
+        Returns:
+            AppUser object or None if transformation fails
+        """
+        try:
+            account_id = user_data.get("accountId")
+            email = user_data.get("email", "").strip()
+
+            if not account_id or not email:
+                return None
+
+            # Parse lastModified timestamp
+            source_updated_at = None
+            last_modified = user_data.get("lastModified")
+            if last_modified:
+                source_updated_at = self._parse_confluence_datetime(last_modified)
+
+            return AppUser(
+                app_name=Connectors.CONFLUENCE,
+                source_user_id=account_id,
+                org_id=self.data_entities_processor.org_id,
+                email=email,
+                full_name=user_data.get("displayName"),
+                is_active=False,
+                source_updated_at=source_updated_at,
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform user: {e}")
+            return None
+
+    def _transform_to_user_group(
+        self,
+        group_data: Dict[str, Any],
+        member_emails: List[str]
+    ) -> Optional[AppUserGroup]:
+        """
+        Transform Confluence group data to AppUserGroup entity.
+
+        Args:
+            group_data: Raw group data from Confluence API
+            member_emails: List of member email addresses
+
+        Returns:
+            AppUserGroup object or None if transformation fails
+        """
+        try:
+            group_id = group_data.get("id")
+            group_name = group_data.get("name")
+
+            if not group_id or not group_name:
+                return None
+
+            return AppUserGroup(
+                app_name=Connectors.CONFLUENCE,
+                source_user_group_id=group_id,
+                name=group_name,
+                org_id=self.data_entities_processor.org_id,
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform group: {e}")
+            return None
+
+    def _parse_confluence_datetime(self, datetime_str: str) -> Optional[int]:
+        """
+        Parse Confluence datetime string to epoch timestamp in milliseconds.
+
+        Confluence format: "2025-11-13T07:51:50.526Z" (ISO 8601 with Z suffix)
+
+        Args:
+            datetime_str: Confluence datetime string
+
+        Returns:
+            int: Epoch timestamp in milliseconds or None if parsing fails
+        """
+        try:
+            # Parse ISO 8601 format: '2025-11-13T07:51:50.526Z'
+            # Replace 'Z' with '+00:00' for proper ISO format parsing
+            dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+            return int(dt.timestamp() * 1000)
+        except Exception as e:
+            self.logger.warning(f"Failed to parse datetime '{datetime_str}': {e}")
+            return None
 
     async def get_signed_url(self, record: Record) -> str:
+        """Get a signed URL for a record (not implemented for Confluence)."""
+        # Confluence uses OAuth, signed URLs are not applicable
         return ""
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        content = await self.confluence_client.fetch_page_content(record.external_record_id)
-        return StreamingResponse(
-            content,
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
-        )
+        """
+        Stream record content (page HTML, comment HTML, or attachment file) from Confluence.
 
-    async def test_connection_and_access(self) -> bool:
-        return True
+        For pages (WebpageRecord): Fetches HTML content from page body.export_view
+        For comments (CommentRecord): Fetches HTML content from comment body.storage.value
+        For attachments (FileRecord): Downloads file from attachment download URL
+
+        Args:
+            record: The record to stream (page, comment, or attachment)
+
+        Returns:
+            StreamingResponse: Streaming response with page/comment HTML or file content
+        """
+        try:
+            self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
+
+            if record.record_type in [RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST]:
+                # Page or blogpost - fetch HTML content based on record type
+                html_content = await self._fetch_page_content(record.external_record_id, record.record_type)
+
+                async def generate_page() -> AsyncGenerator[bytes, None]:
+                    yield html_content.encode('utf-8')
+
+                return StreamingResponse(
+                    generate_page(),
+                    media_type='text/html',
+                    headers={"Content-Disposition": f'inline; filename="{record.external_record_id}.html"'}
+                )
+
+            elif record.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
+                # Comment - fetch HTML content based on comment type
+                html_content = await self._fetch_comment_content(record)
+
+                async def generate_comment() -> AsyncGenerator[bytes, None]:
+                    yield html_content.encode('utf-8')
+
+                return StreamingResponse(
+                    generate_comment(),
+                    media_type='text/html',
+                    headers={"Content-Disposition": f'inline; filename="comment_{record.external_record_id}.html"'}
+                )
+
+            elif record.record_type == RecordType.FILE:
+                media_type = record.mime_type or 'application/octet-stream'
+                filename = record.record_name or f"{record.external_record_id}"
+
+                return StreamingResponse(
+                    self._fetch_attachment_content(record),
+                    media_type=media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+                )
+
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported record type for streaming: {record.record_type}"
+                )
+
+        except HTTPException:
+            raise  # Re-raise HTTP exceptions as-is
+        except Exception as e:
+            self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500, detail=f"Failed to stream record: {str(e)}"
+            )
+
+    async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
+        """
+        Fetch page or blogpost HTML content from Confluence using v2 API.
+
+        Args:
+            page_id: The page or blogpost ID
+            record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+
+        Returns:
+            str: HTML content of the page/blogpost
+
+        Raises:
+            HTTPException: If content not found or fetch fails
+        """
+        try:
+            self.logger.debug(f"Fetching content for {page_id} (type: {record_type})")
+
+            datasource = await self._get_fresh_datasource()
+
+            # Call appropriate API based on record type
+            if record_type == RecordType.CONFLUENCE_PAGE:
+                response = await datasource.get_page_content_v2(
+                    page_id=page_id,
+                    body_format="export_view"
+                )
+            elif record_type == RecordType.CONFLUENCE_BLOGPOST:
+                response = await datasource.get_blogpost_content_v2(
+                    blogpost_id=page_id,
+                    body_format="export_view"
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported record type: {record_type}"
+                )
+
+            # Check response
+            if not response or response.status != HTTP_STATUS_200:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Content not found: {page_id}"
+                )
+
+            response_data = response.json()
+
+            # Extract HTML content from body.export_view.value
+            body = response_data.get("body", {})
+            export_view = body.get("export_view", {})
+            html_content = export_view.get("value", "")
+
+            if not html_content:
+                self.logger.warning(f"Content {page_id} has no body")
+                html_content = "<p>No content available</p>"
+
+            self.logger.debug(f"✅ Fetched {len(html_content)} bytes of HTML for {page_id}")
+            return html_content
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to fetch content: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch content: {str(e)}"
+            )
+
+    async def _fetch_comment_content(self, record: CommentRecord) -> str:
+        """
+        Fetch comment HTML content from Confluence based on record type.
+
+        Args:
+            record: CommentRecord with external_record_id and record_type
+
+        Returns:
+            str: HTML content of the comment
+
+        Raises:
+            HTTPException: If comment not found or fetch fails
+        """
+        try:
+            comment_id = record.external_record_id
+            self.logger.debug(f"Fetching comment content for {comment_id} (type: {record.record_type})")
+
+            datasource = await self._get_fresh_datasource()
+
+            # Call appropriate API based on record type
+            if record.record_type == RecordType.COMMENT:
+                # Footer comment
+                response = await datasource.get_footer_comment_by_id(
+                    comment_id=int(comment_id),
+                    body_format="storage"
+                )
+            elif record.record_type == RecordType.INLINE_COMMENT:
+                # Inline comment
+                response = await datasource.get_inline_comment_by_id(
+                    comment_id=int(comment_id),
+                    body_format="storage"
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported comment type: {record.record_type}"
+                )
+
+            # Check response
+            if not response or response.status != HTTP_STATUS_200:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Comment not found: {comment_id}"
+                )
+
+            response_data = response.json()
+
+            # Extract HTML content from body.storage.value
+            body = response_data.get("body", {})
+            storage = body.get("storage", {})
+            html_content = storage.get("value", "")
+
+            if not html_content:
+                self.logger.warning(f"Comment {comment_id} has no content")
+                html_content = "<p>No content available</p>"
+
+            self.logger.debug(f"✅ Fetched {len(html_content)} bytes of HTML for comment {comment_id}")
+            return html_content
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to fetch comment content: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch comment content: {str(e)}"
+            )
+
+    async def _fetch_attachment_content(self, record: Record) -> AsyncGenerator[bytes, None]:
+        """
+        Stream attachment file content from Confluence Cloud.
+
+        Args:
+            record: Record with external_record_id and parent_external_record_id
+
+        Yields:
+            bytes: File content in 8KB chunks
+
+        Raises:
+            HTTPException: If attachment not found or download fails
+        """
+        try:
+            attachment_id = record.external_record_id
+            parent_page_id = record.parent_external_record_id
+
+            if not attachment_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No attachment ID available for record {record.id}"
+                )
+
+            if not parent_page_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No parent page ID available for attachment {attachment_id}"
+                )
+
+            # Use datasource to stream attachment content
+            datasource = await self._get_fresh_datasource()
+            async for chunk in datasource.download_attachment(
+                parent_page_id=parent_page_id,
+                attachment_id=attachment_id
+            ):
+                yield chunk
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to download attachment {record.external_record_id}: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to download attachment: {str(e)}"
+            )
 
     async def run_incremental_sync(self) -> None:
-        pass
+        """Run incremental sync (delegates to full sync)."""
+        await self.run_sync()
 
     async def reindex_records(self, record_results: List[Dict]) -> None:
         """Reindex records - not implemented for Confluence yet."""
@@ -381,36 +2363,34 @@ class ConfluenceConnector(BaseConnector):
         pass
 
     async def cleanup(self) -> None:
-        pass
+        """Cleanup resources."""
+        self.logger.info("Cleaning up Confluence connector resources")
+        # Add cleanup logic if needed
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
+        """Handle webhook notifications (not implemented)."""
+        self.logger.warning("Webhook notifications not yet supported for Confluence")
         pass
 
-    async def run_sync(self) -> None:
-        users = await self.data_entities_processor.get_all_active_users()
-        if not users:
-            self.logger.info("No users found")
-            return
-        confluence_client = await self.get_confluence_client()
-        user = users[0]
-        try:
-            spaces = await confluence_client.fetch_spaces_with_permissions()
-            for space in spaces:
-                page_records = await confluence_client.fetch_pages_with_permissions(space["id"], users)
-                await self.data_entities_processor.on_new_records(page_records)
-        except Exception as e:
-            self.logger.error(f"Error processing user {user.email}: {e}")
-
     @classmethod
-    async def create_connector(cls, logger: Logger,
-                               data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> BaseConnector:
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
+    async def create_connector(
+        cls,
+        logger: Logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService
+    ) -> "ConfluenceConnector":
+        """Factory method to create a Confluence connector instance."""
+        data_entities_processor = DataSourceEntitiesProcessor(
+            logger,
+            data_store_provider,
+            config_service
+        )
+
         await data_entities_processor.initialize()
 
-        return ConfluenceConnector(logger, data_entities_processor, data_store_provider, config_service)
-
-    async def get_confluence_client(self) -> ConfluenceClient:
-        confluence_client = ConfluenceClient(self.logger, self.config_service)
-        await confluence_client.initialize()
-
-        return confluence_client
+        return cls(
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service
+        )

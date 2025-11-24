@@ -256,7 +256,9 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 max_retries=2,
                 api_key=configuration["apiKey"],
+                max_tokens=16000,
             )
+
     elif provider == LLMProvider.AWS_BEDROCK.value:
         from langchain_aws import ChatBedrock
 

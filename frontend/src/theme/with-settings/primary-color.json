@@ -38,5 +38,13 @@
     "dark": "#B71833",
     "darker": "#7A0930",
     "contrastText": "#FFFFFF"
+  },
+  "green": {
+    "lighter": "#D3FAD6",
+    "light": "#77ED8B",
+    "main": "#22C55E",
+    "dark": "#118D57",
+    "darker": "#065E49",
+    "contrastText": "#FFFFFF"
   }
 }

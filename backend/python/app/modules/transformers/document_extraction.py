@@ -13,6 +13,8 @@ from app.modules.extraction.prompt_template import (
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.llm import get_llm
 
+DEFAULT_CONTEXT_LENGTH = 128000
+CONTENT_TOKEN_RATIO = 0.85
 SentimentType = Literal["Positive", "Neutral", "Negative"]
 
 class SubCategories(BaseModel):
@@ -65,9 +67,11 @@ class DocumentExtraction(Transformer):
             sub_category_level_2=document_classification.subcategories.level2,
             sub_category_level_3=document_classification.subcategories.level3,
         )
+        self.logger.info("🎯 Document extraction completed successfully")
 
-    def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool) -> List[dict]:
-        MAX_TOKENS = 30000
+
+    def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int | None) -> List[dict]:
+        MAX_TOKENS = int(context_length * CONTENT_TOKEN_RATIO)
         MAX_IMAGES = 50
         total_tokens = 0
         image_count = 0
@@ -172,6 +176,8 @@ class DocumentExtraction(Transformer):
         self.logger.info("🎯 Extracting domain metadata")
         self.llm, config= await get_llm(self.config_service)
         is_multimodal_llm = config.get("isMultimodal")
+        context_length = config.get("contextLength",DEFAULT_CONTEXT_LENGTH)
+
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
             departments = await self.arango_service.get_departments(org_id)
@@ -190,7 +196,7 @@ class DocumentExtraction(Transformer):
             self.prompt_template = PromptTemplate.from_template(filled_prompt)
 
             # Prepare multimodal content
-            content = self._prepare_content(blocks, is_multimodal_llm)
+            content = self._prepare_content(blocks, is_multimodal_llm, context_length)
 
             if len(content) == 0:
                 self.logger.info("No content to process in document extraction")

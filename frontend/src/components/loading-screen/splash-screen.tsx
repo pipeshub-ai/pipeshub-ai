@@ -13,6 +13,7 @@ type Props = BoxProps & {
 
 export function SplashScreen({ portal = true, sx, ...other }: Props) {
   const [loaded, setLoaded] = useState(false);
+  const [dotOpacity, setDotOpacity] = useState([0.4, 0.6, 0.8]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -68,11 +69,11 @@ export function SplashScreen({ portal = true, sx, ...other }: Props) {
             <Box
               key={i}
               sx={{
-                width: 10,
-                height: 10,
+                width: 12,
+                height: 12,
                 borderRadius: '50%',
-                bgcolor: 'primary.main',
-                opacity: 0.7,
+                bgcolor: '#70CDA7',
+                opacity: dotOpacity[i], 
                 transition: 'opacity 0.3s ease',
               }}
             />
