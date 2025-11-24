@@ -34,7 +34,24 @@ import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scro
 
 import type { SearchResult, KnowledgeSearchProps } from './types/search-response';
 
-const VIEWABLE_EXTENSIONS = ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md', 'mdx', 'ppt', 'pptx', 'jpg', 'jpeg', 'png', 'webp', 'svg'];
+const VIEWABLE_EXTENSIONS = [
+  'pdf',
+  'xlsx',
+  'xls',
+  'csv',
+  'docx',
+  'html',
+  'txt',
+  'md',
+  'mdx',
+  'ppt',
+  'pptx',
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'svg',
+];
 
 // Helper function to get file icon color based on extension
 export const getFileIconColor = (extension: string): string => {
@@ -281,6 +298,26 @@ const KnowledgeSearch = ({
     if (recordMeta.origin === 'UPLOAD' && !webUrl.startsWith('http')) {
       const baseUrl = `${window.location.protocol}//${window.location.host}`;
       webUrl = baseUrl + webUrl;
+    }
+
+    const content = record.content;
+    if (content && typeof content === 'string' && content.trim().length > 0) {
+      const words = content.trim().split(/\s+/);
+      const textFragment = words.slice(0, 5).join(' ');
+      try {
+        const url = new URL(webUrl);
+        if (url.hash.includes(':~:')) {
+          url.hash += `&text=${encodeURIComponent(textFragment)}`;
+        } else {
+          url.hash += `:~:text=${encodeURIComponent(textFragment)}`;
+        }
+        webUrl = url.toString();
+      } catch (e) {
+        // Fallback for cases where webUrl might not be a full URL.
+        if (!webUrl.includes('#')) {
+          webUrl = `${webUrl}#:~:text=${encodeURIComponent(textFragment)}`;
+        }
+      }
     }
 
     window.open(webUrl, '_blank', 'noopener,noreferrer');
