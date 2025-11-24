@@ -939,8 +939,7 @@ class SharePointConnector(BaseConnector):
 
             # Get permissions
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
-            print("\n\n\n !!!!!!!!!!!!!!!!!!!!!!!!!!!!! permissions: ", permissions)
-
+            
             # Todo: Get permissions for the record
             # for user in users:
             #     permissions.append(Permission(
@@ -1511,7 +1510,7 @@ class SharePointConnector(BaseConnector):
     async def _get_sharepoint_access_token(self) -> Optional[str]:
         """Get access token for SharePoint REST API."""
         from azure.identity.aio import CertificateCredential, ClientSecretCredential
-        
+
         credential = None
         try:
             # Use the same authentication method as the main Graph API client
@@ -1566,7 +1565,7 @@ class SharePointConnector(BaseConnector):
 
     async def _get_site_permissions(self, site_id: str) -> List[Permission]:
         permissions_dict = {} # Key: Email, Value: Permission Object
-        
+
 
         try:
             # 1. Get Site URL from your existing cache
@@ -1574,7 +1573,7 @@ class SharePointConnector(BaseConnector):
             if not site_metadata or not site_metadata.site_url:
                 self.logger.error(f"❌ Site metadata/URL not found for {site_id}")
                 return []
-            
+
             site_url = site_metadata.site_url
 
             # 2. Get SharePoint REST Token
@@ -1584,30 +1583,32 @@ class SharePointConnector(BaseConnector):
                 return []
 
             # Helper to check if user exists to avoid downgrading WRITE to READ
-            def add_or_update_permission(user_email, user_id, perm_type):
-                if not user_email: return
-                
+            def add_or_update_permission(user_email, user_id, perm_type) -> None:
+                if not user_email:
+                    return
+
                 # If user exists and is already WRITE, don't downgrade to READ
                 if user_email in permissions_dict:
                     if permissions_dict[user_email].type == PermissionType.WRITE:
                         return
-                
+
                 permissions_dict[user_email] = Permission(
                     external_id=str(user_id),
                     email=user_email,
                     type=perm_type,
                     entity_type=EntityType.USER
                 )
-            print("\n\n\n\n\n\n processing site permissions")
+            SECURITY_GROUP_TYPE = 4
+
             # ==================================================================
             # STEP 1 & 2: Process Associated Groups (Owners & Members) -> WRITE
             # ==================================================================
             for group_type in ['associatedownergroup', 'associatedmembergroup']:
                 sp_users = await self._get_sharepoint_group_users(site_url, group_type, access_token)
-                
+
                 for sp_user in sp_users:
                     login_name = sp_user.get('LoginName', '')
-                    
+
                     # CASE A: It's an M365 Group (The "True" Team)
                     if 'federateddirectoryclaimprovider' in login_name:
                         # Extract GUID
@@ -1617,7 +1618,7 @@ class SharePointConnector(BaseConnector):
                             # Call Graph API (Owners or Members based on SP group type)
                             is_owner_group = 'owner' in group_type
                             graph_users = await self._fetch_graph_group_members(group_id, is_owner=is_owner_group)
-                            
+
                             for g_user in graph_users:
                                 add_or_update_permission(g_user['email'], g_user['id'], PermissionType.WRITE)
 
@@ -1625,30 +1626,30 @@ class SharePointConnector(BaseConnector):
                     elif 'spo-grid-all-users' in login_name:
                         self.logger.info(f"🌍 Site {site_id} is Public (Everyone claim found)")
                         # Optional: Add a special wildcard permission if your app supports it
-                    
-                    # CASE B: It's an AD Security Group (PrincipalType == 4)
-                    elif sp_user.get('PrincipalType') == 4:
+
+                    # CASE C: It's an AD Security Group (PrincipalType == 4)
+                    elif sp_user.get('PrincipalType') == SECURITY_GROUP_TYPE:
                         # Security Group LoginNames often look like: "c:0t.c|tenant|32537252-0676-4c47-a372-2d93563456"
                         # We need to extract that GUID at the end.
                         self.logger.info(f"🔒 Found Security Group: {login_name}")
-                        
+
                         # Regex to capture the GUID after 'tenant|'
                         match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
-                        
+
                         if match:
                             group_id = match.group(1)
                             self.logger.info(f"   -> Extracted Group ID: {group_id}")
-                            
+
                             # Use your existing Graph expander (reuse logic!)
                             # Note: Security groups can have nested groups, so transitive_members (which you use) is PERFECT.
                             graph_users = await self._fetch_graph_group_members(group_id, is_owner=False)
-                            
+
                             for g_user in graph_users:
                                 add_or_update_permission(g_user['email'], g_user['id'], PermissionType.WRITE) # Or READ based on context
                         else:
                             self.logger.warning(f"   -> ⚠️ Could not extract GUID from Security Group LoginName: {login_name}")
 
-                    # CASE C: It's a direct individual user (Rare in modern sites, but possible)
+                    # CASE D: It's a direct individual user (Rare in modern sites, but possible)
                     elif sp_user.get('PrincipalType') == 1: # 1 = User
                         email = sp_user.get('Email') or sp_user.get('UserPrincipalName')
                         add_or_update_permission(email, sp_user.get('Id'), PermissionType.WRITE)
@@ -1673,7 +1674,7 @@ class SharePointConnector(BaseConnector):
                     # Only add if they are NOT already in the dict (don't overwrite Owners/Members)
                     if email and email not in permissions_dict:
                         add_or_update_permission(email, user.get('Id'), PermissionType.READ)
-            
+
             self.logger.info(f"Found {len(permissions_dict)} unique permissions for site {site_id}")
             return list(permissions_dict.values())
 
@@ -1687,10 +1688,10 @@ class SharePointConnector(BaseConnector):
         group_type options: 'associatedownergroup', 'associatedmembergroup', 'associatedvisitorgroup'
         """
         import aiohttp
-        
+
         # Construct the endpoint: e.g. .../sites/MySite/_api/web/associatedownergroup/users
         endpoint = f"{site_url}/_api/web/{group_type}/users"
-        
+
         headers = {
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json;odata=verbose"
@@ -1698,21 +1699,21 @@ class SharePointConnector(BaseConnector):
 
         try:
             self.logger.debug(f"📡 Fetching SharePoint group: {group_type}")
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(endpoint, headers=headers) as response:
-                    if response.status == 200:
+                    if response.status == HTTPStatus.OK:
                         data = await response.json()
                         results = data.get('d', {}).get('results', [])
                         self.logger.debug(f"✅ Found {len(results)} entries in {group_type}")
                         return results
                     else:
                         # 404 is common if the group is empty/doesn't exist (e.g. no visitors)
-                        if response.status != 404:
+                        if response.status != HTTPStatus.NOT_FOUND:
                             error_text = await response.text()
                             self.logger.warning(f"⚠️ Failed to fetch {group_type}: {response.status} - {error_text}")
                         return []
-                        
+
         except Exception as e:
             self.logger.error(f"❌ Error in _get_sharepoint_group_users: {e}")
             return []
@@ -1738,22 +1739,22 @@ class SharePointConnector(BaseConnector):
                     for item in response.value:
                         # Extract user details (same logic as before)
                         odata_type = getattr(item, 'odata_type', '').lower()
-                        
+
                         # We only want real users (#microsoft.graph.user)
                         if 'user' in odata_type or hasattr(item, 'user_principal_name'):
                             email = getattr(item, 'mail', None) or getattr(item, 'user_principal_name', None)
                             user_id = getattr(item, 'id', None)
-                            
+
                             if email and user_id:
                                 users.append({
                                     'id': user_id,
                                     'email': email,
                                     'name': getattr(item, 'display_name', 'Unknown')
                                 })
-                
+
                 # Check if there is a next page
                 next_link = getattr(response, 'odata_next_link', None)
-                
+
                 if next_link:
                     self.logger.debug(f"🔄 Fetching next page for group {group_id}...")
                     if is_owner:
@@ -1775,21 +1776,21 @@ class SharePointConnector(BaseConnector):
     async def _get_site_members_direct(self, site_url: str, access_token: str) -> List[dict]:
         """Get all site members directly using SharePoint REST API."""
         import aiohttp
-        
+
         try:
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json;odata=verbose"
             }
-            
+
             # Get all site users (anyone with any level of access)
             endpoint = f"{site_url}/_api/web/siteusers"
-            
+
             self.logger.debug(f"Fetching site members from: {endpoint}")
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(endpoint, headers=headers) as response:
-                    if response.status == 200:
+                    if response.status == HTTPStatus.OK:
                         data = await response.json()
                         members = data.get('d', {}).get('results', [])
                         self.logger.info(f"✅ Retrieved {len(members)} site members directly")
@@ -1798,7 +1799,7 @@ class SharePointConnector(BaseConnector):
                         error_text = await response.text()
                         self.logger.warning(f"❌ Failed to get site members: {response.status} - {error_text}")
                         return []
-                        
+
         except Exception as e:
             self.logger.error(f"❌ Error fetching site members directly: {e}")
             return []
@@ -1806,21 +1807,21 @@ class SharePointConnector(BaseConnector):
     async def _get_site_role_assignments_with_members(self, site_url: str, access_token: str) -> List[dict]:
         """Get role assignments with expanded member and role information."""
         import aiohttp
-        
+
         try:
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json;odata=verbose"
             }
-            
+
             # Get role assignments with member and role definition details
             endpoint = f"{site_url}/_api/web/roleassignments?$expand=Member,RoleDefinitionBindings"
-            
+
             self.logger.debug(f"Fetching role assignments from: {endpoint}")
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(endpoint, headers=headers) as response:
-                    if response.status == 200:
+                    if response.status == HTTPStatus.OK:
                         data = await response.json()
                         assignments = data.get('d', {}).get('results', [])
                         self.logger.info(f"✅ Retrieved {len(assignments)} role assignments")
@@ -1829,11 +1830,11 @@ class SharePointConnector(BaseConnector):
                         error_text = await response.text()
                         self.logger.warning(f"❌ Failed to get role assignments: {response.status} - {error_text}")
                         return []
-                        
+
         except Exception as e:
             self.logger.error(f"❌ Error fetching role assignments: {e}")
             return []
-            
+
     def _map_sharepoint_group_to_permission_type(self, group_name: str, group_login_name: str = "") -> PermissionType:
         """Map SharePoint group names and login names to permission types."""
         if not group_name and not group_login_name:
@@ -2649,7 +2650,7 @@ class SharePointConnector(BaseConnector):
                 source_created_at = int(site.created_date_time.timestamp() * 1000) if site.created_date_time else None
                 source_updated_at = int(site.last_modified_date_time.timestamp() * 1000) if site.last_modified_date_time else source_created_at
 
-                # TODO: So we can fetch permissiosn and create edges between members and sites 
+                # TODO: So we can fetch permissiosn and create edges between members and sites
                 # Create site record group
                 site_record_group = RecordGroup(
                     name=site_name,
@@ -2662,7 +2663,7 @@ class SharePointConnector(BaseConnector):
                     source_created_at=source_created_at,
                     source_updated_at=source_updated_at
                 )
-                
+
                 # Get site permissions
                 site_permissions = await self._get_site_permissions(site_id)
                 # Process site record group
