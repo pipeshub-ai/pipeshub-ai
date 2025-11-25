@@ -209,7 +209,7 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
               </>
             ),
             rightArea: (
-              <Box display="flex" alignItems="center" gap={{ xs: 0, sm: 0.75 }}>
+              <Box display="flex" sx={{ mr: 1 }} alignItems="center" gap={{ xs: 0, sm: 0.75 }}>
                 <IconButton
                   component="a"
                   href="https://github.com/pipeshub-ai/pipeshub-ai"
