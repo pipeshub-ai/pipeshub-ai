@@ -138,15 +138,15 @@ class SiteMetadata:
             placeholder="Enter your Azure AD Application ID",
             description="The Application (Client) ID from Azure AD App Registration"
         ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Azure AD Client Secret",
-            description="The Client Secret from Azure AD App Registration (Optional if using certificate)",
-            field_type="PASSWORD",
-            is_secret=True,
-            required=False
-        ))
+        # .add_auth_field(AuthField(
+        #     name="clientSecret",
+        #     display_name="Client Secret",
+        #     placeholder="Enter your Azure AD Client Secret",
+        #     description="The Client Secret from Azure AD App Registration (Optional if using certificate)",
+        #     field_type="PASSWORD",
+        #     is_secret=True,
+        #     required=False
+        # ))
         .add_auth_field(AuthField(
             name="tenantId",
             display_name="Directory (Tenant) ID (Optional)",
@@ -937,8 +937,10 @@ class SharePointConnector(BaseConnector):
             if not file_record:
                 return None
 
-            # Get permissions
+            # Get permissions currently fetching permissions via site record group 
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
+
+            print(f"!!!!!!!!!!!!!!!!!! drive item permissions for {item.name}: {permissions}")
 
             # Todo: Get permissions for the record
             # for user in users:
@@ -1625,7 +1627,14 @@ class SharePointConnector(BaseConnector):
                     # CASE B: It's the "Everyone" Claim (Public Site)
                     elif 'spo-grid-all-users' in login_name:
                         self.logger.info(f"🌍 Site {site_id} is Public (Everyone claim found)")
-                        # Optional: Add a special wildcard permission if your app supports it
+                        print("\n\n\n\n\n !!!!!!!!!!!!!!!!!!!!!! Everyone claim found for site", site_url)
+                        # Add org relation for public sites
+                        permissions_dict['ORGANIZATION_ACCESS'] = Permission(
+                            type=PermissionType.READ, # Default to READ for public access
+                            entity_type=EntityType.ORG,
+                            external_id=self.data_entities_processor.org_id # Placeholder
+                        )
+
 
                     # CASE C: It's an AD Security Group (PrincipalType == 4)
                     elif sp_user.get('PrincipalType') == SECURITY_GROUP_TYPE:
@@ -2117,6 +2126,7 @@ class SharePointConnector(BaseConnector):
                         .permissions.get()
                 )
 
+            print("\n\n\n !!!!!!!!!!!!!! perm response:", perms_response)
             if perms_response and perms_response.value:
                 permissions = await self._convert_to_permissions(perms_response.value)
 
@@ -2287,7 +2297,7 @@ class SharePointConnector(BaseConnector):
                 # Get all sites
                 sites = await self._get_all_sites()
 
-                # --- OPTIMIZATION 2: Open HTTP Client ONCE ---
+                # --- OPTIMIZATION: Open HTTP Client ONCE ---
                 async with httpx.AsyncClient(timeout=30.0) as http_client:
 
                     for site in sites:
@@ -2333,10 +2343,16 @@ class SharePointConnector(BaseConnector):
                                     group_title = group.get('Title', 'N/A')
                                     group_id = group.get('Id', 'N/A')
                                     description = group.get('Description', 'N/A')
+                                    # Fetch email for debugging/reference
+
+                                    # --- FIX: Generate Unique Source ID ---
+                                    # Combine Site ID and Group ID to ensure global uniqueness across the tenant
+                                    # Format: {SiteGUID}-{GroupID}
+                                    unique_source_id = f"{site_id}-{group_id}"
 
                                     user_group = AppUserGroup(
                                         id=str(uuid.uuid4()),
-                                        source_user_group_id=str(group_id),
+                                        source_user_group_id=unique_source_id,
                                         app_name=self.connector_name,
                                         name=group_title,
                                         description=description if description != 'N/A' else None,
@@ -2354,23 +2370,73 @@ class SharePointConnector(BaseConnector):
                                             users = users_data.get('d', {}).get('results', [])
 
                                             if users:
-                                                self.logger.info(f"   - Total Users: {len(users)}")
-                                                for user_idx, user in enumerate(users, 1):
-                                                    user_id = user.get('Id')
-                                                    user_title = user.get('Title', 'N/A')
-                                                    user_email = user.get('Email')
-                                                    user_principal = user.get('UserPrincipalName')
+                                                self.logger.info(f"   - Raw Entities found: {len(users)}")
+                                                
+                                                for user in users:
+                                                    login_name = user.get('LoginName', '')
+                                                    principal_type = user.get('PrincipalType')
+                                                    
+                                                    # --- NEW LOGIC START: Handle Group Expansions ---
+                                                    
+                                                    # CASE A: M365 Unified Group (The "True" Team)
+                                                    # Looks for 'federateddirectoryclaimprovider' in LoginName
+                                                    if 'federateddirectoryclaimprovider' in login_name:
+                                                        # Extract GUID
+                                                        match = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', login_name)
+                                                        if match:
+                                                            m365_id = match.group(1)
+                                                            self.logger.info(f"     -> Expanding M365 Group: {m365_id}")
+                                                            
+                                                            # Determine if we want Owners or Members based on the SP Group Title
+                                                            is_owner_check = 'Owner' in group_title
+                                                            
+                                                            # Call helper to get actual humans from Graph
+                                                            expanded_users = await self._fetch_graph_group_members(m365_id, is_owner=is_owner_check)
+                                                            
+                                                            for exp_u in expanded_users:
+                                                                app_users.append(AppUser(
+                                                                    source_user_id=exp_u['id'],
+                                                                    email=exp_u['email'],
+                                                                    full_name=exp_u['name'],
+                                                                    app_name=self.connector_name
+                                                                ))
 
-                                                    if user_email or user_principal:
-                                                        app_user = AppUser(
-                                                            source_user_id=str(user_id) if user_id else None,
-                                                            email=user_email or user_principal,
-                                                            full_name=user_title if user_title != 'N/A' else None,
-                                                            app_name=self.connector_name,
-                                                        )
-                                                        app_users.append(app_user)
+                                                    # CASE B: AD Security Group (PrincipalType == 4)
+                                                    elif principal_type == 4:
+                                                        # Security Group LoginNames often look like: "c:0t.c|tenant|GUID"
+                                                        match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
+                                                        if match:
+                                                            sec_id = match.group(1)
+                                                            self.logger.info(f"     -> Expanding Security Group: {sec_id}")
+                                                            
+                                                            # Security groups imply members (is_owner=False)
+                                                            expanded_users = await self._fetch_graph_group_members(sec_id, is_owner=False)
+                                                            
+                                                            for exp_u in expanded_users:
+                                                                app_users.append(AppUser(
+                                                                    source_user_id=exp_u['id'],
+                                                                    email=exp_u['email'],
+                                                                    full_name=exp_u['name'],
+                                                                    app_name=self.connector_name
+                                                                ))
+
+                                                    # CASE C: Standard Individual User
+                                                    else:
+                                                        user_id = user.get('Id')
+                                                        user_title = user.get('Title', 'N/A')
+                                                        user_email = user.get('Email') or user.get('UserPrincipalName')
+
+                                                        if user_email or user.get('UserPrincipalName'):
+                                                            app_users.append(AppUser(
+                                                                source_user_id=str(user_id) if user_id else None,
+                                                                email=user_email or user.get('UserPrincipalName'),
+                                                                full_name=user_title if user_title != 'N/A' else None,
+                                                                app_name=self.connector_name,
+                                                            ))
+                                                    # --- NEW LOGIC END ---
+
                                             else:
-                                                self.logger.info("   - No users in this group")
+                                                self.logger.info("   - No entities in this group")
                                         else:
                                             self.logger.info(f"   - Error fetching users: {users_response.status_code}")
 
@@ -2395,6 +2461,13 @@ class SharePointConnector(BaseConnector):
                 # Process all SharePoint site groups
                 if sharepoint_groups_with_members:
                     self.logger.info(f"Processing {len(sharepoint_groups_with_members)} SharePoint site groups")
+                    # --- DEBUG: Print Groups and Member Emails ---
+                    self.logger.info("\n=== DEBUG SUMMARY ===")
+                    for group, members in sharepoint_groups_with_members:
+                        member_emails = [m.email for m in members if m.email]
+                        self.logger.info(f"Group: {group.name} | Members: {', '.join(member_emails) if member_emails else 'None'}")
+                    self.logger.info("=====================\n")
+                    # ---------------------------------------------
                     await self.data_entities_processor.on_new_user_groups(
                         sharepoint_groups_with_members
                     )
