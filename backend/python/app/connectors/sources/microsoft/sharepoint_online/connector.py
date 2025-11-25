@@ -14,6 +14,7 @@ from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+import aiohttp
 import httpx
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import CertificateCredential, ClientSecretCredential
@@ -1645,6 +1646,12 @@ class SharePointConnector(BaseConnector):
 
                         if match:
                             group_id = match.group(1)
+
+                            # This ID is a virtual claim, not a real Graph Group.
+                            if group_id == '9908e57b-4444-4a0e-af96-e8ca83c0a0e5':
+                                self.logger.info("     -> Found 'Everyone except external users' claim. Skipping.")
+                                continue
+
                             self.logger.info(f"   -> Extracted Group ID: {group_id}")
 
                             # Use your existing Graph expander (reuse logic!)
@@ -1676,13 +1683,14 @@ class SharePointConnector(BaseConnector):
             # This catches 'harshitj' who isn't in a group but visited the public site
             all_cached_users = await self._get_site_members_direct(site_url, access_token)
             for user in all_cached_users:
-                if user.get('PrincipalType') == 1:
-                    email = user.get('Email') or user.get('UserPrincipalName')
-                    # Only add if they are NOT already in the dict (don't overwrite Owners/Members)
-                    if email and email not in permissions_dict:
-                        add_or_update_permission(email, user.get('Id'), PermissionType.READ)
+                email = user.get('Email') or user.get('UserPrincipalName')
+
+                # Only add if they are NOT already in the dict
+                if email and email not in permissions_dict:
+                    add_or_update_permission(email, user.get('Id'), PermissionType.READ)
 
             self.logger.info(f"Found {len(permissions_dict)} unique permissions for site {site_id}")
+            print(f"Permissions: {permissions_dict}")
             return list(permissions_dict.values())
 
         except Exception as e:
@@ -1694,7 +1702,6 @@ class SharePointConnector(BaseConnector):
         Fetches users/groups from the associated SharePoint security groups.
         group_type options: 'associatedownergroup', 'associatedmembergroup', 'associatedvisitorgroup'
         """
-        import aiohttp
 
         # Construct the endpoint: e.g. .../sites/MySite/_api/web/associatedownergroup/users
         endpoint = f"{site_url}/_api/web/{group_type}/users"
@@ -1781,39 +1788,63 @@ class SharePointConnector(BaseConnector):
             return users # Return whatever we found so far
 
     async def _get_site_members_direct(self, site_url: str, access_token: str) -> List[dict]:
-        """Get all site members directly using SharePoint REST API."""
-        import aiohttp
+        """
+        Get all site members directly using SharePoint REST API.
+        Optimized to filter only for real users (PrincipalType=1) to avoid 503/Throttling.
+        """
 
-        try:
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json;odata=verbose"
-            }
+        # OPTIMIZATION: Filter for Users only (1) and exclude hidden system users.
+        # We also only select the fields we need to reduce payload size.
+        base_endpoint = f"{site_url}/_api/web/siteusers"
+        query_params = (
+            "?$filter=PrincipalType eq 1 and IsHiddenInUI eq false"
+            "&$select=Id,Email,UserPrincipalName,Title,LoginName"
+        )
+        endpoint = base_endpoint + query_params
 
-            # Get all site users (anyone with any level of access)
-            endpoint = f"{site_url}/_api/web/siteusers"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json;odata=verbose"
+        }
 
-            self.logger.debug(f"Fetching site members from: {endpoint}")
+        self.logger.debug(f"Fetching site members from: {endpoint}")
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(endpoint, headers=headers) as response:
-                    if response.status == HTTPStatus.OK:
-                        data = await response.json()
-                        members = data.get('d', {}).get('results', [])
-                        self.logger.info(f"✅ Retrieved {len(members)} site members directly")
-                        return members
+        max_retries = 3
+
+        async with aiohttp.ClientSession() as session:
+            for attempt in range(max_retries):
+                try:
+                    async with session.get(endpoint, headers=headers) as response:
+                        if response.status == HTTPStatus.OK:
+                            data = await response.json()
+                            members = data.get('d', {}).get('results', [])
+                            self.logger.info(f"✅ Retrieved {len(members)} site members directly")
+                            print("\n\n !!!!!!!!!!!!! members:", members)
+                            return members
+
+                        # Handle 503 (Service Unavailable) or 429 (Throttling)
+                        elif response.status in [503, 429, 504]:
+                            self.logger.warning(f"⚠️ SharePoint is throttling/busy (Status {response.status}). Retrying {attempt + 1}/{max_retries}...")
+                            await asyncio.sleep(2 * (attempt + 1)) # Exponential backoff: 2s, 4s, 6s
+                            continue
+
+                        else:
+                            # Permanent error
+                            error_text = await response.text()
+                            self.logger.warning(f"❌ Failed to get site members: {response.status} - {error_text[:200]}") # Truncate error log
+                            return []
+
+                except Exception as e:
+                    self.logger.error(f"❌ Exception fetching site members (Attempt {attempt + 1}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2)
                     else:
-                        error_text = await response.text()
-                        self.logger.warning(f"❌ Failed to get site members: {response.status} - {error_text}")
                         return []
 
-        except Exception as e:
-            self.logger.error(f"❌ Error fetching site members directly: {e}")
             return []
 
     async def _get_site_role_assignments_with_members(self, site_url: str, access_token: str) -> List[dict]:
         """Get role assignments with expanded member and role information."""
-        import aiohttp
 
         try:
             headers = {
@@ -2295,7 +2326,6 @@ class SharePointConnector(BaseConnector):
                 sites = await self._get_all_sites()
                 SECURITY_GROUP_TYPE = 4
 
-                # --- OPTIMIZATION: Open HTTP Client ONCE ---
                 async with httpx.AsyncClient(timeout=30.0) as http_client:
 
                     for site in sites:
@@ -2341,9 +2371,7 @@ class SharePointConnector(BaseConnector):
                                     group_title = group.get('Title', 'N/A')
                                     group_id = group.get('Id', 'N/A')
                                     description = group.get('Description', 'N/A')
-                                    # Fetch email for debugging/reference
 
-                                    # --- FIX: Generate Unique Source ID ---
                                     # Combine Site ID and Group ID to ensure global uniqueness across the tenant
                                     # Format: {SiteGUID}-{GroupID}
                                     unique_source_id = f"{site_id}-{group_id}"
@@ -2374,8 +2402,6 @@ class SharePointConnector(BaseConnector):
                                                     login_name = user.get('LoginName', '')
                                                     principal_type = user.get('PrincipalType')
 
-                                                    # --- NEW LOGIC START: Handle Group Expansions ---
-
                                                     # CASE A: M365 Unified Group (The "True" Team)
                                                     # Looks for 'federateddirectoryclaimprovider' in LoginName
                                                     if 'federateddirectoryclaimprovider' in login_name:
@@ -2404,11 +2430,17 @@ class SharePointConnector(BaseConnector):
                                                         # Security Group LoginNames often look like: "c:0t.c|tenant|GUID"
                                                         match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
                                                         if match:
-                                                            sec_id = match.group(1)
-                                                            self.logger.info(f"     -> Expanding Security Group: {sec_id}")
+                                                            group_id = match.group(1)
 
+                                                            # This ID is a virtual claim, not a real Graph Group.
+                                                            if group_id == '9908e57b-4444-4a0e-af96-e8ca83c0a0e5':
+                                                                self.logger.info("     -> Found 'Everyone except external users' claim. Skipping.")
+                                                                continue
+
+
+                                                            self.logger.info(f"     -> Expanding Security Group: {group_id}")
                                                             # Security groups imply members (is_owner=False)
-                                                            expanded_users = await self._fetch_graph_group_members(sec_id, is_owner=False)
+                                                            expanded_users = await self._fetch_graph_group_members(group_id, is_owner=False)
 
                                                             for exp_u in expanded_users:
                                                                 app_users.append(AppUser(
@@ -2431,7 +2463,6 @@ class SharePointConnector(BaseConnector):
                                                                 full_name=user_title if user_title != 'N/A' else None,
                                                                 app_name=self.connector_name,
                                                             ))
-                                                    # --- NEW LOGIC END ---
 
                                             else:
                                                 self.logger.info("   - No entities in this group")
@@ -2450,7 +2481,6 @@ class SharePointConnector(BaseConnector):
                             else:
                                 self.logger.info(f" Error: {response.status_code}")
 
-                            # Note: Do NOT close credential here anymore
 
                         except Exception:
                             self.logger.info(f" Error processing site {site_name}: {traceback.format_exc()}")
@@ -2459,13 +2489,7 @@ class SharePointConnector(BaseConnector):
                 # Process all SharePoint site groups
                 if sharepoint_groups_with_members:
                     self.logger.info(f"Processing {len(sharepoint_groups_with_members)} SharePoint site groups")
-                    # --- DEBUG: Print Groups and Member Emails ---
-                    self.logger.info("\n=== DEBUG SUMMARY ===")
-                    for group, members in sharepoint_groups_with_members:
-                        member_emails = [m.email for m in members if m.email]
-                        self.logger.info(f"Group: {group.name} | Members: {', '.join(member_emails) if member_emails else 'None'}")
-                    self.logger.info("=====================\n")
-                    # ---------------------------------------------
+
                     await self.data_entities_processor.on_new_user_groups(
                         sharepoint_groups_with_members
                     )
