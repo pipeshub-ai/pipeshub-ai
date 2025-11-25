@@ -35,7 +35,7 @@ class KnowledgeBaseMigrationService:
 
         # New collection names (Python system)
         self.NEW_KB_COLLECTION = CollectionNames.RECORD_GROUPS.value
-        self.NEW_USER_TO_KB_EDGES = CollectionNames.PERMISSIONS_TO_KB.value
+        self.NEW_USER_TO_KB_EDGES = CollectionNames.PERMISSION.value
         self.NEW_RECORD_TO_KB_EDGES = CollectionNames.BELONGS_TO.value
         self.NEW_RECORD_RELATION_EDGES = CollectionNames.RECORD_RELATIONS.value
 

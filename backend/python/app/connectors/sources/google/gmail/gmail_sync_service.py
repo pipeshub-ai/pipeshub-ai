@@ -771,8 +771,8 @@ class BaseGmailSyncService(ABC):
                                 entity_id, entity_type, perm_type = entity_lookup_map[email]
 
                                 permissions.append({
-                                    "_to": f"{entity_type}/{entity_id}",
-                                    "_from": f"{CollectionNames.RECORDS.value}/{message_key}",
+                                    "_from": f"{entity_type}/{entity_id}",
+                                    "_to": f"{CollectionNames.RECORDS.value}/{message_key}",
                                     "role": role,
                                     "externalPermissionId": None,
                                     "type": perm_type,
@@ -802,8 +802,8 @@ class BaseGmailSyncService(ABC):
                                     entity_id, entity_type, perm_type = entity_lookup_map[email]
 
                                     permissions.append({
-                                        "_to": f"{entity_type}/{entity_id}",
-                                        "_from": f"{CollectionNames.RECORDS.value}/{attachment_key}",
+                                        "_from": f"{entity_type}/{entity_id}",
+                                        "_to": f"{CollectionNames.RECORDS.value}/{attachment_key}",
                                         "role": role,
                                         "externalPermissionId": None,
                                         "type": perm_type,
@@ -839,7 +839,7 @@ class BaseGmailSyncService(ABC):
                             CollectionNames.RECORDS.value,
                             CollectionNames.FILES.value,
                             CollectionNames.RECORD_RELATIONS.value,
-                            CollectionNames.PERMISSIONS.value,
+                            CollectionNames.PERMISSION.value,
                             CollectionNames.IS_OF_TYPE.value,
                         ],
                         write=[
@@ -847,7 +847,7 @@ class BaseGmailSyncService(ABC):
                             CollectionNames.RECORDS.value,
                             CollectionNames.FILES.value,
                             CollectionNames.RECORD_RELATIONS.value,
-                            CollectionNames.PERMISSIONS.value,
+                            CollectionNames.PERMISSION.value,
                             CollectionNames.IS_OF_TYPE.value,
                         ],
                     )
@@ -911,7 +911,7 @@ class BaseGmailSyncService(ABC):
                         self.logger.debug("🔗 Creating %d permissions", len(permissions))
                         if not await self.arango_service.batch_create_edges(
                             permissions,
-                            collection=CollectionNames.PERMISSIONS.value,
+                            collection=CollectionNames.PERMISSION.value,
                             transaction=txn,
                         ):
                             raise Exception("Failed to batch create permissions")
@@ -2046,10 +2046,10 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     AND doc.connectorName == @connector_name
 
                     LET active_users = (
-                        FOR perm IN permissions
-                            FILTER perm._from == doc._id
+                        FOR perm IN permission
+                            FILTER perm._to == doc._id
                             FOR user IN users
-                                FILTER perm._to == user._id
+                                FILTER perm._from == user._id
                                 AND user.isActive == true
                             RETURN DISTINCT user
                     )
