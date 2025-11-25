@@ -26,7 +26,7 @@ from app.utils.citations import (
 from app.utils.logger import create_logger
 
 MAX_TOKENS_THRESHOLD = 80000
-TOOL_EXECUTION_TOKEN_RATIO = 0.7
+TOOL_EXECUTION_TOKEN_RATIO = 0.5
 
 # Create a logger for this module
 logger = create_logger("streaming")

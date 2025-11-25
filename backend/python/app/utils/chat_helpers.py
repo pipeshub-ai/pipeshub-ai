@@ -1303,7 +1303,7 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
     try:
         import tiktoken  # type: ignore
         try:
-            enc = tiktoken.get_encoding("cl100k_base")
+            enc = tiktoken.get_encoding("cl200k_base")
         except Exception:
             enc = None
     except Exception:
@@ -1311,7 +1311,7 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
 
     logger.debug(
         "Using %s for tokenization",
-        "tiktoken(cl100k_base)" if enc is not None else "heuristic (~4 chars/token)",
+        "tiktoken(cl200k_base)" if enc is not None else "heuristic (~4 chars/token)",
     )
 
     current_message_tokens = count_tokens_in_messages(messages,enc)
