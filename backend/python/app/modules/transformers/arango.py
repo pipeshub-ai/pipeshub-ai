@@ -42,8 +42,7 @@ class Arango(Transformer):
                 if record is None:
                     self.logger.error(f"❌ Record {record_id} not found in database")
                     raise Exception(f"Record {record_id} not found in database")
-                # Use arango-safe serialization to avoid non-JSON types (e.g., Enums)
-                doc = record.to_arango_base_record() if record else {}
+
 
                 # Create relationships with departments
                 for department in metadata.departments:
@@ -305,14 +304,13 @@ class Arango(Transformer):
                     "🚀 Metadata saved successfully for document"
                 )
 
-                doc.update(
+                record.update(
                     {
-                        "indexingStatus": "COMPLETED",
                         "extractionStatus": "COMPLETED",
                         "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
                     }
                 )
-                docs = [doc]
+                docs = [record]
 
                 self.logger.info(
                     "🎯 Upserting domain metadata for document"

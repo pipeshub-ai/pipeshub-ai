@@ -82,7 +82,7 @@ class RecordBuilder:
 
     def with_indexing_status(self, status: str) -> 'RecordBuilder':
         valid_statuses = ["NOT_STARTED", "IN_PROGRESS", "PAUSED", "FAILED",
-                         "COMPLETED", "FILE_TYPE_NOT_SUPPORTED", "AUTO_INDEX_OFF"]
+                         "COMPLETED", "FILE_TYPE_NOT_SUPPORTED", "AUTO_INDEX_OFF", "EMPTY", "ENABLE_MULTIMODAL_MODELS", "QUEUED"]
         if status not in valid_statuses:
             raise ValueError(f"Invalid indexing status: {status}")
         self._indexing_status = status

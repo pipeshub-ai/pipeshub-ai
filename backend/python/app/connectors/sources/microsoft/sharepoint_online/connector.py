@@ -29,7 +29,11 @@ from msgraph.generated.models.site_page import SitePage
 from msgraph.generated.models.subscription import Subscription
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -61,7 +65,6 @@ from app.models.entities import (
     Record,
     RecordGroup,
     RecordGroupType,
-    RecordStatus,
     RecordType,
     SharePointListItemRecord,
     SharePointListRecord,
@@ -1025,7 +1028,7 @@ class SharePointConnector(BaseConnector):
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=item_name,
                 record_type=record_type,
-                record_status=RecordStatus.NOT_STARTED if not existing_record else existing_record.record_status,
+                record_status=ProgressStatus.NOT_STARTED if not existing_record else existing_record.record_status,
                 record_group_type=RecordGroupType.DRIVE,
                 parent_record_type=RecordType.FILE,
                 external_record_id=item_id,
@@ -1190,7 +1193,7 @@ class SharePointConnector(BaseConnector):
                 id=str(uuid.uuid4()),
                 record_name=list_name,
                 record_type=RecordType.SHAREPOINT_LIST,
-                record_status=RecordStatus.NOT_STARTED,
+                record_status=ProgressStatus.NOT_STARTED,
                 record_group_type=RecordGroupType.SHAREPOINT_SITE,
                 parent_record_type=RecordType.SITE,
                 external_record_id=list_id,
@@ -1342,7 +1345,7 @@ class SharePointConnector(BaseConnector):
                 id=str(uuid.uuid4()),
                 record_name=str(title)[:255],
                 record_type=RecordType.SHAREPOINT_LIST_ITEM.value,
-                record_status=RecordStatus.NOT_STARTED,
+                record_status=ProgressStatus.NOT_STARTED,
                 record_group_type=RecordGroupType.SHAREPOINT_LIST.value,
                 parent_record_type=RecordType.SHAREPOINT_LIST.value,
                 external_record_id=item_id,
@@ -1445,7 +1448,7 @@ class SharePointConnector(BaseConnector):
                 id=str(uuid.uuid4()),
                 record_name=str(page_name)[:255],
                 record_type=SharePointRecordType.PAGE.value,
-                record_status=RecordStatus.NOT_STARTED,
+                record_status=ProgressStatus.NOT_STARTED,
                 record_group_type="SHAREPOINT_SITE",
                 parent_record_type="SITE",
                 external_record_id=page_id,

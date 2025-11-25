@@ -30,11 +30,15 @@ import { useConnectors } from '../context';
 
 interface IndexingStatusStats {
   NOT_STARTED: number;
+  PAUSED: number;
   IN_PROGRESS: number;
   COMPLETED: number;
   FAILED: number;
   FILE_TYPE_NOT_SUPPORTED: number;
   AUTO_INDEX_OFF: number;
+  EMPTY: number;
+  ENABLE_MULTIMODAL_MODELS: number;
+  QUEUED: number;
 }
 
 interface BasicStats {
@@ -218,6 +222,28 @@ export const ConnectorStatsCard = ({
   ] as const;
 
   const optionalStatusItems = [
+    ...(indexing_status.PAUSED > 0
+      ? [
+          {
+            label: 'Paused',
+            count: indexing_status.PAUSED,
+            icon: clockOutlineIcon,
+            tooltip: 'Paused Records',
+            key: 'paused' as const,
+          },
+        ]
+      : []),
+    ...(indexing_status.QUEUED > 0
+      ? [
+          {
+            label: 'Queued',
+            count: indexing_status.QUEUED,
+            icon: clockOutlineIcon,
+            tooltip: 'Queued Records',
+            key: 'queued' as const,
+          },
+        ]
+      : []),
     ...(indexing_status.FILE_TYPE_NOT_SUPPORTED > 0
       ? [
           {
@@ -237,6 +263,28 @@ export const ConnectorStatsCard = ({
             icon: fileCancelOutlineIcon,
             tooltip: 'Auto Index Off',
             key: 'autoIndexOff' as const,
+          },
+        ]
+      : []),
+    ...(indexing_status.EMPTY > 0
+      ? [
+          {
+            label: 'Empty',
+            count: indexing_status.EMPTY,
+            icon: fileCancelOutlineIcon,
+            tooltip: 'Empty Records',
+            key: 'empty' as const,
+          },
+        ]
+      : []),
+    ...(indexing_status.ENABLE_MULTIMODAL_MODELS > 0
+      ? [
+          {
+            label: 'Enable Multimodal',
+            count: indexing_status.ENABLE_MULTIMODAL_MODELS,
+            icon: alertCircleOutlineIcon,
+            tooltip: 'Enable Multimodal Models',
+            key: 'enableMultimodal' as const,
           },
         ]
       : []),

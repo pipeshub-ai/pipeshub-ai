@@ -55,7 +55,7 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.get_record_by_path(connector_name, path, transaction=self.txn)
 
     async def get_record_by_key(self, key: str) -> Optional[Record]:
-        return await self.arango_service.get_record_by_id(key, transaction=self.txn)
+        return await self.arango_service.get_document(key, CollectionNames.RECORDS.value, transaction=self.txn)
 
     async def get_record_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_external_id(connector_name, external_id, transaction=self.txn)

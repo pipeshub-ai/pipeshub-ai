@@ -906,6 +906,7 @@ class VectorStore(Transformer):
 
             # Update record status
             await self._update_record_status(chunks, record_id)
+            self.logger.info(f"✅ Embeddings created and stored for record: {record_id}")
 
         except (
             EmbeddingError,
@@ -1023,7 +1024,6 @@ class VectorStore(Transformer):
                 if block_group.type.lower() in ["table"]:
                     table_blocks.append(block_group)
 
-
             documents_to_embed = []
 
             # Process text blocks - create sentence embeddings
@@ -1127,6 +1127,7 @@ class VectorStore(Transformer):
                                         "virtualRecordId": virtual_record_id,
                                     }
                                 )
+
 
                                 docs = [doc]
 

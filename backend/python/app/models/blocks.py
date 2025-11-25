@@ -266,4 +266,3 @@ class BlockGroups(BaseModel):
 class BlocksContainer(BaseModel):
     block_groups: List[BlockGroup] = Field(default_factory=list)
     blocks: List[Block] = Field(default_factory=list)
-

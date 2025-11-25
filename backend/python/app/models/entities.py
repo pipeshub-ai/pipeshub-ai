@@ -4,7 +4,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -41,15 +46,6 @@ class RecordType(str, Enum):
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
     OTHERS = "OTHERS"
 
-class RecordStatus(str, Enum):
-    NOT_STARTED = "NOT_STARTED"
-    IN_PROGRESS = "IN_PROGRESS"
-    PAUSED = "PAUSED"
-    FAILED = "FAILED"
-    COMPLETED = "COMPLETED"
-    FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
-    MANUAL_SYNC = "MANUAL_SYNC"
-    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
 
 class Record(BaseModel):
     # Core record properties
@@ -57,7 +53,7 @@ class Record(BaseModel):
     org_id: str = Field(description="Unique identifier for the organization", default="")
     record_name: str = Field(description="Human-readable name for the record")
     record_type: RecordType = Field(description="Type/category of the record")
-    record_status: RecordStatus = Field(default=RecordStatus.NOT_STARTED)
+    record_status: ProgressStatus = Field(default=ProgressStatus.NOT_STARTED)
     parent_record_type: Optional[RecordType] = Field(default=None, description="Type of the parent record")
     record_group_type: Optional[RecordGroupType] = Field(default=None, description="Type of the record group")
     external_record_id: str = Field(description="Unique identifier for the record in the external system")

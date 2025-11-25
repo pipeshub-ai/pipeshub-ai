@@ -7,7 +7,7 @@ from enum import Enum
 from inspect import isclass
 from typing import Any, Callable, Dict, List, Optional, Type
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.connectors.services.base_arango_service import (
     BaseArangoService as ArangoService,
 )
@@ -26,15 +26,7 @@ class Permissions(str, Enum):
     OWNER = "OWNER"
     COMMENTER = "COMMENTER"
 
-class IndexingStatus(str, Enum):
-    NOT_STARTED = "NOT_STARTED"
-    IN_PROGRESS = "IN_PROGRESS"
-    PAUSED = "PAUSED"
-    COMPLETED = "COMPLETED"
-    FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
-    MANUAL_SYNC = "MANUAL_SYNC"
-    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
-    FAILED = "FAILED"
+
 
 def Connector(
     name: str,
@@ -551,7 +543,7 @@ class ConnectorRegistry:
             'appGroups': sorted(app_groups),
             'authTypes': sorted(auth_types),
             'appNames': sorted(app_names),
-            'indexingStatus': IndexingStatus.values(),
+            'indexingStatus': ProgressStatus.values(),
             'recordType': RecordType.values(),
             'origin': Origin.values(),
             'permissions': Permissions.values()

@@ -379,10 +379,18 @@ export const GridView: React.FC<GridViewProps> = ({
         return 'error';
       case 'NOT_STARTED':
         return 'warning';
+      case 'PAUSED':
+        return 'warning';
+      case 'QUEUED':
+        return 'info';
       case 'FILE_TYPE_NOT_SUPPORTED':
         return 'default';
       case 'AUTO_INDEX_OFF':
         return 'primary';
+      case 'EMPTY':
+        return 'info';
+      case 'ENABLE_MULTIMODAL_MODELS':
+        return 'info';
       default:
         return 'default';
     }
@@ -396,10 +404,18 @@ export const GridView: React.FC<GridViewProps> = ({
         return 'Not Supported';
       case 'AUTO_INDEX_OFF':
         return 'Manual Sync';
+      case 'EMPTY':
+        return 'Empty';
+      case 'ENABLE_MULTIMODAL_MODELS':
+        return 'Enable Multimodal Models';
       case 'NOT_STARTED':
         return 'Not Started';
       case 'IN_PROGRESS':
         return 'In Progress';
+      case 'PAUSED':
+        return 'Paused';
+      case 'QUEUED':
+        return 'Queued';
       default:
         return status
           .replace(/_/g, ' ')
