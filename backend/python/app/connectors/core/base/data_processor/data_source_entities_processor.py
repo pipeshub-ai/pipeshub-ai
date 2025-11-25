@@ -480,7 +480,7 @@ class DataSourceEntitiesProcessor:
                                 self.logger.warning(f"Could not find role with external_id {permission.external_id} for RecordGroup permission.")
                         # (The ORG case is no longer needed here as it's handled by BELONGS_TO)
                         # Update adding ORG permission to allow fetching of records via record groups
-                        elif permission.entity_type == EntityType.ORG.value:
+                        elif permission.entity_type == EntityType.ORG:
                             from_collection = f"{CollectionNames.ORGS.value}/{self.org_id}"
 
                         if from_collection:

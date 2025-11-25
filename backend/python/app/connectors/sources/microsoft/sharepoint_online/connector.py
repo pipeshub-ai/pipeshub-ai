@@ -577,7 +577,6 @@ class SharePointConnector(BaseConnector):
                                 continue
 
                             self.logger.debug(f"Site found: '{site.display_name or site.name}' - ID: '{site.id}'")
-                            self.logger.debug(f"Site URL: '{site}'")
                             # Avoid duplicates
                             if not any(existing_site.id == site.id for existing_site in sites):
                                 sites.append(site)
@@ -937,10 +936,8 @@ class SharePointConnector(BaseConnector):
             if not file_record:
                 return None
 
-            # Get permissions currently fetching permissions via site record group 
+            # Get permissions currently fetching permissions via site record group
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
-
-            print(f"!!!!!!!!!!!!!!!!!! drive item permissions for {item.name}: {permissions}")
 
             # Todo: Get permissions for the record
             # for user in users:
@@ -1600,6 +1597,8 @@ class SharePointConnector(BaseConnector):
                     type=perm_type,
                     entity_type=EntityType.USER
                 )
+
+            # Security Group Type constant (Pricipal type=4 means Security group) done to pass lint checks
             SECURITY_GROUP_TYPE = 4
 
             # ==================================================================
@@ -1627,7 +1626,6 @@ class SharePointConnector(BaseConnector):
                     # CASE B: It's the "Everyone" Claim (Public Site)
                     elif 'spo-grid-all-users' in login_name:
                         self.logger.info(f"🌍 Site {site_id} is Public (Everyone claim found)")
-                        print("\n\n\n\n\n !!!!!!!!!!!!!!!!!!!!!! Everyone claim found for site", site_url)
                         # Add org relation for public sites
                         permissions_dict['ORGANIZATION_ACCESS'] = Permission(
                             type=PermissionType.READ, # Default to READ for public access
@@ -2126,7 +2124,6 @@ class SharePointConnector(BaseConnector):
                         .permissions.get()
                 )
 
-            print("\n\n\n !!!!!!!!!!!!!! perm response:", perms_response)
             if perms_response and perms_response.value:
                 permissions = await self._convert_to_permissions(perms_response.value)
 
@@ -2296,6 +2293,7 @@ class SharePointConnector(BaseConnector):
             try:
                 # Get all sites
                 sites = await self._get_all_sites()
+                SECURITY_GROUP_TYPE = 4
 
                 # --- OPTIMIZATION: Open HTTP Client ONCE ---
                 async with httpx.AsyncClient(timeout=30.0) as http_client:
@@ -2371,13 +2369,13 @@ class SharePointConnector(BaseConnector):
 
                                             if users:
                                                 self.logger.info(f"   - Raw Entities found: {len(users)}")
-                                                
+
                                                 for user in users:
                                                     login_name = user.get('LoginName', '')
                                                     principal_type = user.get('PrincipalType')
-                                                    
+
                                                     # --- NEW LOGIC START: Handle Group Expansions ---
-                                                    
+
                                                     # CASE A: M365 Unified Group (The "True" Team)
                                                     # Looks for 'federateddirectoryclaimprovider' in LoginName
                                                     if 'federateddirectoryclaimprovider' in login_name:
@@ -2386,13 +2384,13 @@ class SharePointConnector(BaseConnector):
                                                         if match:
                                                             m365_id = match.group(1)
                                                             self.logger.info(f"     -> Expanding M365 Group: {m365_id}")
-                                                            
+
                                                             # Determine if we want Owners or Members based on the SP Group Title
                                                             is_owner_check = 'Owner' in group_title
-                                                            
+
                                                             # Call helper to get actual humans from Graph
                                                             expanded_users = await self._fetch_graph_group_members(m365_id, is_owner=is_owner_check)
-                                                            
+
                                                             for exp_u in expanded_users:
                                                                 app_users.append(AppUser(
                                                                     source_user_id=exp_u['id'],
@@ -2402,16 +2400,16 @@ class SharePointConnector(BaseConnector):
                                                                 ))
 
                                                     # CASE B: AD Security Group (PrincipalType == 4)
-                                                    elif principal_type == 4:
+                                                    elif principal_type == SECURITY_GROUP_TYPE:
                                                         # Security Group LoginNames often look like: "c:0t.c|tenant|GUID"
                                                         match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
                                                         if match:
                                                             sec_id = match.group(1)
                                                             self.logger.info(f"     -> Expanding Security Group: {sec_id}")
-                                                            
+
                                                             # Security groups imply members (is_owner=False)
                                                             expanded_users = await self._fetch_graph_group_members(sec_id, is_owner=False)
-                                                            
+
                                                             for exp_u in expanded_users:
                                                                 app_users.append(AppUser(
                                                                     source_user_id=exp_u['id'],
