@@ -382,37 +382,59 @@ app = FastAPI(
     dependencies=[Depends(get_initialized_container)],
 )
 
-# List of paths to apply authentication to
-INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/", "/api/v1/entity/", "/api/v1/connectors/", "/api/v1/records", "/api/v1/kb"]
+# List of paths to exclude from authentication (public endpoints)
+# All other paths will require authentication by default
+EXCLUDE_PATHS = [
+    "/health",  # Health check endpoint
+    "/drive/webhook",  # Google Drive webhook (has its own WebhookAuthVerifier)
+    "/gmail/webhook",  # Gmail webhook (uses Google Pub/Sub authentication)
+    "/admin/webhook",  # Admin webhook (has its own WebhookAuthVerifier)
+]
 
 @app.middleware("http")
-async def authenticate_requests(request: Request, call_next)-> JSONResponse:
+async def authenticate_requests(request: Request, call_next) -> JSONResponse:
+    """
+    Authentication middleware that authenticates all requests by default,
+    except for paths explicitly excluded (webhooks, health checks, OAuth callbacks).
+    """
     logger = app.container.logger()  # type: ignore
-    logger.info(f"Middleware request: {request.url.path}")
+    request_path = request.url.path
+    logger.debug(f"Middleware processing request: {request_path}")
 
-    # Check if path should be excluded from authentication (OAuth callbacks)
-    if "/oauth/callback" in request.url.path:
-        # Skip authentication for OAuth callbacks
+    # Check if path should be excluded from authentication
+    should_exclude = False
+
+    # Check exact path matches for webhooks and health
+    if request_path in EXCLUDE_PATHS:
+        should_exclude = True
+        logger.debug(f"Excluding exact path match: {request_path}")
+
+    # Check for OAuth callback paths (pattern-based exclusion)
+    if "/oauth/callback" in request_path:
+        should_exclude = True
+        logger.debug(f"Excluding OAuth callback path: {request_path}")
+
+
+
+    # If path should be excluded, skip authentication
+    if should_exclude:
+        logger.debug(f"Skipping authentication for excluded path: {request_path}")
         return await call_next(request)
 
-    # Apply middleware only to specific paths
-    if not any(request.url.path.startswith(path) for path in INCLUDE_PATHS):
-        # Skip authentication for other paths
-        return await call_next(request)
-
+    # All other paths require authentication
     try:
-        # Apply authentication
+        logger.debug(f"Applying authentication for path: {request_path}")
         authenticated_request = await authMiddleware(request)
-        # Continue with the request
-        logger.info("Call Next")
         response = await call_next(authenticated_request)
         return response
 
     except HTTPException as exc:
         # Handle authentication errors
+        logger.warning(f"Authentication failed for {request_path}: {exc.detail}")
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    except Exception:
+    except Exception as e:
         # Handle unexpected errors
+        logger.error(f"Unexpected error during authentication for {request_path}: {str(e)}", exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": "Internal server error"},

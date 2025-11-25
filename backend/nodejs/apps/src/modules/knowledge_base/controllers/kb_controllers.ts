@@ -22,10 +22,10 @@ import {
   ORIGIN_TYPE,
   RECORD_TYPE,
 } from '../constants/record.constants';
+import axios from 'axios';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { getMimeType } from '../../storage/mimetypes/mimetypes';
-import axios from 'axios';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
   ConnectorServiceCommand,
@@ -146,7 +146,8 @@ interface ActiveConnectorsResponse {
   connectors: ConnectorInfo[];
 }
 
-const normalizeAppName = (value: string): string => value.replace(' ', '').toLowerCase();
+const normalizeAppName = (value: string): string =>
+  value.replace(' ', '').toLowerCase();
 
 const validateActiveConnector = async (
   appName: string,
@@ -165,7 +166,9 @@ const validateActiveConnector = async (
 
   const data = activeAppsResponse.data as ActiveConnectorsResponse;
   const connectors = data?.connectors || [];
-  const allowedApps = connectors.map((connector) => normalizeAppName(connector.name));
+  const allowedApps = connectors.map((connector) =>
+    normalizeAppName(connector.name),
+  );
 
   if (!allowedApps.includes(normalizeAppName(appName))) {
     throw new BadRequestError(`Connector ${appName} not allowed`);
@@ -698,9 +701,10 @@ export const uploadRecordsToKB =
         const extension = fileName.includes('.')
           ? fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase()
           : null;
-        
+
         // Use correct MIME type mapping instead of browser detection
-        const correctMimeType = (extension && getMimeType(extension)) || mimetype;
+        const correctMimeType =
+          (extension && getMimeType(extension)) || mimetype;
         // Generate unique ID for the record
         const key: string = uuidv4();
         const webUrl = `/record/${key}`;
@@ -2253,19 +2257,24 @@ export const getConnectorStats =
         );
       }
 
+      if (!req.params.connector) {
+        throw new BadRequestError('Connector is required');
+      }
+
       try {
         // Call the Python service to get record
-        const response = await axios.get(
-          `${appConfig.connectorBackend}/api/v1/stats`,
-          {
-            params: {
-              org_id: orgId,
-              connector: req.params.connector,
-            },
-          },
+
+        let queryParams = new URLSearchParams();
+
+        queryParams.append('org_id', orgId);
+        queryParams.append('connector', req.params.connector);
+        const response = await executeConnectorCommand(
+          `${appConfig.connectorBackend}/api/v1/stats?${queryParams.toString()}`,
+          HttpMethod.GET,
+          req.headers as Record<string, string>,
         );
 
-        if (response.status !== 200) {
+        if (response.statusCode !== 200) {
           throw new InternalServerError(
             'Failed to get connector stats via Python service',
           );
@@ -2366,7 +2375,9 @@ export const getRecordBuffer =
           try {
             res.status(500).end('Error streaming data');
           } catch (e) {
-            logger.error('Failed to send stream error response to client', { error: e });
+            logger.error('Failed to send stream error response to client', {
+              error: e,
+            });
           }
         }
       });

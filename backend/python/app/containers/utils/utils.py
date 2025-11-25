@@ -176,10 +176,11 @@ class ContainerUtils:
         logger: Logger,
         processor: Processor,
         arango_service: BaseArangoService,
+        config_service: ConfigurationService,
     ) -> EventProcessor:
         """Async factory for EventProcessor"""
         event_processor = EventProcessor(
-            logger=logger, processor=processor, arango_service=arango_service
+            logger=logger, processor=processor, arango_service=arango_service, config_service=config_service
         )
         # Add any necessary async initialization
         return event_processor

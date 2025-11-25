@@ -108,6 +108,7 @@ class IndexingAppContainer(BaseAppContainer):
         logger=logger,
         processor=processor,
         arango_service=arango_service,
+        config_service=config_service,
     )
 
     redis_scheduler = providers.Resource(
