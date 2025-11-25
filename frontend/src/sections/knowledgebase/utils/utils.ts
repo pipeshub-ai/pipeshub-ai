@@ -103,4 +103,56 @@ export const extractCleanTextFragment = (text: string, maxWords: number = 5): st
   
     return bestSegment.slice(0, maxWords).join(' ');
   };
+
+/**
+ * Adds a text fragment to a URL for browser text highlighting.
+ * 
+ * This function handles URL text fragments (Text Fragments API) which allow
+ * highlighting specific text on a page when the URL is opened.
+ * 
+ * @param webUrl - The URL to add the text fragment to (can be absolute or relative)
+ * @param textFragment - The text fragment to highlight (will be URL-encoded)
+ * @returns The URL with the text fragment appended, or the original URL if textFragment is empty
+ * 
+ * @example
+ * addTextFragmentToUrl('https://example.com/page', 'Step 1: Register')
+ * // Returns: 'https://example.com/page#:~:text=Step%201%3A%20Register'
+ * 
+ * @example
+ * addTextFragmentToUrl('https://example.com/page#section', 'Step 1: Register')
+ * // Returns: 'https://example.com/page#section:~:text=Step%201%3A%20Register'
+ */
+export const addTextFragmentToUrl = (webUrl: string, textFragment: string): string => {
+  if (!textFragment || !webUrl) {
+    return webUrl;
+  }
+
+  const encodedFragment = encodeURIComponent(textFragment);
+
+  try {
+    // Try to use URL constructor for proper URL handling (works for absolute URLs)
+    const url = new URL(webUrl);
+    if (url.hash.includes(':~:')) {
+      // If text fragment directive already exists, append with &
+      url.hash += `&text=${encodedFragment}`;
+    } else {
+      // Otherwise, add the text fragment directive
+      url.hash += `:~:text=${encodedFragment}`;
+    }
+    return url.toString();
+  } catch (e) {
+    // Fallback for cases where webUrl might not be a full URL (e.g., relative paths)
+    // Handle all three cases: existing :~:, existing #, or no hash
+    if (webUrl.includes(':~:')) {
+      // Text fragment directive already exists, append with &
+      return `${webUrl}&text=${encodedFragment}`;
+    }
+    if (webUrl.includes('#')) {
+      // Hash exists but no text fragment directive, append :~:text=
+      return `${webUrl}:~:text=${encodedFragment}`;
+    }
+    // No hash exists, add #:~:text=
+    return `${webUrl}#:~:text=${encodedFragment}`;
+  }
+};
   
