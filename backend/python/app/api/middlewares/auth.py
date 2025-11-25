@@ -83,9 +83,8 @@ async def isJwtTokenValid(request: Request) -> dict:
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    logger = None
+    logger = request.app.container.logger()
     try:
-        logger = request.app.container.logger()
         logger.debug("🚀 Starting JWT token validation")
 
         config_service = await get_config_service(request)
@@ -116,8 +115,7 @@ async def isJwtTokenValid(request: Request) -> dict:
         # Try regular JWT first (maintains backward compatibility)
         try:
             payload = jwt.decode(token, regular_jwt_secret, algorithms=[algorithm])
-            if logger:
-                logger.debug("✅ Validated token using regular JWT secret")
+            logger.debug("✅ Validated token using regular JWT secret")
             # Add metadata for backward compatibility
             payload["user"] = token
             payload["token_type"] = "regular"
@@ -127,25 +125,22 @@ async def isJwtTokenValid(request: Request) -> dict:
             if scoped_jwt_secret:
                 try:
                     payload = jwt.decode(token, scoped_jwt_secret, algorithms=[algorithm])
-                    if logger:
-                        logger.debug("✅ Validated token using scoped JWT secret (fallback)")
+                    logger.debug("✅ Validated token using scoped JWT secret (fallback)")
                     # Add metadata
                     payload["user"] = token
                     payload["token_type"] = "scoped"
                     return payload
                 except JWTError as scoped_jwt_error:
                     # Both failed - log and raise
-                    if logger:
-                        logger.warning(
-                            f"Token validation failed with both secrets. "
-                            f"Regular JWT error: {type(regular_jwt_error).__name__}, "
-                            f"Scoped JWT error: {type(scoped_jwt_error).__name__}"
-                        )
+                    logger.warning(
+                        f"Token validation failed with both secrets. "
+                        f"Regular JWT error: {type(regular_jwt_error).__name__}, "
+                        f"Scoped JWT error: {type(scoped_jwt_error).__name__}"
+                    )
                     raise credentials_exception
             else:
                 # No scoped secret available, regular JWT failed
-                if logger:
-                    logger.warning(f"Token validation failed with regular JWT: {type(regular_jwt_error).__name__}")
+                logger.warning(f"Token validation failed with regular JWT: {type(regular_jwt_error).__name__}")
                 raise credentials_exception
 
     except HTTPException:
@@ -153,16 +148,14 @@ async def isJwtTokenValid(request: Request) -> dict:
         raise
     except ValueError as e:
         # Configuration errors should be 500, not 401
-        if logger:
-            logger.error(f"Configuration error during authentication: {e}")
+        logger.error(f"Configuration error during authentication: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication configuration error",
         )
     except Exception as e:
         # Catch-all for unexpected errors
-        if logger:
-            logger.error(f"Unexpected error during authentication: {e}", exc_info=True)
+        logger.error(f"Unexpected error during authentication: {e}", exc_info=True)
         raise credentials_exception
 
 
@@ -187,8 +180,8 @@ async def authMiddleware(request: Request) -> Request:
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    logger = request.app.container.logger()
     try:
-        logger = request.app.container.logger()
         logger.debug("🚀 Starting authentication middleware")
 
         payload = await isJwtTokenValid(request)
@@ -196,14 +189,12 @@ async def authMiddleware(request: Request) -> Request:
         # Attach the authenticated user information to the request state
         request.state.user = payload
 
-        if logger:
-            logger.debug(f"✅ Authentication successful. Token type: {payload.get('token_type', 'unknown')}")
+        logger.debug(f"✅ Authentication successful. Token type: {payload.get('token_type', 'unknown')}")
 
     except HTTPException as e:
         # Re-raise HTTP exceptions as-is to preserve status codes and details
         raise e
     except Exception as e:
-        logger = request.app.container.logger()
         logger.error(f"Unexpected error in authentication middleware: {e}", exc_info=True)
         raise credentials_exception
 
