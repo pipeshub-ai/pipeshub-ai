@@ -54,10 +54,13 @@ import ImageHighlighter from './components/image-highlighter';
 const DRAWER_WIDTH = 300;
 
 // Per-conversation streaming state
-interface ConversationStreamingState {
+export interface ConversationStreamingState {
   messageId: string | null;
   content: string;
   citations: CustomCitation[];
+  confidence: string;
+  createdAt: Date;
+  updatedAt: Date;
   isActive: boolean;
   controller: AbortController | null;
   accumulatedContent: string;
@@ -278,6 +281,7 @@ class StreamingManager {
         content: '',
         citations: [],
         accumulatedContent: '',
+        confidence: '',
       });
     }
 
@@ -292,6 +296,7 @@ class StreamingManager {
       accumulatedContent: updatedAccumulatedContent,
       content: processedContent,
       citations: processedCitations,
+      confidence: state?.confidence || '',
     });
 
     this.updateConversationMessages(conversationKey, (prev) => {
@@ -302,6 +307,7 @@ class StreamingManager {
         ...updated[messageIndex],
         content: processedContent,
         citations: processedCitations,
+        confidence: state?.confidence || '',
       };
       return updated;
     });
@@ -316,6 +322,7 @@ class StreamingManager {
     let finalContent = state?.content || '';
     let finalCitations = state?.citations || [];
     let finalMessageId = messageId;
+    let finalConfidence = state?.confidence || '';
 
     if (completionData?.conversation) {
       const finalBotMessage = completionData.conversation.messages
@@ -332,6 +339,7 @@ class StreamingManager {
           );
           finalContent = processedContent;
           finalCitations = processedCitations;
+          finalConfidence = formatted.confidence || '';
         }
       }
     }
@@ -339,7 +347,7 @@ class StreamingManager {
     this.updateConversationMessages(conversationKey, (prev) =>
       prev.map((msg) =>
         msg.id === messageId
-          ? { ...msg, id: finalMessageId, content: finalContent, citations: finalCitations }
+          ? { ...msg, id: finalMessageId, content: finalContent, citations: finalCitations, confidence: finalConfidence }
           : msg
       )
     );
@@ -357,6 +365,7 @@ class StreamingManager {
       statusMessage: '',
       showStatus: false,
       completionData: null,
+      confidence: finalConfidence,
     });
   }
 
@@ -424,6 +433,9 @@ class StreamingManager {
       messageId: null,
       content: '',
       citations: [],
+      confidence: '',
+      createdAt: new Date(),
+      updatedAt: new Date(),
       isActive: false,
       controller: null,
       accumulatedContent: '',

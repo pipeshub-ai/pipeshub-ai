@@ -47,32 +47,13 @@ import ImageHighlighter from 'src/sections/qna/chatbot/components/image-highligh
 import { StreamingContext } from 'src/sections/qna/chatbot/components/chat-message';
 import { processStreamingContentLegacy } from 'src/sections/qna/chatbot/utils/styles/content-processing';
 import { useConnectors } from 'src/sections/accountdetails/connectors/hooks/use-connectors';
+import { ConversationStreamingState } from 'src/sections/qna/chatbot/chat-bot';
 import AgentApiService, { KnowledgeBase } from './services/api';
 import AgentChatInput from './components/agent-chat-input';
 import AgentChatSidebar from './components/agent-chat-sidebar';
 
 const DRAWER_WIDTH = 300;
 
-// Per-conversation streaming state
-interface ConversationStreamingState {
-  messageId: string | null;
-  content: string;
-  citations: CustomCitation[];
-  isActive: boolean;
-  controller: AbortController | null;
-  accumulatedContent: string;
-  completionData: CompletionData | null;
-  isCompletionPending: boolean;
-  finalMessageId: string | null;
-  isProcessingCompletion: boolean;
-  statusMessage: string;
-  showStatus: boolean;
-  pendingNavigation: {
-    conversationId: string;
-    shouldNavigate: boolean;
-  } | null;
-  isStreamingCompleted: boolean;
-}
 
 // Store messages per conversation
 interface ConversationMessages {
@@ -294,6 +275,7 @@ class StreamingManager {
         content: '',
         citations: [],
         accumulatedContent: '',
+        confidence: '',
       });
     }
 
@@ -311,6 +293,7 @@ class StreamingManager {
       accumulatedContent: updatedAccumulatedContent,
       content: processedContent,
       citations: processedCitations,
+      confidence: state?.confidence || '',
     });
 
     // Update the conversation messages with the processed content
@@ -322,6 +305,7 @@ class StreamingManager {
         ...updated[messageIndex],
         content: processedContent,
         citations: processedCitations,
+        confidence: state?.confidence || '',
       };
       return updated;
     });
@@ -336,7 +320,7 @@ class StreamingManager {
     let finalContent = state?.content || '';
     let finalCitations = state?.citations || [];
     let finalMessageId = messageId;
-
+    let finalConfidence = state?.confidence || '';
     if (completionData?.conversation) {
       const finalBotMessage = completionData.conversation.messages
         .filter((msg: any) => msg.messageType === 'bot_response')
@@ -352,6 +336,7 @@ class StreamingManager {
           );
           finalContent = processedContent;
           finalCitations = processedCitations;
+          finalConfidence = formatted.confidence || '';
         }
       }
     }
@@ -359,7 +344,7 @@ class StreamingManager {
     this.updateConversationMessages(conversationKey, (prev) =>
       prev.map((msg) =>
         msg.id === messageId
-          ? { ...msg, id: finalMessageId, content: finalContent, citations: finalCitations }
+          ? { ...msg, id: finalMessageId, content: finalContent, citations: finalCitations, confidence: finalConfidence }
           : msg
       )
     );
@@ -377,6 +362,7 @@ class StreamingManager {
       statusMessage: '',
       showStatus: false,
       completionData: null,
+      confidence: finalConfidence,
     });
   }
 
@@ -391,6 +377,7 @@ class StreamingManager {
       followUpQuestions: apiMessage.followUpQuestions || [],
       createdAt: apiMessage.createdAt ? new Date(apiMessage.createdAt) : new Date(),
       updatedAt: apiMessage.updatedAt ? new Date(apiMessage.updatedAt) : new Date(),
+      confidence: apiMessage.confidence || '',
     };
 
     if (apiMessage.messageType === 'user_query') {
@@ -446,6 +433,9 @@ class StreamingManager {
       showStatus: false,
       pendingNavigation: null,
       isStreamingCompleted: false,
+      confidence: '',
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
   }
 
