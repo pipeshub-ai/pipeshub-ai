@@ -179,8 +179,6 @@ const ChatMessagesArea = ({
     (message: FormattedMessage) => {
       const botMessages = messages.filter((msg) => msg.type === 'bot');
       const lastBotMessage = botMessages[botMessages.length - 1];
-      console.log('message', message);
-      console.log('lastBotMessage', lastBotMessage);
       return (
         message.type === 'bot' &&
         message.id === lastBotMessage?.id &&

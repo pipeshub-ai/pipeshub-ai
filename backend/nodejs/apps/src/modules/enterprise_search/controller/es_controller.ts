@@ -9,6 +9,12 @@ import {
   buildAgentSharedWithMeFilter,
   deleteAgentConversation,
   replaceMessageWithError,
+  initializeSSEResponse,
+  sendSSEErrorEvent,
+  sendSSECompleteEvent,
+  handleRegenerationStreamData,
+  handleRegenerationSuccess,
+  handleRegenerationError,
 } from './../utils/utils';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession, Types } from 'mongoose';
@@ -1120,17 +1126,12 @@ export const addMessageStream =
       conversation.failReason = undefined; // Clear previous error if any
 
       // Update model and mode information if provided
-      if (req.body.modelKey) {
-        conversation.modelKey = req.body.modelKey;
-      }
-      if (req.body.modelName) {
-        conversation.modelName = req.body.modelName;
-      }
-      if (req.body.modelProvider) {
-        conversation.modelProvider = req.body.modelProvider;
-      }
-      if (req.body.chatMode) {
-        conversation.chatMode = req.body.chatMode;
+      const fieldsToUpdate: Array<keyof IConversation> = ['modelKey', 'modelName', 'modelProvider', 'chatMode'];
+      for (const field of fieldsToUpdate) {
+        const value = req.body[field];
+        if (value !== undefined && value !== null) {
+          (conversation as any)[field] = value;
+        }
       }
 
       // First, add the user message to the existing conversation
@@ -2371,20 +2372,8 @@ export const regenerateAnswers =
     }
 
     try {
-      // Set SSE headers
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
-        'X-Accel-Buffering': 'no',
-      });
-
-      // Send initial connection event and flush
-      res.write(
-        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
-      );
-      (res as any).flush?.();
+      // Initialize SSE response
+      initializeSSEResponse(res);
 
       logger.debug('Attempting to regenerate answers via stream', {
         requestId,
@@ -2455,106 +2444,25 @@ export const regenerateAnswers =
       });
 
       // Process SSE events, capture complete event, and forward non-complete events
-      stream.on('data', async (chunk: Buffer) => {
-        const chunkStr = chunk.toString();
-        buffer += chunkStr;
-
-        // Look for complete events in the buffer
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || ''; // Keep incomplete event in buffer
-
-        let filteredChunk = '';
-
-        for (const event of events) {
-          if (event.trim()) {
-            // Check if this is a complete event
-            const lines = event.split('\n');
-            const eventType = lines
-              .find((line) => line.startsWith('event:'))
-              ?.replace('event:', '')
-              .trim();
-            const dataLines = lines
-              .filter((line) => line.startsWith('data:'))
-              .map((line) => line.replace(/^data: ?/, ''));
-            const dataLine = dataLines.join('\n');
-            if (eventType === 'complete' && dataLine) {
-              try {
-                completeData = JSON.parse(dataLine);
-                logger.debug('Captured complete event data from AI backend', {
-                  requestId,
-                  conversationId: existingConversation?._id,
-                  answer: completeData?.answer,
-                  citationsCount: completeData?.citations?.length || 0,
-                });
-                // DO NOT forward the complete event from AI backend
-                // We'll send our own complete event after processing
-              } catch (parseError: any) {
-                logger.error('Failed to parse complete event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
-                // Forward the event if we can't parse it
-                filteredChunk += event + '\n\n';
-              }
-            } else if (eventType === 'error' && dataLine) {
-              try {
-                const errorData = JSON.parse(dataLine);
-                if (existingConversation && messageIndex >= 0) {
-                  const errorMessage = errorData.error || errorData.message || 'Unknown error occurred';
-                  // Replace the message at messageIndex with error (for regeneration)
-                  replaceMessageWithError(
-                    existingConversation as IConversationDocument,
-                    messageIndex,
-                    errorMessage,
-                    session,
-                    'streaming_error',
-                    errorData.stack,
-                    errorData.metadata ? new Map(Object.entries(errorData.metadata)) : undefined,
-                  ).catch((err) => {
-                    logger.error('Failed to replace message with error', {
-                      requestId,
-                      error: err.message,
-                    });
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              } catch (parseError: any) {
-                logger.error('Failed to parse error event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
-                if (existingConversation && messageIndex >= 0) {
-                  const errorMessage = `Failed to parse error event: ${parseError.message}`;
-                  replaceMessageWithError(
-                    existingConversation as IConversationDocument,
-                    messageIndex,
-                    errorMessage,
-                    session,
-                    'parse_error',
-                    parseError.stack,
-                  ).catch((err) => {
-                    logger.error('Failed to replace message with error', {
-                      requestId,
-                      error: err.message,
-                    });
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              }
-            } else {
-              // Forward all non-complete events
-              filteredChunk += event + '\n\n';
-            }
-          }
-        }
-
-        // Forward only non-complete events to client
-        if (filteredChunk) {
-          res.write(filteredChunk);
-          (res as any).flush?.();
-        }
+      stream.on('data', (chunk: Buffer) => {
+        buffer = handleRegenerationStreamData(
+          chunk,
+          buffer,
+          existingConversation,
+          messageIndex,
+          session,
+          requestId || '',
+          res,
+          (data: IAIResponse) => {
+            completeData = data;
+            logger.debug('Captured complete event data from AI backend', {
+              requestId,
+              conversationId: existingConversation?._id,
+              answer: completeData?.answer,
+              citationsCount: completeData?.citations?.length || 0,
+            });
+          },
+        );
       });
 
       stream.on('end', async () => {
@@ -2563,105 +2471,26 @@ export const regenerateAnswers =
           // Save the AI response to the conversation, replacing the existing message
           if (completeData && existingConversation) {
             try {
-        // Create and save citations
-              const savedCitations: ICitation[] = await Promise.all(
-                completeData.citations?.map(async (citation: ICitation) => {
-            const newCitation = new Citation({
-              content: citation.content,
-              chunkIndex: citation.chunkIndex ?? 0,
-              citationType: citation.citationType,
-              metadata: {
-                ...citation.metadata,
-                orgId,
-              },
-            });
-            return newCitation.save();
-                }) || [],
-              );
-
-              // Build AI response message using existing utility
-              const aiResponseMessage = buildAIResponseMessage(
-                { statusCode: 200, data: completeData },
-          savedCitations,
-        ) as IMessageDocument;
-
-              // Preserve the original message ID
-              const originalMessage = existingConversation.messages[
-                messageIndex
-              ] as IMessageDocument;
-              aiResponseMessage._id = originalMessage._id;
-
-              // Update model and mode information if provided
-              if (req.body.modelKey) {
-                existingConversation.modelKey = req.body.modelKey;
-              }
-              if (req.body.modelName) {
-                existingConversation.modelName = req.body.modelName;
-              }
-              if (req.body.modelProvider) {
-                existingConversation.modelProvider = req.body.modelProvider;
-              }
-              if (req.body.chatMode) {
-                existingConversation.chatMode = req.body.chatMode;
-              }
-
-              // Update the conversation with the new message at the same index
-              existingConversation.messages[messageIndex] = aiResponseMessage;
-              existingConversation.lastActivityAt = Date.now();
-              existingConversation.status = CONVERSATION_STATUS.COMPLETE;
-
-              // Save the updated conversation
-              const updatedConversation = session
-                ? await existingConversation.save({ session })
-                : await existingConversation.save();
-
-        if (!updatedConversation) {
-                throw new InternalServerError(
-                  'Failed to update conversation with regenerated response',
+              const { conversation: responseConversation, savedCitations } =
+                await handleRegenerationSuccess(
+                  completeData,
+                  existingConversation,
+                  messageIndex,
+                  orgId || '',
+                  session,
+                  req.body.modelKey,
+                  req.body.modelName,
+                  req.body.modelProvider,
+                  req.body.chatMode,
                 );
-              }
-
-              // Return the updated conversation in the same format
-              const plainConversation = updatedConversation.toObject();
-              const responseConversation = {
-                ...plainConversation,
-                messages: plainConversation.messages.map(
-                  (message: IMessage, idx: number) => {
-                    // Only include the regenerated message in the response
-                    if (idx === messageIndex) {
-        return {
-                        ...message,
-                citations:
-                          message.citations?.map((citation: IMessageCitation) => ({
-                            ...citation,
-                    citationData: savedCitations.find(
-                              (c) =>
-                        (c as mongoose.Document).id.toString() ===
-                        citation.citationId?.toString(),
-                    ),
-                  })) || [],
-                      };
-                    }
-                    return message;
-                  },
-                ),
-              };
-
-              // Send the final conversation data
-              const responsePayload = {
-                conversation: responseConversation,
-                recordsUsed: savedCitations.length,
-                meta: {
-                  requestId,
-                  timestamp: new Date().toISOString(),
-                  duration: Date.now() - startTime,
-                  recordsUsed: savedCitations.length,
-                },
-              };
 
               // Send final response event with the complete conversation data
-              res.write(
-                `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
+              sendSSECompleteEvent(
+                res,
+                responseConversation,
+                savedCitations.length,
+                requestId || '',
+                startTime,
               );
 
               logger.debug(
@@ -2676,16 +2505,16 @@ export const regenerateAnswers =
             } catch (error: any) {
               // Update conversation status for general errors
               if (existingConversation && messageIndex >= 0) {
-                const errorMessage = error.message || 'Unknown error occurred';
-                // Replace the message at messageIndex with error (for regeneration)
-                await replaceMessageWithError(
-                  existingConversation as IConversationDocument,
-                  messageIndex,
-                  errorMessage,
-                  session,
-                  'regeneration_error',
-                  error.stack,
-                );
+              await handleRegenerationError(
+                res,
+                error,
+                existingConversation,
+                messageIndex,
+                conversationId || '',
+                session,
+                requestId || '',
+                'regeneration_error',
+              );
               }
 
               if (error.cause && error.cause.code === 'ECONNREFUSED') {
@@ -2700,7 +2529,6 @@ export const regenerateAnswers =
             // Mark as failed if no complete data received
             if (existingConversation && messageIndex >= 0) {
               const errorMessage = 'No complete response received from AI service';
-              // Replace the message at messageIndex with error (for regeneration)
               await replaceMessageWithError(
                 existingConversation as IConversationDocument,
                 messageIndex,
@@ -2710,35 +2538,20 @@ export const regenerateAnswers =
               );
 
               // Reload conversation to get updated state
-              const updatedConversation = await Conversation.findById(conversationId);
+              const updatedConversation = await Conversation.findById(conversationId || '');
               if (updatedConversation) {
                 const plainConversation = updatedConversation.toObject();
-                // Send error event with updated conversation
-                res.write(
-                  `event: error\ndata: ${JSON.stringify({
-                    error: errorMessage,
-                    conversation: plainConversation,
-                  })}\n\n`,
-                );
+                await sendSSEErrorEvent(res, errorMessage, undefined, plainConversation);
               } else {
-                res.write(
-                  `event: error\ndata: ${JSON.stringify({
-                    error: errorMessage,
-                  })}\n\n`,
-                );
+                await sendSSEErrorEvent(res, errorMessage);
               }
             } else {
-              // Send error event
-              res.write(
-                `event: error\ndata: ${JSON.stringify({
-                  error: 'No complete response received from AI service',
-                })}\n\n`,
-              );
+              await sendSSEErrorEvent(res, 'No complete response received from AI service');
             }
           }
         } catch (dbError: any) {
           logger.error('Failed to save regenerated AI response to conversation', {
-        requestId,
+            requestId,
             conversationId: existingConversation?._id,
             error: dbError.message,
           });
@@ -2757,44 +2570,22 @@ export const regenerateAnswers =
               );
 
               // Reload conversation to get updated state
-              const updatedConversation = await Conversation.findById(conversationId);
+              const updatedConversation = await Conversation.findById(conversationId || '');
               if (updatedConversation) {
                 const plainConversation = updatedConversation.toObject();
-                res.write(
-                  `event: error\ndata: ${JSON.stringify({
-                    error: errorMessage,
-                    details: dbError.message,
-                    conversation: plainConversation,
-                  })}\n\n`,
-                );
+                await sendSSEErrorEvent(res, errorMessage, dbError.message, plainConversation);
               } else {
-                res.write(
-                  `event: error\ndata: ${JSON.stringify({
-                    error: errorMessage,
-                    details: dbError.message,
-                  })}\n\n`,
-                );
+                await sendSSEErrorEvent(res, errorMessage, dbError.message);
               }
             } catch (replaceError: any) {
               logger.error('Failed to replace message with error in dbError catch', {
                 requestId,
                 error: replaceError.message,
               });
-              res.write(
-                `event: error\ndata: ${JSON.stringify({
-                  error: 'Failed to save regenerated AI response',
-                  details: dbError.message,
-                })}\n\n`,
-              );
+              await sendSSEErrorEvent(res, 'Failed to save regenerated AI response', dbError.message);
             }
           } else {
-            // Send error event
-            res.write(
-              `event: error\ndata: ${JSON.stringify({
-                error: 'Failed to save regenerated AI response',
-                details: dbError.message,
-              })}\n\n`,
-            );
+            await sendSSEErrorEvent(res, 'Failed to save regenerated AI response', dbError.message);
           }
         }
 
@@ -2804,52 +2595,27 @@ export const regenerateAnswers =
       stream.on('error', async (error: Error) => {
         logger.error('Stream error in regenerateAnswers', { requestId, error: error.message });
         try {
-          if (existingConversation && messageIndex >= 0) {
-            // Replace the message at messageIndex with error (for regeneration)
-            await replaceMessageWithError(
-              existingConversation as IConversationDocument,
-              messageIndex,
-              error.message,
-              session,
-              'stream_error',
-              error.stack,
-            );
-
-            // Reload conversation to get updated state
-            const updatedConversation = await Conversation.findById(conversationId);
-            if (updatedConversation) {
-              const plainConversation = updatedConversation.toObject();
-              const errorEvent = `event: error\ndata: ${JSON.stringify({
-                error: error.message || 'Stream error occurred',
-                details: error.message,
-                conversation: plainConversation,
-              })}\n\n`;
-              res.write(errorEvent);
-            } else {
-              const errorEvent = `event: error\ndata: ${JSON.stringify({
-                error: error.message || 'Stream error occurred',
-                details: error.message,
-              })}\n\n`;
-              res.write(errorEvent);
-            }
-          } else {
-            const errorEvent = `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Stream error occurred',
-              details: error.message,
-            })}\n\n`;
-            res.write(errorEvent);
-          }
+        await handleRegenerationError(
+          res,
+          error,
+          existingConversation,
+          messageIndex,
+          conversationId || '',
+          session,
+          requestId || '',
+          'stream_error',
+        );
         } catch (dbError: any) {
           logger.error('Failed to replace message with error', {
-          requestId,
+            requestId,
             conversationId: existingConversation?._id,
             error: dbError.message,
           });
-          const errorEvent = `event: error\ndata: ${JSON.stringify({
-            error: error.message || 'Stream error occurred',
-            details: error.message,
-          })}\n\n`;
-          res.write(errorEvent);
+          await sendSSEErrorEvent(
+            res,
+            error.message || 'Stream error occurred',
+            error.message,
+          );
         }
         res.end();
       });
@@ -2862,76 +2628,32 @@ export const regenerateAnswers =
         stack: error.stack,
       });
 
-      try {
-        // Mark conversation as failed if it exists
-        if (existingConversation) {
-          (existingConversation as IConversationDocument).status =
-            CONVERSATION_STATUS.FAILED;
-          (existingConversation as IConversationDocument).failReason =
-            error.message || 'Internal server error';
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+      }
 
-          // Replace the message at messageIndex with error (for regeneration)
-          if (messageIndex >= 0) {
-            const errorMessage = error.message || 'Internal server error';
-            await replaceMessageWithError(
-              existingConversation as IConversationDocument,
-              messageIndex,
-              errorMessage,
-              session,
-              'regeneration_error',
-              error.stack,
-            );
-          }
-        }
+      try {
+        await handleRegenerationError(
+          res,
+          error,
+          existingConversation,
+          messageIndex,
+          conversationId || '',
+          session,
+          requestId || '',
+          'regeneration_error',
+        );
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
           requestId,
           conversationId,
           error: dbError.message,
         });
-      }
-
-      if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
-      }
-
-      // Try to send updated conversation if available (for regeneration)
-      if (existingConversation && messageIndex >= 0) {
-        try {
-          const updatedConversation = await Conversation.findById(conversationId);
-          if (updatedConversation) {
-            const plainConversation = updatedConversation.toObject();
-            const errorEvent = `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Internal server error',
-              details: error.message,
-              conversation: plainConversation,
-            })}\n\n`;
-            res.write(errorEvent);
-          } else {
-            const errorEvent = `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Internal server error',
-              details: error.message,
-            })}\n\n`;
-            res.write(errorEvent);
-          }
-        } catch (fetchError: any) {
-          logger.error('Failed to fetch updated conversation for error response', {
-            requestId,
-            conversationId,
-            error: fetchError.message,
-          });
-          const errorEvent = `event: error\ndata: ${JSON.stringify({
-            error: error.message || 'Internal server error',
-            details: error.message,
-          })}\n\n`;
-          res.write(errorEvent);
-        }
-      } else {
-        const errorEvent = `event: error\ndata: ${JSON.stringify({
-          error: error.message || 'Internal server error',
-          details: error.message,
-        })}\n\n`;
-        res.write(errorEvent);
+        await sendSSEErrorEvent(
+          res,
+          error.message || 'Internal server error',
+          error.message,
+        );
       }
       res.end();
     } finally {

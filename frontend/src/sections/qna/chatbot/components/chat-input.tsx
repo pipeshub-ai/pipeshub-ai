@@ -333,7 +333,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
       // Safety check: if streaming is active, ensure input is NOT disabled
       // (unless navigation is explicitly blocked)
       if (isStreaming && inputRef.current.disabled && !disabled) {
-        console.warn('Input was disabled during streaming, re-enabling...');
         inputRef.current.disabled = false;
         setIsSubmitting(false); // Also reset submitting state
       }
