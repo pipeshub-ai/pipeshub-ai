@@ -289,7 +289,8 @@ class EventProcessor:
                                 (f for f in duplicate_files if f.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value),
                                 None
                             )
-
+                            
+                            # TODO: handle race condition here
                             if in_progress:
                                 self.logger.info(f"🚀 Duplicate file {in_progress.get('_key')} is being processed, changing status to QUEUED.")
                                 self.logger.info(f"Retried {attempt} times")

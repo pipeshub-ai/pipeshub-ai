@@ -3,6 +3,7 @@ from dotenv import load_dotenv  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.health.health import Health
@@ -29,7 +30,9 @@ class IndexingAppContainer(BaseAppContainer):
     redis_client = providers.Resource(
         BaseAppContainer._create_redis_client, config_service=config_service
     )
-    kafka_service = providers.Singleton(lambda: None)  # Not used in indexing service
+    kafka_service = providers.Singleton(
+        KafkaService, logger=logger, config_service=config_service
+    )
     arango_service = providers.Resource(
         container_utils.create_arango_service,
         logger=logger,

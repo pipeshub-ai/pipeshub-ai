@@ -75,7 +75,7 @@ class RecordEventHandler(BaseEventService):
         redis_url = build_redis_url(redis_config)
         return SchedulerFactory.scheduler("redis", redis_url, logger, config_service, delay_hours=1)
 
-    async def _trigger_next_queued_duplicate(self, record_id: str) -> None:
+    async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
             self.logger.info(f"🔍 Looking for next queued duplicate for record {record_id}")
 
@@ -108,7 +108,12 @@ class RecordEventHandler(BaseEventService):
             self.logger.info(f"✅ Successfully triggered indexing for queued duplicate: {next_record_id}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to trigger next queued duplicate: {str(e)}")
+            self.logger.warning(f"Failed to trigger next queued duplicate: {str(e)}")
+            try:
+                await self.event_processor.arango_service.update_queued_duplicates_status(record_id, ProgressStatus.FAILED.value, virtual_record_id)
+            except Exception as e:
+                self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
+                
 
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
@@ -363,20 +368,22 @@ class RecordEventHandler(BaseEventService):
             )
 
             if error_occurred and record_id:
-                await self.__update_document_status(
+                record = await self.__update_document_status(
                     record_id=record_id,
                     indexing_status=ProgressStatus.FAILED.value,
                     extraction_status=ProgressStatus.FAILED.value,
                     reason=error_msg,
                 )
+                virtual_record_id = record.get("virtualRecordId") if record else None
                 self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
-                await self._trigger_next_queued_duplicate(record_id)
+                await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
                 return False
 
             if record is None:
                 return
 
             record_type = record.get("recordType")
+
             if record_type == RecordTypes.FILE.value and event_type != EventTypes.DELETE_RECORD.value:
                 record = await self.event_processor.arango_service.get_document(
                     record_id, CollectionNames.RECORDS.value
@@ -389,7 +396,7 @@ class RecordEventHandler(BaseEventService):
                 elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                     # Find and trigger indexing for the next queued duplicate
                     self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
-                    await self._trigger_next_queued_duplicate(record_id)
+                    await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
 
     async def __update_document_status(
         self,
@@ -397,7 +404,7 @@ class RecordEventHandler(BaseEventService):
         indexing_status: str,
         extraction_status: str,
         reason: Optional[str] = None,
-    ) -> None:
+    ) -> dict|None:
         """Update document status in Arango"""
         try:
             record = await self.event_processor.arango_service.get_document(
@@ -405,7 +412,7 @@ class RecordEventHandler(BaseEventService):
             )
             if not record:
                 self.logger.error(f"❌ Record {record_id} not found for status update")
-                return
+                return None
 
             doc = dict(record)
             if doc.get("extractionStatus") == ProgressStatus.COMPLETED.value:
@@ -425,9 +432,10 @@ class RecordEventHandler(BaseEventService):
                 docs, CollectionNames.RECORDS.value
             )
             self.logger.info(f"✅ Updated document status for record {record_id}")
-
+            return record
         except Exception as e:
             self.logger.error(f"❌ Failed to update document status: {str(e)}")
+            return None
 
     async def clean_event_handler(self) -> None:
         """Clean up the event handler"""

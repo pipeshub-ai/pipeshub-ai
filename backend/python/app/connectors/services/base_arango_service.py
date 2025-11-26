@@ -12315,7 +12315,7 @@ class BaseArangoService:
         self,
         record_id: str,
         new_indexing_status: str,
-        virtual_record_id: Optional[str] = None,
+        virtual_record_id: Optional[str|None] = None,
         transaction: Optional[TransactionDatabase] = None,
     ) -> int:
         """
@@ -12413,7 +12413,7 @@ class BaseArangoService:
                     "lastIndexTimestamp": current_timestamp,
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
-                    "extractionStatus": ProgressStatus.COMPLETED.value if new_indexing_status == ProgressStatus.COMPLETED.value else ProgressStatus.NOT_STARTED.value,
+                    "extractionStatus": ProgressStatus.COMPLETED.value if new_indexing_status == ProgressStatus.COMPLETED.value else ProgressStatus.FAILED.value,
                 }
 
 

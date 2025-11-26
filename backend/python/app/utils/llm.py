@@ -28,3 +28,18 @@ async def get_llm(config_service: ConfigurationService, llm_configs = None) -> T
 
 
     raise ValueError("No LLM found")
+
+async def get_embedding_model_config(config_service: ConfigurationService) -> dict|None:
+        try:
+            ai_models = await config_service.get_config(
+                config_node_constants.AI_MODELS.value,use_cache=False
+            )
+            embedding_configs = ai_models["embedding"]
+            if not embedding_configs:
+                return None
+            else:
+                config = embedding_configs[0]
+                return config
+        except Exception as e:
+            raise e
+

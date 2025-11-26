@@ -1109,46 +1109,8 @@ class VectorStore(Transformer):
                                             page_content=description, metadata=metadata
                                         )
                                     )
-                        elif mime_type in {MimeTypes.PNG.value, MimeTypes.JPG.value, MimeTypes.JPEG.value, MimeTypes.WEBP.value, MimeTypes.SVG.value, MimeTypes.HEIC.value, MimeTypes.HEIF.value}:
-                            try:
-                                record = await self.arango_service.get_document(
-                                    record_id, CollectionNames.RECORDS.value
-                                )
-                                if not record:
-                                    raise DocumentProcessingError(
-                                        "Record not found in database",
-                                        doc_id=record_id,
-                                    )
-                                doc = dict(record)
-                                doc.update(
-                                    {
-                                        "indexingStatus": "ENABLE_MULTIMODAL_MODELS",
-                                        "isDirty": True,
-                                        "virtualRecordId": virtual_record_id,
-                                    }
-                                )
-
-
-                                docs = [doc]
-
-                                success = await self.arango_service.batch_upsert_nodes(
-                                    docs, CollectionNames.RECORDS.value
-                                )
-                                if not success:
-                                    raise DocumentProcessingError(
-                                        "Failed to update indexing status", doc_id=record_id
-                                    )
-
-                                return False
-
-                            except DocumentProcessingError:
-                                raise
-                            except Exception as e:
-                                raise DocumentProcessingError(
-                                    "Error updating record status: " + str(e),
-                                    doc_id=record_id,
-                                    details={"error": str(e)},
-                                )
+                        
+                            
                 except Exception as e:
                     raise DocumentProcessingError(
                         "Failed to create image document objects: " + str(e),

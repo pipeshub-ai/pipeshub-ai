@@ -33,7 +33,7 @@ from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
-from app.utils.llm import get_llm
+from app.utils.llm import get_embedding_model_config, get_llm
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 
@@ -107,13 +107,47 @@ class Processor:
             self.logger.debug("📸 Processing image content")
             if not content:
                 raise Exception("No image data provided")
-
+            
             record = await self.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 return
+            
+            _ , config = await get_llm(self.config_service)
+            is_multimodal_llm = config.get("isMultimodal")
+        
+            embedding_config = await get_embedding_model_config(self.config_service)
+            is_multimodal_embedding = embedding_config.get("isMultimodal") if embedding_config else False
+            if not is_multimodal_embedding and not is_multimodal_llm:
+                try:
+                    record.update(
+                        {
+                            "indexingStatus": ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
+                            "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                        })
+
+                    docs = [record]
+                    success = await self.arango_service.batch_upsert_nodes(
+                        docs, CollectionNames.RECORDS.value
+                    )
+                    if not success:
+                        raise DocumentProcessingError(
+                            "Failed to update indexing status", doc_id=record_id
+                        )
+                    
+                    return
+
+                except DocumentProcessingError:
+                    raise
+                except Exception as e:
+                    raise DocumentProcessingError(
+                        "Error updating record status: " + str(e),
+                        doc_id=record_id,
+                        details={"error": str(e)},
+                    )
+            
             mime_type = record.get("mimeType")
             if mime_type is None:
                 raise Exception("No mime type present in the record from graph db")
