@@ -707,7 +707,6 @@ class BaseArangoService:
             )
             LET groupAccessPermissionEdge = (
                 FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER belongsEdge.type == 'USER'
                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                 FOR records, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 FILTER records._key == @recordId
@@ -720,7 +719,6 @@ class BaseArangoService:
             LET recordGroupAccess = (
                 // Hop 1: User -> Group
                 FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER userToGroupEdge.type == 'USER'
                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                 // Hop 2: Group -> RecordGroup
@@ -740,7 +738,6 @@ class BaseArangoService:
             LET inheritedRecordGroupAccess = (
                 // Hop 1: User -> Group (permission)
                 FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                    FILTER userToGroupEdge.type == 'USER'
                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                 // Hop 2: Group -> Parent RecordGroup (permission)
@@ -763,7 +760,6 @@ class BaseArangoService:
             LET directUserToRecordGroupAccess = (
                 // Direct user -> record_group permission (with nested record groups support)
                 FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                    FILTER userToRgEdge.type == 'USER'
                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
                     // Record group -> nested record groups (0 to 5 levels) -> record
@@ -783,7 +779,6 @@ class BaseArangoService:
             )
             LET orgAccessPermissionEdge = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FILTER belongsEdge.entityType == 'ORGANIZATION'
                 FOR records, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 FILTER records._key == @recordId
                 RETURN {{
