@@ -294,10 +294,10 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         if is_claude_model:
             return ChatAnthropic(
                 model=model_name,
-                base_url=configuration["endpoint"],
+                base_url=configuration.get("endpoint"),
                 temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                api_key=configuration["apiKey"],
+                api_key=configuration.get("apiKey"),
                 max_tokens=configuration.get("maxTokens", 16000),
             )
         else:
@@ -305,8 +305,8 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                     model=model_name,
                     temperature=temperature,
                     timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                    api_key=configuration["apiKey"],
-                    base_url=configuration["endpoint"],
+                    api_key=configuration.get("apiKey"),
+                    base_url=configuration.get("endpoint"),
                 )
 
     elif provider == LLMProvider.AZURE_OPENAI.value:
