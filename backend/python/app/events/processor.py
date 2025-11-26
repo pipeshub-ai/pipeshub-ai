@@ -1347,12 +1347,12 @@ class Processor:
             # Initialize PPTX parser
             self.logger.debug("📄 Processing PPTX content")
             
-            processor = DoclingProcessor(logger=self.logger,config=self.config_service)
-            block_containers = await processor.load_document(recordName,pptx_binary)
+            processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+            block_containers = await processor.load_document(recordName, pptx_binary)
             if block_containers is False:
                 raise Exception(("Failed to process PPTX document. It might contain scanned pages."))
             record = await self.arango_service.get_document(
-                recordId,CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
