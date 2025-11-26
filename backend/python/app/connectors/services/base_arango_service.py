@@ -555,7 +555,9 @@ class BaseArangoService:
                                 FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
                                 AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
                                 ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                                EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"])
+                                EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
+                                QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
+                                PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
                             }
                         }
                 )

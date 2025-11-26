@@ -384,7 +384,6 @@ class RecordEventHandler(BaseEventService):
 
                 indexing_status = record.get("indexingStatus")
                 virtual_record_id = record.get("virtualRecordId")
-                print(f"indexing_status: {indexing_status}, virtual_record_id: {virtual_record_id}")
                 if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
                     await self.event_processor.arango_service.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
                 elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
