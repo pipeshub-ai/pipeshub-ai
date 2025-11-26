@@ -92,12 +92,16 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     logger.info(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
     if provider == EmbeddingProvider.AZURE_AI.value:
-        from langchain_azure_ai.embeddings import AzureAIEmbeddingsModel
-
-        return AzureAIEmbeddingsModel(
-            model_name=model_name,
-            credential=configuration['apiKey'],
-            endpoint=configuration['endpoint'],
+        from langchain_openai.embeddings import OpenAIEmbeddings
+        if "cohere" or "embed-v" in model_name.lower():
+            check_embedding_ctx_length = False
+        else:
+            check_embedding_ctx_length = True
+        return OpenAIEmbeddings(
+            model=model_name,
+            api_key=configuration['apiKey'],
+            base_url=configuration['endpoint'],
+            check_embedding_ctx_length=check_embedding_ctx_length,
         )
 
     elif provider == EmbeddingProvider.AZURE_OPENAI.value:
@@ -287,9 +291,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
 
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        print("configuration", configuration)
-        print("model_name", model_name)
-        print("temperature", temperature)
+
         is_claude_model = "claude" in model_name
         if is_claude_model:
             return ChatAnthropic(

@@ -98,7 +98,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     ],
     customFields: {
       endpoint: {
-        placeholder: 'e.g., For Claude models: https://<your-resource-name>.inference.ai.azure.com/anthropic, For other models (OpenAI, DeepSeek): https://<your-project-name>.openai.azure.com/openai/v1/',
+        placeholder: 'e.g., For Claude models: https://<your-resource-name>.inference.ai.azure.com/anthropic, For other models (OpenAI, DeepSeek): https://<your-resource-name>.cognitiveservices.azure.com/openai/v1/',
       },
       maxTokens: {
         placeholder: 'e.g., 16000',
@@ -265,7 +265,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     id: 'azureAI',
     label: 'Azure AI',
     description: 'Access Azure AI Foundry embedding models.',
-    modelPlaceholder: 'e.g., text-embedding-ada-002, cohere-embed-v3-multilingual',
+    modelPlaceholder: 'e.g., text-embedding-ada-002, embed-v-4-0',
     fields: [
       'endpoint',
       'apiKey',
@@ -274,7 +274,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     ],
     customFields: {
       endpoint: {
-        placeholder: 'e.g., https://your-endpoint.inference.ai.azure.com/',
+        placeholder: 'e.g., https://<your-resource-name>.services.ai.azure.com/openai/v1/"',
       },
     },
   },
