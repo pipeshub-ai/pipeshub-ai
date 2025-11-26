@@ -260,7 +260,7 @@ class EventProcessor:
                         # Wait and check for processed duplicates
                         for attempt in range(60):
                             processed_duplicate = next(
-                                (f for f in duplicate_files if f.get("virtualRecordId") and f.get("indexingStatus") == ProgressStatus.COMPLETED.value),
+                                (f for f in duplicate_files if (f.get("virtualRecordId") and f.get("indexingStatus") == ProgressStatus.COMPLETED.value) or (f.get("indexingStatus") == ProgressStatus.EMPTY.value)),
                                 None
                             )
 
@@ -270,9 +270,9 @@ class EventProcessor:
                                     "isDirty": False,
                                     "summaryDocumentId": processed_duplicate.get("summaryDocumentId"),
                                     "virtualRecordId": processed_duplicate.get("virtualRecordId"),
-                                    "indexingStatus": ProgressStatus.COMPLETED.value,
+                                    "indexingStatus": processed_duplicate.get("indexingStatus"),
                                     "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                                    "extractionStatus": ProgressStatus.COMPLETED.value,
+                                    "extractionStatus": processed_duplicate.get("extractionStatus"),
                                     "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
                                 })
                                 await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
