@@ -55,6 +55,15 @@ export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [
     color: '#4285F4',
   },
   {
+    id: 'azureAI',
+    name: 'Azure AI',
+    description: 'Access Azure AI Foundry models including GPT-4o, DeepSeek R1, Cohere, and more',
+    src: '/assets/icons/ai-models/azure-color.svg',
+    supportedTypes: ['llm', 'embedding'],
+    isPopular: true,
+    color: '#0078D4',
+  },
+  {
     id: 'azureOpenAI',
     name: 'Azure-OpenAI',
     description: 'Enterprise-grade OpenAI models',
@@ -169,7 +178,7 @@ export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [
     color: '#0078D4',
   },
   {
-    id: 'huggingface',
+    id: 'huggingFace',
     name: 'HuggingFace (System Provided)',
     description: 'Open-source transformer models',
     supportedTypes: ['embedding'],

@@ -85,6 +85,27 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     fields: COMMON_API_FIELDS,
   },
   {
+    id: 'azureAI',
+    label: 'Azure AI',
+    description: 'Access Azure AI Foundry models including GPT-4o, DeepSeek R1, Cohere, Phi and Mistral.',
+    modelPlaceholder: 'e.g., gpt-5.1, claude-sonnet-4-5, DeepSeek-V3.1',
+    fields: [
+      'endpoint',
+      'apiKey',
+      'model',
+      { name: 'isMultimodal', required: false, defaultValue: true },
+      { name: 'isReasoning', required: false, defaultValue: false },
+    ],
+    customFields: {
+      endpoint: {
+        placeholder: 'e.g., For Claude models: https://<your-resource-name>.inference.ai.azure.com/anthropic, For other models (OpenAI, DeepSeek): https://<your-project-name>.openai.azure.com/openai/v1/',
+      },
+      maxTokens: {
+        placeholder: 'e.g., 16000',
+      },
+    },
+  },
+  {
     id: 'azureOpenAI',
     label: 'Azure OpenAI',
     description: 'You need an active Azure subscription with Azure OpenAI Service enabled.',
@@ -239,6 +260,23 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     description: 'Enter your Cohere API credentials for embeddings.',
     modelPlaceholder: 'e.g., embed-v4.0',
     fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: false }],
+  },
+  {
+    id: 'azureAI',
+    label: 'Azure AI',
+    description: 'Access Azure AI Foundry embedding models.',
+    modelPlaceholder: 'e.g., text-embedding-ada-002, cohere-embed-v3-multilingual',
+    fields: [
+      'endpoint',
+      'apiKey',
+      'model',
+      { name: 'isMultimodal', required: false, defaultValue: false },
+    ],
+    customFields: {
+      endpoint: {
+        placeholder: 'e.g., https://your-endpoint.inference.ai.azure.com/',
+      },
+    },
   },
   {
     id: 'azureOpenAI',
