@@ -273,7 +273,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_BLOGPOST": CollectionNames.WEBPAGES.value,
     "TICKET": CollectionNames.TICKETS.value,
-    # "COMMENT": CollectionNames.COMMENTS.value,
-    # "INLINE_COMMENT": CollectionNames.COMMENTS.value,
+    "COMMENT": CollectionNames.COMMENTS.value,
+    "INLINE_COMMENT": CollectionNames.COMMENTS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

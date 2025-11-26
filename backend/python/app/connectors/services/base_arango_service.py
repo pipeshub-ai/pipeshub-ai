@@ -4321,10 +4321,10 @@ class BaseArangoService:
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[TransactionDatabase] = None
-    ) -> List[Dict]:
+    ) -> List[Record]:
         """
         Get records by their indexing status with pagination support.
-        Returns records with their type-specific data joined from respective collections.
+        Returns properly typed Record instances (FileRecord, MailRecord, etc.)
 
         Args:
             org_id (str): Organization ID
@@ -4335,7 +4335,7 @@ class BaseArangoService:
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
-            List[Dict]: List of dictionaries with 'record' and 'typeDoc' keys
+            List[Record]: List of properly typed Record instances
         """
         try:
             self.logger.info(f"Retrieving records for connector {connector_name.value} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
@@ -4411,10 +4411,17 @@ class BaseArangoService:
             db = transaction if transaction else self.db
             cursor = db.aql.execute(query, bind_vars=bind_vars)
 
-            results = [result for result in cursor]
+            # Convert raw DB results to properly typed Record instances
+            typed_records = []
+            for result in cursor:
+                record = self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typeDoc")
+                )
+                typed_records.append(record)
 
-            self.logger.info(f"✅ Successfully retrieved {len(results)} records with type data for connector {connector_name.value}")
-            return results
+            self.logger.info(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_name.value}")
+            return typed_records
 
         except Exception as e:
             self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_name.value}: {str(e)}")
@@ -13779,7 +13786,7 @@ class BaseArangoService:
             result = next(cursor, None)
             if result and result.get("file") and result.get("record"):
                 self.logger.info("✅ Successfully retrieved file record for id %s", id)
-                return FileRecord.from_arango_base_file_record(
+                return FileRecord.from_arango_record(
                     arango_base_file_record=result["file"],
                     arango_base_record=result["record"]
                 )

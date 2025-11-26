@@ -162,7 +162,7 @@ class EventService:
             total_processed = 0
 
             while True:
-                # Fetch batch of records
+                # Fetch batch of typed Record instances
                 records = await self.arango_service.get_records_by_status(
                     org_id=org_id,
                     connector_name=connector_enum,
@@ -176,7 +176,7 @@ class EventService:
 
                 self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
 
-                # Process this batch
+                # Process this batch with typed records
                 await connector.reindex_records(records)
 
                 total_processed += len(records)

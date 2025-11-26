@@ -721,12 +721,21 @@ class OutlookConnector(BaseConnector):
 
         return updates
 
-    async def _process_single_email_with_folder(self, org_id: str, user_email: str, message, folder_id: str, folder_name: str) -> Optional[RecordUpdate]:
-        """Process a single email with folder information."""
+    async def _process_single_email_with_folder(
+        self, org_id: str, user_email: str, message, folder_id: str, folder_name: str,
+        existing_record: Optional[Record] = None
+    ) -> Optional[RecordUpdate]:
+        """Process a single email with folder information.
+
+        Args:
+            existing_record: Optional existing record to skip DB lookup (used during reindex)
+        """
         try:
             message_id = self._safe_get_attr(message, 'id')
 
-            existing_record = await self._get_existing_record(org_id, message_id)
+            # Skip DB lookup if existing_record is provided (reindex case)
+            if existing_record is None:
+                existing_record = await self._get_existing_record(org_id, message_id)
             is_new = existing_record is None
             is_updated = False
             metadata_changed = False
@@ -1142,7 +1151,7 @@ class OutlookConnector(BaseConnector):
         # Delegate to full sync - incremental is handled by delta links
         await self.run_sync()
 
-    async def reindex_records(self, record_results: List[Dict]) -> None:
+    async def reindex_records(self, records: List[Record]) -> None:
         """Reindex a list of Outlook records.
 
         This method:
@@ -1151,14 +1160,14 @@ class OutlookConnector(BaseConnector):
         3. Publishes reindex events for all records via data_entities_processor
 
         Args:
-            record_results: List of dicts with 'record' and 'typeDoc' keys from get_records_by_status
+            records: List of properly typed Record instances (MailRecord, FileRecord, etc.)
         """
         try:
-            if not record_results:
+            if not records:
                 self.logger.info("No records to reindex")
                 return
 
-            self.logger.info(f"Starting reindex for {len(record_results)} Outlook records")
+            self.logger.info(f"Starting reindex for {len(records)} Outlook records")
 
             # Ensure external clients are initialized
             if not self.external_outlook_client or not self.external_users_client:
@@ -1169,82 +1178,95 @@ class OutlookConnector(BaseConnector):
             await self._populate_user_cache()
 
             # Group records by owner email for efficient processing
-            records_by_user = {}
-            for result in record_results:
+            records_by_user: Dict[str, List[Record]] = {}
+            for record in records:
                 try:
-                    record_dict = result["record"]
-                    record_id = record_dict["_key"]
                     # Get owner email from permissions
                     async with self.data_store_provider.transaction() as tx_store:
-                        user_email = await tx_store.get_record_owner_source_user_email(record_id)
+                        user_email = await tx_store.get_record_owner_source_user_email(record.id)
 
                     if not user_email:
-                        self.logger.warning(f"No owner found for record {record_id}, skipping")
+                        self.logger.warning(f"No owner found for record {record.id}, skipping")
                         continue
 
                     if user_email not in records_by_user:
                         records_by_user[user_email] = []
-                    records_by_user[user_email].append(record_dict)
+                    records_by_user[user_email].append(record)
                 except Exception as e:
-                    self.logger.error(f"Error getting owner for record {result.get('record', {}).get('_key', 'unknown')}: {e}")
+                    self.logger.error(f"Error getting owner for record {record.id}: {e}")
                     continue
 
+            # Collect updated and non-updated records across all users
+            all_updated_records_with_permissions: List[Tuple[Record, List[Permission]]] = []
+            all_non_updated_records: List[Record] = []
+
             # Process records by user - check for source updates
-            for user_email, user_record_dicts in records_by_user.items():
+            for user_email, user_records in records_by_user.items():
                 try:
-                    await self._reindex_user_records(user_email, user_record_dicts)
+                    updated, non_updated = await self._reindex_user_records(user_email, user_records)
+                    all_updated_records_with_permissions.extend(updated)
+                    all_non_updated_records.extend(non_updated)
                 except Exception as e:
                     self.logger.error(f"Error reindexing records for user {user_email}: {e}")
 
-            # Publish reindex events for all records (properly typed with to_kafka_record)
-            await self.data_entities_processor.reindex_existing_records(record_results)
+            # Update DB and publish events for updated records
+            if all_updated_records_with_permissions:
+                await self.data_entities_processor.on_new_records(all_updated_records_with_permissions)
+                self.logger.info(f"Updated {len(all_updated_records_with_permissions)} records in DB that changed at source")
 
-            self.logger.info(f"Outlook reindex completed for {len(record_results)} records")
+            # Publish reindex events for non-updated records
+            if all_non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(all_non_updated_records)
+                self.logger.info(f"Published reindex events for {len(all_non_updated_records)} non-updated records")
+
+            self.logger.info(f"Outlook reindex completed for {len(records)} records")
 
         except Exception as e:
             self.logger.error(f"Error during Outlook reindex: {e}")
             raise
 
-    async def _reindex_user_records(self, user_email: str, record_dicts: List[Dict]) -> None:
-        """Reindex records for a specific user. Checks source for updates and upserts if changed."""
+    async def _reindex_user_records(
+        self, user_email: str, records: List[Record]
+    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[Record]]:
+        """Reindex records for a specific user. Checks source for updates.
+
+        Returns:
+            Tuple of (updated_records_with_permissions, non_updated_records)
+        """
+        updated_records_with_permissions: List[Tuple[Record, List[Permission]]] = []
+        non_updated_records: List[Record] = []
+
         try:
             user_id = await self._get_user_id_from_email(user_email)
             if not user_id:
                 self.logger.error(f"Could not find user ID for email {user_email}")
-                return
+                return ([], records)  # Return all as non-updated if user not found
 
-            self.logger.info(f"Checking {len(record_dicts)} records at source for user {user_email}")
+            self.logger.info(f"Checking {len(records)} records at source for user {user_email}")
 
             org_id = self.data_entities_processor.org_id
 
-            updated_records = []
-            for record_dict in record_dicts:
+            for record in records:
                 try:
-                    record = Record.from_arango_base_record(record_dict)
-
                     updated_record_data = await self._check_and_fetch_updated_record(
                         org_id, user_id, user_email, record
                     )
                     if updated_record_data:
                         updated_record, permissions = updated_record_data
-                        updated_records.append(updated_record)
+                        updated_records_with_permissions.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
                 except Exception as e:
-                    self.logger.error(f"Error checking record {record_dict.get('_key', 'unknown')} at source: {e}")
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
                     continue
 
-            # Update DB only for records that changed at source
-            if updated_records:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.batch_upsert_records(updated_records)
-                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
-            else:
-                self.logger.info(f"No records changed at source for user {user_email}")
-
-            self.logger.info(f"Completed source check for user {user_email}")
+            self.logger.info(f"Completed source check for user {user_email}: {len(updated_records_with_permissions)} updated, {len(non_updated_records)} unchanged")
 
         except Exception as e:
             self.logger.error(f"Error reindexing records for user {user_email}: {e}")
             raise
+
+        return (updated_records_with_permissions, non_updated_records)
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, user_id: str, user_email: str, record: Record
@@ -1289,7 +1311,8 @@ class OutlookConnector(BaseConnector):
             folder_name = "Unknown"
 
             email_update = await self._process_single_email_with_folder(
-                org_id, user_email, message, folder_id, folder_name
+                org_id, user_email, message, folder_id, folder_name,
+                existing_record=record  # Pass record to skip DB lookup
             )
 
             if not email_update or not email_update.record:

@@ -1,10 +1,9 @@
 import uuid
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -20,15 +19,11 @@ from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
-    CommentRecord,
     FileRecord,
-    MailRecord,
     Record,
     RecordGroup,
     RecordType,
-    TicketRecord,
     User,
-    WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.messaging.interface.producer import IMessagingProducer
@@ -360,28 +355,21 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_record_by_key(record_id)
 
-    async def reindex_existing_records(self, record_results: List[Dict]) -> None:
+    async def reindex_existing_records(self, records: List[Record]) -> None:
         """
         Publish reindex events for existing records without DB operations.
         Used for reindexing functionality where records already exist in DB.
         This method only publishes newRecord events to trigger re-indexing in the indexing service.
 
         Args:
-            record_results: List of dictionaries with 'record' and 'typeDoc' keys from get_records_by_status
+            records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
         """
         try:
-            if not record_results:
+            if not records:
                 self.logger.info("No records to reindex")
                 return
 
-            for result in record_results:
-                record_dict = result["record"]
-                type_doc = result.get("typeDoc")
-
-                # Create properly typed Record instance
-                record = self._create_typed_record(record_dict, type_doc)
-
-                # Get payload from properly typed record
+            for record in records:
                 payload = record.to_kafka_record()
 
                 await self.messaging_producer.send_message(
@@ -394,53 +382,10 @@ class DataSourceEntitiesProcessor:
                     key=record.id
                 )
 
-            self.logger.info(f"Published reindex events for {len(record_results)} records")
+            self.logger.info(f"Published reindex events for {len(records)} records")
         except Exception as e:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
-
-    def _create_typed_record(self, record_dict: Dict, type_doc: Optional[Dict]) -> Record:
-        """
-        Factory method to create properly typed Record instances.
-        Uses centralized RECORD_TYPE_COLLECTION_MAPPING to determine which types have type collections.
-
-        Args:
-            record_dict: Dictionary from records collection
-            type_doc: Dictionary from type-specific collection (files, mails, etc.) or None
-
-        Returns:
-            Properly typed Record instance (FileRecord, MailRecord, etc.)
-        """
-        record_type = record_dict.get("recordType")
-
-        # Check if this record type has a type collection
-        if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
-            # No type collection or no type doc - use base Record
-            return Record.from_arango_record(record_dict)
-
-        try:
-            # Determine which collection this type uses
-            collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
-
-            # Map collections to their corresponding Record classes
-            if collection == CollectionNames.FILES.value:
-                return FileRecord.from_arango_record(type_doc, record_dict)
-            elif collection == CollectionNames.MAILS.value:
-                return MailRecord.from_arango_record(type_doc, record_dict)
-            elif collection == CollectionNames.WEBPAGES.value:
-                return WebpageRecord.from_arango_record(type_doc, record_dict)
-            elif collection == CollectionNames.TICKETS.value:
-                return TicketRecord.from_arango_record(type_doc, record_dict)
-            elif collection == CollectionNames.COMMENTS.value:
-                return CommentRecord.from_arango_record(type_doc, record_dict)
-            else:
-                # Unknown collection - fallback to base Record
-                return Record.from_arango_record(record_dict)
-        except Exception as e:
-            self.logger.warning(
-                f"Failed to create typed record for {record_type}, falling back to base Record: {str(e)}"
-            )
-            return Record.from_arango_record(record_dict)
 
     async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
         try:

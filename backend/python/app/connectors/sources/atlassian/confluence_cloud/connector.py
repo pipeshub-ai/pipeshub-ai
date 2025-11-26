@@ -12,7 +12,7 @@ Authentication: OAuth 2.0 (3-legged OAuth)
 import uuid
 from datetime import datetime
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import HTTPException
@@ -607,7 +607,7 @@ class ConfluenceConnector(BaseConnector):
                             continue
 
                         # Fetch page permissions
-                        permissions = await self._fetch_page_permissions(page_id, page_title)
+                        permissions = await self._fetch_page_permissions(page_id)
                         total_permissions_synced += len(permissions)
 
                         # Add page to batch
@@ -789,7 +789,7 @@ class ConfluenceConnector(BaseConnector):
                             continue
 
                         # Fetch blogpost permissions using same method as pages
-                        permissions = await self._fetch_page_permissions(blogpost_id, blogpost_title)
+                        permissions = await self._fetch_page_permissions(blogpost_id)
                         total_permissions_synced += len(permissions)
 
                         # Add blogpost to batch
@@ -941,13 +941,12 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch permissions for space {space_name}: {e}")
             return []  # Return empty list on error, space will be created without permissions
 
-    async def _fetch_page_permissions(self, page_id: str, page_title: str) -> List[Permission]:
+    async def _fetch_page_permissions(self, page_id: str) -> List[Permission]:
         """
         Fetch permissions for a Confluence page using v1 API.
 
         Args:
             page_id: The page ID
-            page_title: The page title (for logging)
 
         Returns:
             List of Permission objects
@@ -955,7 +954,7 @@ class ConfluenceConnector(BaseConnector):
         permissions = []
 
         try:
-            self.logger.debug(f"Fetching permissions for page: {page_title}")
+            self.logger.debug(f"Fetching permissions for page: {page_id}")
 
             # Fetch page restrictions using v1 API
             datasource = await self._get_fresh_datasource()
@@ -966,7 +965,7 @@ class ConfluenceConnector(BaseConnector):
 
             # Check response
             if not response or response.status != HTTP_STATUS_200:
-                self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_title}: {response.status if response else 'No response'}")
+                self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_id}: {response.status if response else 'No response'}")
                 return []
 
             response_data = response.json()
@@ -977,11 +976,11 @@ class ConfluenceConnector(BaseConnector):
                 operation_permissions = await self._transform_page_restriction_to_permissions(restriction_data)
                 permissions.extend(operation_permissions)
 
-            self.logger.debug(f"Found {len(permissions)} permissions for page {page_title}")
+            self.logger.debug(f"Found {len(permissions)} permissions for page {page_id}")
             return permissions
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch permissions for page {page_title}: {e}")
+            self.logger.error(f"❌ Failed to fetch permissions for page {page_id}: {e}")
             return []  # Return empty list on error, page will be created without permissions
 
     async def _fetch_comments_recursive(
@@ -1281,13 +1280,16 @@ class ConfluenceConnector(BaseConnector):
             # Generate unique ID for comment
             comment_record_id = str(uuid.uuid4())
 
+            version_number = comment_data.get("version", {}).get("number", 0)
+
             return CommentRecord(
                 id=comment_record_id,
                 org_id=self.data_entities_processor.org_id,
                 record_name=title,
                 record_type=RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT,
                 external_record_id=comment_id,
-                version=comment_data.get("version", {}).get("number", 0),
+                external_revision_id=str(version_number) if version_number else None,
+                version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
                 mime_type=MimeTypes.HTML.value,
@@ -1639,9 +1641,10 @@ class ConfluenceConnector(BaseConnector):
     ) -> Optional[WebpageRecord]:
         """
         Transform Confluence page data to WebpageRecord entity.
+        Supports both v1 and v2 API response formats.
 
         Args:
-            page_data: Raw page data from Confluence API
+            page_data: Raw page data from v1 or v2 Confluence API
 
         Returns:
             WebpageRecord object or None if transformation fails
@@ -1653,61 +1656,91 @@ class ConfluenceConnector(BaseConnector):
             if not page_id or not page_title:
                 return None
 
-            # Parse timestamps
+            # Parse timestamps - v1 vs v2 have different structures
             source_created_at = None
             source_updated_at = None
-            external_revision_id = None
+            version_number = 0
 
-            history = page_data.get("history", {})
-            created_date = history.get("createdDate")
-            if created_date:
-                source_created_at = self._parse_confluence_datetime(created_date)
+            # Try v2 format first (createdAt at top level)
+            created_at_v2 = page_data.get("createdAt")
+            if created_at_v2:
+                source_created_at = self._parse_confluence_datetime(created_at_v2)
+            else:
+                # Fall back to v1 format (history.createdDate)
+                history = page_data.get("history", {})
+                created_date = history.get("createdDate")
+                if created_date:
+                    source_created_at = self._parse_confluence_datetime(created_date)
 
-            last_updated = history.get("lastUpdated", {})
-            updated_when = last_updated.get("when")
-            if updated_when:
-                source_updated_at = self._parse_confluence_datetime(updated_when)
-            if last_updated:
-                external_revision_id = last_updated.get("number")
+            # Try v2 format for updated date and version (version.createdAt, version.number)
+            version_data = page_data.get("version", {})
+            if isinstance(version_data, dict):
+                version_created_at = version_data.get("createdAt")
+                if version_created_at:
+                    source_updated_at = self._parse_confluence_datetime(version_created_at)
+                version_number = version_data.get("number", 0)
 
-            # Extract space ID for external_record_group_id
-            space_data = page_data.get("space", {})
-            space_id = space_data.get("id")
-            external_record_group_id = str(space_id) if space_id else None
+            # Fall back to v1 format (history.lastUpdated.when, history.lastUpdated.number)
+            if not source_updated_at:
+                history = page_data.get("history", {})
+                last_updated = history.get("lastUpdated", {})
+                if isinstance(last_updated, dict):
+                    updated_when = last_updated.get("when")
+                    if updated_when:
+                        source_updated_at = self._parse_confluence_datetime(updated_when)
+                    if not version_number:
+                        version_number = last_updated.get("number", 0)
+
+            # Extract space ID - v2 has spaceId at top level, v1 has space.id
+            external_record_group_id = None
+            space_id_v2 = page_data.get("spaceId")  # v2 format
+            if space_id_v2:
+                external_record_group_id = str(space_id_v2)
+            else:
+                # v1 format
+                space_data = page_data.get("space", {})
+                space_id = space_data.get("id")
+                external_record_group_id = str(space_id) if space_id else None
 
             if not external_record_group_id:
                 self.logger.warning(f"Page {page_id} has no space - skipping")
                 return None
 
-            # Extract parent page ID from ancestors (last ancestor is direct parent)
+            # Extract parent page ID - v2 has parentId at top level, v1 uses ancestors
             parent_external_record_id = None
-            ancestors = page_data.get("ancestors", [])
-            if ancestors and len(ancestors) > 0:
-                # Get the last ancestor (direct parent)
-                direct_parent = ancestors[-1]
-                parent_external_record_id = direct_parent.get("id")
+            parent_id_v2 = page_data.get("parentId")  # v2 format
+            if parent_id_v2:
+                parent_external_record_id = str(parent_id_v2)
+            else:
+                # v1 format - last ancestor is direct parent
+                ancestors = page_data.get("ancestors", [])
+                if ancestors and len(ancestors) > 0:
+                    direct_parent = ancestors[-1]
+                    parent_external_record_id = direct_parent.get("id")
 
-            # Construct web URL from _links.webui
-            # Final URL should be: https://your-domain.atlassian.net/wiki/spaces/{space_alias}/pages/{page_id}/{page_title}
+            # Construct web URL - v1 vs v2 have different link structures
             web_url = None
             links = page_data.get("_links", {})
             webui = links.get("webui")
-            self_link = links.get("self")
 
-            if webui and self_link:
-                # webui is like "/spaces/{space_alias}/pages/{page_id}/{page_title}"
-                # self is like "https://your-domain.atlassian.net/wiki/rest/api/content/{id}"
-                # Extract base URL and trim after "wiki"
-                if "/wiki/" in self_link:
-                    base_url = self_link.split("/wiki/")[0] + "/wiki"
+            if webui:
+                # Try v2 format first (_links.base)
+                base_url = links.get("base")
+                if base_url:
                     web_url = f"{base_url}{webui}"
+                else:
+                    # Fall back to v1 format (extract from _links.self)
+                    self_link = links.get("self")
+                    if self_link and "/wiki/" in self_link:
+                        base_url = self_link.split("/wiki/")[0] + "/wiki"
+                        web_url = f"{base_url}{webui}"
 
             return WebpageRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=page_title,
                 record_type=RecordType.CONFLUENCE_PAGE,
                 external_record_id=page_id,
-                external_revision_id=str(external_revision_id) if external_revision_id else None,
+                external_revision_id=str(version_number) if version_number else None,
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
@@ -1730,9 +1763,10 @@ class ConfluenceConnector(BaseConnector):
     ) -> Optional[WebpageRecord]:
         """
         Transform Confluence blogpost data to WebpageRecord entity.
+        Supports both v1 and v2 API response formats.
 
         Args:
-            blogpost_data: Raw blogpost data from Confluence API
+            blogpost_data: Raw blogpost data from v1 or v2 Confluence API
 
         Returns:
             WebpageRecord object or None if transformation fails
@@ -1744,27 +1778,51 @@ class ConfluenceConnector(BaseConnector):
             if not blogpost_id or not blogpost_title:
                 return None
 
-            # Parse timestamps
+            # Parse timestamps - v1 vs v2 have different structures
             source_created_at = None
             source_updated_at = None
-            external_revision_id = None
+            version_number = 0
 
-            history = blogpost_data.get("history", {})
-            created_date = history.get("createdDate")
-            if created_date:
-                source_created_at = self._parse_confluence_datetime(created_date)
+            # Try v2 format first (createdAt at top level)
+            created_at_v2 = blogpost_data.get("createdAt")
+            if created_at_v2:
+                source_created_at = self._parse_confluence_datetime(created_at_v2)
+            else:
+                # Fall back to v1 format (history.createdDate)
+                history = blogpost_data.get("history", {})
+                created_date = history.get("createdDate")
+                if created_date:
+                    source_created_at = self._parse_confluence_datetime(created_date)
 
-            last_updated = history.get("lastUpdated", {})
-            updated_when = last_updated.get("when")
-            if updated_when:
-                source_updated_at = self._parse_confluence_datetime(updated_when)
-            if last_updated:
-                external_revision_id = last_updated.get("number")
+            # Try v2 format for updated date and version (version.createdAt, version.number)
+            version_data = blogpost_data.get("version", {})
+            if isinstance(version_data, dict):
+                version_created_at = version_data.get("createdAt")
+                if version_created_at:
+                    source_updated_at = self._parse_confluence_datetime(version_created_at)
+                version_number = version_data.get("number", 0)
 
-            # Extract space ID for external_record_group_id
-            space_data = blogpost_data.get("space", {})
-            space_id = space_data.get("id")
-            external_record_group_id = str(space_id) if space_id else None
+            # Fall back to v1 format (history.lastUpdated.when, history.lastUpdated.number)
+            if not source_updated_at:
+                history = blogpost_data.get("history", {})
+                last_updated = history.get("lastUpdated", {})
+                if isinstance(last_updated, dict):
+                    updated_when = last_updated.get("when")
+                    if updated_when:
+                        source_updated_at = self._parse_confluence_datetime(updated_when)
+                    if not version_number:
+                        version_number = last_updated.get("number", 0)
+
+            # Extract space ID - v2 has spaceId at top level, v1 has space.id
+            external_record_group_id = None
+            space_id_v2 = blogpost_data.get("spaceId")  # v2 format
+            if space_id_v2:
+                external_record_group_id = str(space_id_v2)
+            else:
+                # v1 format
+                space_data = blogpost_data.get("space", {})
+                space_id = space_data.get("id")
+                external_record_group_id = str(space_id) if space_id else None
 
             if not external_record_group_id:
                 self.logger.warning(f"Blogpost {blogpost_id} has no space - skipping")
@@ -1773,24 +1831,29 @@ class ConfluenceConnector(BaseConnector):
             # Blogposts have no parent hierarchy - they are flat and connected directly to space
             parent_external_record_id = None
 
-            # Construct web URL from _links.webui
+            # Construct web URL - v1 vs v2 have different link structures
             web_url = None
             links = blogpost_data.get("_links", {})
             webui = links.get("webui")
-            self_link = links.get("self")
 
-            if webui and self_link:
-                # Extract base URL and construct full URL
-                if "/wiki/" in self_link:
-                    base_url = self_link.split("/wiki/")[0] + "/wiki"
+            if webui:
+                # Try v2 format first (_links.base)
+                base_url = links.get("base")
+                if base_url:
                     web_url = f"{base_url}{webui}"
+                else:
+                    # Fall back to v1 format (extract from _links.self)
+                    self_link = links.get("self")
+                    if self_link and "/wiki/" in self_link:
+                        base_url = self_link.split("/wiki/")[0] + "/wiki"
+                        web_url = f"{base_url}{webui}"
 
             return WebpageRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=blogpost_title,
                 record_type=RecordType.CONFLUENCE_BLOGPOST,
                 external_record_id=blogpost_id,
-                external_revision_id=str(external_revision_id) if external_revision_id else None,
+                external_revision_id=str(version_number) if version_number else None,
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
@@ -1815,9 +1878,10 @@ class ConfluenceConnector(BaseConnector):
     ) -> Optional[FileRecord]:
         """
         Transform Confluence attachment to FileRecord entity.
+        Supports both v1 and v2 API response formats.
 
         Args:
-            attachment_data: Raw attachment data from children.attachment.results
+            attachment_data: Raw attachment data from v1 (children.attachment.results) or v2 API
             page_id: Parent page external_record_id
             parent_space_id: Space ID from parent page
 
@@ -1825,34 +1889,60 @@ class ConfluenceConnector(BaseConnector):
             FileRecord object or None if transformation fails
         """
         try:
+            # Get attachment ID - both v1 and v2 use "id" field with "att" prefix
             attachment_id = attachment_data.get("id")
-            file_name = attachment_data.get("title")
-
-            if not attachment_id or not file_name:
+            if not attachment_id:
                 return None
 
-            # Parse timestamps
+            # Get filename - same field in both v1 and v2
+            file_name = attachment_data.get("title")
+            if not file_name:
+                return None
+
+            # Parse timestamps - v1 vs v2 have different structures
             source_created_at = None
             source_updated_at = None
 
-            history = attachment_data.get("history", {})
-            created_date = history.get("createdDate")
-            if created_date:
-                source_created_at = self._parse_confluence_datetime(created_date)
+            # Try v2 format first (createdAt at top level)
+            created_at_v2 = attachment_data.get("createdAt")
+            if created_at_v2:
+                source_created_at = self._parse_confluence_datetime(created_at_v2)
+            else:
+                # Fall back to v1 format (history.createdDate)
+                history = attachment_data.get("history", {})
+                created_date = history.get("createdDate")
+                if created_date:
+                    source_created_at = self._parse_confluence_datetime(created_date)
 
-            last_updated = history.get("lastUpdated", {})
-            updated_when = last_updated.get("when")
-            if updated_when:
-                source_updated_at = self._parse_confluence_datetime(updated_when)
+            # Try v2 format for updated date (version.createdAt)
+            version_data = attachment_data.get("version", {})
+            if isinstance(version_data, dict):
+                version_created_at = version_data.get("createdAt")
+                if version_created_at:
+                    source_updated_at = self._parse_confluence_datetime(version_created_at)
 
-            # Extract file size from extensions (already an integer in the API response)
-            extensions = attachment_data.get("extensions", {})
-            file_size = extensions.get("fileSize")
+            # Fall back to v1 format (history.lastUpdated.when)
+            if not source_updated_at:
+                history = attachment_data.get("history", {})
+                last_updated = history.get("lastUpdated", {})
+                if isinstance(last_updated, dict):
+                    updated_when = last_updated.get("when")
+                    if updated_when:
+                        source_updated_at = self._parse_confluence_datetime(updated_when)
 
-            # Extract mime type from extensions
+            # Extract file size - v2 has it at top level, v1 in extensions
+            file_size = attachment_data.get("fileSize")  # v2 format
+            if file_size is None:
+                extensions = attachment_data.get("extensions", {})
+                file_size = extensions.get("fileSize")  # v1 format
+
+            # Extract mime type - v2 has it at top level (mediaType), v1 in extensions
+            media_type = attachment_data.get("mediaType")  # v2 format
+            if not media_type:
+                extensions = attachment_data.get("extensions", {})
+                media_type = extensions.get("mediaType")  # v1 format
+
             mime_type = None
-            media_type = extensions.get("mediaType")
-
             if media_type:
                 # Try to map to MimeTypes enum
                 for mime in MimeTypes:
@@ -1869,24 +1959,28 @@ class ConfluenceConnector(BaseConnector):
             if '.' in file_name:
                 extension = file_name.split('.')[-1].lower()
 
-            # Construct web URL from _links.download
-            # Final URL should be: https://your-domain.atlassian.net/wiki/pages/viewpageattachments.action?pageId={page_id}
+            # Construct web URL - v1 vs v2 have different link structures
             web_url = None
             links = attachment_data.get("_links", {})
             web_path = links.get("webui")
 
             if web_path:
-                # Extract base URL from self link
-                self_link = links.get("self")
-                if self_link and "https://" in self_link:
-                    # Extract base URL and trim after "wiki"
-                    if "/wiki/" in self_link:
-                        base_url = self_link.split("/wiki/")[0] + "/wiki"
-                        web_url = f"{base_url}{web_path}"
+                # Try v2 format first (_links.base)
+                base_url = links.get("base")
+                if base_url:
+                    web_url = f"{base_url}{web_path}"
+                else:
+                    # Fall back to v1 format (extract from _links.self)
+                    self_link = links.get("self")
+                    if self_link and "https://" in self_link:
+                        if "/wiki/" in self_link:
+                            base_url = self_link.split("/wiki/")[0] + "/wiki"
+                            web_url = f"{base_url}{web_path}"
 
-            attachment_version = attachment_data.get("version", {})
-            if attachment_version:
-                version_number = attachment_version.get("number")
+            # Extract version number
+            version_number = 0
+            if isinstance(version_data, dict):
+                version_number = version_data.get("number", 0)
 
             # Generate unique ID for attachment
             attachment_record_id = str(uuid.uuid4())
@@ -1897,7 +1991,8 @@ class ConfluenceConnector(BaseConnector):
                 record_name=file_name,
                 record_type=RecordType.FILE,
                 external_record_id=attachment_id,
-                version=version_number if attachment_version else 0,
+                external_revision_id=str(version_number) if version_number else None,
+                version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
                 mime_type=mime_type,
@@ -2357,10 +2452,318 @@ class ConfluenceConnector(BaseConnector):
         """Run incremental sync (delegates to full sync)."""
         await self.run_sync()
 
-    async def reindex_records(self, record_results: List[Dict]) -> None:
-        """Reindex records - not implemented for Confluence yet."""
-        self.logger.warning("Reindex not implemented for Confluence connector")
-        pass
+    async def reindex_records(self, records: List[Record]) -> None:
+        """Reindex a list of Confluence records.
+
+        This method:
+        1. For each record, checks if it has been updated at the source
+        2. If updated, upserts the record in DB
+        3. Publishes reindex events for all records via data_entities_processor
+
+        Args:
+            records: List of properly typed Record instances (WebpageRecord, FileRecord, CommentRecord, etc.)
+        """
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} Confluence records")
+
+            # Ensure external clients are initialized
+            if not self.external_client or not self.data_source:
+                self.logger.error("External API clients not initialized. Call init() first.")
+                raise Exception("External API clients not initialized. Call init() first.")
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non updated records")
+        except Exception as e:
+            self.logger.error(f"Error during Confluence reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch record from source and return data for reindexing.
+
+        Args:
+            org_id: Organization ID
+            record: Record to check
+
+        Returns:
+            Tuple of (Record, List[Permission]) if updated, None if not updated or error
+        """
+        try:
+            if record.record_type == RecordType.CONFLUENCE_PAGE:
+                return await self._check_and_fetch_updated_page(org_id, record)
+            elif record.record_type == RecordType.CONFLUENCE_BLOGPOST:
+                return await self._check_and_fetch_updated_blogpost(org_id, record)
+            elif record.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
+                return await self._check_and_fetch_updated_comment(org_id, record)
+            elif record.record_type == RecordType.FILE:
+                return await self._check_and_fetch_updated_attachment(org_id, record)
+            else:
+                self.logger.warning(f"Unsupported record type for reindex: {record.record_type}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_page(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch page from source for reindexing."""
+        try:
+            page_id = record.external_record_id
+
+            # Fetch page from source using v1 API
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_page_content_v2(
+                page_id=page_id,
+                body_format="storage"
+            )
+
+            if not response or response.status != HTTP_STATUS_200:
+                self.logger.warning(f"Page {page_id} not found at source, may have been deleted")
+                return None
+
+            page_data = response.json()
+
+            # Check if version changed
+            current_version = page_data.get("version", {}).get("number")
+            if current_version is None:
+                self.logger.warning(f"Page {page_id} has no version number")
+                return None
+
+            # Compare versions
+            if record.external_revision_id and str(current_version) == record.external_revision_id:
+                self.logger.debug(f"Page {page_id} has not changed at source (version {current_version})")
+                return None
+
+            self.logger.info(f"Page {page_id} has changed at source (version {record.external_revision_id} -> {current_version})")
+
+            # Transform page to WebpageRecord
+            webpage_record = self._transform_to_page_webpage_record(page_data)
+            if not webpage_record:
+                return None
+
+            # Preserve existing record ID
+            webpage_record.id = record.id
+
+            # Fetch fresh permissions
+            permissions = await self._fetch_page_permissions(page_id)
+
+            return (webpage_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching page {record.external_record_id}: {e}")
+            return None
+
+    async def _check_and_fetch_updated_blogpost(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch blogpost from source for reindexing."""
+        try:
+            blogpost_id = record.external_record_id
+
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_blog_post_by_id(
+                id=blogpost_id,
+                body_format="storage"
+            )
+
+            if not response or response.status != HTTP_STATUS_200:
+                self.logger.warning(f"Blogpost {blogpost_id} not found at source, may have been deleted")
+                return None
+
+            blogpost_data = response.json()
+
+            # Check if version changed
+            current_version = blogpost_data.get("version", {}).get("number")
+            if current_version is None:
+                self.logger.warning(f"Blogpost {blogpost_id} has no version number")
+                return None
+
+            # Compare versions
+            if record.external_revision_id and str(current_version) == record.external_revision_id:
+                self.logger.debug(f"Blogpost {blogpost_id} has not changed at source (version {current_version})")
+                return None
+
+            self.logger.info(f"Blogpost {blogpost_id} has changed at source (version {record.external_revision_id} -> {current_version})")
+
+            # Transform blogpost to WebpageRecord
+            webpage_record = self._transform_to_blogpost_webpage_record(blogpost_data)
+            if not webpage_record:
+                return None
+
+            # Preserve existing record ID
+            webpage_record.id = record.id
+
+            # Fetch fresh permissions
+            permissions = await self._fetch_page_permissions(blogpost_id)
+
+            return (webpage_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching blogpost {record.external_record_id}: {e}")
+            return None
+
+    async def _check_and_fetch_updated_comment(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch comment from source for reindexing."""
+        try:
+            comment_id = record.external_record_id
+            is_inline = record.record_type == RecordType.INLINE_COMMENT
+
+            # Fetch comment from source using v2 API
+            datasource = await self._get_fresh_datasource()
+
+            if is_inline:
+                response = await datasource.get_inline_comment_by_id(
+                    comment_id=int(comment_id),
+                    body_format="storage"
+                )
+            else:
+                response = await datasource.get_footer_comment_by_id(
+                    comment_id=int(comment_id),
+                    body_format="storage"
+                )
+
+            if not response or response.status != HTTP_STATUS_200:
+                self.logger.warning(f"Comment {comment_id} not found at source, may have been deleted")
+                return None
+
+            comment_data = response.json()
+
+            # Check if version changed
+            current_version = comment_data.get("version", {}).get("number")
+            if current_version is None:
+                self.logger.warning(f"Comment {comment_id} has no version number")
+                return None
+
+            # Compare versions using external_revision_id
+            if record.external_revision_id and str(current_version) == record.external_revision_id:
+                self.logger.debug(f"Comment {comment_id} has not changed at source (version {current_version})")
+                return None
+
+            self.logger.info(f"Comment {comment_id} has changed at source (version {record.external_revision_id} -> {current_version})")
+
+            # Transform comment to CommentRecord
+            comment_type = "inline" if is_inline else "footer"
+
+            comment_record = self._transform_to_comment_record(
+                comment_data,
+                record.parent_external_record_id,
+                record.external_record_group_id,
+                comment_type,
+                record.parent_external_record_id
+            )
+
+            if not comment_record:
+                return None
+
+            # Preserve existing record ID
+            comment_record.id = record.id
+
+            # Comments inherit permissions from parent page - fetch page permissions
+            parent_page_id = record.parent_external_record_id
+            permissions = []
+            if parent_page_id:
+                permissions = await self._fetch_page_permissions(parent_page_id, f"parent of comment {comment_id}")
+
+            return (comment_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching comment {record.external_record_id}: {e}")
+            return None
+
+    async def _check_and_fetch_updated_attachment(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch attachment from source for reindexing."""
+        try:
+            attachment_id = record.external_record_id
+            parent_page_id = record.parent_external_record_id
+
+            if not parent_page_id:
+                self.logger.warning(f"Attachment {attachment_id} has no parent page ID")
+                return None
+
+            # Fetch attachment metadata from source using v2 API
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_attachment_by_id(
+                id=attachment_id,
+                include_version=True
+            )
+
+            if not response or response.status != HTTP_STATUS_200:
+                self.logger.warning(f"Attachment {attachment_id} not found at source, may have been deleted")
+                return None
+
+            attachment_data = response.json()
+
+            # Check if version changed
+            current_version = attachment_data.get("version", {}).get("number")
+            if current_version is None:
+                self.logger.warning(f"Attachment {attachment_id} has no version number")
+                return None
+
+            # Compare versions using external_revision_id
+            if record.external_revision_id and str(current_version) == record.external_revision_id:
+                self.logger.debug(f"Attachment {attachment_id} has not changed at source (version {current_version})")
+                return None
+
+            self.logger.info(f"Attachment {attachment_id} has changed at source (version {record.external_revision_id} -> {current_version})")
+
+            # Get space_id from parent page or use existing
+            parent_space_id = record.external_record_group_id
+
+            # Transform attachment to FileRecord using v1 data
+            attachment_record = self._transform_to_attachment_file_record(
+                attachment_data,
+                parent_page_id,
+                parent_space_id
+            )
+
+            if not attachment_record:
+                return None
+
+            # Preserve existing record ID
+            attachment_record.id = record.id
+
+            # Attachments inherit permissions from parent page - fetch page permissions
+            permissions = await self._fetch_page_permissions(parent_page_id, f"parent of attachment {attachment_id}")
+
+            return (attachment_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")
+            return None
 
     async def cleanup(self) -> None:
         """Cleanup resources."""
