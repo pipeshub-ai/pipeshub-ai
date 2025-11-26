@@ -25,6 +25,7 @@ class ModelType(str, Enum):
 class EmbeddingProvider(Enum):
     ANTHROPIC = "anthropic"
     AWS_BEDROCK = "bedrock"
+    AZURE_AI = "azureAI"
     AZURE_OPENAI = "azureOpenAI"
     COHERE = "cohere"
     DEFAULT = "default"
@@ -44,6 +45,7 @@ class EmbeddingProvider(Enum):
 class LLMProvider(Enum):
     ANTHROPIC = "anthropic"
     AWS_BEDROCK = "bedrock"
+    AZURE_AI = "azureAI"
     AZURE_OPENAI = "azureOpenAI"
     COHERE = "cohere"
     FIREWORKS = "fireworks"
@@ -89,7 +91,20 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
 
     logger.info(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
-    if provider == EmbeddingProvider.AZURE_OPENAI.value:
+    if provider == EmbeddingProvider.AZURE_AI.value:
+        from langchain_openai.embeddings import OpenAIEmbeddings
+        if "cohere" or "embed-v" in model_name.lower():
+            check_embedding_ctx_length = False
+        else:
+            check_embedding_ctx_length = True
+        return OpenAIEmbeddings(
+            model=model_name,
+            api_key=configuration['apiKey'],
+            base_url=configuration['endpoint'],
+            check_embedding_ctx_length=check_embedding_ctx_length,
+        )
+
+    elif provider == EmbeddingProvider.AZURE_OPENAI.value:
         from langchain_openai.embeddings import AzureOpenAIEmbeddings
 
         return AzureOpenAIEmbeddings(
@@ -270,10 +285,36 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 region_name=configuration["region"],
                 provider=configuration.get("provider", "anthropic"),
             )
+    elif provider == LLMProvider.AZURE_AI.value:
+        from langchain_anthropic import ChatAnthropic
+        from langchain_openai import ChatOpenAI
+
+        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+
+        is_claude_model = "claude" in model_name
+        if is_claude_model:
+            return ChatAnthropic(
+                model=model_name,
+                base_url=configuration.get("endpoint"),
+                temperature=temperature,
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+                api_key=configuration.get("apiKey"),
+                max_tokens=configuration.get("maxTokens", 16000),
+            )
+        else:
+            return ChatOpenAI(
+                    model=model_name,
+                    temperature=temperature,
+                    timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+                    api_key=configuration.get("apiKey"),
+                    base_url=configuration.get("endpoint"),
+                )
+
     elif provider == LLMProvider.AZURE_OPENAI.value:
         from langchain_openai import AzureChatOpenAI
 
-        is_reasoning_model = "gpt-5" in model_name or configuration.get("isReasoning")
+        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
         return AzureChatOpenAI(
                 api_key=configuration["apiKey"],
@@ -349,7 +390,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == LLMProvider.OPENAI.value:
         from langchain_openai import ChatOpenAI
 
-        is_reasoning_model = "gpt-5" in model_name or configuration.get("isReasoning")
+        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
         return ChatOpenAI(
                 model=model_name,
@@ -382,10 +423,11 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
 
     elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai import ChatOpenAI
-
+        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
         return ChatOpenAI(
                 model=model_name,
-                temperature=0.2,
+                temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],

@@ -107,6 +107,7 @@ const normalizeDisplayName = (name: string): string =>
     .join(' ');
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  azureAI: 'Azure AI',
   azureOpenAI: 'Azure OpenAI',
   openAI: 'OpenAI',
   anthropic: 'Anthropic',

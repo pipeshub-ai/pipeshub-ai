@@ -400,6 +400,7 @@ export const modelType = z.enum([
 export const embeddingProvider = z.enum([
   'anthropic',
   'bedrock',
+  'azureAI',
   'azureOpenAI', 
   'cohere',
   'default',
@@ -419,7 +420,8 @@ export const embeddingProvider = z.enum([
 
 export const llmProvider = z.enum([
   'anthropic',
-  'bedrock', 
+  'bedrock',
+  'azureAI',
   'azureOpenAI',
   'cohere',
   'fireworks',
