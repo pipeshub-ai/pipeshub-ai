@@ -574,18 +574,48 @@ export const saveCompleteConversation = async (
 };
 
 // Helper function to mark conversation as failed
+// Helper function to add error to conversation errors array
+export const addErrorToConversation = (
+  conversation: IConversationDocument,
+  errorMessage: string,
+  errorType?: string,
+  messageId?: mongoose.Types.ObjectId,
+  stack?: string,
+  metadata?: Map<string, any>,
+): void => {
+  if (!conversation.conversationErrors) {
+    conversation.conversationErrors = [];
+  }
+  conversation.conversationErrors.push({
+    message: errorMessage,
+    errorType: errorType || 'unknown',
+    timestamp: new Date(),
+    messageId,
+    stack,
+    metadata,
+  });
+};
+
 export const markConversationFailed = async (
   conversation: IConversationDocument,
   failReason: string,
   session?: ClientSession | null,
+  errorType?: string,
+  stack?: string,
+  metadata?: Map<string, any>,
 ): Promise<void> => {
   try {
     conversation.status = CONVERSATION_STATUS.FAILED;
     conversation.failReason = failReason;
     conversation.lastActivityAt = Date.now();
 
+    // Add error to errors array
+    addErrorToConversation(conversation, failReason, errorType, undefined, stack, metadata);
+
     // Add failure message
     const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+    // Update the error message content with the exact error
+    failedMessage.content = failReason;
     conversation.messages.push(failedMessage);
 
     // Save failed conversation
@@ -607,6 +637,73 @@ export const markConversationFailed = async (
   } catch (error: any) {
     logger.error('Error marking conversation as failed', {
       conversationId: conversation._id,
+      error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Replace a message at a specific index with an error message (used for regeneration)
+ */
+export const replaceMessageWithError = async (
+  conversation: IConversationDocument,
+  messageIndex: number,
+  errorMessage: string,
+  session?: ClientSession | null,
+  errorType?: string,
+  stack?: string,
+  metadata?: Map<string, any>,
+): Promise<void> => {
+  try {
+    if (messageIndex < 0 || messageIndex >= conversation.messages.length) {
+      throw new InternalServerError('Invalid message index for error replacement');
+    }
+
+    conversation.status = CONVERSATION_STATUS.FAILED;
+    conversation.failReason = errorMessage;
+    conversation.lastActivityAt = Date.now();
+
+    // Add error to errors array
+    const originalMessage = conversation.messages[messageIndex] as IMessageDocument;
+    addErrorToConversation(
+      conversation,
+      errorMessage,
+      errorType,
+      originalMessage._id as mongoose.Types.ObjectId,
+      stack,
+      metadata,
+    );
+
+    // Replace the message at the specified index with error message
+    const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+    failedMessage.content = errorMessage;
+    // Preserve the original message ID
+    failedMessage._id = originalMessage._id;
+    conversation.messages[messageIndex] = failedMessage;
+
+    // Save updated conversation
+    const savedWithError = session
+      ? await conversation.save({ session })
+      : await conversation.save();
+
+    if (!savedWithError) {
+      logger.error('Failed to replace message with error', {
+        conversationId: conversation._id,
+        messageIndex,
+        errorMessage,
+      });
+    }
+
+    logger.debug('Message replaced with error', {
+      conversationId: conversation._id,
+      messageIndex,
+      errorMessage,
+    });
+  } catch (error: any) {
+    logger.error('Error replacing message with error', {
+      conversationId: conversation._id,
+      messageIndex,
       error: error.message,
     });
     throw error;

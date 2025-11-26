@@ -7,7 +7,6 @@ export interface ChatMessageProps {
   onFeedbackSubmit: (messageId: string, feedback: any) => Promise<void>;
   conversationId: string | null;
   onViewPdf: (url: string,citation : CustomCitation, citations: CustomCitation[], isExcelFile?: boolean,buffer?: ArrayBuffer) => void;
-  isRegenerating: boolean;
   showRegenerate: boolean;
 }
 
