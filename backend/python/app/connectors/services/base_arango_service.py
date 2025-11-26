@@ -11564,7 +11564,7 @@ class BaseArangoService:
 
             if mime_type:
                 # Checking a FILE: Only conflict if same name AND same MIME type
-                # Files are stored as records, and we need to check the associated file document for mimeType
+                # Files are stored as records, and we can filter by mimeType on the record before expensive lookups
                 # edge._to for files points to records/{record_id}
                 query = """
                 FOR edge IN @@record_relations
@@ -11574,20 +11574,18 @@ class BaseArangoService:
                     FILTER edge._to LIKE "records/%"
                     LET child = DOCUMENT(edge._to)
                     FILTER child != null
-                    // Verify it's a record (has recordName field)
+                    // Verify it's a record and filter by mimeType early to reduce lookups
                     FILTER child.recordName != null
-                    LET child_name = child.recordName
-                    LET child_name_l = LOWER(child_name)
+                    FILTER child.mimeType == @mime_type
+                    LET child_name_l = LOWER(child.recordName)
                     FILTER child_name_l IN @name_variants
-                    // Get the associated file document to check mimeType
+                    // Get the associated file document to confirm it's a file
                     // Records and files share the same _key
                     LET file_doc = DOCUMENT(@@files_collection, child._key)
-                    FILTER file_doc != null
-                    FILTER file_doc.isFile == true
-                    FILTER file_doc.mimeType == @mime_type
+                    FILTER file_doc != null AND file_doc.isFile == true
                     RETURN {
                         id: child._key,
-                        name: child_name,
+                        name: child.recordName,
                         type: "record",
                         document_type: "records",
                         mimeType: file_doc.mimeType
