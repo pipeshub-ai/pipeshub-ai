@@ -113,7 +113,7 @@ class RecordEventHandler(BaseEventService):
                 await self.event_processor.arango_service.update_queued_duplicates_status(record_id, ProgressStatus.FAILED.value, virtual_record_id)
             except Exception as e:
                 self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
-                
+
 
 
     async def process_event(self, event_type: str, payload: dict) -> bool:

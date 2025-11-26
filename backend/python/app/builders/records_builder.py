@@ -1,9 +1,9 @@
 from datetime import datetime
 from typing import List
 
+from app.config.constants.arangodb import ProgressStatus
 from app.models.records import FileRecord, MailRecord, Record
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.config.constants.arangodb import ProgressStatus
 
 
 class RecordBuilder:

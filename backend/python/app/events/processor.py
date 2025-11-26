@@ -107,17 +107,17 @@ class Processor:
             self.logger.debug("📸 Processing image content")
             if not content:
                 raise Exception("No image data provided")
-            
+
             record = await self.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 return
-            
+
             _ , config = await get_llm(self.config_service)
             is_multimodal_llm = config.get("isMultimodal")
-        
+
             embedding_config = await get_embedding_model_config(self.config_service)
             is_multimodal_embedding = embedding_config.get("isMultimodal") if embedding_config else False
             if not is_multimodal_embedding and not is_multimodal_llm:
@@ -136,7 +136,7 @@ class Processor:
                         raise DocumentProcessingError(
                             "Failed to update indexing status", doc_id=record_id
                         )
-                    
+
                     return
 
                 except DocumentProcessingError:
@@ -147,7 +147,7 @@ class Processor:
                         doc_id=record_id,
                         details={"error": str(e)},
                     )
-            
+
             mime_type = record.get("mimeType")
             if mime_type is None:
                 raise Exception("No mime type present in the record from graph db")

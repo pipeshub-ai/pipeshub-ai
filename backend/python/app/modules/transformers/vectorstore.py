@@ -13,7 +13,7 @@ from qdrant_client.http.models import PointStruct
 from spacy.language import Language
 from spacy.tokens import Doc
 
-from app.config.constants.arangodb import CollectionNames, MimeTypes
+from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -1109,8 +1109,8 @@ class VectorStore(Transformer):
                                             page_content=description, metadata=metadata
                                         )
                                     )
-                        
-                            
+
+
                 except Exception as e:
                     raise DocumentProcessingError(
                         "Failed to create image document objects: " + str(e),
