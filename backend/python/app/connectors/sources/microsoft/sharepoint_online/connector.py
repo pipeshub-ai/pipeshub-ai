@@ -1634,7 +1634,6 @@ class SharePointConnector(BaseConnector):
                             external_id=self.data_entities_processor.org_id # Placeholder
                         )
 
-
                     # CASE C: It's an AD Security Group (PrincipalType == 4)
                     elif sp_user.get('PrincipalType') == SECURITY_GROUP_TYPE:
                         # Security Group LoginNames often look like: "c:0t.c|tenant|32537252-0676-4c47-a372-2d93563456"
@@ -1672,22 +1671,43 @@ class SharePointConnector(BaseConnector):
             # STEP 3: Process Explicit Visitors -> READ
             # ==================================================================
             visitors = await self._get_sharepoint_group_users(site_url, 'associatedvisitorgroup', access_token)
+
+            # The standard GUID for "Everyone except external users"
+            EVERYONE_EXCEPT_EXTERNAL_ID = '9908e57b-4444-4a0e-af96-e8ca83c0a0e5'
+
             for v in visitors:
-                 if v.get('PrincipalType') == 1:
+                login_name = v.get('LoginName', '')
+                principal_type = v.get('PrincipalType')
+                title = v.get('Title', '')
+
+                # DEBUG: Print everything found in visitors so you can see it in logs
+                self.logger.info(f"👀 Visitor Found: '{title}' | Type: {principal_type} | Login: {login_name}")
+
+                # CASE A: Standard User (Type 1)
+                if principal_type == 1:
                     email = v.get('Email') or v.get('UserPrincipalName')
                     add_or_update_permission(email, v.get('Id'), PermissionType.READ)
 
-            # ==================================================================
-            # STEP 4: The "Catch-All" (User Info List) -> READ
-            # ==================================================================
-            # This catches 'harshitj' who isn't in a group but visited the public site
-            all_cached_users = await self._get_site_members_direct(site_url, access_token)
-            for user in all_cached_users:
-                email = user.get('Email') or user.get('UserPrincipalName')
+                # CASE B: "Everyone" Claims (Modern)
+                elif 'spo-grid-all-users' in login_name or 'c:0(.s|true' in login_name:
+                    self.logger.info(f"🌍 Site {site_id} is Public (Everyone claim found)")
+                    permissions_dict['ORGANIZATION_ACCESS'] = Permission(
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                        external_id=self.data_entities_processor.org_id
+                    )
 
-                # Only add if they are NOT already in the dict
-                if email and email not in permissions_dict:
-                    add_or_update_permission(email, user.get('Id'), PermissionType.READ)
+                # CASE C: "Everyone" Security Group (Type 4) <--- THIS IS WHAT YOU WERE MISSING
+                elif principal_type == SECURITY_GROUP_TYPE:
+                    # Check GUID or Title
+                    if EVERYONE_EXCEPT_EXTERNAL_ID in login_name or 'Everyone except external users' in title:
+                        self.logger.info(f"🌍 Site {site_id} is Public ('Everyone' Group found)")
+                        permissions_dict['ORGANIZATION_ACCESS'] = Permission(
+                            type=PermissionType.READ,
+                            entity_type=EntityType.ORG,
+                            external_id=self.data_entities_processor.org_id
+                        )
+
 
             self.logger.info(f"Found {len(permissions_dict)} unique permissions for site {site_id}")
             print(f"Permissions: {permissions_dict}")
