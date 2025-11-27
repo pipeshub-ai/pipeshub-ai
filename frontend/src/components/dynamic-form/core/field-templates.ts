@@ -88,6 +88,15 @@ export const FIELD_TEMPLATES = {
     validation: z.string().min(1, 'Deployment Name is required'),
   },
 
+  apiVersion: {
+    name: 'apiVersion',
+    label: 'API Version',
+    placeholder: '2024-05-01-preview',
+    icon: serverIcon,
+    required: false,
+    validation: z.string().optional(),
+  },
+
   // EMAIL FIELDS
   fromEmail: {
     name: 'fromEmail',

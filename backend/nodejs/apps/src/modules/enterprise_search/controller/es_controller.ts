@@ -8,6 +8,13 @@ import {
   buildAgentConversationFilter,
   buildAgentSharedWithMeFilter,
   deleteAgentConversation,
+  replaceMessageWithError,
+  initializeSSEResponse,
+  sendSSEErrorEvent,
+  sendSSECompleteEvent,
+  handleRegenerationStreamData,
+  handleRegenerationSuccess,
+  handleRegenerationError,
 } from './../utils/utils';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession, Types } from 'mongoose';
@@ -189,6 +196,11 @@ export const streamChat =
         messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
+        // Store model and mode information
+        modelKey: req.body.modelKey || undefined,
+        modelName: req.body.modelName || undefined,
+        modelProvider: req.body.modelProvider || undefined,
+        chatMode: req.body.chatMode || 'standard',
       };
 
       // Start transaction if replica set is available
@@ -350,6 +362,7 @@ export const streamChat =
               savedConversation as IConversationDocument,
               'No complete response received from AI service',
               session,
+              'incomplete_response',
             );
 
             // Send error event
@@ -365,6 +378,16 @@ export const streamChat =
             conversationId: savedConversation?._id,
             error: dbError.message,
           });
+
+          if (savedConversation) {
+            await markConversationFailed(
+              savedConversation as IConversationDocument,
+              `Failed to save conversation: ${dbError.message}`,
+              session,
+              'database_error',
+              dbError.stack,
+            );
+          }
 
           // Send error event
           res.write(
@@ -387,6 +410,8 @@ export const streamChat =
               savedConversation as IConversationDocument,
               `Stream error: ${error.message}`,
               session,
+              'stream_error',
+              error.stack,
             );
           }
         } catch (dbError: any) {
@@ -414,6 +439,8 @@ export const streamChat =
             savedConversation as IConversationDocument,
             error.message || 'Internal server error',
             session,
+            'internal_error',
+            error.stack,
           );
         }
       } catch (dbError: any) {
@@ -1098,6 +1125,15 @@ export const addMessageStream =
       conversation.status = CONVERSATION_STATUS.INPROGRESS;
       conversation.failReason = undefined; // Clear previous error if any
 
+      // Update model and mode information if provided
+      const fieldsToUpdate: Array<keyof IConversation> = ['modelKey', 'modelName', 'modelProvider', 'chatMode'];
+      for (const field of fieldsToUpdate) {
+        const value = req.body[field];
+        if (value !== undefined && value !== null) {
+          (conversation as any)[field] = value;
+        }
+      }
+
       // First, add the user message to the existing conversation
       conversation.messages.push(
         buildUserQueryMessage(req.body.query) as IMessageDocument,
@@ -1252,10 +1288,14 @@ export const addMessageStream =
             } else if (eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
+                const errorMessage = errorData.error || errorData.message || 'Unknown error occurred';
                 markConversationFailed(
                   existingConversation as IConversationDocument,
-                  errorData.error,
+                  errorMessage,
                   session,
+                  'streaming_error',
+                  errorData.stack,
+                  errorData.metadata ? new Map(Object.entries(errorData.metadata)) : undefined,
                 );
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
@@ -1264,6 +1304,16 @@ export const addMessageStream =
                   parseError: parseError.message,
                   dataLine,
                 });
+                const errorMessage = `Failed to parse error event: ${parseError.message}`;
+                if (existingConversation) {
+                  markConversationFailed(
+                    existingConversation as IConversationDocument,
+                    errorMessage,
+                    session,
+                    'parse_error',
+                    parseError.stack,
+                  );
+                }
                 filteredChunk += event + '\n\n';
               }
             } else {
@@ -1455,10 +1505,12 @@ export const addMessageStream =
         logger.error('Stream error', { requestId, error: error.message });
         try {
           if (existingConversation) {
-            markConversationFailed(
+            await markConversationFailed(
               existingConversation as IConversationDocument,
               error.message,
               session,
+              'stream_error',
+              error.stack,
             );
           }
         } catch (dbError: any) {
@@ -2236,26 +2288,24 @@ export const unshareConversationById = async (
 
 export const regenerateAnswers =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (req: AuthenticatedUserRequest, res: Response) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     let session: ClientSession | null = null;
     const { conversationId, messageId } = req.params;
-    try {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
 
-      logger.debug('Attempting to regenerate answers', {
-        requestId,
-        conversationId,
-        messageId,
-        timestamp: new Date().toISOString(),
-      });
+    let existingConversation: IConversationDocument | null = null;
+    let messageIndex = -1;
 
-      // Common helper that performs all operations needed to regenerate the answer.
-      async function performRegenerateAnswers(session?: ClientSession | null) {
+    // Helper function to validate and get conversation
+    async function performRegenerateAnswersValidation(
+      session?: ClientSession | null,
+    ): Promise<IConversationDocument> {
         // Get conversation with access control
-        const conversation = await Conversation.findOne({
+      const conversation = await Conversation.findOne(
+        {
           _id: conversationId,
           orgId,
           userId,
@@ -2265,7 +2315,10 @@ export const regenerateAnswers =
             { 'sharedWith.userId': userId },
             { isShared: true },
           ],
-        });
+        },
+        null,
+        session ? { session } : undefined,
+      );
 
         if (!conversation) {
           throw new NotFoundError('Conversation not found or unauthorized');
@@ -2305,147 +2358,304 @@ export const regenerateAnswers =
           throw new BadRequestError('Previous message must be a user query');
         }
 
-        // Format previous conversations up to this message
-        const previousConversations = formatPreviousConversations(
-          conversation.messages.slice(0, -2), // Exclude last bot response and user query
-        );
+      messageIndex = conversation.messages.length - 1;
 
-        // Get new AI response
-        const aiCommand = new AIServiceCommand({
-          uri: `${appConfig.aiBackend}/api/v1/chat`,
-          method: HttpMethod.POST,
-          headers: req.headers as Record<string, string>,
-          body: {
-            query: userQuery.content,
-            previousConversations: previousConversations || [],
-          },
-        });
-        let aiResponse;
-        try {
-          aiResponse =
-            (await aiCommand.execute()) as AIServiceResponse<IAIResponse>;
-        } catch (error: any) {
-          if (error.cause && error.cause.code === 'ECONNREFUSED') {
-            throw new InternalServerError(
-              AI_SERVICE_UNAVAILABLE_MESSAGE,
-              error,
-            );
-          }
-          logger.error(' Failed error ', error);
-          throw new InternalServerError('Failed to get AI response', error);
-        }
-        if (!aiResponse || aiResponse.statusCode !== 200 || !aiResponse.data) {
-          throw new InternalServerError(
-            'Failed to get response from AI service',
-            aiResponse?.data,
-          );
-        }
-
-        // Create and save citations
-        const savedCitations = await Promise.all(
-          aiResponse.data.citations.map(async (citation: ICitation) => {
-            const newCitation = new Citation({
-              content: citation.content,
-              chunkIndex: citation.chunkIndex ?? 0,
-              citationType: citation.citationType,
-              metadata: {
-                ...citation.metadata,
-                orgId,
-              },
-            });
-            return newCitation.save();
-          }),
-        );
-
-        // Build new AI message while preserving the original message's _id
-        const newMessage = buildAIResponseMessage(
-          aiResponse,
-          savedCitations,
-        ) as IMessageDocument;
-        newMessage._id = lastMessage._id;
-
-        // Update conversation with the new message
-        const updatedConversation = await Conversation.findOneAndUpdate(
-          { _id: conversationId },
-          {
-            $set: {
-              [`messages.${conversation.messages.length - 1}`]: newMessage,
-              lastActivityAt: Date.now(),
-            },
-          },
-          {
-            new: true,
-            session,
-            runValidators: true,
-          },
-        );
-        if (!updatedConversation) {
-          throw new InternalServerError('Failed to update conversation');
-        }
-
-        return {
-          conversation: {
-            id: updatedConversation._id,
-            messages: [
-              {
-                ...newMessage,
-                citations:
-                  newMessage.citations?.map((citation: IMessageCitation) => ({
-                    citationId: citation.citationId,
-                    citationData: savedCitations.find(
-                      (c: ICitation) =>
-                        (c as mongoose.Document).id.toString() ===
-                        citation.citationId?.toString(),
-                    ),
-                  })) || [],
-              },
-            ],
-          },
-        };
-      }
-
-      let responseData;
-      if (rsAvailable) {
-        session = await mongoose.startSession();
-        responseData = await session.withTransaction(() =>
-          performRegenerateAnswers(session),
-        );
-      } else {
-        responseData = await performRegenerateAnswers();
-      }
-
-      if (session && rsAvailable) {
-        await session.commitTransaction();
-      }
-
-      logger.debug('Answer regenerated successfully', {
+      logger.debug('Regenerate answers validation passed', {
         requestId,
         conversationId,
         messageId,
-        duration: Date.now() - startTime,
+        messageIndex,
+        timestamp: new Date().toISOString(),
       });
 
-      res.status(200).json({
-        ...responseData,
-        meta: {
-          requestId,
-          timestamp: new Date().toISOString(),
-          duration: Date.now() - startTime,
+      return conversation;
+    }
+
+    try {
+      // Initialize SSE response
+      initializeSSEResponse(res);
+
+      logger.debug('Attempting to regenerate answers via stream', {
+        requestId,
+        conversationId,
+        messageId,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Validate conversation and message
+      if (rsAvailable) {
+        session = await mongoose.startSession();
+        existingConversation = await session.withTransaction(() =>
+          performRegenerateAnswersValidation(session),
+        );
+      } else {
+        existingConversation = await performRegenerateAnswersValidation();
+      }
+
+      if (!existingConversation || messageIndex === -1) {
+        throw new NotFoundError('Conversation or message not found');
+      }
+
+      // Get user query from the previous message
+      const userQuery = existingConversation.messages[
+        messageIndex - 1
+      ] as IMessageDocument;
+
+        // Format previous conversations up to this message
+        const previousConversations = formatPreviousConversations(
+        existingConversation.messages.slice(0, -2), // Exclude last bot response and user query
+      );
+
+      // Prepare AI payload
+      const aiPayload = {
+            query: userQuery.content,
+            previousConversations: previousConversations || [],
+        filters: req.body.filters || {},
+        // New fields for multi-model support
+        modelKey: req.body.modelKey || null,
+        modelName: req.body.modelName || null,
+        chatMode: req.body.chatMode || 'standard',
+      };
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
+        method: HttpMethod.POST,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
         },
+        body: aiPayload,
+      };
+
+      const stream = await startAIStream(aiCommandOptions, 'Regenerate Answers Stream', { requestId });
+
+      if (!stream) {
+        throw new Error('Failed to get stream from AI service');
+      }
+
+      // Variables to collect complete response data
+      let completeData: IAIResponse | null = null;
+      let buffer = '';
+
+      // Handle client disconnect
+      req.on('close', () => {
+        logger.debug('Client disconnected', { requestId });
+        stream.destroy();
+      });
+
+      // Process SSE events, capture complete event, and forward non-complete events
+      stream.on('data', (chunk: Buffer) => {
+        buffer = handleRegenerationStreamData(
+          chunk,
+          buffer,
+          existingConversation,
+          messageIndex,
+          session,
+          requestId || '',
+          res,
+          (data: IAIResponse) => {
+            completeData = data;
+            logger.debug('Captured complete event data from AI backend', {
+              requestId,
+              conversationId: existingConversation?._id,
+              answer: completeData?.answer,
+              citationsCount: completeData?.citations?.length || 0,
+            });
+          },
+        );
+      });
+
+      stream.on('end', async () => {
+        logger.debug('Stream ended successfully', { requestId });
+        try {
+          // Save the AI response to the conversation, replacing the existing message
+          if (completeData && existingConversation) {
+            try {
+              const { conversation: responseConversation, savedCitations } =
+                await handleRegenerationSuccess(
+                  completeData,
+                  existingConversation,
+                  messageIndex,
+                  orgId || '',
+                  session,
+                  req.body.modelKey,
+                  req.body.modelName,
+                  req.body.modelProvider,
+                  req.body.chatMode,
+                );
+
+              // Send final response event with the complete conversation data
+              sendSSECompleteEvent(
+                res,
+                responseConversation,
+                savedCitations.length,
+                requestId || '',
+                startTime,
+              );
+
+              logger.debug(
+                'Answer regenerated and conversation updated, sent custom complete event',
+                {
+                  requestId,
+                  conversationId: existingConversation._id,
+                  messageId,
+                  duration: Date.now() - startTime,
+                },
+              );
+            } catch (error: any) {
+              // Update conversation status for general errors
+              if (existingConversation && messageIndex >= 0) {
+              await handleRegenerationError(
+                res,
+                error,
+                existingConversation,
+                messageIndex,
+                conversationId || '',
+                session,
+                requestId || '',
+                'regeneration_error',
+              );
+              }
+
+              if (error.cause && error.cause.code === 'ECONNREFUSED') {
+                throw new InternalServerError(
+                  AI_SERVICE_UNAVAILABLE_MESSAGE,
+                  error,
+                );
+              }
+              throw error;
+            }
+          } else {
+            // Mark as failed if no complete data received
+            if (existingConversation && messageIndex >= 0) {
+              const errorMessage = 'No complete response received from AI service';
+              await replaceMessageWithError(
+                existingConversation as IConversationDocument,
+                messageIndex,
+                errorMessage,
+                session,
+                'incomplete_response',
+              );
+
+              // Reload conversation to get updated state
+              const updatedConversation = await Conversation.findById(conversationId || '');
+              if (updatedConversation) {
+                const plainConversation = updatedConversation.toObject();
+                await sendSSEErrorEvent(res, errorMessage, undefined, plainConversation);
+              } else {
+                await sendSSEErrorEvent(res, errorMessage);
+              }
+            } else {
+              await sendSSEErrorEvent(res, 'No complete response received from AI service');
+            }
+          }
+        } catch (dbError: any) {
+          logger.error('Failed to save regenerated AI response to conversation', {
+            requestId,
+            conversationId: existingConversation?._id,
+            error: dbError.message,
+          });
+
+          // Try to replace message with error if we have the index
+          if (existingConversation && messageIndex >= 0) {
+            try {
+              const errorMessage = `Failed to save regenerated AI response: ${dbError.message}`;
+              await replaceMessageWithError(
+                existingConversation as IConversationDocument,
+                messageIndex,
+                errorMessage,
+                session,
+                'database_error',
+                dbError.stack,
+              );
+
+              // Reload conversation to get updated state
+              const updatedConversation = await Conversation.findById(conversationId || '');
+              if (updatedConversation) {
+                const plainConversation = updatedConversation.toObject();
+                await sendSSEErrorEvent(res, errorMessage, dbError.message, plainConversation);
+              } else {
+                await sendSSEErrorEvent(res, errorMessage, dbError.message);
+              }
+            } catch (replaceError: any) {
+              logger.error('Failed to replace message with error in dbError catch', {
+                requestId,
+                error: replaceError.message,
+              });
+              await sendSSEErrorEvent(res, 'Failed to save regenerated AI response', dbError.message);
+            }
+          } else {
+            await sendSSEErrorEvent(res, 'Failed to save regenerated AI response', dbError.message);
+          }
+        }
+
+        res.end();
+      });
+
+      stream.on('error', async (error: Error) => {
+        logger.error('Stream error in regenerateAnswers', { requestId, error: error.message });
+        try {
+        await handleRegenerationError(
+          res,
+          error,
+          existingConversation,
+          messageIndex,
+          conversationId || '',
+          session,
+          requestId || '',
+          'stream_error',
+        );
+        } catch (dbError: any) {
+          logger.error('Failed to replace message with error', {
+            requestId,
+            conversationId: existingConversation?._id,
+            error: dbError.message,
+          });
+          await sendSSEErrorEvent(
+            res,
+            error.message || 'Stream error occurred',
+            error.message,
+          );
+        }
+        res.end();
       });
     } catch (error: any) {
-      logger.error('Error regenerating answer', {
+      logger.error('Error in regenerateAnswers', {
         requestId,
         conversationId,
         messageId,
         error: error.message,
         stack: error.stack,
-        duration: Date.now() - startTime,
       });
-      if (session?.inTransaction()) {
-        await session.abortTransaction();
+
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
       }
-      next(error);
+
+      try {
+        await handleRegenerationError(
+          res,
+          error,
+          existingConversation,
+          messageIndex,
+          conversationId || '',
+          session,
+          requestId || '',
+          'regeneration_error',
+        );
+      } catch (dbError: any) {
+        logger.error('Failed to mark conversation as failed in catch block', {
+          requestId,
+          conversationId,
+          error: dbError.message,
+        });
+        await sendSSEErrorEvent(
+          res,
+          error.message || 'Internal server error',
+          error.message,
+        );
+      }
+      res.end();
     } finally {
       if (session) {
         session.endSession();

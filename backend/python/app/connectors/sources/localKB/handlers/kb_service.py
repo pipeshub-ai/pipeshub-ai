@@ -65,7 +65,7 @@ class KnowledgeBaseService :
                         CollectionNames.FILES.value,
                         CollectionNames.IS_OF_TYPE.value,
                         CollectionNames.BELONGS_TO.value,
-                        CollectionNames.PERMISSIONS_TO_KB.value,
+                        CollectionNames.PERMISSION.value,
                     ]
                 )
                 self.logger.info("🔄 Transaction created")

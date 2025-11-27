@@ -471,14 +471,6 @@ class ArangoTransactionStore(TransactionStore):
     async def get_all_orgs(self) -> List[Org]:
         return await self.arango_service.get_all_orgs()
 
-    async def create_record_permissions(self, record_id: str, permissions: List[Permission]) -> None:
-        return await self.arango_service.batch_create_edges([permission.to_arango_permission() for permission in permissions],
-                    collection=CollectionNames.PERMISSIONS.value, transaction=self.txn)
-
-    async def create_record_group_permissions(self, record_group_id: str, permissions: List[Permission]) -> None:
-        return await self.arango_service.batch_create_edges([permission.to_arango_permission() for permission in permissions],
-                    collection=CollectionNames.PERMISSIONS.value, transaction=self.txn)
-
     async def create_user_groups(self, user_groups: List[AppUserGroup]) -> None:
         return await self.arango_service.batch_upsert_nodes([user_group.to_arango_base_user_group() for user_group in user_groups],
                     collection=CollectionNames.GROUPS.value, transaction=self.txn)

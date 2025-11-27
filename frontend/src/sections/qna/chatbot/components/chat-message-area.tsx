@@ -57,59 +57,84 @@ const ProcessingIndicator = React.memo(
 
     const indicatorColor = isCreating ? theme.palette.primary.main : theme.palette.text.secondary;
     const backgroundColor = isCreating
-      ? alpha(theme.palette.primary.main, 0.1)
+      ? alpha(theme.palette.primary.main, 0.08)
       : theme.palette.mode === 'dark'
-        ? alpha(theme.palette.background.paper, 0.7)
-        : alpha(theme.palette.background.default, 0.9);
+        ? alpha(theme.palette.background.paper, 0.6)
+        : alpha(theme.palette.background.default, 0.95);
 
     return (
-      <Fade in timeout={200}>
+      <Fade in timeout={300}>
         <Box sx={{ display: 'flex', justifyContent: 'flex-start', mb: 2 }}>
           <Stack
             direction="row"
             spacing={1.5}
             alignItems="center"
             sx={{
-              py: 1,
-              px: 2,
-              borderRadius: '12px',
+              py: 1.25,
+              px: 2.5,
+              borderRadius: '16px',
               bgcolor: backgroundColor,
-              backdropFilter: 'blur(4px)',
-              boxShadow: theme.shadows[2],
+              backdropFilter: 'blur(8px)',
+              boxShadow:
+                theme.palette.mode === 'dark'
+                  ? '0 2px 12px rgba(0, 0, 0, 0.3)'
+                  : '0 2px 12px rgba(0, 0, 0, 0.06)',
               border: '1px solid',
               borderColor: isCreating
-                ? alpha(theme.palette.primary.main, 0.3)
-                : theme.palette.divider,
-              transition: 'all 0.3s ease',
+                ? alpha(theme.palette.primary.main, 0.2)
+                : alpha(theme.palette.divider, 0.5),
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              '&:hover': {
+                boxShadow:
+                  theme.palette.mode === 'dark'
+                    ? '0 4px 16px rgba(0, 0, 0, 0.4)'
+                    : '0 4px 16px rgba(0, 0, 0, 0.08)',
+              },
             }}
           >
-            <Box sx={{ minWidth: 20, height: 20, display: 'flex', alignItems: 'center' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                {[0, 1, 2].map((i) => (
-                  <Box
-                    key={i}
-                    sx={{
-                      width: 5,
-                      height: 5,
-                      borderRadius: '50%',
-                      bgcolor: indicatorColor,
-                      animation: `bounce 1.4s ease-in-out ${i * 0.16}s infinite`,
-                      '@keyframes bounce': {
-                        '0%, 80%, 100%': { transform: 'scale(0.8)', opacity: 0.5 },
-                        '40%': { transform: 'scale(1)', opacity: 1 },
+            {/* Animated dots */}
+            <Box
+              sx={{
+                display: 'flex',
+                gap: 0.75,
+                alignItems: 'center',
+                pr: 0.5,
+              }}
+            >
+              {[0, 1, 2].map((i) => (
+                <Box
+                  key={i}
+                  sx={{
+                    width: 5,
+                    height: 5,
+                    borderRadius: '50%',
+                    bgcolor: isCreating ? theme.palette.primary.main : 'text.secondary',
+                    opacity: 0.6,
+                    animation: `bounce 1.4s ease-in-out ${i * 0.16}s infinite`,
+                    '@keyframes bounce': {
+                      '0%, 80%, 100%': {
+                        transform: 'scale(0.85)',
+                        opacity: 0.4,
                       },
-                    }}
-                  />
-                ))}
-              </Box>
+                      '40%': {
+                        transform: 'scale(1.1)',
+                        opacity: 1,
+                      },
+                    },
+                  }}
+                />
+              ))}
             </Box>
+
+            {/* Status text */}
             <Typography
               variant="body2"
               sx={{
-                fontSize: '0.8rem',
-                fontWeight: isCreating ? 600 : 500,
-                color: indicatorColor,
-                transition: 'color 0.3s ease',
+                fontSize: '0.8125rem',
+                fontWeight: 500,
+                color: isCreating ? theme.palette.primary.main : 'text.secondary',
+                letterSpacing: '0.01em',
+                lineHeight: 1.5,
               }}
             >
               {displayText}
@@ -160,7 +185,8 @@ const ChatMessagesArea = ({
         !message.id.startsWith('streaming-') &&
         !isLoading &&
         !isCreatingConversation &&
-        !message.id.startsWith('start-message')
+        !message.id.startsWith('start-message') &&
+        message.messageType !== 'error'
       );
     },
     [messages, isLoading, isCreatingConversation]
@@ -358,33 +384,19 @@ const MessageWithControls = React.memo(
     conversationId,
     showRegenerate,
     onViewPdf,
-  }: MessageWithControlsProps) => {
-    const [isRegenerating, setIsRegenerating] = useState(false);
-
-    const handleRegenerate = async (messageId: string): Promise<void> => {
-      setIsRegenerating(true);
-      try {
-        await onRegenerate(messageId);
-      } finally {
-        setIsRegenerating(false);
-      }
-    };
-
-    return (
-      <Box sx={{ mb: 2 }}>
-        <ChatMessage
-          message={message}
-          index={index}
-          onRegenerate={handleRegenerate}
-          onFeedbackSubmit={onFeedbackSubmit}
-          conversationId={conversationId}
-          isRegenerating={isRegenerating}
-          showRegenerate={showRegenerate}
-          onViewPdf={onViewPdf}
-        />
-      </Box>
-    );
-  },
+  }: MessageWithControlsProps) => (
+    <Box sx={{ mb: 2 }}>
+      <ChatMessage
+        message={message}
+        index={index}
+        onRegenerate={onRegenerate}
+        onFeedbackSubmit={onFeedbackSubmit}
+        conversationId={conversationId}
+        showRegenerate={showRegenerate}
+        onViewPdf={onViewPdf}
+      />
+    </Box>
+  ),
 
   (prevProps, nextProps) =>
     prevProps.message.id === nextProps.message.id &&

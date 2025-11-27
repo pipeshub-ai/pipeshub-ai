@@ -146,6 +146,28 @@ const conversationSchema = new Schema<IConversation>(
       enum: ['None', 'Inprogress', 'Complete', 'Failed'],
     },
     failReason: { type: String },
+    // Model information used for this conversation
+    modelKey: { type: String },
+    modelName: { type: String },
+    modelProvider: { type: String },
+    // Chat mode used for this conversation
+    chatMode: { type: String, default: 'standard' },
+    // Errors array to track errors during conversation
+    conversationErrors: [
+      {
+        message: { type: String, required: true },
+        errorType: { type: String },
+        timestamp: { type: Date, default: Date.now },
+        messageId: { type: Schema.Types.ObjectId },
+        stack: { type: String },
+        metadata: { type: Map, of: Schema.Types.Mixed },
+      },
+    ],
+    // Additional metadata for useful information
+    metadata: {
+      type: Map,
+      of: Schema.Types.Mixed,
+    },
   },
   { timestamps: true },
 );

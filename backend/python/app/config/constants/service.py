@@ -13,6 +13,7 @@ class config_node_constants(Enum):
     ENDPOINTS = "/services/endpoints"
     SECRET_KEYS = "/services/secretKeys"
     STORAGE = "/services/storage"
+    MIGRATIONS = "/services/migrations"
 
     # Non-service paths
     # LOG_LEVEL = "/logLevel"
