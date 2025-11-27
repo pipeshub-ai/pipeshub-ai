@@ -73,12 +73,16 @@ import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { RequestHandler, Response, NextFunction } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
+import { NotificationService } from '../../notification/service/notification.service';
 
 const logger = Logger.getInstance({
   service: 'KnowledgeBaseRoutes',
 });
 
-export function createKnowledgeBaseRouter(container: Container): Router {
+export function createKnowledgeBaseRouter(
+  container: Container,
+  notificationContainer?: Container,
+): Router {
   const router = Router();
   const appConfig = container.get<AppConfig>('AppConfig');
   const arangoService = container.get<ArangoService>('ArangoService');
@@ -98,6 +102,17 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     'KeyValueStoreService',
   );
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  
+  // Get NotificationService from notificationContainer if available (optional)
+  let notificationService: NotificationService | undefined;
+  try {
+    if (notificationContainer) {
+      notificationService = notificationContainer.get<NotificationService>(NotificationService);
+    }
+  } catch (error) {
+    // NotificationService not available - uploads will work but without real-time updates
+    logger.warn('NotificationService not available - real-time updates disabled');
+  }
 
   // Helper: resolve current max upload size (bytes) from platform settings
   const resolveMaxUploadSize = async (): Promise<number> => {
@@ -336,7 +351,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     ValidationMiddleware.validate(uploadRecordsSchema),
 
     // Upload handler
-    uploadRecordsToKB(recordRelationService, keyValueStoreService, appConfig),
+    uploadRecordsToKB(recordRelationService, keyValueStoreService, appConfig, notificationService),
   );
 
   // Upload records to a specific folder in the KB
@@ -361,6 +376,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
       recordRelationService,
       keyValueStoreService,
       appConfig,
+      notificationService,
     ),
   );
 
