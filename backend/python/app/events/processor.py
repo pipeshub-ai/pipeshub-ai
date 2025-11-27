@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 
 from bs4 import BeautifulSoup
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from html_to_markdown import convert
 
 from app.config.constants.ai_models import (
@@ -1043,10 +1044,14 @@ class Processor:
                 doc_id=record_id,
             )
         doc = dict(record)
+        timestamp = get_epoch_timestamp_in_ms()
         doc.update(
             {
                 "indexingStatus": indexing_status.value,
                 "isDirty": False,
+                "lastIndexTimestamp": timestamp,
+                "extractionStatus": ProgressStatus.EMPTY.value,
+                "lastExtractionTimestamp": timestamp,
             }
         )
 

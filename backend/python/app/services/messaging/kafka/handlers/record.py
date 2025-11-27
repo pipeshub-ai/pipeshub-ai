@@ -122,6 +122,7 @@ class RecordEventHandler(BaseEventService):
         message_id = f"{event_type}-unknown"
         error_occurred = False
         error_msg = None
+        record = None
         try:
             record_id = payload.get("recordId")
             extension = payload.get("extension", "unknown")
@@ -388,7 +389,20 @@ class RecordEventHandler(BaseEventService):
                 record = await self.event_processor.arango_service.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
+                
+                if record is None:
+                    self.logger.warning(f"Record {record_id} not found in database")
+                    return
 
+                # if record is None:
+                #     self.logger.warning(f"Record {record_id} not found in database")
+                #     self.logger.warning(f"Triggering next queued duplicate for record {record_id}")
+                #     if md5_checksum and size_in_bytes:
+                #         await self._trigger_next_queued_duplicate(md5_checksum, size_in_bytes, None)
+                #     else:
+                #         self.logger.warning(f"Missing md5Checksum or sizeInBytes, skipping next queued duplicate")
+                #     return
+                
                 indexing_status = record.get("indexingStatus")
                 virtual_record_id = record.get("virtualRecordId")
                 if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:

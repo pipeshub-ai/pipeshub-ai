@@ -713,7 +713,7 @@ class IndexingPipeline:
             )
 
     async def index_documents(
-        self, sentences: List[Dict[str, Any]],record_id: str, merge_documents: bool = False
+        self, sentences: List[Dict[str, Any]],record_id: str
     ) -> List[Document]:
         """
         Main method to index documents through the entire pipeline.
@@ -752,6 +752,14 @@ class IndexingPipeline:
                 record_dict = await self.arango_service.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
+
+                if record_dict is None:
+                    self.logger.error(f"Record {record_id} not found in database")
+                    raise DocumentProcessingError(
+                        "Record not found in database",
+                        doc_id=record_id,
+                    )
+
                 record_dict.update(
                     {
                         "indexingStatus": ProgressStatus.EMPTY.value,
@@ -767,7 +775,7 @@ class IndexingPipeline:
                     raise DocumentProcessingError(
                         "Failed to update indexing status for record id: " + record_id
                     )
-                return
+                return []
             try:
                 await self.get_embedding_model_instance()
             except Exception as e:

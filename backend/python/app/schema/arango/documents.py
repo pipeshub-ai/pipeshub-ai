@@ -213,7 +213,8 @@ record_schema = {
                     "FAILED",
                     "COMPLETED",
                     "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF"
+                    "AUTO_INDEX_OFF",
+                    "EMPTY"
                 ],
             },
             "isLatestVersion": {"type": "boolean", "default": True},
