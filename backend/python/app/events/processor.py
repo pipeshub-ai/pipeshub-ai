@@ -1,11 +1,9 @@
-from ast import If
 import io
 import json
-from datetime import datetime
 
+from datetime import datetime
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
-
 from app.config.constants.ai_models import (
     AzureDocIntelligenceModel,
     OCRProvider,
@@ -1346,7 +1344,7 @@ class Processor:
         try:
             # Initialize PPTX parser
             self.logger.debug("📄 Processing PPTX content")
-            
+
             processor = DoclingProcessor(logger=self.logger, config=self.config_service)
             block_containers = await processor.load_document(recordName, pptx_binary)
             if block_containers is False:
@@ -1364,7 +1362,7 @@ class Processor:
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
             self.logger.info("✅ PPTX processing completed successfully using docling")
-            return 
+            return
         except Exception as e:
             self.logger.error(f"❌ Error processing PPTX document: {str(e)}")
             raise
