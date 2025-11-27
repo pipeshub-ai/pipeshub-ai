@@ -2740,24 +2740,31 @@ export class RecordRelationService {
 
   async reindexAllRecords(reindexPayload: any): Promise<any> {
     try {
-      const reindexAllRecordEventPayload =
-        await this.createReindexAllRecordEventPayload(reindexPayload);
+      const connectorNormalized = reindexPayload.app
+        .replace(/\s+/g, '')
+        .toLowerCase();
+      
+      const eventType = `${connectorNormalized}.reindex`;
+      
+      const payload = {
+        orgId: reindexPayload.orgId,
+        statusFilters: ['FAILED'],
+      };
 
       const event: SyncEvent = {
-        eventType: 'reindexAllRecord',
+        eventType: eventType,
         timestamp: Date.now(),
-        payload: reindexAllRecordEventPayload,
+        payload: payload,
       };
 
       await this.syncEventProducer.publishEvent(event);
-      logger.info(`Published reindex all record for app ${reindexPayload.app}`);
+      logger.info(`Published ${eventType} event for app ${reindexPayload.app}`);
 
       return { success: true };
     } catch (eventError: any) {
       logger.error('Failed to publish reindex record event', {
         error: eventError,
       });
-      // Don't throw the error to avoid affecting the main operation
       return { success: false, error: eventError.message };
     }
   }

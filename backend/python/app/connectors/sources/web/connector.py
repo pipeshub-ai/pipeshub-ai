@@ -627,6 +627,11 @@ class WebConnector(BaseConnector):
         self.visited_urls.clear()
         self.logger.info("✅ Web connector cleanup completed")
 
+    async def reindex_records(self, record_results: List[Record]) -> None:
+        """Reindex records - not implemented for Web connector yet."""
+        self.logger.warning("Reindex not implemented for Web connector")
+        pass
+
     async def handle_webhook_notification(self, notification: Dict) -> None:
         """Web connector doesn't support webhooks."""
         pass

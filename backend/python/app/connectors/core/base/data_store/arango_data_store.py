@@ -4,7 +4,11 @@ from typing import AsyncContextManager, Dict, List, Optional
 
 from arango.database import TransactionDatabase
 
-from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.arangodb import (
+    RECORD_TYPE_COLLECTION_MAPPING,
+    CollectionNames,
+    Connectors,
+)
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
@@ -55,6 +59,10 @@ class ArangoTransactionStore(TransactionStore):
 
     async def get_record_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_external_id(connector_name, external_id, transaction=self.txn)
+
+    async def get_records_by_status(self, org_id: str, connector_name: Connectors, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
+        """Get records by status. Returns properly typed Record instances."""
+        return await self.arango_service.get_records_by_status(org_id, connector_name, status_filters, limit, offset, transaction=self.txn)
 
     async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
         return await self.arango_service.get_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
@@ -258,33 +266,8 @@ class ArangoTransactionStore(TransactionStore):
             for record in records:
                 # Define record type configurations
                 record_type_config = {
-                    RecordType.FILE: {
-                        "collection": CollectionNames.FILES.value,
-                    },
-                    RecordType.MAIL: {
-                        "collection": CollectionNames.MAILS.value,
-                    },
-                    # RecordType.MESSAGE.value: {
-                    #     "collection": CollectionNames.MESSAGES.value,
-                    # },
-                    RecordType.WEBPAGE: {
-                        "collection": CollectionNames.WEBPAGES.value,
-                    },
-                    RecordType.CONFLUENCE_PAGE: {
-                        "collection": CollectionNames.WEBPAGES.value,
-                    },
-                    RecordType.CONFLUENCE_BLOGPOST: {
-                        "collection": CollectionNames.WEBPAGES.value,
-                    },
-                    RecordType.TICKET: {
-                        "collection": CollectionNames.TICKETS.value,
-                    },
-                    RecordType.COMMENT: {
-                        "collection": CollectionNames.COMMENTS.value,
-                    },
-                    RecordType.INLINE_COMMENT: {
-                        "collection": CollectionNames.COMMENTS.value,
-                    },
+                    RecordType(record_type_str): {"collection": collection}
+                    for record_type_str, collection in RECORD_TYPE_COLLECTION_MAPPING.items()
                 }
 
                 # Get the configuration for the current record type

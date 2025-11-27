@@ -3,7 +3,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -700,14 +700,14 @@ class OutlookConnector(BaseConnector):
                 return updates
 
             # Process email with attachments
-            email_update = await self._process_single_email_with_folder(org_id, user, message, folder_id, folder_name)
+            email_update = await self._process_single_email_with_folder(org_id, user.email, message, folder_id, folder_name)
             if email_update:
                 updates.append(email_update)
 
                 # Process attachments if any
                 has_attachments = self._safe_get_attr(message, 'has_attachments', False)
                 if has_attachments:
-                    email_permissions = await self._extract_email_permissions(message, None, user)
+                    email_permissions = await self._extract_email_permissions(message, None, user.email)
                     attachment_updates = await self._process_email_attachments_with_folder(
                         org_id, user, message, email_permissions, folder_id, folder_name
                     )
@@ -721,22 +721,35 @@ class OutlookConnector(BaseConnector):
 
         return updates
 
-    async def _process_single_email_with_folder(self, org_id: str, user: AppUser, message, folder_id: str, folder_name: str) -> Optional[RecordUpdate]:
-        """Process a single email with folder information."""
+    async def _process_single_email_with_folder(
+        self, org_id: str, user_email: str, message, folder_id: str, folder_name: str,
+        existing_record: Optional[Record] = None
+    ) -> Optional[RecordUpdate]:
+        """Process a single email with folder information.
+
+        Args:
+            existing_record: Optional existing record to skip DB lookup (used during reindex)
+        """
         try:
             message_id = self._safe_get_attr(message, 'id')
 
-            existing_record = await self._get_existing_record(org_id, message_id)
+            # Skip DB lookup if existing_record is provided (reindex case)
+            if existing_record is None:
+                existing_record = await self._get_existing_record(org_id, message_id)
             is_new = existing_record is None
             is_updated = False
             metadata_changed = False
             content_changed = False
 
             if not is_new:
-                # Check if email moved to a different folder
+                current_etag = self._safe_get_attr(message, 'e_tag')
+                if existing_record.external_revision_id != current_etag:
+                    content_changed = True
+                    is_updated = True
+                    self.logger.info(f"Email {message_id} content changed (e_tag: {existing_record.external_revision_id} -> {current_etag})")
+
                 current_folder_id = folder_id
                 existing_folder_id = existing_record.external_record_group_id
-
                 if existing_folder_id and current_folder_id != existing_folder_id:
                     metadata_changed = True
                     is_updated = True
@@ -773,7 +786,7 @@ class OutlookConnector(BaseConnector):
                 conversation_index=self._safe_get_attr(message, 'conversation_index', ''),
             )
 
-            permissions = await self._extract_email_permissions(message, email_record.id, user)
+            permissions = await self._extract_email_permissions(message, email_record.id, user_email)
 
             return RecordUpdate(
                 record=email_record,
@@ -791,7 +804,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error processing email {self._safe_get_attr(message, 'id', 'unknown')}: {str(e)}")
             return None
 
-    async def _extract_email_permissions(self, message: Dict, record_id: Optional[str], inbox_owner: AppUser) -> List[Permission]:
+    async def _extract_email_permissions(self, message: Dict, record_id: Optional[str], inbox_owner_email: str) -> List[Permission]:
         """Extract permissions from email recipients, with special handling for inbox owner."""
         permissions = []
 
@@ -808,7 +821,7 @@ class OutlookConnector(BaseConnector):
 
             # Create a set to track unique email addresses
             processed_emails = set()
-            inbox_owner_email = inbox_owner.email.lower()
+            inbox_owner_email_lower = inbox_owner_email.lower()
 
             for recipient in all_recipients:
                 try:
@@ -816,7 +829,7 @@ class OutlookConnector(BaseConnector):
                     if email_address and email_address not in processed_emails:
                         processed_emails.add(email_address)
 
-                        if email_address.lower() == inbox_owner_email:
+                        if email_address.lower() == inbox_owner_email_lower:
                             permission_type = PermissionType.OWNER
                         else:
                             permission_type = PermissionType.READ
@@ -839,8 +852,64 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error extracting permissions: {e}")
             return []
 
+    async def _create_attachment_record(
+        self,
+        org_id: str,
+        attachment: Dict,
+        message_id: str,
+        folder_id: str,
+        existing_record: Optional[Record] = None
+    ) -> FileRecord:
+        """Helper method to create a FileRecord from an attachment.
+
+        Args:
+            org_id: Organization ID
+            attachment: Attachment data from Microsoft Graph API
+            message_id: Parent message ID
+            folder_id: Folder ID
+            existing_record: Existing record if updating
+
+        Returns:
+            FileRecord: Created attachment record
+        """
+        attachment_id = self._safe_get_attr(attachment, 'id')
+        is_new = existing_record is None
+
+        content_type = self._safe_get_attr(attachment, 'content_type', 'application/octet-stream')
+        mime_type = self._get_mime_type_enum(content_type)
+
+        file_name = self._safe_get_attr(attachment, 'name', 'Unnamed Attachment')
+        extension = None
+        if '.' in file_name:
+            extension = file_name.split('.')[-1].lower()
+
+        attachment_record_id = existing_record.id if existing_record else str(uuid.uuid4())
+
+        return FileRecord(
+            id=attachment_record_id,
+            org_id=org_id,
+            record_name=file_name,
+            record_type=RecordType.FILE,
+            external_record_id=attachment_id,
+            external_revision_id=self._safe_get_attr(attachment, 'e_tag'),
+            version=0 if is_new else existing_record.version + 1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.OUTLOOK,
+            source_created_at=self._parse_datetime(self._safe_get_attr(attachment, 'last_modified_date_time')),
+            source_updated_at=self._parse_datetime(self._safe_get_attr(attachment, 'last_modified_date_time')),
+            mime_type=mime_type,
+            parent_external_record_id=message_id,
+            parent_record_type=RecordType.MAIL,
+            external_record_group_id=folder_id,
+            record_group_type=RecordGroupType.MAILBOX,
+            weburl="",
+            is_file=True,
+            size_in_bytes=self._safe_get_attr(attachment, 'size', 0),
+            extension=extension,
+        )
+
     async def _process_email_attachments_with_folder(self, org_id: str, user: AppUser, message: Dict,
-                                                   email_permissions: List[Permission], folder_id: str, folder_name: str) -> List[RecordUpdate]:
+                                                  email_permissions: List[Permission], folder_id: str, folder_name: str) -> List[RecordUpdate]:
         """Process email attachments with folder information."""
         attachment_updates = []
 
@@ -850,53 +919,40 @@ class OutlookConnector(BaseConnector):
 
             attachments = await self._get_message_attachments_external(user_id, message_id)
 
-            for i, attachment in enumerate(attachments):
+            for attachment in attachments:
                 attachment_id = self._safe_get_attr(attachment, 'id')
                 existing_record = await self._get_existing_record(org_id, attachment_id)
                 is_new = existing_record is None
+                is_updated = False
+                metadata_changed = False
+                content_changed = False
 
-                content_type = self._safe_get_attr(attachment, 'content_type', 'application/octet-stream')
-                mime_type = self._get_mime_type_enum(content_type)
+                if not is_new:
+                    current_etag = self._safe_get_attr(attachment, 'e_tag')
+                    if existing_record.external_revision_id != current_etag:
+                        content_changed = True
+                        is_updated = True
+                        self.logger.info(f"Attachment {attachment_id} content changed (e_tag changed)")
 
-                file_name = self._safe_get_attr(attachment, 'name', 'Unnamed Attachment')
-                extension = None
-                if '.' in file_name:
-                    extension = file_name.split('.')[-1].lower()
+                    current_folder_id = folder_id
+                    existing_folder_id = existing_record.external_record_group_id
+                    if existing_folder_id and current_folder_id != existing_folder_id:
+                        metadata_changed = True
+                        is_updated = True
 
-                attachment_record_id = existing_record.id if existing_record else str(uuid.uuid4())
-
-                attachment_record = FileRecord(
-                    id=attachment_record_id,
-                    org_id=org_id,
-                    record_name=file_name,
-                    record_type=RecordType.FILE,
-                    external_record_id=attachment_id,
-                    external_revision_id=self._safe_get_attr(attachment, 'e_tag'),
-                    version=0 if is_new else existing_record.version + 1,
-                    origin=OriginTypes.CONNECTOR,
-                    connector_name=Connectors.OUTLOOK,
-                    source_created_at=self._parse_datetime(self._safe_get_attr(attachment, 'last_modified_date_time')),
-                    source_updated_at=self._parse_datetime(self._safe_get_attr(attachment, 'last_modified_date_time')),
-                    mime_type=mime_type,
-                    parent_external_record_id=message_id,
-                    parent_record_type=RecordType.MAIL,
-                    external_record_group_id=folder_id,
-                    record_group_type=RecordGroupType.MAILBOX,
-                    weburl="",
-                    is_file=True,
-                    size_in_bytes=self._safe_get_attr(attachment, 'size', 0),
-                    extension=extension,
+                attachment_record = await self._create_attachment_record(
+                    org_id, attachment, message_id, folder_id, existing_record
                 )
 
                 attachment_updates.append(RecordUpdate(
                     record=attachment_record,
                     is_new=is_new,
-                    is_updated=False,
+                    is_updated=is_updated,
                     is_deleted=False,
-                    metadata_changed=False,
-                    content_changed=False,
+                    metadata_changed=metadata_changed,
+                    content_changed=content_changed,
                     permissions_changed=bool(email_permissions),
-                    new_permissions=email_permissions,  # Inherit permissions from parent email
+                    new_permissions=email_permissions,
                     external_record_id=attachment_id,
                 ))
 
@@ -1095,6 +1151,235 @@ class OutlookConnector(BaseConnector):
         # Delegate to full sync - incremental is handled by delta links
         await self.run_sync()
 
+    async def reindex_records(self, records: List[Record]) -> None:
+        """Reindex a list of Outlook records.
+
+        This method:
+        1. For each record, checks if it has been updated at the source
+        2. If updated, upserts the record in DB
+        3. Publishes reindex events for all records via data_entities_processor
+
+        Args:
+            records: List of properly typed Record instances (MailRecord, FileRecord, etc.)
+        """
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} Outlook records")
+
+            # Ensure external clients are initialized
+            if not self.external_outlook_client or not self.external_users_client:
+                self.logger.error("External API clients not initialized. Call init() first.")
+                raise Exception("External API clients not initialized. Call init() first.")
+
+            # Populate user cache for better performance
+            await self._populate_user_cache()
+
+            # Group records by owner email for efficient processing
+            records_by_user: Dict[str, List[Record]] = {}
+            for record in records:
+                try:
+                    # Get owner email from permissions
+                    async with self.data_store_provider.transaction() as tx_store:
+                        user_email = await tx_store.get_record_owner_source_user_email(record.id)
+
+                    if not user_email:
+                        self.logger.warning(f"No owner found for record {record.id}, skipping")
+                        continue
+
+                    if user_email not in records_by_user:
+                        records_by_user[user_email] = []
+                    records_by_user[user_email].append(record)
+                except Exception as e:
+                    self.logger.error(f"Error getting owner for record {record.id}: {e}")
+                    continue
+
+            # Collect updated and non-updated records across all users
+            all_updated_records_with_permissions: List[Tuple[Record, List[Permission]]] = []
+            all_non_updated_records: List[Record] = []
+
+            # Process records by user - check for source updates
+            for user_email, user_records in records_by_user.items():
+                try:
+                    updated, non_updated = await self._reindex_user_records(user_email, user_records)
+                    all_updated_records_with_permissions.extend(updated)
+                    all_non_updated_records.extend(non_updated)
+                except Exception as e:
+                    self.logger.error(f"Error reindexing records for user {user_email}: {e}")
+
+            # Update DB and publish events for updated records
+            if all_updated_records_with_permissions:
+                await self.data_entities_processor.on_new_records(all_updated_records_with_permissions)
+                self.logger.info(f"Updated {len(all_updated_records_with_permissions)} records in DB that changed at source")
+
+            # Publish reindex events for non-updated records
+            if all_non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(all_non_updated_records)
+                self.logger.info(f"Published reindex events for {len(all_non_updated_records)} non-updated records")
+
+            self.logger.info(f"Outlook reindex completed for {len(records)} records")
+
+        except Exception as e:
+            self.logger.error(f"Error during Outlook reindex: {e}")
+            raise
+
+    async def _reindex_user_records(
+        self, user_email: str, records: List[Record]
+    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[Record]]:
+        """Reindex records for a specific user. Checks source for updates.
+
+        Returns:
+            Tuple of (updated_records_with_permissions, non_updated_records)
+        """
+        updated_records_with_permissions: List[Tuple[Record, List[Permission]]] = []
+        non_updated_records: List[Record] = []
+
+        try:
+            user_id = await self._get_user_id_from_email(user_email)
+            if not user_id:
+                self.logger.error(f"Could not find user ID for email {user_email}")
+                return ([], records)  # Return all as non-updated if user not found
+
+            self.logger.info(f"Checking {len(records)} records at source for user {user_email}")
+
+            org_id = self.data_entities_processor.org_id
+
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(
+                        org_id, user_id, user_email, record
+                    )
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records_with_permissions.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            self.logger.info(f"Completed source check for user {user_email}: {len(updated_records_with_permissions)} updated, {len(non_updated_records)} unchanged")
+
+        except Exception as e:
+            self.logger.error(f"Error reindexing records for user {user_email}: {e}")
+            raise
+
+        return (updated_records_with_permissions, non_updated_records)
+
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, user_id: str, user_email: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch record from source and return data for reindexing.
+
+        Args:
+            org_id: Organization ID
+            user_id: Source user ID for API calls
+            user_email: User email for permission extraction
+            record: Record to check
+
+        Returns:
+            Tuple of (Record, List[Permission]) for processing via on_new_records
+        """
+        try:
+            if record.record_type == RecordType.MAIL:
+                return await self._check_and_fetch_updated_email(org_id, user_id, user_email, record)
+            elif record.record_type == RecordType.FILE:
+                return await self._check_and_fetch_updated_attachment(org_id, user_id, user_email, record)
+            else:
+                self.logger.warning(f"Unsupported record type for reindex: {record.record_type}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_email(
+        self, org_id: str, user_id: str, user_email: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch email from source for reindexing."""
+        try:
+            message_id = record.external_record_id
+
+            message = await self._get_message_by_id_external(user_id, message_id)
+            if not message:
+                self.logger.warning(f"Email {message_id} not found at source, may have been deleted")
+                return None
+
+            folder_id = record.external_record_group_id or ""
+            folder_name = "Unknown"
+
+            email_update = await self._process_single_email_with_folder(
+                org_id, user_email, message, folder_id, folder_name,
+                existing_record=record  # Pass record to skip DB lookup
+            )
+
+            if not email_update or not email_update.record:
+                return None
+
+            if not email_update.is_new and not email_update.is_updated:
+                self.logger.debug(f"Email {message_id} has not changed at source, skipping update")
+                return None
+
+            return (email_update.record, email_update.new_permissions or [])
+
+        except Exception as e:
+            self.logger.error(f"Error fetching email {record.external_record_id}: {e}")
+            return None
+
+    async def _check_and_fetch_updated_attachment(
+        self, org_id: str, user_id: str, user_email: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch attachment from source for reindexing."""
+        try:
+            attachment_id = record.external_record_id
+            parent_message_id = record.parent_external_record_id
+
+            if not parent_message_id:
+                self.logger.warning(f"Attachment {attachment_id} has no parent message ID")
+                return None
+
+            message = await self._get_message_by_id_external(user_id, parent_message_id)
+            if not message:
+                self.logger.warning(f"Parent message {parent_message_id} not found at source")
+                return None
+
+            attachments = await self._get_message_attachments_external(user_id, parent_message_id)
+
+            attachment = None
+            for att in attachments:
+                if self._safe_get_attr(att, 'id') == attachment_id:
+                    attachment = att
+                    break
+
+            if not attachment:
+                self.logger.warning(f"Attachment {attachment_id} not found in parent message")
+                return None
+
+            folder_id = record.external_record_group_id or ""
+
+            is_updated = False
+            current_etag = self._safe_get_attr(attachment, 'e_tag')
+            if record.external_revision_id != current_etag:
+                is_updated = True
+                self.logger.info(f"Attachment {attachment_id} has changed at source (e_tag changed)")
+
+            if not is_updated:
+                self.logger.debug(f"Attachment {attachment_id} has not changed at source, skipping update")
+                return None
+
+            email_permissions = await self._extract_email_permissions(message, None, user_email)
+
+            attachment_record = await self._create_attachment_record(
+                org_id, attachment, parent_message_id, folder_id, existing_record=record
+            )
+
+            return (attachment_record, email_permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")
+            return None
 
     def _extract_email_from_recipient(self, recipient) -> str:
         """Extract email address from a Recipient object."""

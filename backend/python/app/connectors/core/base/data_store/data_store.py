@@ -66,6 +66,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_records_by_status(self, org_id: str, connector_name: Connectors, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
+        """Get records by their indexing status with pagination support. Returns typed Record instances."""
+        pass
+
+    @abstractmethod
     async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
         pass
 

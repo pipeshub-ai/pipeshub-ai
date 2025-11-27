@@ -264,3 +264,15 @@ class AccountType(Enum):
     ENTERPRISE = "enterprise"
     BUSINESS = "business"
     ADMIN = "admin"
+
+RECORD_TYPE_COLLECTION_MAPPING = {
+    "FILE": CollectionNames.FILES.value,
+    "MAIL": CollectionNames.MAILS.value,
+    "WEBPAGE": CollectionNames.WEBPAGES.value,
+    "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,
+    "CONFLUENCE_BLOGPOST": CollectionNames.WEBPAGES.value,
+    "TICKET": CollectionNames.TICKETS.value,
+    "COMMENT": CollectionNames.COMMENTS.value,
+    "INLINE_COMMENT": CollectionNames.COMMENTS.value,
+    # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
+}

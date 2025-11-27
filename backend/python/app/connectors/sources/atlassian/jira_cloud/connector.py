@@ -7,11 +7,7 @@ import aiohttp
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import (
-    Connectors,
-    MimeTypes,
-    OriginTypes,
-)
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -506,6 +502,11 @@ class JiraConnector(BaseConnector):
         pass
 
     async def cleanup(self) -> None:
+        pass
+
+    async def reindex_records(self, record_results: List[Record]) -> None:
+        """Reindex records - not implemented for Jira yet."""
+        self.logger.warning("Reindex not implemented for Jira connector")
         pass
 
     async def handle_webhook_notification(self, notification: Dict) -> None:

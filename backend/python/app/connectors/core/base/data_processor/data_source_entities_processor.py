@@ -355,6 +355,38 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_record_by_key(record_id)
 
+    async def reindex_existing_records(self, records: List[Record]) -> None:
+        """
+        Publish reindex events for existing records without DB operations.
+        Used for reindexing functionality where records already exist in DB.
+        This method only publishes newRecord events to trigger re-indexing in the indexing service.
+
+        Args:
+            records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
+        """
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            for record in records:
+                payload = record.to_kafka_record()
+
+                await self.messaging_producer.send_message(
+                    "record-events",
+                    {
+                        "eventType": "newRecord",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                        "payload": payload
+                    },
+                    key=record.id
+                )
+
+            self.logger.info(f"Published reindex events for {len(records)} records")
+        except Exception as e:
+            self.logger.error(f"Failed to publish reindex events: {str(e)}")
+            raise e
+
     async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
         try:
             async with self.data_store_provider.transaction() as tx_store:

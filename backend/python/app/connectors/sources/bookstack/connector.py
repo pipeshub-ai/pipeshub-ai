@@ -1837,6 +1837,11 @@ class BookStackConnector(BaseConnector):
         self.logger.info("Cleaning up BookStack connector resources.")
         self.data_source = None
 
+    async def reindex_records(self, record_results: List[Record]) -> None:
+        """Reindex records - not implemented for BookStack yet."""
+        self.logger.warning("Reindex not implemented for BookStack connector")
+        pass
+
     @classmethod
     async def create_connector(
         cls,

@@ -21,10 +21,7 @@ from msgraph.generated.models.site_page import SitePage
 from msgraph.generated.models.subscription import Subscription
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import (
-    MimeTypes,
-    OriginTypes,
-)
+from app.config.constants.arangodb import MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -2327,6 +2324,11 @@ class SharePointConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during SharePoint connector cleanup: {e}")
+
+    async def reindex_records(self, record_results: List[Record]) -> None:
+        """Reindex records - not implemented for SharePoint yet."""
+        self.logger.warning("Reindex not implemented for SharePoint connector")
+        pass
 
     @classmethod
     async def create_connector(cls, logger: Logger,

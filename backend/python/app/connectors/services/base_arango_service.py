@@ -7,6 +7,7 @@ import hashlib
 import json
 import unicodedata
 import uuid
+from collections import defaultdict
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -17,6 +18,7 @@ from fastapi import Request  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
     Connectors,
     DepartmentNames,
@@ -32,10 +34,14 @@ from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
+    CommentRecord,
     FileRecord,
+    MailRecord,
     Record,
     RecordGroup,
+    TicketRecord,
     User,
+    WebpageRecord,
 )
 from app.schema.arango.documents import (
     agent_schema,
@@ -2066,14 +2072,18 @@ class BaseArangoService:
                     "reason": permission_check["reason"]
                 }
 
-            # Create and publish single reindexFailed event
             try:
-                payload = await self._create_reindex_failed_event_payload(
-                    org_id, connector, origin
-                )
-                await self._publish_sync_event("reindexFailed", payload)
+                connector_normalized = connector.replace("_", "").lower()
+                event_type = f"{connector_normalized}.reindex"
 
-                self.logger.info(f"✅ Published reindexFailed event for {connector}")
+                payload = {
+                    "orgId": org_id,
+                    "statusFilters": ["FAILED"]
+                }
+
+                await self._publish_sync_event(event_type, payload)
+
+                self.logger.info(f"✅ Published {event_type} event for {connector}")
 
                 return {
                     "success": True,
@@ -2085,11 +2095,11 @@ class BaseArangoService:
                 }
 
             except Exception as event_error:
-                self.logger.error(f"❌ Failed to publish reindexFailed event: {str(event_error)}")
+                self.logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
                 return {
                     "success": False,
                     "code": 500,
-                    "reason": f"Failed to publish reindexFailed event: {str(event_error)}"
+                    "reason": f"Failed to publish reindex event: {str(event_error)}"
                 }
 
         except Exception as e:
@@ -4173,6 +4183,162 @@ class BaseArangoService:
                 "❌ Failed to retrieve internal key for external file ID %s %s: %s", connector_name, external_id, str(e)
             )
             return None
+
+    # TODO: expand this method for specific users list
+    async def get_records_by_status(
+        self,
+        org_id: str,
+        connector_name: Connectors,
+        status_filters: List[str],
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[Record]:
+        """
+        Get records by their indexing status with pagination support.
+        Returns properly typed Record instances (FileRecord, MailRecord, etc.)
+
+        Args:
+            org_id (str): Organization ID
+            connector_name (Connectors): Connector name
+            status_filters (List[str]): List of status values to filter (e.g., ["FAILED", "COMPLETED"])
+            limit (Optional[int]): Maximum number of records to return (for pagination)
+            offset (int): Number of records to skip (for pagination)
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        try:
+            self.logger.info(f"Retrieving records for connector {connector_name.value} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
+
+            limit_clause = "LIMIT @offset, @limit" if limit else ""
+
+            # Group record types by their collection
+            collection_to_types = defaultdict(list)
+            for record_type, collection in RECORD_TYPE_COLLECTION_MAPPING.items():
+                collection_to_types[collection].append(record_type)
+
+            # Build dynamic typeDoc conditions based on mapping
+            type_doc_conditions = []
+            bind_vars = {
+                "org_id": org_id,
+                "connector_name": connector_name.value,
+                "status_filters": status_filters,
+            }
+
+            # Generate conditions for each collection
+            for collection, record_types in collection_to_types.items():
+                # Create condition for checking if record type matches any in this group
+                if len(record_types) == 1:
+                    type_check = f"record.recordType == @type_{record_types[0].lower()}"
+                    bind_vars[f"type_{record_types[0].lower()}"] = record_types[0]
+                else:
+                    # Multiple types map to same collection (e.g., WEBPAGE, CONFLUENCE_PAGE, CONFLUENCE_BLOGPOST)
+                    type_checks = []
+                    for rt in record_types:
+                        type_checks.append(f"record.recordType == @type_{rt.lower()}")
+                        bind_vars[f"type_{rt.lower()}"] = rt
+                    type_check = " || ".join(type_checks)
+
+                # Add condition for this collection
+                condition = f"""({type_check}) ? (
+                        FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                            FILTER edge._from == record._id
+                            LET doc = DOCUMENT(edge._to)
+                            FILTER doc != null
+                            RETURN doc
+                    )[0]"""
+                type_doc_conditions.append(condition)
+
+            # Build the complete typeDoc expression
+            type_doc_expr = " :\n                    ".join(type_doc_conditions)
+            if type_doc_expr:
+                type_doc_expr += " :\n                    null"
+            else:
+                type_doc_expr = "null"
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.orgId == @org_id
+                    AND record.connectorName == @connector_name
+                    AND record.indexingStatus IN @status_filters
+                SORT record._key
+                {limit_clause}
+
+                LET typeDoc = (
+                    {type_doc_expr}
+                )
+
+                RETURN {{
+                    record: record,
+                    typeDoc: typeDoc
+                }}
+            """
+
+            if limit:
+                bind_vars["limit"] = limit
+                bind_vars["offset"] = offset
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
+
+            # Convert raw DB results to properly typed Record instances
+            typed_records = []
+            for result in cursor:
+                record = self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typeDoc")
+                )
+                typed_records.append(record)
+
+            self.logger.info(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_name.value}")
+            return typed_records
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_name.value}: {str(e)}")
+            return []
+
+    def _create_typed_record_from_arango(self, record_dict: Dict, type_doc: Optional[Dict]) -> Record:
+        """
+        Factory method to create properly typed Record instances from ArangoDB data.
+        Uses centralized RECORD_TYPE_COLLECTION_MAPPING to determine which types have type collections.
+
+        Args:
+            record_dict: Dictionary from records collection
+            type_doc: Dictionary from type-specific collection (files, mails, etc.) or None
+
+        Returns:
+            Properly typed Record instance (FileRecord, MailRecord, etc.)
+        """
+        record_type = record_dict.get("recordType")
+
+        # Check if this record type has a type collection
+        if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
+            # No type collection or no type doc - use base Record
+            return Record.from_arango_base_record(record_dict)
+
+        try:
+            # Determine which collection this type uses
+            collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
+
+            # Map collections to their corresponding Record classes
+            if collection == CollectionNames.FILES.value:
+                return FileRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.MAILS.value:
+                return MailRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.WEBPAGES.value:
+                return WebpageRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.TICKETS.value:
+                return TicketRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.COMMENTS.value:
+                return CommentRecord.from_arango_record(type_doc, record_dict)
+            else:
+                # Unknown collection - fallback to base Record
+                return Record.from_arango_base_record(record_dict)
+        except Exception as e:
+            self.logger.warning(f"Failed to create typed record for {record_type}, falling back to base Record: {str(e)}")
+            return Record.from_arango_base_record(record_dict)
 
     async def get_record_by_id(
         self, id: str, transaction: Optional[TransactionDatabase] = None
@@ -13505,7 +13671,7 @@ class BaseArangoService:
             result = next(cursor, None)
             if result and result.get("file") and result.get("record"):
                 self.logger.info("✅ Successfully retrieved file record for id %s", id)
-                return FileRecord.from_arango_base_file_record(
+                return FileRecord.from_arango_record(
                     arango_base_file_record=result["file"],
                     arango_base_record=result["record"]
                 )

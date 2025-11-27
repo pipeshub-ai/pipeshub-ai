@@ -658,6 +658,10 @@ class ServiceNowConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during cleanup: {e}", exc_info=True)
 
+    async def reindex_records(self, record_results: List[Record]) -> None:
+        """Reindex records - not implemented for ServiceNow yet."""
+        self.logger.warning("Reindex not implemented for ServiceNow connector")
+        pass
 
     async def _sync_users_and_groups(self) -> None:
         """
