@@ -346,7 +346,7 @@ export class Application {
     // knowledge base routes
     this.app.use(
       '/api/v1/knowledgeBase',
-      createKnowledgeBaseRouter(this.knowledgeBaseContainer),
+      createKnowledgeBaseRouter(this.knowledgeBaseContainer, this.notificationContainer),
     );
 
     // configuration manager routes
