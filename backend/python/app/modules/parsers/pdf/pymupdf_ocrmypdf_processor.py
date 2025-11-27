@@ -18,6 +18,7 @@ from app.utils.indexing_helpers import (
 )
 
 LENGTH_THRESHOLD = 2
+BBOX_SIZE = 4
 
 class PyMuPDFOCRStrategy(OCRStrategy):
     def __init__(self, logger, config, language: str = "eng") -> None:
@@ -417,13 +418,13 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         # Create paragraph from block
         bbox = block.get("bbox")
         normalized_bbox = None
-        if bbox and len(bbox) == 4:
+        if bbox and len(bbox) == BBOX_SIZE:
             try:
                 normalized_bbox = _normalize_bbox(bbox, page_width, page_height)
             except (TypeError, ValueError, IndexError) as e:
                 self.logger.warning(f"Failed to normalize bounding box: {e}")
                 normalized_bbox = None
-        
+
         paragraph = {
             "content": block_text.strip(),
             "bounding_box": normalized_bbox,

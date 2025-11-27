@@ -753,7 +753,7 @@ class Processor:
                                 except (TypeError, KeyError) as e:
                                     self.logger.warning(f"Failed to process bounding boxes: {e}")
                                     bounding_boxes = None
-                            
+
                             blocks.append(
                                 Block(
                                     index=index,
