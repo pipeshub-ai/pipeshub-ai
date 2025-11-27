@@ -296,19 +296,6 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
             },
         )
 
-def extract_error_message(error) -> str:
-    """Extract error message from any exception type."""
-    # Try common attributes first
-    if hasattr(error, "message"):
-        return str(error.message)
-    
-    # Fall back to args
-    if error.args:
-        return str(error.args[0])
-    
-    # Last resort: string representation
-    return str(error)
-
 async def perform_llm_health_check(
     llm_config: dict,
     logger: Logger,
@@ -373,7 +360,7 @@ async def perform_llm_health_check(
                 raise
             except Exception as image_error:
                 logger.error(f"Image test failed for multimodal model: {str(image_error)}")
-                
+
                 # Image test failed, now try text test to determine if model works at all
                 logger.info("Image test failed - testing with text to verify model functionality")
                 test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
@@ -383,7 +370,7 @@ async def perform_llm_health_check(
                         timeout=120.0  # 120 second timeout
                     )
                     logger.info(f"Text test passed for multimodal model: {text_response}")
-                    
+
                     # Text works but image doesn't - model doesn't support images
                     return JSONResponse(
                         status_code=500,
@@ -400,7 +387,7 @@ async def perform_llm_health_check(
                 except Exception as text_error:
                     # Both tests failed - pass the original error as-is
                     logger.error(f"Both image and text tests failed for multimodal model: {str(text_error)}")
-                    raise image_error
+                    raise text_error
         else:
             # Test with a simple text prompt
             test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
@@ -444,7 +431,7 @@ async def perform_llm_health_check(
                 "message": f"LLM health check failed: {str(e)}",
                 "details": {
                     "provider": llm_config.get("provider"),
-                    "model": llm_config.get("configuration").get("model"),
+                    "model": model_name,
                     "error_type": type(e).__name__
                 }
             },
