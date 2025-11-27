@@ -348,8 +348,8 @@ async def perform_llm_health_check(
 
         # Set timeout for the test
         if is_multimodal:
-            # Test with multimodal input (text + small image)
-            logger.info("Multimodal model detected - testing with text and small image")
+            # For multimodal models, test image first, then text if image fails
+            logger.info("Multimodal model detected - testing with image first")
             test_image_url = TEST_IMAGE
 
             # Create multimodal message content
@@ -362,11 +362,45 @@ async def perform_llm_health_check(
                 }
             ]
 
-            test_message = HumanMessage(content=multimodal_content)
-            test_response = await asyncio.wait_for(
-                asyncio.to_thread(llm_model.invoke, [test_message]),
-                timeout=120.0  # 120 second timeout
-            )
+            try:
+                test_message = HumanMessage(content=multimodal_content)
+                test_response = await asyncio.wait_for(
+                    asyncio.to_thread(llm_model.invoke, [test_message]),
+                    timeout=120.0  # 120 second timeout
+                )
+                logger.info(f"Image test passed for multimodal model: {test_response}")
+            except asyncio.TimeoutError:
+                raise
+            except Exception as image_error:
+                logger.error(f"Image test failed for multimodal model: {str(image_error)}")
+                
+                # Image test failed, now try text test to determine if model works at all
+                logger.info("Image test failed - testing with text to verify model functionality")
+                test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
+                try:
+                    text_response = await asyncio.wait_for(
+                        asyncio.to_thread(llm_model.invoke, test_prompt),
+                        timeout=120.0  # 120 second timeout
+                    )
+                    logger.info(f"Text test passed for multimodal model: {text_response}")
+                    
+                    # Text works but image doesn't - model doesn't support images
+                    return JSONResponse(
+                        status_code=500,
+                        content={
+                            "status": "error",
+                            "message": "Model doesn't support images/vision. Disable Multimodal checkbox.",
+                            "details": {
+                                "provider": llm_config.get("provider"),
+                                "model": model_name,
+                                "error": str(image_error)
+                            },
+                        },
+                    )
+                except Exception as text_error:
+                    # Both tests failed - pass the original error as-is
+                    logger.error(f"Both image and text tests failed for multimodal model: {str(text_error)}")
+                    raise image_error
         else:
             # Test with a simple text prompt
             test_prompt = "Hello, this is a health check test. Please respond with 'Health check successful' if you can read this message."
@@ -407,7 +441,7 @@ async def perform_llm_health_check(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"LLM health check failed: {extract_error_message(e)}",
+                "message": f"LLM health check failed: {str(e)}",
                 "details": {
                     "provider": llm_config.get("provider"),
                     "model": llm_config.get("configuration").get("model"),
