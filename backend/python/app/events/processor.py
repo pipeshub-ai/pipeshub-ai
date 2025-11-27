@@ -1,9 +1,10 @@
 import io
 import json
-
 from datetime import datetime
+
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
+
 from app.config.constants.ai_models import (
     AzureDocIntelligenceModel,
     OCRProvider,
