@@ -745,7 +745,15 @@ class Processor:
 
                     else:
                         paragraph = block
-                        if paragraph["content"]:
+                        if paragraph and paragraph.get("content"):
+                            bounding_boxes = None
+                            if paragraph.get("bounding_box"):
+                                try:
+                                    bounding_boxes = [Point(x=p["x"], y=p["y"]) for p in paragraph["bounding_box"]]
+                                except (TypeError, KeyError) as e:
+                                    self.logger.warning(f"Failed to process bounding boxes: {e}")
+                                    bounding_boxes = None
+                            
                             blocks.append(
                                 Block(
                                     index=index,
@@ -754,8 +762,8 @@ class Processor:
                                     data=paragraph["content"],
                                     comments=[],
                                     citation_metadata=CitationMetadata(
-                                        page_number=paragraph["page_number"],
-                                        bounding_boxes=[Point(x=p["x"], y=p["y"]) for p in paragraph["bounding_box"]],
+                                        page_number=paragraph.get("page_number"),
+                                        bounding_boxes=bounding_boxes,
                                     ),
                                 )
                             )

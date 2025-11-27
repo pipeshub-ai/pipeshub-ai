@@ -415,11 +415,18 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             processed_sentences.append(sentence_data)
 
         # Create paragraph from block
+        bbox = block.get("bbox")
+        normalized_bbox = None
+        if bbox and len(bbox) == 4:
+            try:
+                normalized_bbox = _normalize_bbox(bbox, page_width, page_height)
+            except (TypeError, ValueError, IndexError) as e:
+                self.logger.warning(f"Failed to normalize bounding box: {e}")
+                normalized_bbox = None
+        
         paragraph = {
             "content": block_text.strip(),
-            "bounding_box": _normalize_bbox(
-                block["bbox"], page_width, page_height
-            ),
+            "bounding_box": normalized_bbox,
             "block_number": block_number,
             "spans": block_spans,
             "words": block_words,
@@ -561,6 +568,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                             page_idx + 1,
                             processed_block["paragraph"]["block_number"],
                         )
+                        result["blocks"].append(processed_block["paragraph"])
 
                     for sentence in processed_block["sentences"]:
                         sentence["page_number"] = page_idx + 1
@@ -570,7 +578,6 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                             page_idx + 1,
                             sentence["block_number"],
                         )
-                    result["blocks"].append(processed_block["paragraph"])
                     block_number += 1
                 elif block.get("type") == 1:  # Image block
                     ext = block.get("ext")
