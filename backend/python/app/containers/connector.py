@@ -7,6 +7,7 @@ from google.oauth2 import service_account
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups
+from app.config.constants.service import config_node_constants
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
@@ -56,6 +57,10 @@ from app.containers.utils.utils import ContainerUtils
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
+from app.migrations.permission_edge_migration import (
+    run_permissions_edge_migration,
+    run_permissions_to_kb_migration,
+)
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
@@ -875,6 +880,20 @@ async def initialize_container(container) -> bool:
     """Initialize container resources with health checks."""
 
     logger = container.logger()
+    config_service = container.config_service()
+    migrations_key = config_node_constants.MIGRATIONS.value
+
+    async def get_migration_state() -> dict:
+        state = await config_service.get_config(migrations_key, default={})
+        return state or {}
+
+    def migration_completed(state: dict, name: str) -> bool:
+        return bool(state.get(name))
+
+    async def mark_migration_completed(name: str, result: dict) -> None:
+        state = await get_migration_state()
+        state[name] = True
+        await config_service.set_config(migrations_key, state)
 
     logger.info("🚀 Initializing application resources")
     try:
@@ -902,10 +921,49 @@ async def initialize_container(container) -> bool:
 
         logger.info("✅ Container initialization completed successfully")
 
-        logger.info("🔄 Running Knowledge Base migration...")
-        migration_success = await run_knowledge_base_migration(container)
-        if not migration_success:
-            logger.warning("⚠️ Knowledge Base migration had issues but continuing initialization")
+        migration_state = await get_migration_state()
+
+        if migration_completed(migration_state, "knowledgeBase"):
+            logger.info("⏭️ Knowledge Base migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Knowledge Base migration...")
+            migration_success = await run_knowledge_base_migration(container)
+            if migration_success:
+                await mark_migration_completed("knowledgeBase", {})
+            else:
+                logger.warning("⚠️ Knowledge Base migration had issues but continuing initialization")
+
+        migration_state = await get_migration_state()
+
+        if migration_completed(migration_state, "permissionsEdge"):
+            logger.info("⏭️ Permissions Edge migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Permissions Edge migration...")
+            result_permissions_migration = await run_permissions_edge_migration(
+                arango_service, logger, dry_run=False, batch_size=1000
+            )
+            if result_permissions_migration.get("success"):
+                logger.info(f"Migrated: {result_permissions_migration.get('migrated_edges')} edges")
+                logger.info(f"Deleted: {result_permissions_migration.get('deleted_edges')} edges")
+                await mark_migration_completed("permissionsEdge", result_permissions_migration)
+            else:
+                logger.error(f"Failed: {result_permissions_migration.get('message')}")
+
+        migration_state = await get_migration_state()
+
+        if migration_completed(migration_state, "permissionsToKb"):
+            logger.info("⏭️ Permissions To KB migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Permissions To KB migration...")
+            result_permissions_to_kb_migration = await run_permissions_to_kb_migration(
+                arango_service, logger, dry_run=False, batch_size=1000
+            )
+            if result_permissions_to_kb_migration.get("success"):
+                logger.info(f"Migrated: {result_permissions_to_kb_migration.get('migrated_edges')} edges")
+                logger.info(f"Deleted: {result_permissions_to_kb_migration.get('deleted_edges')} edges")
+                await mark_migration_completed("permissionsToKb", result_permissions_to_kb_migration)
+            else:
+                logger.error(f"Failed: {result_permissions_to_kb_migration.get('message')}")
 
         return True
 

@@ -7,6 +7,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 import aiohttp
 from fastapi import HTTPException
 from langchain.chat_models.base import BaseChatModel
+from langchain.output_parsers import PydanticOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
@@ -126,9 +127,11 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
             # Non-streaming – yield whole blob once
             response = await llm.ainvoke(messages)
             content = getattr(response, "content", response)
-            if parts is not None:
-                parts.append(content)
-            yield _stringify_content(content)
+            parts.append(response)
+
+            text = _stringify_content(content)
+            if text:
+                yield text
     except Exception as e:
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
         raise
@@ -184,28 +187,24 @@ async def execute_tool_calls(
         try:
             # Measure LLM invocation latency
 
-            parts = []
-            async for event in call_aiter_llm_stream(llm_with_tools, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk, parts=parts):
-                if event.get("event") == "complete":
+            ai = None
+            async for event in call_aiter_llm_stream(llm_with_tools, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk):
+                if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
                     return
-                yield event
-
-            ai = None
-            for part in parts:
-                if ai is None:
-                    ai = part
+                elif event.get("event") == "tool_calls":
+                    ai = event.get("data").get("ai")
                 else:
-                    ai += part
+                    yield event
+
 
             ai = AIMessage(
-            content=ai.content,
-            tool_calls=getattr(ai, 'tool_calls', []),
+                content = ai.content,
+                tool_calls = getattr(ai, 'tool_calls', []),
             )
         except Exception as e:
             logger.debug("Error in llm call with tools: %s", str(e))
             break
-
 
         # Check if there are tool calls
         if not (isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None)):
@@ -1116,7 +1115,7 @@ async def stream_llm_response_with_tools(
                         tools_were_called = True
                     logger.debug("stream_llm_response_with_tools: forwarding tool event type=%s", tool_event.get("event"))
                     yield tool_event
-                elif tool_event.get("event") == "complete":
+                elif tool_event.get("event") == "complete" or tool_event.get("event") == "error":
                     yield tool_event
                     return
                 else:
@@ -1186,13 +1185,15 @@ async def call_aiter_llm_stream(
     final_results,
     records=None,
     target_words_per_chunk=1,
-    parts=None,
+    reflection_retry_count=0,
+    max_reflection_retries=1,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
     state = AnswerParserState()
     answer_key_re, cite_block_re, incomplete_cite_re, word_iter = _initialize_answer_parser_regex()
 
-    async for token in aiter_llm_stream(llm, messages, parts):
+    parts = []
+    async for token in aiter_llm_stream(llm, messages,parts):
         state.full_json_buf += token
 
         # Look for the start of the "answer" field
@@ -1263,8 +1264,85 @@ async def call_aiter_llm_stream(
                         # Break after yielding to avoid re-processing the same words on next token
                         break
 
-    if not (state.answer_buf):
+    ai = None
+    for part in parts:
+        if ai is None:
+            ai = part
+        else:
+            ai += part
+
+    tool_calls = getattr(ai, 'tool_calls', [])
+    if tool_calls:
+        yield {
+            "event": "tool_calls",
+            "data": {
+                "ai": ai,
+            },
+        }
         return
+
+
+    if not (state.answer_buf):
+        # No answer field found in the response - use reflection to guide the LLM
+        if reflection_retry_count < max_reflection_retries:
+            logger.warning(
+                "call_aiter_llm_stream: No answer field found in LLM response. Using reflection to guide LLM to proper format. Retry count: %d",
+                reflection_retry_count
+            )
+
+            response_text = state.full_json_buf.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text.replace("```json", "", 1)
+            if response_text.endswith("```"):
+                response_text = response_text.rsplit("```", 1)[0]
+            response_text = response_text.strip()
+            try:
+                parser = PydanticOutputParser(pydantic_object=AnswerWithMetadata)
+                parsed = parser.parse(response_text)
+            except Exception as e:
+                parse_error = str(e)
+                # Create reflection message to guide the LLM
+                reflection_message = HumanMessage(
+                    content=(f"""The previous response failed validation with the following error: {parse_error}
+
+                    Please correct your response to match the expected schema. Ensure all fields are properly formatted and all required fields are present. Respond only with valid JSON that matches the AnswerWithMetadata schema.""")
+                )
+                # Add the reflection message to the messages list
+                updated_messages = messages.copy()
+                if ai is not None:
+                    ai_message = AIMessage(
+                        content=ai.content,
+                    )
+                    updated_messages.append(ai_message)
+
+                updated_messages.append(reflection_message)
+
+                # Recursively call the function with updated messages
+                async for event in call_aiter_llm_stream(
+                    llm,
+                    updated_messages,
+                    final_results,
+                    records,
+                    target_words_per_chunk,
+                    reflection_retry_count + 1,
+                    max_reflection_retries,
+                ):
+                    yield event
+
+            return
+        else:
+            logger.error(
+                "call_aiter_llm_stream: No answer field found after %d reflection attempts. Returning error.",
+                max_reflection_retries
+            )
+            # After max retries, return an error event
+            yield {
+                "event": "error",
+                "data": {
+                    "error": "LLM did not provide any appropriate answer"
+                },
+            }
+            return
 
     try:
         parsed = json.loads(escape_ctl(state.full_json_buf))
@@ -1277,10 +1355,12 @@ async def call_aiter_llm_stream(
                 "citations": c,
                 "reason": parsed.get("reason"),
                 "confidence": parsed.get("confidence"),
+
             },
         }
     except Exception:
         # Fallback if JSON parsing fails
+
         normalized, c = normalize_citations_and_chunks(state.answer_buf, final_results, records)
         yield {
             "event": "complete",

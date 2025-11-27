@@ -1,8 +1,11 @@
 import asyncio
 import base64
 import re
+from http import HTTPStatus
 from typing import Optional
 from urllib.parse import unquote, urlparse
+
+from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 try:
     from cairosvg import svg2png
@@ -61,32 +64,24 @@ class ImageParser:
         # If we can't determine from URL, allow it but will check content-type later
         return True
 
-    def _is_valid_image_content_type(self, content_type: str) -> tuple[bool, str]:
+    def _is_valid_image_content_type(self, content_type: str) -> bool:
         """
-        Validate content type and return (is_valid, extension).
-        Returns (False, '') for invalid or unsupported image types.
+        Validate content type and return True for valid image types.
         """
         if not content_type:
-            return False, ''
+            return False
 
         content_type = content_type.lower().split(';')[0].strip()
 
         # Must be an image content type
         if not content_type.startswith('image/'):
-            return False, ''
+            return False
 
-        # Extract and validate extension
-        extension = content_type.split('/')[-1]
-
-        if f".{extension}" not in VALID_IMAGE_EXTENSIONS:
-            return False, ''
-
-        return True, extension
+        return True
 
     async def _fetch_single_url(self, session: aiohttp.ClientSession, url: str) -> str | None:
         try:
             # Check if already a base64 data URL
-            self.logger.debug(f"_fetch_single_url start for URL: {url[:200]}...")
             if url.startswith('data:image/'):
                 # Skip SVG images - check the MIME type in the data URL
                 if url.startswith('data:image/svg+xml'):
@@ -98,68 +93,78 @@ class ImageParser:
 
             # Validate URL format before attempting to fetch
             if not self._is_valid_image_url(url):
-                self.logger.warning(f"URL does not appear to be an image URL: {url[:100]}...")
+                self.logger.warning(f"⚠️ URL does not appear to be an image URL: {url[:100]}...")
                 return None
 
-            self.logger.debug(f"HEAD request for URL: {url[:200]}...")
-            async with session.head(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as head_response:
-                head_response.raise_for_status()
-                content_type = head_response.headers.get('content-type', '').lower()
-                self.logger.debug(f"HEAD content-type for URL {url[:200]}... => {content_type}")
-
-                # Validate content type before fetching full image
-                is_valid, extension = self._is_valid_image_content_type(content_type)
-                if not is_valid:
-                    self.logger.debug(f"Skipping non-image or unsupported image type: {content_type} from URL: {url[:100]}...")
-                    return None
-
-                # If extension couldn't be determined, try to get from URL or default
-                if not extension:
-                    parsed = urlparse(url)
-                    path = parsed.path.lower()
-                    for ext in VALID_IMAGE_EXTENSIONS:
-                        if path.endswith(ext):
-                            extension = ext.lstrip('.')
-                            break
-                    if not extension:
-                        extension = 'png'  # fallback
-
-            # Now fetch the actual image content
-            self.logger.debug(f"GET request for URL: {url[:200]}...")
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
                 response.raise_for_status()
 
-                # Re-verify content-type from GET response (in case it differs)
-                get_content_type = response.headers.get('content-type', '').lower()
-                is_valid, fetched_extension = self._is_valid_image_content_type(get_content_type)
+                get_content_type_header = response.headers.get('content-type', '').lower()
+                get_content_type = get_content_type_header.split(';')[0].strip()
+                is_valid = self._is_valid_image_content_type(get_content_type)
                 self.logger.debug(f"GET content-type for URL {url[:200]}... => {get_content_type}")
 
                 if not is_valid:
-                    self.logger.warning(f"Content-type changed or invalid during GET: {get_content_type} from URL: {url[:100]}...")
+                    self.logger.info(f"⚠️ Content-type invalid during GET: {get_content_type} from URL: {url[:100]}...")
                     return None
 
-                # Use extension from GET response if available, otherwise use from HEAD
-                if fetched_extension:
-                    extension = fetched_extension
+                extension = get_extension_from_mimetype(get_content_type)
+                if not extension:
+                    self.logger.info(f"⚠️ Extension couldn't be determined for URL: {url[:100]}... Skipping image")
+                    return None
+
+                if f".{extension}" not in VALID_IMAGE_EXTENSIONS:
+                    self.logger.info(f"⚠️ Extension {extension} not in valid image extensions, from URL: {url[:100]}... Skipping image")
+                    return None
 
                 # Read content and encode to base64
                 content = await response.read()
 
                 # Basic validation - ensure we got some content
                 if not content:
-                    self.logger.warning(f"Empty content received from URL: {url}")
+                    self.logger.info(f"⚠️ Empty content received from URL: {url}")
                     return None
 
                 base64_encoded = base64.b64encode(content).decode('utf-8')
-                base64_image = f"data:image/{extension};base64,{base64_encoded}"
                 if 'svg' in extension:
                     self.logger.debug("Detected SVG extension from GET; converting SVG base64 to PNG base64")
                     base64_image = f"data:image/png;base64,{self.svg_base64_to_png_base64(base64_encoded)}"
-                self.logger.debug(f"Converted URL to base64 for {extension}: {url}")
+                    return base64_image
+
+                base64_image = f"data:image/{extension};base64,{base64_encoded}"
+                self.logger.debug(f"Converted URL to base64 for {extension}: {url[:100]}")
                 return base64_image
 
+        except aiohttp.ClientResponseError as e:
+            # Handle HTTP errors specifically
+            if e.status == HTTPStatus.FORBIDDEN:
+                # Check if this is a signed URL that might have expired
+                if 'X-Amz-Expires' in str(e):
+                    self.logger.warning(
+                        f"⚠️ Access denied (403) for signed URL - likely expired or invalid signature: {url[:150]}... "
+                        f"(Original error: {e.status}, {e.message})"
+                    )
+                else:
+                    self.logger.warning(
+                        f"⚠️ Access denied (403) for URL - insufficient permissions: {url[:150]}... "
+                        f"(Original error: {e.status}, {e.message})"
+                    )
+            elif e.status == HTTPStatus.NOT_FOUND:
+                self.logger.warning(f"⚠️ Image not found (404) at URL: {url[:150]}...")
+            elif e.status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+                self.logger.warning(f"⚠️ Server error ({e.status}) when fetching URL: {url[:150]}...")
+            else:
+                self.logger.warning(
+                    f"⚠️ HTTP error ({e.status}) when fetching URL: {url[:150]}... "
+                    f"(Error: {e.message})"
+                )
+            return None
+        except aiohttp.ClientError as e:
+            # Handle other aiohttp client errors (timeouts, connection errors, etc.)
+            self.logger.warning(f"⚠️ Network error when fetching URL: {url[:150]}... (Error: {str(e)})")
+            return None
         except Exception as e:
-            self.logger.error(f"Failed to convert URL to base64: {url}, error: {str(e)}")
+            self.logger.error(f"⚠️ Failed to convert URL to base64: {url[:150]}..., error: {str(e)}")
             return None
 
     async def urls_to_base64(self, urls: list[str]) -> list[str|None]:

@@ -74,6 +74,8 @@ class LegacyCollectionNames(Enum):
     PERMISSIONS_TO_KNOWLEDGE_BASE = "permissionsToKnowledgeBase"
     BELONGS_TO_KNOWLEDGE_BASE = "belongsToKnowledgeBase"
     BELONGS_TO_KB = "belongsToKB"
+    PERMISSIONS = "permissions"
+    PERMISSIONS_TO_KB = "permissionsToKB"
 
 class LegacyGraphNames(Enum):
     FILE_ACCESS_GRAPH = "fileAccessGraph"
@@ -92,7 +94,6 @@ class CollectionNames(Enum):
     # Knowledge base
     IS_OF_TYPE = "isOfType"
     PERMISSION = "permission"
-    PERMISSIONS_TO_KB = "permissionsToKB"
 
     # Drive related
     DRIVES = "drives"
@@ -133,8 +134,6 @@ class CollectionNames(Enum):
     SUBCATEGORIES3 = "subcategories3"
     INTER_CATEGORY_RELATIONS = "interCategoryRelations"
 
-    # Permissions
-    PERMISSIONS = "permissions"
 
     # Other
     CHANNEL_HISTORY = "channelHistory"

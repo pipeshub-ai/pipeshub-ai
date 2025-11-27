@@ -347,7 +347,13 @@ class StreamingManager {
     this.updateConversationMessages(conversationKey, (prev) =>
       prev.map((msg) =>
         msg.id === messageId
-          ? { ...msg, id: finalMessageId, content: finalContent, citations: finalCitations, confidence: finalConfidence }
+          ? {
+              ...msg,
+              id: finalMessageId,
+              content: finalContent,
+              citations: finalCitations,
+              confidence: finalConfidence,
+            }
           : msg
       )
     );
@@ -375,11 +381,12 @@ class StreamingManager {
       id: apiMessage._id,
       timestamp: new Date(apiMessage.createdAt || new Date()),
       content: apiMessage.content || '',
-      type: apiMessage.messageType === 'user_query' ? 'user' : 'bot',
+      type: apiMessage.messageType === 'user_query' ? 'user' : apiMessage.messageType === 'error' ? 'error' : 'bot',
       contentFormat: apiMessage.contentFormat || 'MARKDOWN',
       followUpQuestions: apiMessage.followUpQuestions || [],
       createdAt: apiMessage.createdAt ? new Date(apiMessage.createdAt) : new Date(),
       updatedAt: apiMessage.updatedAt ? new Date(apiMessage.updatedAt) : new Date(),
+      messageType: apiMessage.messageType,
     };
 
     if (apiMessage.messageType === 'user_query') {
@@ -607,6 +614,23 @@ const ChatInterface = () => {
     [selectedApps, selectedKbIds]
   );
 
+  const latestFiltersRef = useRef(currentFilters);
+  const latestModelRef = useRef(selectedModel);
+  const latestChatModeRef = useRef(selectedChatMode);
+
+  // Update refs whenever values change
+  useEffect(() => {
+    latestFiltersRef.current = currentFilters;
+  }, [currentFilters]);
+
+  useEffect(() => {
+    latestModelRef.current = selectedModel;
+  }, [selectedModel]);
+
+  useEffect(() => {
+    latestChatModeRef.current = selectedChatMode;
+  }, [selectedChatMode]);
+
   // Build app sources from connectors
   useEffect(() => {
     const connectors = [...(activeConnectors || [])];
@@ -693,11 +717,12 @@ const ChatInterface = () => {
       id: apiMessage._id,
       timestamp: new Date(apiMessage.createdAt || new Date()),
       content: apiMessage.content || '',
-      type: apiMessage.messageType === 'user_query' ? 'user' : 'bot',
+      type: apiMessage.messageType === 'user_query' ? 'user' : apiMessage.messageType === 'error' ? 'error' : 'bot',
       contentFormat: apiMessage.contentFormat || 'MARKDOWN',
       followUpQuestions: apiMessage.followUpQuestions || [],
       createdAt: apiMessage.createdAt ? new Date(apiMessage.createdAt) : new Date(),
       updatedAt: apiMessage.updatedAt ? new Date(apiMessage.updatedAt) : new Date(),
+      messageType: apiMessage.messageType,
     };
     if (apiMessage.messageType === 'user_query') {
       return { ...baseMessage, type: 'user', feedback: apiMessage.feedback || [] };
@@ -737,7 +762,7 @@ const ChatInterface = () => {
     [currentStreamingState, streamingManager, currentConversationKey]
   );
 
-  const parseSSELine = (line: string): { event?: string; data?: any } | null => {
+  const parseSSELine = useCallback((line: string): { event?: string; data?: any } | null => {
     if (line.startsWith('event: ')) return { event: line.substring(7).trim() };
     if (line.startsWith('data: ')) {
       try {
@@ -747,10 +772,10 @@ const ChatInterface = () => {
       }
     }
     return null;
-  };
+  }, []);
 
   // Extract the stream processing logic into a separate helper function
-  const processStreamChunk = async (
+  const processStreamChunk = useCallback(async (
     reader: ReadableStreamDefaultReader<Uint8Array>,
     decoder: TextDecoder,
     parseSSELineFunc: (line: string) => { event?: string; data?: any } | null,
@@ -799,7 +824,7 @@ const ChatInterface = () => {
     };
 
     await readNextChunk();
-  };
+  }, []);
 
   // Refactored main function as a standard async function
   const handleStreamingResponse = useCallback(
@@ -966,7 +991,7 @@ const ChatInterface = () => {
         throw error; // Re-throw non-abort errors
       }
     },
-    [currentConversationId, getConversationKey, streamingManager]
+    [currentConversationId, getConversationKey, streamingManager, parseSSELine, processStreamChunk]
   );
 
   // Updated handleSendMessage to properly handle the promise
@@ -1528,7 +1553,7 @@ const ChatInterface = () => {
     setIsMarkdown(['mdx', 'md'].includes(citationMeta?.extension));
     setIsHtml(['html'].includes(citationMeta?.extension));
     setIsTextFile(['txt'].includes(citationMeta?.extension));
-    setIsImage(['jpg', 'jpeg', 'png', 'webp','svg'].includes(citationMeta?.extension));
+    setIsImage(['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(citationMeta?.extension));
     setIsExcel(isExcelOrCSV);
     setIsPdf(['pptx', 'ppt', 'pdf'].includes(citationMeta?.extension));
 
@@ -1543,48 +1568,196 @@ const ChatInterface = () => {
     async (messageId: string): Promise<void> => {
       if (!currentConversationId || !messageId || isCurrentConversationLoading) return;
 
-      try {
         const conversationKey = getConversationKey(currentConversationId);
+      const streamingBotMessageId = `streaming-${Date.now()}`;
 
-        const response = await axios.post<{ conversation: Conversation }>(
-          `/api/v1/conversations/${currentConversationId}/message/${messageId}/regenerate`,
-          { instruction: 'Improve writing style and clarity' }
-        );
+      // Find the message to regenerate and get its index
+      const messageIndex = currentMessages.findIndex((msg) => msg.id === messageId);
+      if (messageIndex === -1) return;
 
-        if (!response?.data?.conversation?.messages) throw new Error('Invalid response format');
+      // Get the old message to preserve its timestamp
+      const oldMessage = currentMessages[messageIndex];
 
-        const allMessages = response.data.conversation.messages
-          .map(formatMessage)
-          .filter(Boolean) as FormattedMessage[];
-        const regeneratedMessage = allMessages.filter((msg) => msg.type === 'bot').pop();
-        if (!regeneratedMessage) throw new Error('No regenerated message found in response');
+      // Get the user query that preceded this bot response
+      const userMessage = messageIndex > 0 ? currentMessages[messageIndex - 1] : null;
+      if (!userMessage || userMessage.type !== 'user') {
+        console.error('Cannot regenerate: No user query found before this message');
+        return;
+      }
 
-        streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
-          prevMessages.map((msg) =>
-            msg.id === messageId ? { ...regeneratedMessage, createdAt: msg.createdAt } : msg
-          )
-        );
+      // Initialize streaming state
+      streamingManager.updateStatus(conversationKey, 'Regenerating response...');
+      const controller = new AbortController();
+      streamingManager.updateConversationState(conversationKey, { controller });
 
+      // Immediately replace the old message with a new streaming message placeholder
+      // This hides the old message right away and shows the new one in the same position
+      streamingManager.updateConversationMessages(conversationKey, (prevMessages) => {
+        const updated = [...prevMessages];
+        // Replace the message at messageIndex with a new streaming message
+        // Preserve the original timestamp so it appears in the same position
+        updated[messageIndex] = {
+          type: 'bot',
+          content: '',
+          createdAt: oldMessage.createdAt,
+          updatedAt: new Date(),
+          id: streamingBotMessageId,
+          contentFormat: 'MARKDOWN',
+          followUpQuestions: [],
+          citations: [],
+          confidence: '',
+          messageType: 'bot_response',
+          timestamp: oldMessage.timestamp || oldMessage.createdAt,
+        };
+        return updated;
+      });
+      streamingManager.mapMessageToConversation(streamingBotMessageId, conversationKey);
+
+      const hasCreatedMessage = { current: true }; // Already created above
+
+      // Define the event handler for regenerate streaming
+      const handleRegenerateStreamingEvent = async (event: string, data: any): Promise<void> => {
+        const statusMsg = getEngagingStatusMessage(event, data);
+        if (statusMsg) {
+          streamingManager.updateStatus(conversationKey, statusMsg);
+        }
+
+        switch (event) {
+          case 'answer_chunk':
+            if (data.chunk) {
+              streamingManager.clearStatus(conversationKey);
+              streamingManager.updateStreamingContent(
+                streamingBotMessageId,
+                data.chunk,
+                data.citations || []
+              );
+            }
+            break;
+
+          case 'complete': {
+            streamingManager.clearStatus(conversationKey);
+            const completedConversation = data.conversation;
+            if (completedConversation?.messages) {
+              // Find the regenerated message in the response
+              const regeneratedMessage = completedConversation.messages
+                .filter((msg: any) => msg.messageType === 'bot_response')
+                .pop();
+
+              if (regeneratedMessage) {
+                streamingManager.finalizeStreaming(conversationKey, streamingBotMessageId, {
+                  conversation: completedConversation,
+                });
+
+                // Update expanded citations state
+                const formattedMessage = formatMessage(regeneratedMessage);
+                if (formattedMessage) {
         setExpandedCitations((prevStates) => {
           const newStates = { ...prevStates };
-          const messageIndex = currentMessages.findIndex((msg) => msg.id === messageId);
-          if (messageIndex !== -1) {
             const hasCitations =
-              regeneratedMessage.citations && regeneratedMessage.citations.length > 0;
-            newStates[messageIndex] = hasCitations ? prevStates[messageIndex] || false : false;
-          }
+                      formattedMessage.citations && formattedMessage.citations.length > 0;
+                    newStates[messageIndex] = hasCitations
+                      ? prevStates[messageIndex] || false
+                      : false;
           return newStates;
         });
-      } catch (error) {
-        const conversationKey = getConversationKey(currentConversationId);
+                }
+              }
+            }
+            break;
+          }
+
+          case 'error': {
+            streamingManager.clearStreaming(conversationKey);
+            const errorMessage =
+              data.message || data.error || 'An error occurred while regenerating';
+
+            // Update the streaming message with error
         streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
           prevMessages.map((msg) =>
-            msg.id === messageId
-              ? {
-                  ...msg,
-                  content: 'Sorry, I encountered an error regenerating this message.',
-                  error: true,
-                }
+                msg.id === streamingBotMessageId
+                  ? { ...msg, content: errorMessage, messageType: 'error' }
+                  : msg
+              )
+            );
+            throw new Error(errorMessage);
+          }
+
+          default:
+            break;
+        }
+      };
+
+      try {
+        // Make the streaming request to regenerate endpoint
+        const token = localStorage.getItem('jwt_access_token');
+        // Use refs to get the latest values
+        const currentModel = latestModelRef.current;
+        const currentMode = latestChatModeRef.current;
+        const currentFiltersValue = latestFiltersRef.current;
+
+        const response = await fetch(
+          `${CONFIG.backendUrl}/api/v1/conversations/${currentConversationId}/message/${messageId}/regenerate`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'text/event-stream',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              filters: currentFiltersValue,
+              modelKey: currentModel?.modelKey,
+              modelName: currentModel?.modelName,
+              chatMode: currentMode?.id || 'standard',
+            }),
+            signal: controller.signal,
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('Failed to get response reader');
+        }
+
+        const decoder = new TextDecoder();
+
+        // Process the stream
+        await processStreamChunk(
+          reader,
+          decoder,
+          parseSSELine,
+          handleRegenerateStreamingEvent,
+          {
+            conversationKey,
+            streamingBotMessageId,
+            isNewConversation: false,
+            hasCreatedMessage,
+            conversationIdRef: { current: currentConversationId },
+          },
+          controller
+        );
+      } catch (error) {
+        // Handle AbortError separately
+        if (error instanceof Error && error.name === 'AbortError') {
+          return;
+        }
+
+        console.error('Error regenerating message:', error);
+        streamingManager.clearStreaming(conversationKey);
+
+        // Show error in the message
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : 'Sorry, I encountered an error regenerating this message.';
+        streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
+          prevMessages.map((msg) =>
+            msg.id === streamingBotMessageId
+              ? { ...msg, content: errorMessage, messageType: 'error' }
               : msg
           )
         );
@@ -1592,11 +1765,14 @@ const ChatInterface = () => {
     },
     [
       currentConversationId,
-      formatMessage,
       currentMessages,
       getConversationKey,
       streamingManager,
       isCurrentConversationLoading,
+      parseSSELine,
+      processStreamChunk,
+      formatMessage,
+      setExpandedCitations,
     ]
   );
 
@@ -1708,7 +1884,8 @@ const ChatInterface = () => {
                 <ChatInput
                   onSubmit={handleSendMessage}
                   isLoading={isCurrentConversationLoading}
-                  disabled={isCurrentConversationLoading || isNavigationBlocked}
+                  disabled={isNavigationBlocked}
+                  isStreaming={isCurrentConversationLoading}
                   placeholder="Type your message..."
                   selectedModel={selectedModel}
                   selectedChatMode={selectedChatMode}

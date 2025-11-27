@@ -315,13 +315,13 @@ async def perform_llm_health_check(
 ) -> Dict[str, Any]:
     """Perform health check for LLM models"""
     try:
-        logger.info(f"Performing LLM health check for {llm_config.get('provider')} with configuration {llm_config.get('configuration')}")
+        logger.info(f"Performing LLM health check for {llm_config.get('provider')} with configuration model {llm_config.get('configuration', {}).get('model', '')}")
         # Use the first model from comma-separated list
-        model_string = llm_config.get("configuration").get("model", "")
+        model_string = llm_config.get("configuration", {}).get("model", "")
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
 
         if not model_names:
-            logger.error(f"No valid model names found in configuration for {llm_config.get('provider')} with configuration {llm_config.get('configuration')}")
+            logger.error(f"No valid model names found in configuration for {llm_config.get('provider')} with configuration model {llm_config.get('configuration', {}).get('model', '')}")
             return JSONResponse(
                 status_code=500,
                 content={
@@ -329,7 +329,7 @@ async def perform_llm_health_check(
                     "message": "No valid model names found in configuration",
                     "details": {
                     "provider": llm_config.get("provider"),
-                    "model": llm_config.get("configuration").get("model")
+                    "model": llm_config.get("configuration", {}).get("model", "")
                     },
                 },
             )
@@ -457,13 +457,13 @@ async def perform_embedding_health_check(
 ) -> Dict[str, Any]:
     """Perform health check for embedding models"""
     try:
-        logger.info(f"Performing embedding health check for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}")
+        logger.info(f"Performing embedding health check for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")
         # Use the first model from comma-separated list
-        model_string = embedding_config.get("configuration").get("model", "")
+        model_string = embedding_config.get("configuration", {}).get("model", "")
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
 
         if not model_names:
-            logger.error(f"No valid model names found in configuration for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}")
+            logger.error(f"No valid model names found in configuration for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")
             return JSONResponse(
                 status_code=500,
                 content={
@@ -471,7 +471,7 @@ async def perform_embedding_health_check(
                     "message": "No valid model names found in configuration",
                     "details": {
                     "provider": embedding_config.get("provider"),
-                    "model": embedding_config.get("configuration").get("model")
+                    "model": embedding_config.get("configuration", {}).get("model", "")
                     },
                 },
             )
@@ -499,7 +499,7 @@ async def perform_embedding_health_check(
 
             logger.info(f"Test embeddings length: {len(test_embeddings)}")
             if not test_embeddings or len(test_embeddings) == 0:
-                logger.error(f"Embedding model returned empty results for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}")
+                logger.error(f"Embedding model returned empty results for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")
                 return JSONResponse(
                     status_code=500,
                     content={
@@ -569,7 +569,7 @@ async def perform_embedding_health_check(
             )
 
         except asyncio.TimeoutError:
-            logger.error(f"Embedding health check timed out for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}")
+            logger.error(f"Embedding health check timed out for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")
             return JSONResponse(
                 status_code=500,
                 content={
@@ -584,7 +584,7 @@ async def perform_embedding_health_check(
         )
 
     except Exception as e:
-        logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')   }: {str(e)}", exc_info=True)
+        logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}: {str(e)}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
@@ -623,14 +623,14 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
     try:
         logger = request.app.container.logger()
         logger.info(f"Health check endpoint called for {model_type}")
-        logger.info(f"Request body: {model_config}")
+        logger.debug(f"Request body: {model_config}")
 
         if model_type == "embedding":
-            logger.info(f"Performing embedding health check for {model_config.get('provider')} with configuration {model_config.get('configuration')}")
+            logger.info(f"Performing embedding health check for {model_config.get('provider')} with configuration model {model_config.get('configuration', {}).get('model', '')}")
             return await perform_embedding_health_check(request, model_config, logger)
 
         elif model_type == "llm":
-            logger.info(f"Performing LLM health check for {model_config.get('provider')} with configuration {model_config.get('configuration')}")
+            logger.info(f"Performing LLM health check for {model_config.get('provider')} with configuration model {model_config.get('configuration', {}).get('model', '')}")
             return await perform_llm_health_check(model_config, logger)
 
     except Exception as e:

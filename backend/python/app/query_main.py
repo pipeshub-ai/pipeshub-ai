@@ -302,8 +302,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
     try:
         # Try to log the request body
-        body = await request.json()
-        print(f"Failing request body: {body}")
+        await request.json()
     except Exception:
         print("Could not parse request body as JSON.")
 
