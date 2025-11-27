@@ -288,8 +288,14 @@ class BlobStorage(Transformer):
 
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-            query = f'FOR doc IN {collection_name} FILTER doc.virtualRecordId == "{virtual_record_id}" RETURN doc.documentId'
-            cursor = self.arango_service.db.aql.execute(query)
+            query = 'FOR doc IN @@collection FILTER doc.virtualRecordId == @virtualRecordId OR doc._key == @virtualRecordId RETURN doc.documentId'
+
+            bind_vars = {
+                '@collection': collection_name,
+                'virtualRecordId': virtual_record_id
+            }
+
+            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
 
             # Check if cursor has any results before calling next()
             results = list(cursor)
@@ -378,7 +384,7 @@ class BlobStorage(Transformer):
             mapping_document = {
                 "_key": mapping_key,
                 "documentId": document_id,
-                "createdAt": get_epoch_timestamp_in_ms()
+                "updatedAt": get_epoch_timestamp_in_ms()
             }
 
             success = await self.arango_service.batch_upsert_nodes(
