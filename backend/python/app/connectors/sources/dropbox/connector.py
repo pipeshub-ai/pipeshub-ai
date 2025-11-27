@@ -2642,7 +2642,7 @@ class DropboxConnector(BaseConnector):
         self.logger.info("Cleaning up Dropbox connector resources.")
         self.data_source = None
 
-    async def reindex_records(self, record_results: List[Dict]) -> None:
+    async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex records - not implemented for Dropbox yet."""
         self.logger.warning("Reindex not implemented for Dropbox connector")
         pass

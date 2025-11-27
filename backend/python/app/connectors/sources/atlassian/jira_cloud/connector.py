@@ -504,7 +504,7 @@ class JiraConnector(BaseConnector):
     async def cleanup(self) -> None:
         pass
 
-    async def reindex_records(self, record_results: List[Dict]) -> None:
+    async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex records - not implemented for Jira yet."""
         self.logger.warning("Reindex not implemented for Jira connector")
         pass

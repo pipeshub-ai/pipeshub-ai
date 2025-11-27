@@ -65,7 +65,7 @@ class BaseConnector(ABC):
         NotImplementedError("This method should be implemented by the subclass")
 
     @abstractmethod
-    async def reindex_records(self, record_results: List[Dict]) -> None:
+    async def reindex_records(self, record_results: List[Record]) -> None:
         NotImplementedError("This method should be implemented by the subclass")
 
     @classmethod

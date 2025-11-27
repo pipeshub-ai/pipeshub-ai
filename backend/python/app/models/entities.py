@@ -157,24 +157,7 @@ class Record(BaseModel):
         )
 
     def to_kafka_record(self) -> Dict:
-        """
-        Default implementation for Kafka record payload.
-        Subclasses can override this to add type-specific fields.
-        """
-        return {
-            "orgId": self.org_id,
-            "recordId": self.id,
-            "recordName": self.record_name,
-            "recordType": self.record_type.value,
-            "version": self.version,
-            "origin": self.origin.value,
-            "connectorName": self.connector_name.value,
-            "mimeType": self.mime_type,
-            "externalRecordId": self.external_record_id,
-            "createdAtTimestamp": str(self.created_at) if self.created_at else str(get_epoch_timestamp_in_ms()),
-            "updatedAtTimestamp": str(self.updated_at) if self.updated_at else str(get_epoch_timestamp_in_ms()),
-            "sourceCreatedAtTimestamp": str(self.source_created_at) if self.source_created_at else str(self.created_at) if self.created_at else str(get_epoch_timestamp_in_ms())
-        }
+        raise NotImplementedError("Implement this method in the subclass")
 
 class FileRecord(Record):
     is_file: bool

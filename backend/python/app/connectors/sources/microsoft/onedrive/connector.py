@@ -1000,7 +1000,7 @@ class OneDriveConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during cleanup: {e}")
 
-    async def reindex_records(self, record_results: List[Dict]) -> None:
+    async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex records - not implemented for OneDrive yet."""
         self.logger.warning("Reindex not implemented for OneDrive connector")
         pass

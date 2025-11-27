@@ -2325,7 +2325,7 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during SharePoint connector cleanup: {e}")
 
-    async def reindex_records(self, record_results: List[Dict]) -> None:
+    async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex records - not implemented for SharePoint yet."""
         self.logger.warning("Reindex not implemented for SharePoint connector")
         pass

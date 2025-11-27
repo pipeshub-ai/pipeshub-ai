@@ -2757,7 +2757,7 @@ class ConfluenceConnector(BaseConnector):
             attachment_record.id = record.id
 
             # Attachments inherit permissions from parent page - fetch page permissions
-            permissions = await self._fetch_page_permissions(parent_page_id, f"parent of attachment {attachment_id}")
+            permissions = await self._fetch_page_permissions(parent_page_id)
 
             return (attachment_record, permissions)
 
