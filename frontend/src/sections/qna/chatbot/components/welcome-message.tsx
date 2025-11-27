@@ -12,7 +12,8 @@ import {
   Typography,
 } from '@mui/material';
 
-import ChatInput, { Model, ChatMode } from './chat-input';
+import ChatInput from './chat-input';
+import { Model, ChatMode } from '../types';
 
 // Simple Footer component
 const Footer = memo(({ isDark }: { isDark: boolean }) => {
@@ -85,6 +86,7 @@ interface WelcomeMessageProps {
   initialSelectedApps?: string[];
   initialSelectedKbIds?: string[];
   onFiltersChange?: (filters: { apps: string[]; kb: string[] }) => void;
+  models: Model[];
 }
 
 // Main WelcomeMessage component
@@ -100,6 +102,7 @@ const WelcomeMessageComponent = ({
   initialSelectedApps = [],
   initialSelectedKbIds = [],
   onFiltersChange,
+  models,
 }: WelcomeMessageProps) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -205,6 +208,7 @@ const WelcomeMessageComponent = ({
           initialSelectedApps={initialSelectedApps}
           initialSelectedKbIds={initialSelectedKbIds}
           onFiltersChange={onFiltersChange}
+          models={models}
         />
 
       {/* Footer */}

@@ -115,6 +115,12 @@ const messageSchema = new Schema<IMessage>(
       modelVersion: { type: String },
       aiTransactionId: { type: String },
     },
+    modelInfo: {
+      modelKey: { type: String },
+      modelName: { type: String },
+      modelProvider: { type: String },
+      chatMode: { type: String, default: 'quick' },
+    },
   },
   { timestamps: true },
 );
@@ -149,6 +155,24 @@ const agentConversationSchema = new Schema({
     enum: ['None', 'Inprogress', 'Complete', 'Failed'],
   },
   failReason: { type: String },
+  // Model information used for this conversation
+  modelInfo: {
+    modelKey: { type: String },
+    modelName: { type: String },
+    modelProvider: { type: String },
+    chatMode: { type: String, default: 'quick' },
+  },
+  // Errors array to track errors during conversation
+  conversationErrors: [
+    {
+      message: { type: String, required: true },
+      errorType: { type: String },
+      timestamp: { type: Date, default: Date.now },
+      messageId: { type: Schema.Types.ObjectId },
+      stack: { type: String },
+      metadata: { type: Map, of: Schema.Types.Mixed },
+    },
+  ],
   
   // Agent conversation specific fields
   conversationSource: {

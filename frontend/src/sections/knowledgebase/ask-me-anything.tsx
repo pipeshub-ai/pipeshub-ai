@@ -11,7 +11,7 @@ import type {
 import { Icon } from '@iconify/react';
 import menuIcon from '@iconify-icons/mdi/menu';
 import closeIcon from '@iconify-icons/mdi/close';
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import chatOutlineIcon from '@iconify-icons/mdi/chat-outline';
 import fileDocumentOutlineIcon from '@iconify-icons/mdi/file-document-outline';
 
@@ -20,7 +20,8 @@ import { Box, Button, styled, useTheme, Typography, IconButton } from '@mui/mate
 import axiosInstance from 'src/utils/axios';
 
 import RecordSidebar from './ask-me-anything-sidebar';
-import ChatInput, { Model, ChatMode } from '../qna/chatbot/components/chat-input';
+import ChatInput from '../qna/chatbot/components/chat-input';
+import { Model, ChatMode } from '../qna/chatbot/types';
 import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
 
 import type {
@@ -174,6 +175,7 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
   const [isLoadingConversation, setIsLoadingConversation] = useState<boolean>(false);
   const [selectedModel, setSelectedModel] = useState<Model | null>(null);
   const [selectedChatMode, setSelectedChatMode] = useState<ChatMode | null>(null);
+  const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const [selectedRecord, setSelectedRecord] = useState<Record | null>(
     initialContext?.recordId
       ? {
@@ -227,6 +229,32 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
     }
 
     return null;
+  }, []);
+
+  // Load available models once
+  useEffect(() => {
+    const fetchAvailableModels = async () => {
+      try {
+        const response = await axiosInstance.get('/api/v1/configurationManager/ai-models/available/llm');
+
+        if (response.data.status === 'success') {
+          // Handle both response formats: response.data.models or response.data.data
+          const models = response.data.models || response.data.data || [];
+          setAvailableModels(models);
+
+          // Set default model if not already selected
+          if (!selectedModel && models.length > 0) {
+            const defaultModel = models.find((model: Model) => model.isDefault) || models[0];
+            setSelectedModel(defaultModel);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch available models:', error);
+        setAvailableModels([]);
+      }
+    };
+    fetchAvailableModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // const loadConversation = async (conversationId) => {
@@ -359,8 +387,14 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
   }, [initialContext]);
 
   // Update handleSendMessage to include recordIds and sourceRecordId
-  const handleSendMessage = useCallback(async () => {
-    const trimmedInput = inputValue.trim();
+  const handleSendMessage = useCallback(async (
+    message: string,
+    modelKey?: string,
+    modelName?: string,
+    chatMode?: string,
+    filters?: { apps: string[]; kb: string[] }
+  ) => {
+    const trimmedInput = message.trim();
     if (!trimmedInput || isLoading || !selectedRecord) return;
 
     const tempUserMessage = {
@@ -379,7 +413,6 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
 
     try {
       setIsLoading(true);
-      setInputValue('');
 
       let response;
       if (!currentConversationId) {
@@ -458,7 +491,6 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
       setIsLoading(false);
     }
   }, [
-    inputValue,
     isLoading,
     currentConversationId,
     selectedRecord,
@@ -668,6 +700,7 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
               knowledgeBases={[]}
               initialSelectedApps={[]}
               initialSelectedKbIds={[]}
+              models={availableModels}
             />
           </Box>
         </Box>

@@ -29,13 +29,26 @@ export const enterpriseSearchCreateSchema = z.object({
       .optional(),
     filters: z
       .object({
-        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL])).optional(),
+        apps: z
+          .array(
+            z.enum(Object.values(APP_TYPES) as [string, ...string[]]),
+          )
+          .optional(),
         kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
-    modelKey: z.string().min(1, { message: 'Model key is required' }).optional(),
-    modelName: z.string().min(1, { message: 'Model name is required' }).optional(),
-    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
+    modelKey: z
+      .string()
+      .min(1, { message: 'Model key is required' })
+      .optional(),
+    modelName: z
+      .string()
+      .min(1, { message: 'Model name is required' })
+      .optional(),
+    chatMode: z
+      .string()
+      .min(1, { message: 'Chat mode is required' })
+      .optional(),
   }),
 });
 
@@ -74,13 +87,26 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
     query: z.string().min(1, { message: 'Query is required' }),
     filters: z
       .object({
-        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL])).optional(),
+        apps: z
+          .array(
+            z.enum(Object.values(APP_TYPES) as [string, ...string[]]),
+          )
+          .optional(),
         kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
-    modelKey: z.string().min(1, { message: 'Model key is required' }).optional(),
-    modelName: z.string().min(1, { message: 'Model name is required' }).optional(),
-    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
+    modelKey: z
+      .string()
+      .min(1, { message: 'Model key is required' })
+      .optional(),
+    modelName: z
+      .string()
+      .min(1, { message: 'Model name is required' })
+      .optional(),
+    chatMode: z
+      .string()
+      .min(1, { message: 'Chat mode is required' })
+      .optional(),
   }),
 });
 
@@ -104,15 +130,65 @@ export const regenerateAnswersParamsSchema = z.object({
   body: z.object({
     filters: z
       .object({
-        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL])).optional(),
+        apps: z
+          .array(
+            z.enum(Object.values(APP_TYPES) as [string, ...string[]]),
+          )
+          .optional(),
         kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
-    modelKey: z.string().min(1, { message: 'Model key is required' }).optional(),
-    modelName: z.string().min(1, { message: 'Model name is required' }).optional(),
-    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
+    modelKey: z
+      .string()
+      .min(1, { message: 'Model key is required' })
+      .optional(),
+    modelName: z
+      .string()
+      .min(1, { message: 'Model name is required' })
+      .optional(),
+    chatMode: z
+      .string()
+      .min(1, { message: 'Chat mode is required' })
+      .optional(),
   }),
 });
+
+export const regenerateAgentAnswersParamsSchema =
+  regenerateAnswersParamsSchema.extend({
+    params: z.object({
+      agentKey: z.string().min(1, { message: 'Agent key is required' }),
+      conversationId: z
+        .string()
+        .regex(objectIdRegex, { message: 'Invalid message ID format' }),
+      messageId: z
+        .string()
+        .regex(objectIdRegex, { message: 'Invalid message ID format' }),
+    }),
+    body: z.object({
+      filters: z
+        .object({
+          apps: z
+            .array(
+              z.enum(Object.values(APP_TYPES) as [string, ...string[]]),
+            )
+            .optional(),
+          kb: z.array(z.string().uuid()).optional(),
+        })
+        .optional(),
+      modelKey: z
+        .string()
+        .min(1, { message: 'Model key is required' })
+        .optional(),
+      modelName: z
+        .string()
+        .min(1, { message: 'Model name is required' })
+        .optional(),
+      chatMode: z
+        .string()
+        .min(1, { message: 'Chat mode is required' })
+        .optional(),
+    }),
+  });
 
 export const updateFeedbackParamsSchema = regenerateAnswersParamsSchema;
 
@@ -161,7 +237,9 @@ export const enterpriseSearchSearchSchema = z.object({
     filters: z
       .object({
         apps: z
-          .array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.ONEDRIVE, APP_TYPES.SHAREPOINT_ONLINE, APP_TYPES.LOCAL]))
+          .array(
+            z.enum(Object.values(APP_TYPES) as [string, ...string[]]),
+          )
           .optional(),
         kb: z.array(z.string().uuid()).optional(),
       })
@@ -169,9 +247,18 @@ export const enterpriseSearchSearchSchema = z.object({
     limit: z
       .preprocess((arg) => Number(arg), z.number().min(1).max(100).default(10))
       .optional(),
-    modelKey: z.string().min(1, { message: 'Model key is required' }).optional(),
-    modelName: z.string().min(1, { message: 'Model name is required' }).optional(),
-    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
+    modelKey: z
+      .string()
+      .min(1, { message: 'Model key is required' })
+      .optional(),
+    modelName: z
+      .string()
+      .min(1, { message: 'Model name is required' })
+      .optional(),
+    chatMode: z
+      .string()
+      .min(1, { message: 'Chat mode is required' })
+      .optional(),
   }),
 });
 

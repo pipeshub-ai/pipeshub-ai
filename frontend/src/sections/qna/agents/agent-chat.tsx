@@ -48,12 +48,12 @@ import { StreamingContext } from 'src/sections/qna/chatbot/components/chat-messa
 import { processStreamingContentLegacy } from 'src/sections/qna/chatbot/utils/styles/content-processing';
 import { useConnectors } from 'src/sections/accountdetails/connectors/hooks/use-connectors';
 import { ConversationStreamingState } from 'src/sections/qna/chatbot/chat-bot';
+import { CHAT_MODES } from 'src/sections/qna/chatbot/utils/utils';
 import AgentApiService, { KnowledgeBase } from './services/api';
 import AgentChatInput from './components/agent-chat-input';
 import AgentChatSidebar from './components/agent-chat-sidebar';
 
 const DRAWER_WIDTH = 300;
-
 
 // Store messages per conversation
 interface ConversationMessages {
@@ -257,7 +257,6 @@ class StreamingManager {
   }
 
   static getPendingNavigation(): { conversationId: string; shouldNavigate: boolean } | null {
-    console.log('Getting pending navigation');
     return null;
   }
 
@@ -321,6 +320,8 @@ class StreamingManager {
     let finalCitations = state?.citations || [];
     let finalMessageId = messageId;
     let finalConfidence = state?.confidence || '';
+    let finalModelInfo: any = null;
+
     if (completionData?.conversation) {
       const finalBotMessage = completionData.conversation.messages
         .filter((msg: any) => msg.messageType === 'bot_response')
@@ -337,14 +338,27 @@ class StreamingManager {
           finalContent = processedContent;
           finalCitations = processedCitations;
           finalConfidence = formatted.confidence || '';
+          // Get modelInfo from message first, then fallback to conversation
+          finalModelInfo =
+            formatted.modelInfo || (completionData.conversation as any).modelInfo || null;
         }
+      } else {
+        // If no bot message, use conversation-level modelInfo
+        finalModelInfo = (completionData.conversation as any).modelInfo || null;
       }
     }
 
     this.updateConversationMessages(conversationKey, (prev) =>
       prev.map((msg) =>
         msg.id === messageId
-          ? { ...msg, id: finalMessageId, content: finalContent, citations: finalCitations, confidence: finalConfidence }
+          ? {
+              ...msg,
+              id: finalMessageId,
+              content: finalContent,
+              citations: finalCitations,
+              confidence: finalConfidence,
+              modelInfo: finalModelInfo || msg.modelInfo || null,
+            }
           : msg
       )
     );
@@ -372,12 +386,18 @@ class StreamingManager {
       id: apiMessage._id,
       timestamp: new Date(apiMessage.createdAt || new Date()),
       content: apiMessage.content || '',
-      type: apiMessage.messageType === 'user_query' ? 'user' : 'bot',
+      type:
+        apiMessage.messageType === 'user_query'
+          ? 'user'
+          : apiMessage.messageType === 'error'
+            ? 'error'
+            : 'bot',
       contentFormat: apiMessage.contentFormat || 'MARKDOWN',
       followUpQuestions: apiMessage.followUpQuestions || [],
       createdAt: apiMessage.createdAt ? new Date(apiMessage.createdAt) : new Date(),
       updatedAt: apiMessage.updatedAt ? new Date(apiMessage.updatedAt) : new Date(),
       confidence: apiMessage.confidence || '',
+      messageType: apiMessage.messageType,
     };
 
     if (apiMessage.messageType === 'user_query') {
@@ -389,6 +409,7 @@ class StreamingManager {
         ...baseMessage,
         type: 'bot',
         confidence: apiMessage.confidence || '',
+        modelInfo: apiMessage.modelInfo || null,
         citations: (apiMessage?.citations || []).map((citation: any) => ({
           id: citation.citationId,
           _id: citation?.citationData?._id || citation.citationId,
@@ -545,6 +566,82 @@ const AgentChat = () => {
   // Model selection state
   const [selectedModel, setSelectedModel] = useState<Model | null>(availableModels[0]);
   const [selectedChatMode, setSelectedChatMode] = useState<ChatMode | null>(null);
+
+  // Refs to store latest values to avoid stale closures in callbacks
+  const latestModelRef = useRef(selectedModel);
+  const latestChatModeRef = useRef(selectedChatMode);
+  const availableModelsRef = useRef<Model[]>([]);
+
+  // Update refs whenever values change
+  useEffect(() => {
+    latestModelRef.current = selectedModel;
+  }, [selectedModel]);
+
+  useEffect(() => {
+    latestChatModeRef.current = selectedChatMode;
+  }, [selectedChatMode]);
+
+  // Keep availableModels ref in sync
+  useEffect(() => {
+    availableModelsRef.current = availableModels;
+  }, [availableModels]);
+
+  // Helper function to set model and chat mode from conversation modelInfo
+  const setModelFromConversation = useCallback((conversationModelInfo: any) => {
+    if (!conversationModelInfo) return;
+
+    // Use ref to get latest models to avoid stale closure issues
+    const models = availableModelsRef.current;
+    if (models.length === 0) {
+      // Models not loaded yet, will be set by useEffect when models load
+      return;
+    }
+
+    // Set model from conversation if available
+    if (conversationModelInfo.modelName) {
+      // Try to find matching model by modelName
+      const matchingModel = models.find((m) => m.modelName === conversationModelInfo.modelName);
+
+      if (matchingModel) {
+        setSelectedModel(matchingModel);
+      }
+    }
+
+    // Set chat mode from conversation if available
+    if (conversationModelInfo.chatMode) {
+      const matchingMode = CHAT_MODES.find((m) => m.id === conversationModelInfo.chatMode);
+      if (matchingMode) {
+        setSelectedChatMode(matchingMode);
+      }
+    }
+  }, []);
+
+  // Set default model and chat mode when models are first loaded
+  // Only set defaults if no conversation is selected (new chat scenario)
+  useEffect(() => {
+    // Don't set defaults if we have a selected chat - let the conversation model useEffect handle it
+    if (selectedChat) return;
+
+    if (availableModels.length > 0 && !selectedModel) {
+      // Set first model as default if no model is selected and no conversation is selected
+      setSelectedModel(availableModels[0]);
+    }
+    // Set default chat mode if not already selected
+    if (!selectedChatMode && CHAT_MODES.length > 0) {
+      setSelectedChatMode(CHAT_MODES[0]);
+    }
+  }, [availableModels, selectedModel, selectedChatMode, selectedChat]);
+
+  // When models are loaded and we have a selected chat, try to set model from conversation
+  useEffect(() => {
+    if (availableModels.length > 0 && selectedChat) {
+      const conversationModelInfo = (selectedChat as any).modelInfo;
+      if (conversationModelInfo) {
+        setModelFromConversation(conversationModelInfo);
+      }
+    }
+  }, [availableModels.length, selectedChat, setModelFromConversation]);
+
   const { activeConnectors } = useConnectors();
   const navigate = useNavigate();
   const { agentKey, conversationId } = useParams<{ agentKey: string; conversationId: string }>();
@@ -678,6 +775,7 @@ const AgentChat = () => {
 
   const formatMessage = useCallback((apiMessage: Message): FormattedMessage | null => {
     if (!apiMessage) return null;
+    console.log('formatMessage called with apiMessage:', apiMessage);
     const baseMessage = {
       id: apiMessage._id,
       timestamp: new Date(apiMessage.createdAt || new Date()),
@@ -687,6 +785,8 @@ const AgentChat = () => {
       followUpQuestions: apiMessage.followUpQuestions || [],
       createdAt: apiMessage.createdAt ? new Date(apiMessage.createdAt) : new Date(),
       updatedAt: apiMessage.updatedAt ? new Date(apiMessage.updatedAt) : new Date(),
+      messageType: apiMessage.messageType,
+      modelInfo: apiMessage.modelInfo || null,
     };
     if (apiMessage.messageType === 'user_query') {
       return { ...baseMessage, type: 'user', feedback: apiMessage.feedback || [] };
@@ -696,6 +796,7 @@ const AgentChat = () => {
         ...baseMessage,
         type: 'bot',
         confidence: apiMessage.confidence || '',
+        modelInfo: (apiMessage as any).modelInfo || null,
         citations: (apiMessage?.citations || []).map((citation: Citation) => ({
           id: citation.citationId,
           _id: citation?.citationData?._id || citation.citationId,
@@ -726,7 +827,7 @@ const AgentChat = () => {
     [currentStreamingState, streamingManager, currentConversationKey]
   );
 
-  const parseSSELine = (line: string): { event?: string; data?: any } | null => {
+  const parseSSELine = useCallback((line: string): { event?: string; data?: any } | null => {
     if (line.startsWith('event: ')) return { event: line.substring(7).trim() };
     if (line.startsWith('data: ')) {
       try {
@@ -736,66 +837,70 @@ const AgentChat = () => {
       }
     }
     return null;
-  };
+  }, []);
 
   // Extract the stream processing logic into a separate helper function
-  const processStreamChunk = async (
-    reader: ReadableStreamDefaultReader<Uint8Array>,
-    decoder: TextDecoder,
-    parseSSELineFunc: (line: string) => { event?: string; data?: any } | null,
-    handleStreamingEvent: (event: string, data: any, context: any) => Promise<void>,
-    context: {
-      conversationKey: string;
-      streamingBotMessageId: string;
-      isNewConversation: boolean;
-      hasCreatedMessage: React.MutableRefObject<boolean>;
-      conversationIdRef: React.MutableRefObject<string | null>;
-    },
-    controller: AbortController
-  ): Promise<void> => {
-    let buffer = '';
-    let currentEvent = '';
+  const processStreamChunk = useCallback(
+    async (
+      reader: ReadableStreamDefaultReader<Uint8Array>,
+      decoder: TextDecoder,
+      parseSSELineFunc: (line: string) => { event?: string; data?: any } | null,
+      handleStreamingEvent: (event: string, data: any, context: any) => Promise<void>,
+      context: {
+        conversationKey: string;
+        streamingBotMessageId: string;
+        isNewConversation: boolean;
+        hasCreatedMessage: React.MutableRefObject<boolean>;
+        conversationIdRef: React.MutableRefObject<string | null>;
+      },
+      controller: AbortController
+    ): Promise<void> => {
+      let buffer = '';
+      let currentEvent = '';
 
-    const readNextChunk = async (): Promise<void> => {
-      const { done, value } = await reader.read();
-      if (done) return;
+      const readNextChunk = async (): Promise<void> => {
+        const { done, value } = await reader.read();
+        if (done) return;
 
-      const chunk = decoder.decode(value, { stream: true });
-      buffer += chunk;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      for (let i = 0; i < lines.length; i += 1) {
-        const line = lines[i];
-        const trimmedLine = line.trim();
-        // eslint-disable-next-line
-        if (!trimmedLine) continue;
-
-        const parsed = parseSSELineFunc(trimmedLine);
-        // eslint-disable-next-line
-        if (!parsed) continue;
-
-        if (parsed.event) {
-          currentEvent = parsed.event;
-        } else if (parsed.data && currentEvent) {
+        for (let i = 0; i < lines.length; i += 1) {
+          const line = lines[i];
+          const trimmedLine = line.trim();
           // eslint-disable-next-line
-          await handleStreamingEvent(currentEvent, parsed.data, context);
+          if (!trimmedLine) continue;
+
+          const parsed = parseSSELineFunc(trimmedLine);
+          // eslint-disable-next-line
+          if (!parsed) continue;
+
+          if (parsed.event) {
+            currentEvent = parsed.event;
+          } else if (parsed.data && currentEvent) {
+            // eslint-disable-next-line
+            await handleStreamingEvent(currentEvent, parsed.data, context);
+          }
         }
-      }
 
-      if (!controller.signal.aborted) {
-        await readNextChunk();
-      }
-    };
+        if (!controller.signal.aborted) {
+          await readNextChunk();
+        }
+      };
 
-    await readNextChunk();
-  };
+      await readNextChunk();
+    },
+    []
+  );
 
   // Refactored main function as a standard async function
   const handleStreamingResponse = useCallback(
     async (url: string, body: any, isNewConversation: boolean): Promise<string | null> => {
       const streamingBotMessageId = `streaming-${Date.now()}`;
       const conversationKey = isNewConversation ? 'new' : getConversationKey(currentConversationId);
+      const currentConvId = currentConversationId; // Capture current conversation ID
 
       // Initialize streaming state
       streamingManager.updateStatus(conversationKey, 'Connecting...');
@@ -854,6 +959,20 @@ const AgentChat = () => {
                 context.conversationIdRef.current = completedConversation._id;
               }
               streamingManager.finalizeStreaming(finalKey, context.streamingBotMessageId, data);
+              
+              // Update selectedChat with fresh conversation data to reflect updated modelInfo
+              // This ensures the model selection is updated when switching back to this conversation
+              const finalConvId = finalKey === 'new' ? context.conversationIdRef.current : finalKey;
+              if (finalConvId === currentConvId || finalConvId === context.conversationIdRef.current) {
+                // Use setTimeout to ensure this runs after state updates
+                setTimeout(() => {
+                  setSelectedChat(completedConversation);
+                  // Update model selection if modelInfo changed
+                  if ((completedConversation as any).modelInfo) {
+                    setModelFromConversation((completedConversation as any).modelInfo);
+                  }
+                }, 0);
+              }
             }
             break;
           }
@@ -957,7 +1076,14 @@ const AgentChat = () => {
         throw error; // Re-throw non-abort errors
       }
     },
-    [currentConversationId, getConversationKey, streamingManager]
+    [
+      currentConversationId,
+      getConversationKey,
+      streamingManager,
+      parseSSELine,
+      processStreamChunk,
+      setModelFromConversation,
+    ]
   );
 
   // Updated handleSendMessage to properly handle the promise
@@ -976,6 +1102,10 @@ const AgentChat = () => {
       if (!trimmedInput) return;
       if (isNavigationBlocked || isCurrentConversationLoading) return;
 
+      // Use refs to get the latest values (prevents stale closures)
+      const currentModel = latestModelRef.current;
+      const currentMode = latestChatModeRef.current;
+
       console.log('handleSendMessage called with persistent selections:', {
         trimmedInput,
         currentConversationId,
@@ -983,8 +1113,8 @@ const AgentChat = () => {
         persistentTools: selectedTools, // These persist across messages
         persistentKBs: selectedKBs, // These persist across messages
         persistentApps: selectedApps, // These persist across messages
-        chatMode: chatMode || selectedChatMode?.id,
-        modelName: modelName || selectedModel?.modelName,
+        chatMode: chatMode || currentMode?.id,
+        modelName: modelName || currentModel?.modelName,
       });
 
       const wasCreatingNewConversation = !currentConversationId;
@@ -1017,8 +1147,8 @@ const AgentChat = () => {
       // Build the request body with persistent selections
       const requestBody = {
         query: trimmedInput,
-        modelName: selectedModel?.modelName || modelName,
-        chatMode: chatMode || selectedChatMode?.id,
+        modelName: modelName || currentModel?.modelName,
+        chatMode: chatMode || currentMode?.id,
 
         // Tools: Use persistent selected tools (app_name.tool_name format)
         // If no tools selected, use agent defaults, if no agent defaults, use empty array
@@ -1073,6 +1203,19 @@ const AgentChat = () => {
         if (wasCreatingNewConversation && createdConversationId) {
           setCurrentConversationId(createdConversationId);
           setShouldRefreshSidebar(true);
+          // Fetch the conversation to get modelInfo and set it
+          try {
+            const response = await axios.get(
+              `/api/v1/agents/${agentKey}/conversations/${createdConversationId}`
+            );
+            const { conversation } = response.data;
+            if (conversation) {
+              setSelectedChat(conversation);
+              // The useEffect will automatically set the model from conversation.modelInfo
+            }
+          } catch (error) {
+            console.error('Error fetching new conversation:', error);
+          }
         }
       } catch (error) {
         console.error('Error in streaming response:', error);
@@ -1086,10 +1229,9 @@ const AgentChat = () => {
       handleStreamingResponse,
       isNavigationBlocked,
       isCurrentConversationLoading,
-      selectedModel,
-      selectedChatMode,
       agent,
       agentKey,
+      setSelectedChat,
     ]
   );
 
@@ -1139,19 +1281,59 @@ const AgentChat = () => {
 
         const existingMessages = streamingManager.getConversationMessages(chatKey);
 
-        if (!existingMessages.length && !isCurrentlyStreaming) {
-          // Only fetch if we don't have messages and it's not currently streaming
-          const response = await axios.get(`/api/v1/agents/${agentKey}/conversations/${chat._id}`);
-          const { conversation } = response.data;
-          if (conversation?.messages) {
-            const formattedMessages = conversation.messages
-              .map(formatMessage)
-              .filter(Boolean) as FormattedMessage[];
-            streamingManager.setConversationMessages(chatKey, formattedMessages);
-            setSelectedChat(conversation);
+        // Always fetch fresh conversation data to get the latest modelInfo
+        // This ensures model changes made during the conversation are reflected
+        if (!isCurrentlyStreaming) {
+          try {
+            const response = await axios.get(`/api/v1/agents/${agentKey}/conversations/${chat._id}`);
+            const { conversation } = response.data;
+            
+            if (conversation) {
+              // Update selectedChat with fresh data
+              setSelectedChat(conversation);
+              
+              // Update messages if we don't have them or if conversation was updated
+              if (!existingMessages.length || conversation.messages) {
+                const formattedMessages = (conversation.messages || [])
+                  .map((msg: any) => {
+                    const formatted = formatMessage(msg);
+                    if (
+                      formatted &&
+                      formatted.type === 'bot' &&
+                      !formatted.modelInfo &&
+                      (conversation as any).modelInfo
+                    ) {
+                      formatted.modelInfo = (conversation as any).modelInfo;
+                    }
+                    return formatted;
+                  })
+                  .filter(Boolean) as FormattedMessage[];
+                
+                // Only update messages if we got new data or didn't have messages
+                if (!existingMessages.length || formattedMessages.length > existingMessages.length) {
+                  streamingManager.setConversationMessages(chatKey, formattedMessages);
+                }
+              }
+              
+              // Always set model from fresh conversation data
+              if ((conversation as any).modelInfo) {
+                setModelFromConversation((conversation as any).modelInfo);
+              }
+            }
+          } catch (err) {
+            console.error('Failed to fetch conversation data:', err);
+            // Fallback to using cached chat data if fetch fails
+            setSelectedChat(chat);
+            if ((chat as any).modelInfo) {
+              setModelFromConversation((chat as any).modelInfo);
+            }
           }
         } else {
+          // If streaming, use cached data but still try to update model if available
           setSelectedChat(chat);
+          if ((chat as any).modelInfo) {
+            setModelFromConversation((chat as any).modelInfo);
+          }
         }
       } catch (error) {
         console.error('❌ Error loading conversation:', error);
@@ -1170,7 +1352,15 @@ const AgentChat = () => {
         }
       }
     },
-    [formatMessage, navigate, streamingManager, getConversationKey, isNavigationBlocked, agentKey]
+    [
+      formatMessage,
+      navigate,
+      streamingManager,
+      getConversationKey,
+      isNavigationBlocked,
+      agentKey,
+      setModelFromConversation,
+    ]
   );
 
   // Update the useEffect to better handle streaming conversations
@@ -1188,16 +1378,48 @@ const AgentChat = () => {
         streamingState?.showStatus;
 
       if (existingMessages.length > 0 || isCurrentlyStreaming) {
-        // We have existing messages or it's streaming, just switch to this conversation
+        // We have existing messages or it's streaming, but still fetch fresh data for modelInfo
         setCurrentConversationId(urlConversationId);
-        const existingConversation =
-          selectedChat?._id === urlConversationId
-            ? selectedChat
-            : ({ _id: urlConversationId } as Conversation);
-        setSelectedChat(existingConversation);
-
-        // Don't set loading if it's currently streaming
+        
+        // Always fetch fresh conversation data to get latest modelInfo
+        // This ensures model changes made during the conversation are reflected
         if (!isCurrentlyStreaming) {
+          axios
+            .get(`/api/v1/agents/${agentKey}/conversations/${urlConversationId}`)
+            .then((response) => {
+              const { conversation } = response.data;
+              if (conversation) {
+                setSelectedChat(conversation);
+                if ((conversation as any).modelInfo) {
+                  setModelFromConversation((conversation as any).modelInfo);
+                }
+              }
+            })
+            .catch((err) => {
+              console.error('Failed to fetch conversation modelInfo:', err);
+              // Fallback to cached data
+              const existingConversation =
+                selectedChat?._id === urlConversationId
+                  ? selectedChat
+                  : ({ _id: urlConversationId } as Conversation);
+              setSelectedChat(existingConversation);
+              if ((existingConversation as any).modelInfo) {
+                setModelFromConversation((existingConversation as any).modelInfo);
+              }
+            })
+            .finally(() => {
+              setIsLoadingConversation(false);
+            });
+        } else {
+          // If streaming, use cached data
+          const existingConversation =
+            selectedChat?._id === urlConversationId
+              ? selectedChat
+              : ({ _id: urlConversationId } as Conversation);
+          setSelectedChat(existingConversation);
+          if ((existingConversation as any).modelInfo) {
+            setModelFromConversation((existingConversation as any).modelInfo);
+          }
           setIsLoadingConversation(false);
         }
       } else if (currentConversationId !== urlConversationId) {
@@ -1227,6 +1449,8 @@ const AgentChat = () => {
     isNavigationBlocked,
     handleNewChat,
     getConversationKey,
+    setModelFromConversation,
+    agentKey,
   ]);
 
   // Add effect to show start message when creating new conversation
@@ -1351,7 +1575,7 @@ const AgentChat = () => {
                 console.error('Failed to decode UTF-8 filename', e);
               }
             }
-            
+
             // Fallback to basic filename="..." format if filename* not found
             if (!filename) {
               const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
@@ -1361,7 +1585,7 @@ const AgentChat = () => {
             }
           }
 
-          if(!filename && fileName) {
+          if (!filename && fileName) {
             filename = fileName;
           }
 
@@ -1469,7 +1693,7 @@ const AgentChat = () => {
                 console.error('Failed to decode UTF-8 filename', e);
               }
             }
-            
+
             // Fallback to basic filename="..." format if filename* not found
             if (!filename) {
               const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
@@ -1479,7 +1703,7 @@ const AgentChat = () => {
             }
           }
 
-          if(!filename && record.recordName) {
+          if (!filename && record.recordName) {
             filename = record.recordName;
           }
 
@@ -1577,48 +1801,194 @@ const AgentChat = () => {
     async (messageId: string): Promise<void> => {
       if (!currentConversationId || !messageId || isCurrentConversationLoading) return;
 
-      try {
-        const conversationKey = getConversationKey(currentConversationId);
+      const conversationKey = getConversationKey(currentConversationId);
+      const streamingBotMessageId = `streaming-${Date.now()}-${agentKey}`;
 
-        const response = await axios.post<{ conversation: Conversation }>(
-          `/api/v1/agents/${agentKey}/conversations/${currentConversationId}/message/${messageId}/regenerate`,
-          { instruction: 'Improve writing style and clarity' }
-        );
+      // Find the message to regenerate and get its index
+      const messageIndex = currentMessages.findIndex((msg) => msg.id === messageId);
+      if (messageIndex === -1) return;
 
-        if (!response?.data?.conversation?.messages) throw new Error('Invalid response format');
+      // Get the old message to preserve its timestamp
+      const oldMessage = currentMessages[messageIndex];
 
-        const allMessages = response.data.conversation.messages
-          .map(formatMessage)
-          .filter(Boolean) as FormattedMessage[];
-        const regeneratedMessage = allMessages.filter((msg) => msg.type === 'bot').pop();
-        if (!regeneratedMessage) throw new Error('No regenerated message found in response');
+      // Get the user query that preceded this bot response
+      const userMessage = messageIndex > 0 ? currentMessages[messageIndex - 1] : null;
+      if (!userMessage || userMessage.type !== 'user') {
+        console.error('Cannot regenerate: No user query found before this message');
+        return;
+      }
 
-        streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
-          prevMessages.map((msg) =>
-            msg.id === messageId ? { ...regeneratedMessage, createdAt: msg.createdAt } : msg
-          )
-        );
+      // Initialize streaming state
+      streamingManager.updateStatus(conversationKey, 'Regenerating response...');
+      const controller = new AbortController();
+      streamingManager.updateConversationState(conversationKey, { controller });
 
-        setExpandedCitations((prevStates) => {
-          const newStates = { ...prevStates };
-          const messageIndex = currentMessages.findIndex((msg) => msg.id === messageId);
-          if (messageIndex !== -1) {
-            const hasCitations =
-              regeneratedMessage.citations && regeneratedMessage.citations.length > 0;
-            newStates[messageIndex] = hasCitations ? prevStates[messageIndex] || false : false;
-          }
-          return newStates;
-        });
-      } catch (error) {
-        const conversationKey = getConversationKey(currentConversationId);
-        streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
-          prevMessages.map((msg) =>
-            msg.id === messageId
-              ? {
-                  ...msg,
-                  content: 'Sorry, I encountered an error regenerating this message.',
-                  error: true,
+      // Immediately replace the old message with a new streaming message placeholder
+      // This hides the old message right away and shows the new one in the same position
+      streamingManager.updateConversationMessages(conversationKey, (prevMessages) => {
+        const updated = [...prevMessages];
+        // Replace the message at messageIndex with a new streaming message
+        // Preserve the original timestamp so it appears in the same position
+        updated[messageIndex] = {
+          type: 'bot',
+          content: '',
+          createdAt: oldMessage.createdAt,
+          updatedAt: new Date(),
+          id: streamingBotMessageId,
+          contentFormat: 'MARKDOWN',
+          followUpQuestions: [],
+          citations: [],
+          confidence: '',
+          messageType: 'bot_response',
+          timestamp: oldMessage.timestamp || oldMessage.createdAt,
+        };
+        return updated;
+      });
+      streamingManager.mapMessageToConversation(streamingBotMessageId, conversationKey);
+
+      const hasCreatedMessage = { current: true }; // Already created above
+
+      // Define the event handler for regenerate streaming
+      const handleRegenerateStreamingEvent = async (event: string, data: any): Promise<void> => {
+        const statusMsg = getEngagingStatusMessage(event, data);
+        if (statusMsg) {
+          streamingManager.updateStatus(conversationKey, statusMsg);
+        }
+
+        switch (event) {
+          case 'answer_chunk':
+            if (data.chunk) {
+              streamingManager.clearStatus(conversationKey);
+              streamingManager.updateStreamingContent(
+                streamingBotMessageId,
+                data.chunk,
+                data.citations || []
+              );
+            }
+            break;
+
+          case 'complete': {
+            streamingManager.clearStatus(conversationKey);
+            const completedConversation = data.conversation;
+            if (completedConversation?.messages) {
+              // Find the regenerated message in the response
+              const regeneratedMessage = completedConversation.messages
+                .filter((msg: any) => msg.messageType === 'bot_response')
+                .pop();
+
+              if (regeneratedMessage) {
+                streamingManager.finalizeStreaming(conversationKey, streamingBotMessageId, {
+                  conversation: completedConversation,
+                });
+
+                // Update expanded citations state
+                const formattedMessage = formatMessage(regeneratedMessage);
+                if (formattedMessage) {
+                  setExpandedCitations((prevStates) => {
+                    const newStates = { ...prevStates };
+                    const hasCitations =
+                      formattedMessage.citations && formattedMessage.citations.length > 0;
+                    newStates[messageIndex] = hasCitations
+                      ? prevStates[messageIndex] || false
+                      : false;
+                    return newStates;
+                  });
                 }
+              }
+            }
+            break;
+          }
+
+          case 'error': {
+            streamingManager.clearStreaming(conversationKey);
+            const errorMessage =
+              data.message || data.error || 'An error occurred while regenerating';
+
+            // Update the streaming message with error
+            streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
+              prevMessages.map((msg) =>
+                msg.id === streamingBotMessageId
+                  ? { ...msg, content: errorMessage, messageType: 'error' }
+                  : msg
+              )
+            );
+            throw new Error(errorMessage);
+          }
+
+          default:
+            break;
+        }
+      };
+
+      try {
+        // Make the streaming request to regenerate endpoint
+        const token = localStorage.getItem('jwt_access_token');
+        // Use refs to get the latest values (prevents stale closures)
+        const currentModel = latestModelRef.current;
+        const currentMode = latestChatModeRef.current;
+
+        const response = await fetch(
+          `${CONFIG.backendUrl}/api/v1/agents/${agentKey}/conversations/${currentConversationId}/message/${messageId}/regenerate`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'text/event-stream',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              modelName: currentModel?.modelName,
+              modelProvider: currentModel?.provider,
+              chatMode: currentMode?.id || 'quick',
+            }),
+            signal: controller.signal,
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('Failed to get response reader');
+        }
+
+        const decoder = new TextDecoder();
+
+        // Process the stream
+        await processStreamChunk(
+          reader,
+          decoder,
+          parseSSELine,
+          handleRegenerateStreamingEvent,
+          {
+            conversationKey,
+            streamingBotMessageId,
+            isNewConversation: false,
+            hasCreatedMessage,
+            conversationIdRef: { current: currentConversationId },
+          },
+          controller
+        );
+      } catch (error) {
+        // Handle AbortError separately
+        if (error instanceof Error && error.name === 'AbortError') {
+          return;
+        }
+
+        console.error('Error regenerating message:', error);
+        streamingManager.clearStreaming(conversationKey);
+
+        // Show error in the message
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : 'Sorry, I encountered an error regenerating this message.';
+        streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
+          prevMessages.map((msg) =>
+            msg.id === streamingBotMessageId
+              ? { ...msg, content: errorMessage, messageType: 'error' }
               : msg
           )
         );
@@ -1626,12 +1996,15 @@ const AgentChat = () => {
     },
     [
       currentConversationId,
-      formatMessage,
       currentMessages,
       getConversationKey,
       streamingManager,
       isCurrentConversationLoading,
       agentKey,
+      parseSSELine,
+      processStreamChunk,
+      formatMessage,
+      setExpandedCitations,
     ]
   );
 

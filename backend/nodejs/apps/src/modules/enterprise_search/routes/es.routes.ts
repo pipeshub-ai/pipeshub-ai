@@ -48,6 +48,7 @@ import {
   unshareAgent,
   updateAgentPermissions,
   getAgentPermissions,
+  regenerateAgentAnswers,
 } from '../controller/es_controller';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -62,6 +63,7 @@ import {
   regenerateAnswersParamsSchema,
   updateFeedbackParamsSchema,
   searchShareParamsSchema,
+  regenerateAgentAnswersParamsSchema,
 } from '../validators/es_validators'; 
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -473,6 +475,16 @@ export function createAgentConversationalRouter(container: Container): Router {
     metricsMiddleware(container),
     addMessageStreamToAgentConversation(appConfig),
   );
+
+
+    router.post(
+      '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',
+      authMiddleware.authenticate,
+      metricsMiddleware(container),
+      ValidationMiddleware.validate(regenerateAgentAnswersParamsSchema),
+      regenerateAgentAnswers(appConfig),
+    );
+  
 
   router.get(
     '/:agentKey/conversations',

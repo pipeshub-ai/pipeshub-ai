@@ -99,6 +99,7 @@ export interface Message {
   createdAt: string;
   updatedAt: string;
   confidence?: string;
+  modelInfo?: any;
 }
 
 export interface ConversationFilters {
