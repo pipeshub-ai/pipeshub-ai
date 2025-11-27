@@ -48,6 +48,7 @@ export type ChatInputProps = {
   ) => Promise<void>;
   isLoading: boolean;
   disabled?: boolean;
+  isStreaming?: boolean;
   placeholder?: string;
   selectedModel: Model | null;
   selectedChatMode: ChatMode | null;
@@ -135,6 +136,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   onSubmit,
   isLoading,
   disabled = false,
+  isStreaming = false,
   placeholder = 'Type your message...',
   selectedModel,
   selectedChatMode,
@@ -306,15 +308,37 @@ const ChatInput: React.FC<ChatInputProps> = ({
     }
   }, [selectedApps, selectedKbIds, onFiltersChange]);
 
+  // Reset isSubmitting when streaming starts (streaming is handled separately)
+  // This ensures the input is not stuck in submitting state
+  useEffect(() => {
+    if (isStreaming && isSubmitting) {
+      // If streaming has started, reset submitting state
+      // The actual submission is handled by the parent, not this component
+      setIsSubmitting(false);
+    }
+  }, [isStreaming, isSubmitting]);
+
+  // Ensure input is properly enabled/disabled
+  // CRITICAL: Never disable during streaming - users must be able to type
   useEffect(() => {
     if (inputRef.current) {
-      const actuallyDisabled = inputRef.current.disabled;
-
-      if (actuallyDisabled && !isLoading && !disabled && !isSubmitting) {
+      // Only disable input if explicitly disabled (navigation blocked) or currently submitting
+      // IMPORTANT: isStreaming should NOT affect disabled state
+      const shouldBeDisabled = disabled || isSubmitting;
+      
+      // Force update if there's a mismatch
+      if (inputRef.current.disabled !== shouldBeDisabled) {
+        inputRef.current.disabled = shouldBeDisabled;
+      }
+      
+      // Safety check: if streaming is active, ensure input is NOT disabled
+      // (unless navigation is explicitly blocked)
+      if (isStreaming && inputRef.current.disabled && !disabled) {
         inputRef.current.disabled = false;
+        setIsSubmitting(false); // Also reset submitting state
       }
     }
-  });
+  }, [disabled, isSubmitting, isStreaming]);
 
   // Auto-resize textarea with debounce
   const autoResizeTextarea = useCallback(() => {
@@ -342,7 +366,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
 
   const handleSubmit = useCallback(async () => {
     const trimmedValue = localValue.trim();
-    if (!trimmedValue || isLoading || isSubmitting || disabled) {
+    // Prevent submission if streaming is active, but allow typing
+    if (!trimmedValue || isSubmitting || disabled || isStreaming) {
       return;
     }
 
@@ -382,9 +407,9 @@ const ChatInput: React.FC<ChatInputProps> = ({
     }
   }, [
     localValue,
-    isLoading,
     isSubmitting,
     disabled,
+    isStreaming,
     onSubmit,
     selectedModel,
     selectedChatMode,
@@ -395,11 +420,15 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === 'Enter' && !e.shiftKey) {
+        // Allow Enter to create new line if streaming is active
+        if (isStreaming) {
+          return; // Don't prevent default, allow new line
+        }
         e.preventDefault();
         handleSubmit();
       }
     },
-    [handleSubmit]
+    [handleSubmit, isStreaming]
   );
 
   const handleModelMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
@@ -475,9 +504,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
     };
   }, [isDark]);
 
-  // Only disable input if THIS conversation is actively loading/submitting
-  const isInputDisabled = disabled || isSubmitting || isLoading;
-  const canSubmit = hasText && !isInputDisabled;
+
+  const canSubmit = hasText  && !isStreaming;
 
   // Format model name for display
   const getModelDisplayName = (model: Model | null) => {
@@ -543,7 +571,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 onChange={handleChange}
                 onKeyDown={handleKeyDown}
                 value={localValue}
-                disabled={isInputDisabled}
                 style={{
                   width: '100%',
                   border: 'none',
@@ -560,8 +587,10 @@ const ChatInput: React.FC<ChatInputProps> = ({
                   overflowX: 'hidden',
                   transition: 'all 0.2s ease',
                   cursor: 'text',
-                  opacity: isInputDisabled ? 0.6 : 1,
+                  opacity: 1,
+                  pointerEvents: 'auto',
                 }}
+                title={isStreaming ? 'You can type while the response is streaming, but cannot send until it completes' : ''}
               />
             </Box>
 
@@ -681,60 +710,74 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 </Tooltip>
 
                 {/* Send Button */}
-                <IconButton
-                  size="small"
-                  onClick={handleSubmit}
-                  disabled={!canSubmit}
-                  sx={{
-                    backgroundColor: canSubmit
-                      ? alpha(theme.palette.primary.main, 0.9)
-                      : 'transparent',
-                    width: 36,
-                    height: 36,
-                    borderRadius: '8px',
-                    flexShrink: 0,
-                    transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                    color: canSubmit ? '#fff' : isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3),
-                    opacity: canSubmit ? 1 : 0.5,
-                    border: canSubmit
-                      ? 'none'
-                      : `1px solid ${isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06)}`,
-                    '&:hover': !isInputDisabled
-                      ? {
-                          backgroundColor: canSubmit
-                            ? theme.palette.primary.main
-                            : isDark
-                              ? alpha('#fff', 0.04)
-                              : alpha('#000', 0.03),
-                          transform: canSubmit ? 'scale(1.05)' : 'none',
-                        }
-                      : {},
-                    '&:active': {
-                      transform: canSubmit ? 'scale(0.98)' : 'none',
-                    },
-                    '&.Mui-disabled': {
-                      opacity: 0.5,
-                      backgroundColor: 'transparent',
-                    },
-                  }}
+                <Tooltip
+                  title={
+                    isStreaming
+                      ? 'Please wait for the current response to complete'
+                      : !hasText
+                        ? 'Type a message to send'
+                        : ''
+                  }
+                  placement="top"
                 >
-                  {isSubmitting ? (
-                    <Box
-                      component="span"
+                  <span>
+                    <IconButton
+                      size="small"
+                      onClick={handleSubmit}
+                      disabled={!canSubmit}
                       sx={{
-                        width: 16,
-                        height: 16,
-                        border: '2px solid transparent',
-                        borderTop: `2px solid ${canSubmit ? '#fff' : isDark ? '#fff' : '#000'}`,
-                        borderRadius: '50%',
-                        animation: 'spin 1s linear infinite',
-                        display: 'inline-block',
+                        backgroundColor: canSubmit
+                          ? alpha(theme.palette.primary.main, 0.9)
+                          : 'transparent',
+                        width: 36,
+                        height: 36,
+                        borderRadius: '8px',
+                        flexShrink: 0,
+                        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                        color: canSubmit ? '#fff' : isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3),
+                        opacity: canSubmit ? 1 : 0.5,
+                        border: canSubmit
+                          ? 'none'
+                          : `1px solid ${isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06)}`,
+                        '&:hover': canSubmit
+                          ? {
+                              backgroundColor: theme.palette.primary.main,
+                              transform: 'scale(1.05)',
+                            }
+                          : isStreaming
+                            ? {
+                                backgroundColor: isDark ? alpha('#fff', 0.04) : alpha('#000', 0.03),
+                              }
+                            : {},
+                        '&:active': {
+                          transform: canSubmit ? 'scale(0.98)' : 'none',
+                        },
+                        '&.Mui-disabled': {
+                          opacity: 0.5,
+                          backgroundColor: 'transparent',
+                          cursor: isStreaming ? 'not-allowed' : 'default',
+                        },
                       }}
-                    />
-                  ) : (
-                    <Icon icon={arrowUpIcon} width={18} height={18} />
-                  )}
-                </IconButton>
+                    >
+                      {isSubmitting || isStreaming ? (
+                        <Box
+                          component="span"
+                          sx={{
+                            width: 16,
+                            height: 16,
+                            border: '2px solid transparent',
+                            borderTop: `2px solid ${canSubmit ? '#fff' : isDark ? '#fff' : '#000'}`,
+                            borderRadius: '50%',
+                            animation: 'spin 1s linear infinite',
+                            display: 'inline-block',
+                          }}
+                        />
+                      ) : (
+                        <Icon icon={arrowUpIcon} width={18} height={18} />
+                      )}
+                    </IconButton>
+                  </span>
+                </Tooltip>
               </Box>
             </Box>
           </Box>
