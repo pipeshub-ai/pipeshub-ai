@@ -660,6 +660,8 @@ class IndexingPipeline:
             self.logger.info("🗑️ Proceeding with deletion as no other records exist")
 
             try:
+                await self.arango_service.delete_nodes(keys=[virtual_record_id], collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+
                 filter_dict = await self.vector_db_service.filter_collection(
                     must={"virtualRecordId": virtual_record_id}
                 )
@@ -687,6 +689,7 @@ class IndexingPipeline:
 
                 if ids:
                     await self.vector_store.adelete(ids=ids)
+
 
                 self.logger.info(
                     f"✅ Successfully deleted embeddings for record {record_id}"
