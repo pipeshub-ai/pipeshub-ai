@@ -12140,35 +12140,39 @@ class BaseArangoService:
                 RETURN user
             )
 
+
+            // User -> Direct Records (via permission edges)
             LET directRecords = (
                 FOR records IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
 
+            // User -> Group -> Records (via belongs_to edges)
             LET groupRecords = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
 
+            // User -> Group -> Records (via permission edges)
             LET groupRecordsPermissionEdge = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER edge.type == 'GROUP' or edge.type == 'ROLE'
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
 
+            // User -> Organization -> Records (direct)
             LET orgRecords = (
                 FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
 
+            // User -> Organization -> RecordGroup -> Records (direct and inherited)
             LET orgRecordGroupRecords = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
 
                     FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                        FILTER orgToRgEdge.type == 'ORG'
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
                         FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -12176,14 +12180,13 @@ class BaseArangoService:
                             RETURN DISTINCT record
             )
 
+            // User -> Group/Role -> RecordGroup -> Record
             LET recordGroupRecords = (
-                // User -> Group/Role -> RecordGroup -> Record
+
                 FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER userToGroupEdge.type == 'USER'
                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                 FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                FILTER groupToRecordGroupEdge.type == 'GROUP' OR groupToRecordGroupEdge.type == 'ROLE'
 
                 // Support nested RecordGroups (0..5 levels)
                 FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -12191,9 +12194,9 @@ class BaseArangoService:
                 RETURN DISTINCT record
             )
 
+            // User -> Group/Role -> RecordGroup -> Records (inherited)
             LET inheritedRecordGroupRecords = (
                 FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER userToRgEdge.type == 'USER'
                 FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
                 FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -12205,7 +12208,6 @@ class BaseArangoService:
                 directRecords,
                 groupRecords,
                 orgRecords,
-                directRecordsPermissionEdge,
                 groupRecordsPermissionEdge,
                 orgRecordsPermissionEdge,
                 recordGroupRecords,

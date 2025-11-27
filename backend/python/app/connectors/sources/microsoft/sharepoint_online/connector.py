@@ -266,9 +266,9 @@ class SharePointConnector(BaseConnector):
         private_key_data = credentials_config.get("privateKey")
 
         # Debug logging
-        self.logger.info(f"🔍 Certificate data present: {bool(certificate_data)}")
-        self.logger.info(f"🔍 Private key data present: {bool(private_key_data)}")
-        self.logger.info(f"🔍 Client secret present: {bool(client_secret)}")
+        self.logger.debug(f"🔍 Certificate data present: {bool(certificate_data)}")
+        self.logger.debug(f"🔍 Private key data present: {bool(private_key_data)}")
+        self.logger.debug(f"🔍 Client secret present: {bool(client_secret)}")
 
         # Normalize SharePoint domain to scheme+host (no path)
         try:
@@ -2309,6 +2309,7 @@ class SharePointConnector(BaseConnector):
             return None
 
     # User and group sync methods
+    # TODO: rn sharepoint group doesnt direcctly support incremental sync need to add the logic to remove members from group if removed
     async def _sync_user_groups(self) -> None:
         """Sync SharePoint groups and their members."""
         try:
