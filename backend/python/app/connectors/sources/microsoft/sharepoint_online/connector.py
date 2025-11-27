@@ -1697,7 +1697,7 @@ class SharePointConnector(BaseConnector):
                         external_id=self.data_entities_processor.org_id
                     )
 
-                # CASE C: "Everyone" Security Group (Type 4) 
+                # CASE C: "Everyone" Security Group (Type 4)
                 elif principal_type == SECURITY_GROUP_TYPE:
                     # Check GUID or Title
                     if EVERYONE_EXCEPT_EXTERNAL_ID in login_name or 'Everyone except external users' in title:
