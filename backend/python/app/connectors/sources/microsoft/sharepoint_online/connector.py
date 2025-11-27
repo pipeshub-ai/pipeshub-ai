@@ -1697,7 +1697,7 @@ class SharePointConnector(BaseConnector):
                         external_id=self.data_entities_processor.org_id
                     )
 
-                # CASE C: "Everyone" Security Group (Type 4) <--- THIS IS WHAT YOU WERE MISSING
+                # CASE C: "Everyone" Security Group (Type 4) 
                 elif principal_type == SECURITY_GROUP_TYPE:
                     # Check GUID or Title
                     if EVERYONE_EXCEPT_EXTERNAL_ID in login_name or 'Everyone except external users' in title:
@@ -1710,7 +1710,6 @@ class SharePointConnector(BaseConnector):
 
 
             self.logger.info(f"Found {len(permissions_dict)} unique permissions for site {site_id}")
-            print(f"Permissions: {permissions_dict}")
             return list(permissions_dict.values())
 
         except Exception as e:
@@ -1839,7 +1838,6 @@ class SharePointConnector(BaseConnector):
                             data = await response.json()
                             members = data.get('d', {}).get('results', [])
                             self.logger.info(f"✅ Retrieved {len(members)} site members directly")
-                            print("\n\n !!!!!!!!!!!!! members:", members)
                             return members
 
                         # Handle 503 (Service Unavailable) or 429 (Throttling)

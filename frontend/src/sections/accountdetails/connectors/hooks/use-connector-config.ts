@@ -86,7 +86,7 @@ export const useConnectorConfig = ({
 }: UseConnectorConfigProps): UseConnectorConfigReturn => {
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  
+
   // SharePoint certificate refs
   const certificateInputRef = useRef<HTMLInputElement>(null);
   const privateKeyInputRef = useRef<HTMLInputElement>(null);
@@ -159,6 +159,17 @@ export const useConnectorConfig = ({
         authValues.client_id && authValues.project_id && authValues.type === 'service_account'
           ? 'existing-credentials.json'
           : null,
+    };
+  }, []);
+
+  // Helper to get SharePoint certificate data from existing config
+  const getSharePointCertificateData = useCallback((config: any) => {
+    const authValues = config?.config?.auth?.values || config?.config?.auth || {};
+    return {
+      certificate: authValues.certificate || null,
+      privateKey: authValues.privateKey || null,
+      certificateFileName: authValues.certificate ? 'existing-certificate.pem' : null,
+      privateKeyFileName: authValues.privateKey ? 'existing-privatekey.pem' : null,
     };
   }, []);
 
@@ -293,7 +304,9 @@ export const useConnectorConfig = ({
 
       if (file && validateJsonFile(file)) {
         const parsed = await parseJsonFile(file);
-        setJsonData(parsed);
+        if (parsed) {
+          setJsonData(parsed);
+        }
       } else {
         setJsonData(null);
       }
@@ -302,7 +315,9 @@ export const useConnectorConfig = ({
   );
 
   const handleFileUpload = useCallback(() => {
-    fileInputRef.current?.click();
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
   }, []);
 
   const handleFileChange = useCallback(
@@ -315,7 +330,7 @@ export const useConnectorConfig = ({
 
   const isBusinessGoogleOAuthValid = useCallback(
     () => validateBusinessGoogleOAuth(adminEmail, jsonData),
-    [validateBusinessGoogleOAuth, adminEmail, jsonData]
+    [adminEmail, jsonData, validateBusinessGoogleOAuth]
   );
 
   // SharePoint Certificate validation functions
@@ -335,14 +350,14 @@ export const useConnectorConfig = ({
     // Check for PKCS#8 format (no RSA in headers)
     const pkcs8Regex = /-----BEGIN PRIVATE KEY-----[\s\S]+-----END PRIVATE KEY-----/;
     const rsaRegex = /-----BEGIN RSA PRIVATE KEY-----/;
-    
+
     if (rsaRegex.test(content)) {
       setPrivateKeyError(
         'Private key must be in PKCS#8 format. Use: openssl pkcs8 -topk8 -inform PEM -outform PEM -in privatekey.key -out privatekey.key -nocrypt'
       );
       return false;
     }
-    
+
     if (!pkcs8Regex.test(content)) {
       setPrivateKeyError(
         'Invalid private key format. Must contain BEGIN PRIVATE KEY and END PRIVATE KEY markers.'
@@ -381,7 +396,7 @@ export const useConnectorConfig = ({
       // Validate file type
       const validExtensions = ['.crt', '.cer', '.pem'];
       const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
-      
+
       if (!validExtensions.includes(fileExtension)) {
         setCertificateError('Invalid file type. Please upload a .crt, .cer, or .pem file.');
         return;
@@ -390,7 +405,7 @@ export const useConnectorConfig = ({
       try {
         // Read file content
         const content = await file.text();
-        
+
         // Validate certificate format
         if (!validateCertificateFile(content)) {
           return;
@@ -401,6 +416,9 @@ export const useConnectorConfig = ({
         setCertificateFileName(file.name);
         setCertificateContent(content);
         setCertificateError(null);
+
+        // Clear save error when user uploads a valid file
+        setSaveError(null);
 
         // Parse certificate information (basic parsing for display)
         try {
@@ -439,7 +457,7 @@ export const useConnectorConfig = ({
       // Validate file type
       const validExtensions = ['.key', '.pem'];
       const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
-      
+
       if (!validExtensions.includes(fileExtension)) {
         setPrivateKeyError('Invalid file type. Please upload a .key or .pem file.');
         return;
@@ -448,7 +466,7 @@ export const useConnectorConfig = ({
       try {
         // Read file content
         const content = await file.text();
-        
+
         // Validate private key format
         if (!validatePrivateKeyFile(content)) {
           return;
@@ -459,6 +477,9 @@ export const useConnectorConfig = ({
         setPrivateKeyFileName(file.name);
         setPrivateKeyData(content);
         setPrivateKeyError(null);
+
+        // Clear save error when user uploads a valid file
+        setSaveError(null);
 
         // Update form data with private key content
         setFormData((prev) => ({
@@ -482,176 +503,259 @@ export const useConnectorConfig = ({
     }
 
     // Check required fields
-    const hasClientId = formData.auth.clientId && formData.auth.clientId.trim() !== '';
-    const hasSharePointDomain = formData.auth.sharepointDomain && formData.auth.sharepointDomain.trim() !== '';
-    const hasCertificate = certificateFile && certificateContent;
-    const hasPrivateKey = privateKeyFile && privateKeyData;
+    const hasClientId = formData.auth.clientId && String(formData.auth.clientId).trim() !== '';
+    const hasTenantId = formData.auth.tenantId && String(formData.auth.tenantId).trim() !== '';
+    const hasSharePointDomain = formData.auth.sharepointDomain && String(formData.auth.sharepointDomain).trim() !== '';
+    const hasAdminConsent = formData.auth.hasAdminConsent === true;
     
-    // Check for validation errors
-    const hasErrors = 
-      certificateError !== null || 
-      privateKeyError !== null ||
-      formErrors.auth.clientId !== undefined ||
-      formErrors.auth.sharepointDomain !== undefined;
+    // Check for certificate content - either from file upload or from existing config in formData
+    const hasCertificate = !!(certificateContent || formData.auth.certificate);
+    const hasPrivateKey = !!(privateKeyData || formData.auth.privateKey);
 
-    return hasClientId && hasSharePointDomain && hasCertificate && hasPrivateKey && !hasErrors;
+    // Check for validation errors (only if they have actual error messages)
+    const hasErrors =
+      (certificateError !== null && certificateError !== '') ||
+      (privateKeyError !== null && privateKeyError !== '');
+
+    const isValid = hasClientId && hasTenantId && hasSharePointDomain && hasAdminConsent && hasCertificate && hasPrivateKey && !hasErrors;
+    
+    // Debug logging (can be removed in production)
+    if (!isValid) {
+      console.log('SharePoint validation failed:', {
+        hasClientId,
+        hasTenantId,
+        hasSharePointDomain,
+        hasAdminConsent,
+        hasCertificate,
+        hasPrivateKey,
+        hasErrors,
+        certificateError,
+        privateKeyError,
+      });
+    }
+
+    return isValid;
   }, [
     isSharePointCertificateAuth,
     formData.auth,
-    certificateFile,
     certificateContent,
-    privateKeyFile,
     privateKeyData,
     certificateError,
     privateKeyError,
-    formErrors.auth,
   ]);
 
-  // Load connector configuration
+  // Load connector configuration - simplified with proper dependency management
   useEffect(() => {
-    const loadConfig = async () => {
+    // Skip if account type is still loading
+    if (accountTypeLoading) {
+      return undefined;
+    }
+
+    let isMounted = true;
+
+    const fetchConnectorConfig = async () => {
       try {
         setLoading(true);
-        const [configResponse, schemaResponse] = await Promise.all([
-          ConnectorApiService.getConnectorConfig(connector.name),
-          ConnectorApiService.getConnectorSchema(connector.name),
-        ]);
 
-        const merged = mergeConfigWithSchema(configResponse, schemaResponse);
-        setConnectorConfig(merged);
+        // Fetch both config and schema in a single API call
+        const { config: configResponse, schema: schemaResponse } =
+          await ConnectorApiService.getConnectorConfigAndSchema(connector.name);
 
-        const initialFormData = initializeFormData(merged);
+        if (!isMounted) return;
+
+        // Merge config with schema
+        const mergedConfig = mergeConfigWithSchema(configResponse, schemaResponse);
+        setConnectorConfig(mergedConfig);
+
+        // Initialize form data
+        const initialFormData = initializeFormData(mergedConfig);
+
+        // For business OAuth, load admin email and JSON data from existing config
+        if (isCustomGoogleBusinessOAuth) {
+          const businessData = getBusinessOAuthData(mergedConfig);
+          setAdminEmail(businessData.adminEmail);
+          setJsonData(businessData.jsonData);
+          setFileName(businessData.fileName);
+        }
+
+        // For SharePoint certificate auth, load existing certificate data
+        if (isSharePointCertificateAuth) {
+          const sharePointData = getSharePointCertificateData(mergedConfig);
+          if (sharePointData.certificate) {
+            setCertificateContent(sharePointData.certificate);
+            setCertificateFileName(sharePointData.certificateFileName);
+            setCertificateData({ status: 'Valid certificate loaded' });
+          }
+          if (sharePointData.privateKey) {
+            setPrivateKeyData(sharePointData.privateKey);
+            setPrivateKeyFileName(sharePointData.privateKeyFileName);
+          }
+        }
+
         setFormData(initialFormData);
 
-        // Initialize Business OAuth data if applicable
-        if (isCustomGoogleBusinessOAuth) {
-          const businessOAuthData = getBusinessOAuthData(merged);
-          setAdminEmail(businessOAuthData.adminEmail);
-          setJsonData(businessOAuthData.jsonData);
-          setFileName(businessOAuthData.fileName);
-          setSelectedFile(businessOAuthData.jsonData ? new File([], businessOAuthData.fileName || '') : null);
-        }
-
-        // Evaluate conditional display
-        if (merged.config.auth?.conditionalDisplay) {
-          const display = evaluateConditionalDisplay(
-            merged.config.auth.conditionalDisplay,
+        // Evaluate conditional display rules
+        if (mergedConfig.config.auth.conditionalDisplay) {
+          const displayRules = evaluateConditionalDisplay(
+            mergedConfig.config.auth.conditionalDisplay,
             initialFormData.auth
           );
-          setConditionalDisplay(display);
+          setConditionalDisplay(displayRules);
+        } else {
+          setConditionalDisplay({});
         }
-      } catch (error) {
-        console.error('Error loading connector config:', error);
-        setSaveError('Failed to load connector configuration');
+      } catch (error: any) {
+        if (!isMounted) return;
+        console.error('Error fetching connector config:', error);
+
+        // Check if it's a beta connector access denied error (403)
+        if (error?.response?.status === 403) {
+          const errorMessage = error?.response?.data?.detail || error?.message || 'Beta connectors are not enabled. This connector is a beta connector and cannot be accessed. Please enable beta connectors in platform settings to use this connector.';
+          setSaveError(errorMessage);
+        } else {
+          setSaveError('Failed to load connector configuration');
+        }
       } finally {
-        setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     };
 
-    loadConfig();
+    fetchConnectorConfig();
+
+    return () => {
+      isMounted = false;
+    };
   }, [
     connector.name,
+    accountTypeLoading,
+    isCustomGoogleBusinessOAuth,
+    isSharePointCertificateAuth,
     mergeConfigWithSchema,
     initializeFormData,
     getBusinessOAuthData,
-    isCustomGoogleBusinessOAuth,
+    getSharePointCertificateData,
   ]);
 
-  // Update conditional display when form data changes
+  // Recalculate conditional display when auth form data changes
   useEffect(() => {
     if (connectorConfig?.config?.auth?.conditionalDisplay) {
-      const display = evaluateConditionalDisplay(
+      const displayRules = evaluateConditionalDisplay(
         connectorConfig.config.auth.conditionalDisplay,
         formData.auth
       );
-      setConditionalDisplay(display);
+      setConditionalDisplay(displayRules);
     }
-  }, [formData.auth, connectorConfig]);
+  }, [formData.auth, connectorConfig?.config?.auth?.conditionalDisplay]);
 
-  const handleFieldChange = useCallback((section: string, fieldName: string, value: any) => {
-    setFormData((prev) => ({
-      ...prev,
-      [section]: {
-        ...prev[section as keyof FormData],
-        [fieldName]: value,
-      },
-    }));
+  // Field validation
+  const validateField = useCallback((field: any, value: any): string => {
+    if (field.required && (!value || (typeof value === 'string' && !value.trim()))) {
+      return `${field.displayName} is required`;
+    }
 
-    // Clear error for this field
-    setFormErrors((prev) => {
-      const newErrors = { ...prev };
-      const sectionErrors = { ...newErrors[section as keyof FormErrors] };
-      delete sectionErrors[fieldName];
-      newErrors[section as keyof FormErrors] = sectionErrors;
-      return newErrors;
-    });
+    if (field.validation) {
+      const { minLength, maxLength, format } = field.validation;
+
+      if (minLength && value && value.length < minLength) {
+        return `${field.displayName} must be at least ${minLength} characters`;
+      }
+
+      if (maxLength && value && value.length > maxLength) {
+        return `${field.displayName} must be no more than ${maxLength} characters`;
+      }
+
+      if (format && value) {
+        switch (format) {
+          case 'email': {
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(value)) {
+              return `${field.displayName} must be a valid email address`;
+            }
+            break;
+          }
+          case 'url': {
+            try {
+              // eslint-disable-next-line no-new
+              new URL(value);
+            } catch {
+              return `${field.displayName} must be a valid URL`;
+            }
+            break;
+          }
+          default:
+            break;
+        }
+      }
+    }
+
+    return '';
   }, []);
 
-  const validateSection = useCallback(
-    (section: string, fields: any[], data: Record<string, any>): Record<string, string> => {
+   const validateSection = useCallback(
+    (section: string, fields: any[], values: Record<string, any>): Record<string, string> => {
       const errors: Record<string, string> = {};
 
       fields.forEach((field) => {
-        const value = data[field.name];
-        const isEmpty = value === undefined || value === null || value === '';
-
-        // Skip validation if field should be hidden due to conditional display
-        if (
-          section === 'auth' &&
-          connectorConfig?.config?.auth?.conditionalDisplay?.[field.name] &&
-          !conditionalDisplay[field.name]
-        ) {
-          return;
-        }
-
-        if (field.required && isEmpty) {
-          errors[field.name] = `${field.displayName || field.name} is required`;
-          return;
-        }
-
-        if (!isEmpty && field.validation) {
-          if (field.validation.pattern) {
-            const regex = new RegExp(field.validation.pattern);
-            if (!regex.test(String(value))) {
-              errors[field.name] =
-                field.validation.message || `Invalid ${field.displayName || field.name}`;
-            }
-          }
-
-          if (field.validation.min !== undefined && Number(value) < field.validation.min) {
-            errors[field.name] = `${field.displayName || field.name} must be at least ${field.validation.min}`;
-          }
-
-          if (field.validation.max !== undefined && Number(value) > field.validation.max) {
-            errors[field.name] = `${field.displayName || field.name} must be at most ${field.validation.max}`;
-          }
-
-          if (
-            field.validation.minLength !== undefined &&
-            String(value).length < field.validation.minLength
-          ) {
-            errors[field.name] = `${field.displayName || field.name} must be at least ${field.validation.minLength} characters`;
-          }
-
-          if (
-            field.validation.maxLength !== undefined &&
-            String(value).length > field.validation.maxLength
-          ) {
-            errors[field.name] = `${field.displayName || field.name} must be at most ${field.validation.maxLength} characters`;
-          }
+        const error = validateField(field, values[field.name]);
+        if (error) {
+          errors[field.name] = error;
         }
       });
-
       return errors;
     },
-    [connectorConfig, conditionalDisplay]
+    
+    [validateField]
+  );
+
+  const handleFieldChange = useCallback(
+    (section: string, fieldName: string, value: any) => {
+      setFormData((prev) => {
+        const newFormData = {
+          ...prev,
+          [section]: {
+            ...prev[section as keyof FormData],
+            [fieldName]: value,
+          },
+        };
+
+        // Re-evaluate conditional display rules for auth section
+        if (section === 'auth' && connectorConfig?.config.auth.conditionalDisplay) {
+          const displayRules = evaluateConditionalDisplay(
+            connectorConfig.config.auth.conditionalDisplay,
+            newFormData.auth
+          );
+          setConditionalDisplay(displayRules);
+        }
+
+        return newFormData;
+      });
+
+      // Clear error for this field
+      setFormErrors((prev) => ({
+        ...prev,
+        [section]: {
+          ...prev[section as keyof FormErrors],
+          [fieldName]: '',
+        },
+      }));
+
+      // Clear save error when user makes changes
+      setSaveError(null);
+    },
+    [connectorConfig]
   );
 
   const handleNext = useCallback(() => {
     if (!connectorConfig) return;
 
+    // Clear any previous save error when user tries again
+    setSaveError(null);
+
     let errors: Record<string, string> = {};
 
+    // Validate current step
     switch (activeStep) {
       case 0: // Auth
         if (isCustomGoogleBusinessOAuth) {
@@ -791,14 +895,17 @@ export const useConnectorConfig = ({
 
       // For SharePoint certificate auth, ensure certificate and private key are included
       if (isSharePointCertificateAuth) {
-        if (!certificateContent || !privateKeyData) {
+        const certContent = certificateContent || formData.auth.certificate;
+        const keyContent = privateKeyData || formData.auth.privateKey;
+        
+        if (!certContent || !keyContent) {
           throw new Error('Certificate and private key are required for SharePoint authentication');
         }
-        
+
         configToSave.auth = {
           ...configToSave.auth,
-          certificate: certificateContent,
-          privateKey: privateKeyData,
+          certificate: certContent,
+          privateKey: keyContent,
         };
       }
 
