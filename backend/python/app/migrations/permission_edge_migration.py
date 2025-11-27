@@ -6,7 +6,7 @@ Supports both direction reversal and same-direction migrations.
 
 import uuid
 from logging import Logger
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List
 
 from app.config.constants.arangodb import CollectionNames, LegacyCollectionNames
 from app.connectors.services.base_arango_service import BaseArangoService
@@ -16,13 +16,13 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 class UnifiedPermissionEdgeMigrationService:
     """
     Unified service to handle migration of permission edges from deprecated collections to new collection.
-    
+
     Migration process:
     1. Validates all preconditions
     2. Reads edges from source collection (deprecated)
     3. Creates edges in target collection (new) with optional direction reversal
     4. Deletes edges from source collection
-    
+
     Args:
         arango_service: BaseArangoService instance
         logger: Logger instance
@@ -53,11 +53,11 @@ class UnifiedPermissionEdgeMigrationService:
     ) -> Dict[str, Any]:
         """
         Main migration method that orchestrates the entire migration process.
-        
+
         Args:
             dry_run: If True, only reports what would be done without making changes
             batch_size: Number of edges to process in each batch
-            
+
         Returns:
             Dict with statistics about the operation
         """
@@ -107,7 +107,7 @@ class UnifiedPermissionEdgeMigrationService:
                 return migration_result
 
             # Step 4: Verify migration
-            
+
             self.logger.info("🎉 Permission Edge Migration completed successfully")
             return {
                 "success": True,
@@ -161,7 +161,7 @@ class UnifiedPermissionEdgeMigrationService:
             # 3. Check if target collection exists (should exist, but check anyway)
             if not self.db.has_collection(self.target_collection):
                 self.logger.warning(f"⚠️ Target collection '{self.target_collection}' does not exist")
-                self.logger.info(f"   Target collection will need to be created or already exists in graph definition")
+                self.logger.info("   Target collection will need to be created or already exists in graph definition")
 
             # 4. Count edges in source collection
             count_query = f"""
@@ -177,12 +177,12 @@ class UnifiedPermissionEdgeMigrationService:
                 self.logger.info(f"✅ No edges found in source collection '{self.source_collection}' - no migration needed")
                 return {
                     "success": True,
-                    "message": f"No edges found in source collection",
+                    "message": "No edges found in source collection",
                     "migration_needed": False,
                     "edge_count": 0
                 }
 
-            self.logger.info(f"✅ Preconditions validated:")
+            self.logger.info("✅ Preconditions validated:")
             self.logger.info(f"   Source collection '{self.source_collection}': {edge_count} edges")
             self.logger.info(f"   Target collection '{self.target_collection}': {'exists' if self.db.has_collection(self.target_collection) else 'will be used'}")
 
@@ -304,7 +304,7 @@ class UnifiedPermissionEdgeMigrationService:
 
                 # Process batch: create in target, delete from source
                 batch_result = await self._process_batch(batch, batch_num)
-                
+
                 migrated_count += batch_result["migrated"]
                 deleted_count += batch_result["deleted"]
                 error_count += batch_result["errors"]
@@ -445,17 +445,17 @@ async def run_permissions_edge_migration(
 ) -> Dict[str, Any]:
     """
     Convenience function to run the 'permissions' collection migration with REVERSED direction.
-    
+
     Migrates from 'permissions' to 'permission' collection:
     - Old: Record → User/Group/Org
     - New: User/Group/Org → Record
-    
+
     Args:
         arango_service: BaseArangoService instance
         logger: Logger instance
         dry_run: If True, only reports what would be done
         batch_size: Number of edges to process in each batch
-        
+
     Returns:
         Dict with migration results
     """
@@ -502,17 +502,17 @@ async def run_permissions_to_kb_migration(
 ) -> Dict[str, Any]:
     """
     Convenience function to run the 'permissionsToKB' collection migration with SAME direction.
-    
+
     Migrates from 'permissionsToKB' to 'permission' collection:
     - Old: User/Team → RecordGroup
     - New: User/Team → RecordGroup (same direction)
-    
+
     Args:
         arango_service: BaseArangoService instance
         logger: Logger instance
         dry_run: If True, only reports what would be done
         batch_size: Number of edges to process in each batch
-        
+
     Returns:
         Dict with migration results
     """

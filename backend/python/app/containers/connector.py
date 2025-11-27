@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from app.migrations.permission_edge_migration import run_permissions_edge_migration, run_permissions_to_kb_migration
 import google.oauth2.credentials
 from dependency_injector import containers, providers
 from google.oauth2 import service_account
@@ -58,6 +57,10 @@ from app.containers.utils.utils import ContainerUtils
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
+from app.migrations.permission_edge_migration import (
+    run_permissions_edge_migration,
+    run_permissions_to_kb_migration,
+)
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser

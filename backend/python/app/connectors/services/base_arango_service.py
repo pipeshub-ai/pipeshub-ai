@@ -3522,7 +3522,7 @@ class BaseArangoService:
                     FILTER perm.type == "USER"
                     RETURN perm.role
             )
-            // 3. Check group permissions   
+            // 3. Check group permissions
             LET group_permission = FIRST(
                 FOR belongs_edge IN @@belongs_to
                     FILTER belongs_edge._from == user_from
@@ -5968,7 +5968,7 @@ class BaseArangoService:
                     # New permission - use batch_upsert_nodes which handles transactions properly
                     self.logger.info("✅ Creating new permission edge: %s", edge_key)
                     await self.batch_upsert_nodes(
-                        [edge], 
+                        [edge],
                         collection=CollectionNames.PERMISSION.value,
                         transaction=transaction
                     )
@@ -5977,7 +5977,7 @@ class BaseArangoService:
                     # Update existing permission
                     self.logger.info("✅ Updating permission edge: %s", edge_key)
                     await self.batch_upsert_nodes(
-                        [edge], 
+                        [edge],
                         collection=CollectionNames.PERMISSION.value,
                         transaction=transaction
                     )
