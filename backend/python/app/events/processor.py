@@ -3,7 +3,6 @@ import json
 from datetime import datetime
 
 from bs4 import BeautifulSoup
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from html_to_markdown import convert
 
 from app.config.constants.ai_models import (
@@ -36,6 +35,7 @@ from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.utils.llm import get_embedding_model_config, get_llm
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 def convert_record_dict_to_record(record_dict: dict) -> Record:

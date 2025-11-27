@@ -12408,7 +12408,7 @@ class BaseArangoService:
 
             for queued_record in queued_records:
                 doc = dict(queued_record)
-                
+
                 # Map indexing status to extraction status
                 # For EMPTY status, extraction status should also be EMPTY, not FAILED
                 if new_indexing_status == ProgressStatus.COMPLETED.value:
@@ -12417,7 +12417,7 @@ class BaseArangoService:
                     extraction_status = ProgressStatus.EMPTY.value
                 else:
                     extraction_status = ProgressStatus.FAILED.value
-                
+
                 update_data = {
                     "indexingStatus": new_indexing_status,
                     "lastIndexTimestamp": current_timestamp,
@@ -12444,7 +12444,7 @@ class BaseArangoService:
                 f"❌ Failed to update queued duplicates status: {str(e)}"
             )
             return -1
-            
+
 
     async def find_next_queued_duplicate(
         self,

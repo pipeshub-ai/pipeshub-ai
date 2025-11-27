@@ -389,7 +389,7 @@ class RecordEventHandler(BaseEventService):
                 record = await self.event_processor.arango_service.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
-                
+
                 if record is None:
                     self.logger.warning(f"Record {record_id} not found in database")
                     return
@@ -402,7 +402,7 @@ class RecordEventHandler(BaseEventService):
                 #     else:
                 #         self.logger.warning(f"Missing md5Checksum or sizeInBytes, skipping next queued duplicate")
                 #     return
-                
+
                 indexing_status = record.get("indexingStatus")
                 virtual_record_id = record.get("virtualRecordId")
                 if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
