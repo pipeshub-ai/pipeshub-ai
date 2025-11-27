@@ -645,7 +645,6 @@ const AgentChat = () => {
   const { activeConnectors } = useConnectors();
   const navigate = useNavigate();
   const { agentKey, conversationId } = useParams<{ agentKey: string; conversationId: string }>();
-  console.log(agentKey, conversationId);
   const [agent, setAgent] = useState<Agent | null>(null);
   useEffect(() => {
     if (agentKey) {
@@ -682,16 +681,14 @@ const AgentChat = () => {
 
   const [updateTrigger, setUpdateTrigger] = useState(0);
   const forceUpdate = useCallback(() => {
-    console.log('Force update triggered, current trigger:', updateTrigger);
     setUpdateTrigger((prev) => prev + 1);
-  }, [updateTrigger]);
+  }, []);
 
   const streamingManager = StreamingManager.getInstance();
   const theme = useTheme();
 
   const getConversationKey = useCallback((convId: string | null) => {
     const key = convId || 'new';
-    console.log('Getting conversation key:', { convId, key });
     return key;
   }, []);
 
@@ -703,14 +700,6 @@ const AgentChat = () => {
   const currentMessages = useMemo(
     () => {
       const messages = streamingManager.getConversationMessages(currentConversationKey);
-      console.log('Current messages for conversation:', currentConversationKey, {
-        messageCount: messages.length,
-        messages: messages.map((m) => ({
-          id: m.id,
-          type: m.type,
-          content: m.content.substring(0, 50),
-        })),
-      });
       return messages;
     },
     // eslint-disable-next-line
@@ -719,12 +708,6 @@ const AgentChat = () => {
 
   const currentStreamingState = useMemo(() => {
     const state = streamingManager.getConversationState(currentConversationKey);
-    console.log('Current streaming state for conversation:', currentConversationKey, {
-      messageId: state?.messageId,
-      isActive: state?.isActive,
-      content: state?.content?.substring(0, 50),
-      citationsCount: state?.citations?.length,
-    });
     return state
       ? {
           messageId: state.messageId,
@@ -742,7 +725,6 @@ const AgentChat = () => {
       statusMessage: state?.statusMessage || '',
       showStatus: state?.showStatus || false,
     };
-    console.log('Current conversation status for conversation:', currentConversationKey, status);
     return status;
     // eslint-disable-next-line
   }, [streamingManager, currentConversationKey, updateTrigger]);
@@ -751,21 +733,14 @@ const AgentChat = () => {
     const streamingState = streamingManager.getConversationState(currentConversationKey);
     const isLoading =
       streamingManager.isConversationLoading(currentConversationKey) || isLoadingConversation;
-    console.log('Current conversation loading state for conversation:', currentConversationKey, {
-      streamingLoading: streamingManager.isConversationLoading(currentConversationKey),
-      conversationLoading: isLoadingConversation,
-      totalLoading: isLoading,
-    });
     return isLoading;
     // eslint-disable-next-line
   }, [streamingManager, currentConversationKey, updateTrigger, isLoadingConversation]);
 
   useEffect(() => {
     streamingManager.addUpdateCallback(forceUpdate);
-    console.log('Added update callback to streaming manager');
     return () => {
       streamingManager.removeUpdateCallback(forceUpdate);
-      console.log('Removed update callback from streaming manager');
     };
   }, [streamingManager, forceUpdate]);
 
@@ -775,7 +750,6 @@ const AgentChat = () => {
 
   const formatMessage = useCallback((apiMessage: Message): FormattedMessage | null => {
     if (!apiMessage) return null;
-    console.log('formatMessage called with apiMessage:', apiMessage);
     const baseMessage = {
       id: apiMessage._id,
       timestamp: new Date(apiMessage.createdAt || new Date()),
@@ -1106,17 +1080,6 @@ const AgentChat = () => {
       const currentModel = latestModelRef.current;
       const currentMode = latestChatModeRef.current;
 
-      console.log('handleSendMessage called with persistent selections:', {
-        trimmedInput,
-        currentConversationId,
-        agentKey,
-        persistentTools: selectedTools, // These persist across messages
-        persistentKBs: selectedKBs, // These persist across messages
-        persistentApps: selectedApps, // These persist across messages
-        chatMode: chatMode || currentMode?.id,
-        modelName: modelName || currentModel?.modelName,
-      });
-
       const wasCreatingNewConversation = !currentConversationId;
       const conversationKey = getConversationKey(currentConversationId);
 
@@ -1181,18 +1144,6 @@ const AgentChat = () => {
         }),
       };
 
-      console.log('Streaming URL:', streamingUrl);
-      console.log('Request body with persistent selections:', requestBody);
-      console.log('Persistent filter details:', {
-        'tools (app_name.tool_name)': requestBody.tools,
-        'filters.apps (app names)': requestBody.filters.apps,
-        'filters.kb (KB IDs)': requestBody.filters.kb,
-        chatMode: requestBody.chatMode,
-        totalToolsCount: requestBody.tools.length,
-        totalAppsCount: requestBody.filters.apps.length,
-        totalKBsCount: requestBody.filters.kb.length,
-      });
-
       try {
         const createdConversationId = await handleStreamingResponse(
           streamingUrl,
@@ -1251,7 +1202,6 @@ const AgentChat = () => {
     setSelectedChat(null);
     setIsNavigationBlocked(false);
 
-    console.log('New chat initiated, cleared all streaming states');
   }, [navigate, streamingManager, currentConversationId, getConversationKey, agentKey]);
 
   const handleChatSelect = useCallback(
@@ -1475,7 +1425,6 @@ const AgentChat = () => {
           timestamp: new Date(),
         };
 
-        console.log('Adding start message for agent:', agent.name);
         streamingManager.setConversationMessages(conversationKey, [customStartMessage]);
       }
     }

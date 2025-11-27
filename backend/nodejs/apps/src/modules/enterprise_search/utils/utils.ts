@@ -29,6 +29,19 @@ const logger = new Logger({
   service: 'enterprise-search',
 });
 
+/**
+ * Extract model information from request body
+ */
+export const extractModelInfo = (
+  body: any,
+  defaultChatMode: string = 'quick',
+): IAIModel => ({
+  modelKey: body.modelKey || undefined,
+  modelName: body.modelName || undefined,
+  modelProvider: body.modelProvider || undefined,
+  chatMode: body.chatMode || defaultChatMode,
+});
+
 export const buildUserQueryMessage = (query: string): IMessage => ({
   messageType: 'user_query',
   content: query,
@@ -1550,7 +1563,6 @@ export const handleRegenerationError = async (
   session: ClientSession | null,
   requestId: string,
   errorType: string = 'regeneration_error',
-  conversationType: 'conversation' | 'agent_conversation' = 'conversation',
 ): Promise<void> => {
   const errorMessage = error.message || 'Unknown error occurred';
 
@@ -1565,8 +1577,17 @@ export const handleRegenerationError = async (
         error.stack,
       );
 
-      // Reload conversation to get updated state
-      const updatedConversation = conversationType === 'conversation' ? await Conversation.findById(conversationId) : await AgentConversation.findById(conversationId);
+      // Determine the model type from the conversation object itself
+      // Check if it's an AgentConversation by looking for agentKey property
+      // or by checking the constructor
+      const isAgentConversation =
+        'agentKey' in existingConversation ||
+        existingConversation.constructor === AgentConversation;
+
+      // Reload conversation to get updated state using the appropriate model
+      const updatedConversation = isAgentConversation
+        ? await AgentConversation.findById(conversationId)
+        : await Conversation.findById(conversationId);
       if (updatedConversation) {
         const plainConversation = updatedConversation.toObject();
         await sendSSEErrorEvent(
