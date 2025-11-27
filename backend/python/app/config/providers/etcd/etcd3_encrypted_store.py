@@ -147,8 +147,11 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             EXCLUDED_KEYS = [
                 config_node_constants.ENDPOINTS.value,
                 config_node_constants.STORAGE.value,
+                config_node_constants.MIGRATIONS.value,
             ]
-            if key not in EXCLUDED_KEYS:
+            encrypt_value = key not in EXCLUDED_KEYS
+
+            if encrypt_value:
                 # Encrypt the value
                 encrypted_value = self.encryption_service.encrypt(value_json)
             else:
@@ -164,10 +167,14 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 # Verify the stored value
                 encrypted_stored_value = await self.store.get_key(key)
                 if encrypted_stored_value:
-                    decrypted_value = self.encryption_service.decrypt(
-                        encrypted_stored_value
-                    )
-                    stored_value = json.loads(decrypted_value)
+                    if encrypt_value:
+                        processed_value = self.encryption_service.decrypt(
+                            encrypted_stored_value
+                        )
+                    else:
+                        processed_value = encrypted_stored_value
+                    self.logger.debug("🔒 Processed value for key %s: %s", key, processed_value)
+                    stored_value = json.loads(processed_value)
 
                     if stored_value != value:
                         self.logger.warning("⚠️ Verification failed for key: %s", key)
@@ -199,6 +206,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                     UNENCRYPTED_KEYS = [
                         config_node_constants.ENDPOINTS.value,
                         config_node_constants.STORAGE.value,
+                        config_node_constants.MIGRATIONS.value,
                     ]
                     needs_decryption = key not in UNENCRYPTED_KEYS
 

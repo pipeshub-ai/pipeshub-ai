@@ -101,7 +101,7 @@ class DriveChangeHandler:
                     CollectionNames.GROUPS.value,
                     CollectionNames.ORGS.value,
                     CollectionNames.ANYONE.value,
-                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.PERMISSION.value,
                     CollectionNames.BELONGS_TO.value,
                     CollectionNames.BELONGS_TO_DEPARTMENT.value,
                     CollectionNames.BELONGS_TO_CATEGORY.value,
@@ -118,7 +118,7 @@ class DriveChangeHandler:
                     CollectionNames.GROUPS.value,
                     CollectionNames.ORGS.value,
                     CollectionNames.ANYONE.value,
-                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.PERMISSION.value,
                     CollectionNames.BELONGS_TO.value,
                     CollectionNames.BELONGS_TO_DEPARTMENT.value,
                     CollectionNames.BELONGS_TO_CATEGORY.value,
@@ -447,9 +447,9 @@ class DriveChangeHandler:
                 )
                 for perm in existing_permissions:
                     query_permissions = """
-                    FOR p IN permissions
+                    FOR p IN permission
                         FILTER p._key == @perm_key
-                        REMOVE p IN permissions
+                        REMOVE p IN permission
                     """
                     db.aql.execute(
                         query_permissions, bind_vars={"perm_key": perm["_key"]}

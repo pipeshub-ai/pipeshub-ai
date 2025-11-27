@@ -3,15 +3,6 @@ from app.config.constants.arangodb import CollectionNames
 # Define all edge definitions
 EDGE_DEFINITIONS = [
     {
-        "edge_collection": CollectionNames.PERMISSIONS.value,
-        "from_vertex_collections": [CollectionNames.RECORDS.value],
-        "to_vertex_collections": [
-            CollectionNames.USERS.value,
-            CollectionNames.GROUPS.value,
-            CollectionNames.ORGS.value,
-        ],
-    },
-    {
         "edge_collection": CollectionNames.BELONGS_TO.value,
         "from_vertex_collections": [CollectionNames.USERS.value,CollectionNames.RECORDS.value,CollectionNames.FILES.value],
         "to_vertex_collections": [
@@ -61,11 +52,6 @@ EDGE_DEFINITIONS = [
         "to_vertex_collections": [CollectionNames.CATEGORIES.value, CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value, CollectionNames.SUBCATEGORIES3.value],
     },
     {
-        "edge_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value],
-        "to_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
-    },
-    {
         "edge_collection": CollectionNames.IS_OF_TYPE.value,
         "from_vertex_collections": [CollectionNames.RECORDS.value],
         "to_vertex_collections": [CollectionNames.FILES.value, CollectionNames.MAILS.value, CollectionNames.WEBPAGES.value, CollectionNames.COMMENTS.value, CollectionNames.TICKETS.value],
@@ -92,7 +78,7 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.PERMISSION.value,
-        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value],
-        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value],
+        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value ],
     },
 ]

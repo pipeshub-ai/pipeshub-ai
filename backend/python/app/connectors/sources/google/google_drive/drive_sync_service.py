@@ -453,8 +453,8 @@ class BaseDriveSyncService(ABC):
 
             # Create user-record relationship with permissions
             user_record_relation = {
-                "_to": f"{CollectionNames.USERS.value}/{user_id}",
-                "_from": f"{CollectionNames.RECORDS.value}/{drive_info['record']['_key']}",
+                "_from": f"{CollectionNames.USERS.value}/{user_id}",
+                "_to": f"{CollectionNames.RECORDS.value}/{drive_info['record']['_key']}",
                 "role": (
                     "WRITER"
                     if drive_info["drive"]["access_level"] == "writer"
@@ -468,7 +468,7 @@ class BaseDriveSyncService(ABC):
             }
 
             await self.arango_service.batch_create_edges(
-                [user_record_relation], collection=CollectionNames.PERMISSIONS.value
+                [user_record_relation], collection=CollectionNames.PERMISSION.value
             )
 
             self.logger.info(
@@ -676,7 +676,7 @@ class BaseDriveSyncService(ABC):
                     CollectionNames.GROUPS.value,
                     CollectionNames.ORGS.value,
                     CollectionNames.ANYONE.value,
-                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.PERMISSION.value,
                     CollectionNames.BELONGS_TO.value,
                 ],
                 write=[
@@ -688,7 +688,7 @@ class BaseDriveSyncService(ABC):
                     CollectionNames.GROUPS.value,
                     CollectionNames.ORGS.value,
                     CollectionNames.ANYONE.value,
-                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.PERMISSION.value,
                     CollectionNames.BELONGS_TO.value,
                 ],
             )
@@ -1922,10 +1922,10 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     AND doc.connectorName == @connector_name
 
                     LET active_users = (
-                        FOR perm IN permissions
-                            FILTER perm._from == doc._id
+                        FOR perm IN permission
+                            FILTER perm._to == doc._id
                             FOR user IN users
-                                FILTER perm._to == user._id
+                                FILTER perm._from == user._id
                                 AND user.isActive == true
                             RETURN DISTINCT user
                     )

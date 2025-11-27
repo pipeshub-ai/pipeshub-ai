@@ -152,7 +152,7 @@ class GmailChangeHandler:
                             CollectionNames.MAILS.value,
                             CollectionNames.RECORDS.value,
                             CollectionNames.FILES.value,
-                            CollectionNames.PERMISSIONS.value,
+                            CollectionNames.PERMISSION.value,
                             CollectionNames.IS_OF_TYPE.value,
                             CollectionNames.RECORD_RELATIONS.value,
                         ],
@@ -160,7 +160,7 @@ class GmailChangeHandler:
                             CollectionNames.MAILS.value,
                             CollectionNames.RECORDS.value,
                             CollectionNames.FILES.value,
-                            CollectionNames.PERMISSIONS.value,
+                            CollectionNames.PERMISSION.value,
                             CollectionNames.IS_OF_TYPE.value,
                             CollectionNames.RECORD_RELATIONS.value,
                         ],
@@ -323,8 +323,8 @@ class GmailChangeHandler:
 
                                 permission_records.append(
                                     {
-                                        "_to": f"{entityType}/{entity_id}",
-                                        "_from": f"{CollectionNames.RECORDS.value}/{message_record['_key']}",
+                                        "_from": f"{entityType}/{entity_id}",
+                                        "_to": f"{CollectionNames.RECORDS.value}/{message_record['_key']}",
                                         "externalPermissionId": None,
                                         "type": permType,
                                         "role": "READER",
@@ -337,8 +337,8 @@ class GmailChangeHandler:
                                     for attachment_record in attachment_records:
                                         permission_records.append(
                                             {
-                                                "_to": f"{entityType}/{entity_id}",
-                                                "_from": f"{CollectionNames.RECORDS.value}/{attachment_record['_key']}",
+                                                "_from": f"{entityType}/{entity_id}",
+                                                "_to": f"{CollectionNames.RECORDS.value}/{attachment_record['_key']}",
                                                 "externalPermissionId": None,
                                                 "type": permType,
                                                 "role": "READER",
@@ -351,7 +351,7 @@ class GmailChangeHandler:
                         if permission_records:
                             await self.arango_service.batch_create_edges(
                                 permission_records,
-                                collection=CollectionNames.PERMISSIONS.value,
+                                collection=CollectionNames.PERMISSION.value,
                                 transaction=txn,
                             )
 
@@ -511,7 +511,7 @@ class GmailChangeHandler:
                                 CollectionNames.GROUPS.value,
                                 CollectionNames.ORGS.value,
                                 CollectionNames.ANYONE.value,
-                                CollectionNames.PERMISSIONS.value,
+                                CollectionNames.PERMISSION.value,
                                 CollectionNames.BELONGS_TO.value,
                                 CollectionNames.BELONGS_TO_DEPARTMENT.value,
                                 CollectionNames.BELONGS_TO_CATEGORY.value,
@@ -528,7 +528,7 @@ class GmailChangeHandler:
                                 CollectionNames.GROUPS.value,
                                 CollectionNames.ORGS.value,
                                 CollectionNames.ANYONE.value,
-                                CollectionNames.PERMISSIONS.value,
+                                CollectionNames.PERMISSION.value,
                                 CollectionNames.BELONGS_TO.value,
                                 CollectionNames.BELONGS_TO_DEPARTMENT.value,
                                 CollectionNames.BELONGS_TO_CATEGORY.value,
@@ -541,12 +541,13 @@ class GmailChangeHandler:
                             # Delete permissions for main message
                             self.arango_service.db.aql.execute(
                                 """
-                                FOR p IN permissions
-                                FILTER p._to == @message_id OR p._from == @message_id
-                                REMOVE p IN permissions
+                                FOR p IN @@permission
+                                FILTER p._to == @message_id
+                                REMOVE p IN @@permission
                                 """,
                                 bind_vars={
-                                    "message_id": f'{CollectionNames.RECORDS.value}/{existing_message["_key"]}'
+                                    "message_id": f'{CollectionNames.RECORDS.value}/{existing_message["_key"]}',
+                                    "@permission": CollectionNames.PERMISSION.value
                                 },
                             )
 
@@ -555,12 +556,13 @@ class GmailChangeHandler:
                                 # Delete permissions for attachment
                                 self.arango_service.db.aql.execute(
                                     """
-                                    FOR p IN permissions
-                                    FILTER p._to == @attachment_id OR p._from == @attachment_id
-                                    REMOVE p IN permissions
+                                    FOR p IN @@permission
+                                    FILTER p._to == @attachment_id
+                                    REMOVE p IN @@permission
                                     """,
                                     bind_vars={
-                                        "attachment_id": f'{CollectionNames.RECORDS.value}/{attachment["_key"]}'
+                                        "attachment_id": f'{CollectionNames.RECORDS.value}/{attachment["_key"]}',
+                                        "@permission": CollectionNames.PERMISSION.value
                                     },
                                 )
 
