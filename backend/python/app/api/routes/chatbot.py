@@ -245,7 +245,7 @@ async def process_chat_query_with_status(
     search_results = result.get("searchResults", [])
     status_code = result.get("status_code", 500)
 
-    if status_code in [202, 500, 503]:
+    if status_code in [202, 500, 503, 404]:
         raise HTTPException(status_code=status_code, detail=result)
 
     if yield_status:
