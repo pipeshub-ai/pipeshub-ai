@@ -759,11 +759,14 @@ class IndexingPipeline:
                         "Record not found in database",
                         doc_id=record_id,
                     )
-
+                timestamp = get_epoch_timestamp_in_ms()
                 record_dict.update(
                     {
                         "indexingStatus": ProgressStatus.EMPTY.value,
                         "isDirty": False,
+                        "extractionStatus": ProgressStatus.EMPTY.value,
+                        "lastExtractionTimestamp": timestamp,
+                        "lastIndexTimestamp": timestamp,
                     }
                 )
 

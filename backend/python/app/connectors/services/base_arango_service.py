@@ -12431,7 +12431,7 @@ class BaseArangoService:
                 updated_records.append(doc)
 
             # Batch update all queued records
-            await self.batch_upsert_nodes(updated_records, CollectionNames.RECORDS.value)
+            await self.batch_upsert_nodes(updated_records, CollectionNames.RECORDS.value,transaction)
 
             self.logger.info(
                 f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
