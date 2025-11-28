@@ -673,7 +673,7 @@ const ChatInterface = () => {
       iconPath: c.iconPath || '/assets/icons/connectors/default.svg',
     }));
     // include local KB app selector
-    setAllApps([{ id: 'local', name: 'KB', iconPath: '/assets/icons/connectors/kb.svg' }, ...apps]);
+    setAllApps(apps);
   }, [activeConnectors]);
 
   // Load knowledge bases once

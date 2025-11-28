@@ -186,6 +186,8 @@ const PdfHighlighterComp = ({
   const [actualPdfBuffer, setActualPdfBuffer] = useState<ArrayBuffer | null>(pdfBuffer || null);
   const scrollViewerTo = useRef<(highlight: HighlightType) => void>(() => {});
   const [processedCitations, setProcessedCitations] = useState<ProcessedCitation[]>([]);
+  // Track the currently selected citation ID (from sidebar clicks or initial highlightCitation)
+  const [selectedCitationId, setSelectedCitationId] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [pdfWidth, setPdfWidth] = useState<number>(100); // Percentage of screen width
   const [pdfScale, setPdfScale] = useState<number>(1); // Zoom scale
@@ -214,29 +216,39 @@ const PdfHighlighterComp = ({
       }
       
       .Highlight--scrolledTo .Highlight__part::before {
-        content: '[';
+        content: '';
         position: absolute;
-        top: 0;
-        left: -8px;
-        height: 100%;
-        color: #006400;
-        font-size: 20px;
-        font-weight: bold;
-        display: flex;
-        align-items: center;
+        top: -2px;
+        left: -16px;
+        bottom: -2px;
+        height: calc(100% + 4px);
+        width: 8px;
+        border-left: 3px solid #006400;
+        border-top: 3px solid #006400;
+        border-bottom: 3px solid #006400;
+        border-top-left-radius: 2px;
+        border-bottom-left-radius: 2px;
+        box-sizing: border-box;
+        z-index: 10;
+        pointer-events: none;
       }
    
       .Highlight--scrolledTo .Highlight__part::after {
-        content: ']';
+        content: '';
         position: absolute;
-        top: 0;
-        right: -8px;
-        height: 100%;
-        color: #006400;
-        font-size: 20px;
-        font-weight: bold;
-        display: flex;
-        align-items: center;
+        top: -2px;
+        right: -16px;
+        bottom: -2px;
+        height: calc(100% + 4px);
+        width: 8px;
+        border-right: 3px solid #006400;
+        border-top: 3px solid #006400;
+        border-bottom: 3px solid #006400;
+        border-top-right-radius: 2px;
+        border-bottom-right-radius: 2px;
+        box-sizing: border-box;
+        z-index: 10;
+        pointer-events: none;
       }
 
       .fullscreen-controls {
@@ -391,6 +403,22 @@ const PdfHighlighterComp = ({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Sync selectedCitationId with highlightCitation prop when it changes
+  useEffect(() => {
+    if (highlightCitation) {
+      const citationId =
+        highlightCitation.citationId ||
+        highlightCitation.metadata?._id ||
+        highlightCitation.id;
+      if (citationId) {
+        setSelectedCitationId(citationId);
+      }
+    } else {
+      // If highlightCitation is cleared, also clear selectedCitationId
+      setSelectedCitationId(null);
+    }
+  }, [highlightCitation]);
 
   useEffect(() => {
     const processCitationsWithHighlights = () => {
@@ -918,14 +946,10 @@ const PdfHighlighterComp = ({
                     screenshot,
                     isScrolledTo
                   ) => {
-                    // Enhanced highlighting logic with multiple ID matching strategies
-                    const citationId =
-                      highlightCitation?.citationId ||
-                      highlightCitation?.metadata?._id ||
-                      highlightCitation?.id;
-                    const isHighlighted: boolean =
-                      Boolean(isScrolledTo) ||
-                      Boolean(highlightCitation && citationId === highlight.id);
+                    // Only show brackets on the citation that matches selectedCitationId
+                    // Use selectedCitationId (which is updated when clicking sidebar or when highlightCitation changes)
+                    // This ensures only ONE highlight shows brackets at a time
+                    const isHighlighted = selectedCitationId !== null && selectedCitationId === highlight.id;
 
                     const isTextHighlight = !highlight.content?.image;
                     const component = isTextHighlight ? (
@@ -980,11 +1004,17 @@ const PdfHighlighterComp = ({
         <CitationSidebar
           citations={processedCitations}
           scrollViewerTo={(highlight) => {
+            // Update the selected citation ID when a citation is clicked in the sidebar
+            if (highlight?.id) {
+              setSelectedCitationId(highlight.id);
+            }
+            // Scroll to the highlight
             if (scrollViewerTo.current && typeof scrollViewerTo.current === 'function') {
               scrollViewerTo.current(highlight);
             }
           }}
           highlightedCitationId={
+            selectedCitationId ||
             highlightCitation?.citationId ||
             highlightCitation?.metadata?._id ||
             highlightCitation?.id ||

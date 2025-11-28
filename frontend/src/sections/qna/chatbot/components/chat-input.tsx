@@ -485,7 +485,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
               }}
             >
               {/* Chat Mode Selector */}
-              <Box sx={{ display: 'flex', gap: 1 }}>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                 {CHAT_MODES.map((mode) => (
                   <Chip
                     key={mode.id}
@@ -523,7 +523,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 ))}
               </Box>
               <Box
-                sx={{ display: 'flex', gap: 1, flexDirection: 'row', mr: 2, alignItems: 'center' }}
+                sx={{ display: 'flex', gap: 1, flexDirection: 'row', mr: 2, alignItems: 'center', }}
               >
                 {/* Unified Resources selector with badge */}
                 <Tooltip title="Select apps and knowledge bases">
