@@ -66,7 +66,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
   onFiltersChange,
   models,
 }) => {
-  console.log('models', models);
   const [localValue, setLocalValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasText, setHasText] = useState(false);

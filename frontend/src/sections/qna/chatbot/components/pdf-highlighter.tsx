@@ -39,6 +39,14 @@ const SCROLL_TO_HIGHLIGHT_DELAY_MS = 1500;
 const HIGHLIGHT_POLLING_INTERVAL_MS = 100;
 const HIGHLIGHT_POLLING_MAX_ATTEMPTS = 50; // 5 seconds max
 
+// Helper function to extract citation ID from various citation object types
+const getCitationId = (
+  citation: DocumentContent | { citationId?: string; metadata?: { _id?: string }; id?: string } | null
+): string | null => {
+  if (!citation) return null;
+  return citation.citationId || citation.metadata?._id || citation.id || null;
+};
+
 // Custom PDF Loader that can work with either URL or buffer
 interface EnhancedPdfLoaderProps {
   url?: string | null;
@@ -146,7 +154,7 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
     };
 
     // Use citationId as the primary ID, fallback to metadata._id, then citation.id, then generate new ID
-    const highlightId = citation.citationId || citation.metadata?._id || citation.id || getNextId();
+    const highlightId = getCitationId(citation) || getNextId();
 
     return {
       content: {
@@ -406,18 +414,7 @@ const PdfHighlighterComp = ({
 
   // Sync selectedCitationId with highlightCitation prop when it changes
   useEffect(() => {
-    if (highlightCitation) {
-      const citationId =
-        highlightCitation.citationId ||
-        highlightCitation.metadata?._id ||
-        highlightCitation.id;
-      if (citationId) {
-        setSelectedCitationId(citationId);
-      }
-    } else {
-      // If highlightCitation is cleared, also clear selectedCitationId
-      setSelectedCitationId(null);
-    }
+    setSelectedCitationId(getCitationId(highlightCitation));
   }, [highlightCitation]);
 
   useEffect(() => {
@@ -472,8 +469,7 @@ const PdfHighlighterComp = ({
       !loading
     ) {
       // Try multiple ID matching strategies
-      const citationId =
-        highlightCitation.citationId || highlightCitation.metadata?._id || highlightCitation.id;
+      const citationId = getCitationId(highlightCitation);
 
       if (!citationId) {
         return undefined;
@@ -1013,13 +1009,7 @@ const PdfHighlighterComp = ({
               scrollViewerTo.current(highlight);
             }
           }}
-          highlightedCitationId={
-            selectedCitationId ||
-            highlightCitation?.citationId ||
-            highlightCitation?.metadata?._id ||
-            highlightCitation?.id ||
-            null
-          }
+          highlightedCitationId={selectedCitationId || getCitationId(highlightCitation)}
           toggleFullScreen={toggleFullScreen}
           onClosePdf={onClosePdf}
         />

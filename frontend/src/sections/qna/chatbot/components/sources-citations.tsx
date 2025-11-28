@@ -400,7 +400,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
   const theme = useTheme();
   const [isFilesExpanded, setIsFilesExpanded] = useState(false);
   const [isCitationsExpanded, setIsCitationsExpanded] = useState(false);
-  console.log('modelInfo', modelInfo);
+
   // Get connector data from the hook
   const { activeConnectors } = useConnectors();
 

@@ -672,7 +672,7 @@ const ChatInterface = () => {
       name: c.name || '',
       iconPath: c.iconPath || '/assets/icons/connectors/default.svg',
     }));
-    // include local KB app selector
+    
     setAllApps(apps);
   }, [activeConnectors]);
 
