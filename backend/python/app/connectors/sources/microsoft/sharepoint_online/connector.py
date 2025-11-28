@@ -47,10 +47,8 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
-    CommonFields,
     ConnectorBuilder,
     DocumentationLink,
-    FilterField,
 )
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
@@ -172,17 +170,6 @@ class SiteMetadata:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        .add_filter_field(FilterField(
-            name="sites",
-            display_name="SharePoint Sites",
-            description="Select SharePoint sites to sync content from"
-        ), "https://graph.microsoft.com/v1.0/sites")
-        .add_filter_field(FilterField(
-            name="documentLibraries",
-            display_name="Document Libraries",
-            description="Select document libraries to sync from"
-        ), "https://graph.microsoft.com/v1.0/sites/{siteId}/drives")
-        .add_filter_field(CommonFields.file_types_filter(), "static")
     )\
     .build_decorator()
 class SharePointConnector(BaseConnector):

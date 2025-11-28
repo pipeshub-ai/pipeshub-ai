@@ -35,6 +35,15 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     DocumentationLink,
 )
+from app.connectors.core.registry.connector_registry import IndexingStatus
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterType,
+    IndexingFilterKey,
+    SyncFilterKey,
+)
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.models.entities import (
@@ -84,6 +93,18 @@ HTTP_STATUS_200 = 200
         .add_auth_field(CommonFields.client_secret("Atlassian OAuth App"))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .add_filter_field(FilterField(
+            name="space_keys",
+            display_name="Space Keys",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+        ))
+        .add_filter_field(FilterField(
+            name="modified_after",
+            display_name="Modified After",
+            filter_type=FilterType.DATETIME,
+            category=FilterCategory.SYNC,
+        ))
     )\
     .build_decorator()
 class ConfluenceConnector(BaseConnector):
@@ -129,6 +150,13 @@ class ConfluenceConnector(BaseConnector):
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
+
+        # Initialize with mock filters for testing
+        # TODO: Remove this when we have a real filters implementation
+        self._init_mock_filters()
+
     async def init(self) -> bool:
         """Initialize the Confluence connector with credentials and client."""
         try:
@@ -143,6 +171,10 @@ class ConfluenceConnector(BaseConnector):
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
 
+            # self.sync_filters, self.indexing_filters = await load_connector_filters(
+            #     self.config_service, "confluence", self.logger
+            # )
+
             # Test connection
             if not await self.test_connection_and_access():
                 self.logger.error("❌ Confluence connector connection test failed")
@@ -154,6 +186,53 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Confluence connector: {e}", exc_info=True)
             return False
+
+    def _init_mock_filters(self) -> None:
+        """
+        Initialize mock filters for testing.
+
+        TODO: Replace with config service integration when ready:
+            sync_filters, indexing_filters = await load_connector_filters(
+                self.config_service, "confluence", self.logger
+            )
+        """
+        self.logger.info("🧪 Initializing mock filters for testing")
+
+        mock_config = {
+            "sync": {
+                "filters": [
+                    {
+                        "key": SyncFilterKey.SPACE_KEYS.value,
+                        "value": ["SD", "pyq"],
+                        "type": FilterType.LIST.value,
+                        "operator": "in"
+                    },
+                    # Uncomment to test modified_after filter:
+                    {
+                        "key": SyncFilterKey.MODIFIED_AFTER.value,
+                        "value": ["2025-07-07T00:00:00.000Z"],
+                        "type": FilterType.DATETIME.value,
+                        "operator": "is_after"
+                    },
+                ]
+            },
+            "indexing": {
+                "filters": [
+                    # Content types
+                    {"key": IndexingFilterKey.PAGES.value, "value": True, "type": FilterType.BOOLEAN.value},
+                    {"key": IndexingFilterKey.BLOGPOSTS.value, "value": True, "type": FilterType.BOOLEAN.value},
+                    # Page child content
+                    {"key": IndexingFilterKey.PAGE_COMMENTS.value, "value": True, "type": FilterType.BOOLEAN.value},
+                    {"key": IndexingFilterKey.PAGE_ATTACHMENTS.value, "value": True, "type": FilterType.BOOLEAN.value},
+                    # Blogpost child content
+                    {"key": IndexingFilterKey.BLOGPOST_COMMENTS.value, "value": True, "type": FilterType.BOOLEAN.value},
+                    {"key": IndexingFilterKey.BLOGPOST_ATTACHMENTS.value, "value": True, "type": FilterType.BOOLEAN.value},
+                ]
+            }
+        }
+
+        self.sync_filters = FilterCollection.from_list(mock_config["sync"]["filters"])
+        self.indexing_filters = FilterCollection.from_list(mock_config["indexing"]["filters"])
 
     async def _get_fresh_datasource(self) -> ConfluenceDataSource:
         """
@@ -236,6 +315,10 @@ class ConfluenceConnector(BaseConnector):
             - Permissions
             - Attachments
             - Comments (inline, footer)
+
+        Filters:
+        - Sync filters: Control what data is fetched (space_keys, modified_after, etc.)
+        - Indexing filters: Control what record types get indexed (pages, comments, etc.)
         """
         try:
             org_id = self.data_entities_processor.org_id
@@ -245,13 +328,19 @@ class ConfluenceConnector(BaseConnector):
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
 
+            # Log active filters
+            if self.sync_filters:
+                self.logger.info(f"🔍 Sync filters: {self.sync_filters.keys()}")
+            if self.indexing_filters:
+                self.logger.info(f"🔍 Indexing filters: {self.indexing_filters.keys()}")
+
             # Step 1: Sync users
             await self._sync_users()
 
             # Step 2: Sync groups and memberships
             await self._sync_user_groups()
 
-            # Step 3: Sync spaces
+            # Step 3: Sync spaces (RecordGroups - no indexing filter, always sync)
             spaces = await self._sync_spaces()
 
             # Step 4: Sync pages and blogposts per space
@@ -439,6 +528,9 @@ class ConfluenceConnector(BaseConnector):
         try:
             self.logger.info("Starting space synchronization...")
 
+            # Get sync filter values for API (None if empty = fetch all)
+            space_keys_filter = self.sync_filters.get_value(SyncFilterKey.SPACE_KEYS)
+
             # Pagination variables
             batch_size = 20
             cursor = None
@@ -452,7 +544,8 @@ class ConfluenceConnector(BaseConnector):
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_spaces(
                     limit=batch_size,
-                    cursor=cursor
+                    cursor=cursor,
+                    keys=space_keys_filter
                 )
 
                 # Check response
@@ -530,9 +623,15 @@ class ConfluenceConnector(BaseConnector):
 
         Uses offset-based pagination with modification time filtering for incremental sync.
         Creates WebpageRecord for each page with proper hierarchy (parent page) and space assignment.
+
+        Args:
+            space_key: The space key to sync pages from
         """
         try:
-            self.logger.info("Starting page synchronization...")
+            # Get indexing filter settings (default=True means index if not configured)
+            pages_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES)
+            page_comments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGE_COMMENTS)
+            page_attachments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGE_ATTACHMENTS)
 
             # Get last sync checkpoint
             sync_point_key = generate_record_sync_point_key(
@@ -541,13 +640,33 @@ class ConfluenceConnector(BaseConnector):
             last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
 
-            # Build modified_after parameter for incremental sync
+            # Build modified_after parameter - use the LATEST of filter and checkpoint
+            filter_modified_after = self.sync_filters.get_value(SyncFilterKey.MODIFIED_AFTER)[0]
+
             modified_after = None
-            if last_sync_time:
-                self.logger.info(f"🔄 Incremental sync: Fetching pages modified after {last_sync_time}")
+            if filter_modified_after and last_sync_time:
+                # Use the latest (max) of both
+                modified_after = max(filter_modified_after, last_sync_time)
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {filter_modified_after}, checkpoint: {last_sync_time})")
+            elif filter_modified_after:
+                modified_after = filter_modified_after
+                self.logger.info(f"🔍 Using filter: Fetching pages modified after {modified_after}")
+            elif last_sync_time:
                 modified_after = last_sync_time
+                self.logger.info(f"🔄 Incremental sync: Fetching pages modified after {modified_after}")
             else:
                 self.logger.info("🆕 Full sync: Fetching all pages (first time)")
+
+            # Expand properties for page API call
+            expand_properties = [
+                "ancestors",
+                "history.lastUpdated",
+                "space",
+                "children.attachment",
+                "children.attachment.history.lastUpdated",
+                "children.attachment.version",
+                "childTypes.comment"
+            ]
 
             # Pagination variables
             batch_size = 50
@@ -568,7 +687,7 @@ class ConfluenceConnector(BaseConnector):
                     space_key=space_key,
                     order_by="lastModified",
                     sort_order="asc",
-                    expand="ancestors,history.lastUpdated,space,children.attachment,children.attachment.history.lastUpdated,children.attachment.version,childTypes.comment"
+                    expand=",".join(expand_properties)
                 )
 
                 # Check response
@@ -606,6 +725,10 @@ class ConfluenceConnector(BaseConnector):
                         if not webpage_record:
                             continue
 
+                        # Set indexing status based on filter
+                        if not pages_indexing_enabled:
+                            webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                         # Fetch page permissions
                         permissions = await self._fetch_page_permissions(page_id)
                         total_permissions_synced += len(permissions)
@@ -635,6 +758,9 @@ class ConfluenceConnector(BaseConnector):
                                     )
 
                                     if attachment_record:
+                                        # Set indexing status based on filter
+                                        if not page_attachments_indexing_enabled:
+                                            attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
                                         # Attachments inherit permissions from parent page
                                         records_with_permissions.append((attachment_record, permissions))
                                         total_attachments_synced += 1
@@ -644,7 +770,7 @@ class ConfluenceConnector(BaseConnector):
                                     self.logger.error(f"❌ Failed to process attachment: {att_error}")
                                     continue
 
-                        # Process comments for this page (if enabled)
+                        # Process comments for this page
                         child_types = page_data.get("childTypes", {})
                         comment_info = child_types.get("comment", {})
                         has_comments = comment_info.get("value", False)
@@ -660,6 +786,10 @@ class ConfluenceConnector(BaseConnector):
                                 permissions,
                                 space_id
                             )
+                            # Set indexing status for comments if disabled
+                            for comment_record, comment_permissions in footer_comments:
+                                if not page_comments_indexing_enabled:
+                                    comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
                             records_with_permissions.extend(footer_comments)
 
                             # Fetch inline comments
@@ -670,6 +800,10 @@ class ConfluenceConnector(BaseConnector):
                                 permissions,
                                 space_id
                             )
+                            # Set indexing status for comments if disabled
+                            for comment_record, comment_permissions in inline_comments:
+                                if not page_comments_indexing_enabled:
+                                    comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
                             records_with_permissions.extend(inline_comments)
 
                             total_comments = len(footer_comments) + len(inline_comments)
@@ -712,9 +846,17 @@ class ConfluenceConnector(BaseConnector):
         Uses cursor-based pagination with modification time filtering for incremental sync.
         Creates WebpageRecord for each blogpost with attachments.
         Blogposts are flat (no parent hierarchy) and connected directly to space.
+
+        Args:
+            space_key: The space key to sync blogposts from
         """
         try:
             self.logger.info(f"Starting blogpost synchronization for space {space_key}...")
+
+            # Get indexing filter settings (default=True means index if not configured)
+            blogposts_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOSTS)
+            blogpost_comments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOST_COMMENTS)
+            blogpost_attachments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOST_ATTACHMENTS)
 
             # Get last sync checkpoint
             sync_point_key = generate_record_sync_point_key(
@@ -723,13 +865,31 @@ class ConfluenceConnector(BaseConnector):
             last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
 
-            # Build modified_after parameter for incremental sync
+            # Build modified_after parameter - use the LATEST of filter and checkpoint
+            filter_modified_after = self.sync_filters.get_value(SyncFilterKey.MODIFIED_AFTER)[0]
+
             modified_after = None
-            if last_sync_time:
-                self.logger.info(f"🔄 Incremental sync: Fetching blogposts modified after {last_sync_time}")
+            if filter_modified_after and last_sync_time:
+                # Use the latest (max) of both
+                modified_after = max(filter_modified_after, last_sync_time)
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {filter_modified_after}, checkpoint: {last_sync_time})")
+            elif filter_modified_after:
+                modified_after = filter_modified_after
+                self.logger.info(f"🔍 Using filter: Fetching blogposts modified after {modified_after}")
+            elif last_sync_time:
                 modified_after = last_sync_time
+                self.logger.info(f"🔄 Incremental sync: Fetching blogposts modified after {modified_after}")
             else:
                 self.logger.info("🆕 Full sync: Fetching all blogposts (first time)")
+
+            # Expand properties for blogpost API call
+            expand_properties = [
+                "history.lastUpdated",
+                "space",
+                "children.attachment",
+                "children.attachment.history.lastUpdated",
+                "children.attachment.version"
+            ]
 
             # Pagination variables
             batch_size = 50
@@ -750,7 +910,7 @@ class ConfluenceConnector(BaseConnector):
                     space_key=space_key,
                     order_by="lastModified",
                     sort_order="asc",
-                    expand="history.lastUpdated,space,children.attachment,children.attachment.history.lastUpdated,children.attachment.version"
+                    expand=",".join(expand_properties)
                 )
 
                 # Check response
@@ -788,6 +948,10 @@ class ConfluenceConnector(BaseConnector):
                         if not webpage_record:
                             continue
 
+                        # Set indexing status based on filter
+                        if not blogposts_indexing_enabled:
+                            webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                         # Fetch blogpost permissions using same method as pages
                         permissions = await self._fetch_page_permissions(blogpost_id)
                         total_permissions_synced += len(permissions)
@@ -812,6 +976,9 @@ class ConfluenceConnector(BaseConnector):
                         )
 
                         for comment_record, comment_permissions in inline_comments:
+                            # Set indexing status based on filter
+                            if not blogpost_comments_indexing_enabled:
+                                comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
                             records_with_permissions.append((comment_record, comment_permissions))
                             total_comments_synced += 1
 
@@ -826,6 +993,9 @@ class ConfluenceConnector(BaseConnector):
                         )
 
                         for comment_record, comment_permissions in footer_comments:
+                            # Set indexing status based on filter
+                            if not blogpost_comments_indexing_enabled:
+                                comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
                             records_with_permissions.append((comment_record, comment_permissions))
                             total_comments_synced += 1
 
@@ -846,6 +1016,9 @@ class ConfluenceConnector(BaseConnector):
                                     )
 
                                     if attachment_record:
+                                        # Set indexing status based on filter
+                                        if not blogpost_attachments_indexing_enabled:
+                                            attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
                                         # Attachments inherit permissions from parent blogpost
                                         records_with_permissions.append((attachment_record, permissions))
                                         total_attachments_synced += 1
