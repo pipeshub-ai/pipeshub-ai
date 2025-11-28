@@ -40,7 +40,8 @@ interface UploadManagerProps {
   onClose: () => void;
   knowledgeBaseId: string | null | undefined;
   folderId: string | null | undefined;
-  onUploadSuccess: (message?: string) => Promise<void>;
+  onUploadSuccess: (message?: string, records?: any[]) => Promise<void>;
+  onUploadStart?: (files: string[], kbId: string, folderId?: string) => void;
 }
 
 interface ProcessedFile {
@@ -68,6 +69,7 @@ export default function UploadManager({
   knowledgeBaseId,
   folderId,
   onUploadSuccess,
+  onUploadStart,
 }: UploadManagerProps) {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -265,6 +267,21 @@ export default function UploadManager({
     try {
       // Prepare batches
       const valid = fileStats.validFiles;
+      
+      // Notify parent component that uploads have started
+      if (onUploadStart && knowledgeBaseId) {
+        const fileNames = valid.map((f) => f.file.name || f.path);
+        onUploadStart(fileNames, knowledgeBaseId, folderId || undefined);
+      }
+      
+      // Close dialog immediately after upload starts to show notification instead
+      // This prevents both dialog and notification from showing at the same time
+      // Close after a brief delay to ensure upload has initiated
+      setTimeout(() => {
+        if (!uploadError.show) {
+          onClose();
+        }
+      }, 500); // Small delay to ensure upload has started
       const perRequest = Math.min(BATCH_SIZE, maxFilesPerRequest);
       const batches = chunkArray(valid, perRequest);
       const totalFiles = valid.length;
@@ -323,6 +340,7 @@ export default function UploadManager({
       // Concurrency-controlled workers
       let nextIndex = 0;
       const worker = async () => {
+        const results: any[] = [];
         // eslint-disable-next-line no-constant-condition
         while (true) {
           const idx = nextIndex;
@@ -333,7 +351,7 @@ export default function UploadManager({
 
           try {
             // eslint-disable-next-line no-await-in-loop
-            await axios.post(url, formData, {
+            const response = await axios.post(url, formData, {
               headers: { 'Content-Type': 'multipart/form-data' },
               onUploadProgress: (progressEvent) => {
                 if (progressEvent.total) {
@@ -348,15 +366,21 @@ export default function UploadManager({
             completedBatches.add(idx);
             delete batchProgress[idx];
             updateProgress();
+            
+            // Store response data for optimistic UI updates
+            results.push(response.data);
           } catch (err) {
             delete batchProgress[idx];
             throw err;
           }
         }
+        return results;
       };
 
       const workers = Array.from({ length: Math.min(CONCURRENCY, batches.length) }, () => worker());
-      await Promise.all(workers);
+      const workerResults = await Promise.all(workers);
+      // Flatten results from all workers
+      const responses = workerResults.flat();
 
       setUploadProgress(100);
       setUploadStatus({
@@ -366,8 +390,16 @@ export default function UploadManager({
         totalFiles,
       });
 
+      // Collect all records from responses for optimistic UI update
+      const allRecords: any[] = [];
+      responses.forEach((response) => {
+        if (response?.data?.records && Array.isArray(response.data.records)) {
+          allRecords.push(...response.data.records);
+        }
+      });
+
       const successMessage = `Successfully uploaded ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
-      await onUploadSuccess(successMessage);
+      await onUploadSuccess(successMessage, allRecords);
       handleClose();
     } catch (error: any) {
       // Use processed error message from axios interceptor if available

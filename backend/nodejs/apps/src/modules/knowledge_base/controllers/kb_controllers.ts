@@ -3,8 +3,6 @@ import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
 import { RecordRelationService } from '../services/kb.relation.service';
-import { IRecordDocument } from '../types/record';
-import { IFileRecordDocument } from '../types/file_record';
 import {
   BadRequestError,
   ForbiddenError,
@@ -14,9 +12,14 @@ import {
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
-  saveFileToStorageAndGetDocumentId,
   uploadNextVersionToStorage,
+  createPlaceholderDocument,
+  processUploadsInBackground,
+  FileUploadMetadata,
+  PlaceholderResultWithMetadata,
 } from '../utils/utils';
+import { IRecordDocument } from '../types/record';
+import { IFileRecordDocument } from '../types/file_record';
 import {
   INDEXING_STATUS,
   ORIGIN_TYPE,
@@ -633,9 +636,10 @@ export const deleteFolder =
 //  Upload records in KB along with folder creation and folder record creation new controller
 export const uploadRecordsToKB =
   (
-    recordRelationService: RecordRelationService,
+    _recordRelationService: RecordRelationService,
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
+    notificationService?: any, // NotificationService - optional
   ) =>
   async (
     req: AuthenticatedUserRequest,
@@ -671,7 +675,7 @@ export const uploadRecordsToKB =
         );
       }
 
-      console.log('📦 Processing optimized upload:', {
+      logger.info('📦 Processing optimized upload', {
         totalFiles: files.length,
         kbId,
         userId,
@@ -680,8 +684,8 @@ export const uploadRecordsToKB =
 
       const currentTime = Date.now();
 
-      // Process files and create records (storage operations)
-      const processedFiles = [];
+      // STEP 1: Create all placeholder documents first (fast operation)
+      const placeholderResults: PlaceholderResultWithMetadata[] = [];
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
@@ -698,9 +702,10 @@ export const uploadRecordsToKB =
         const extension = fileName.includes('.')
           ? fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase()
           : null;
-        
+
         // Use correct MIME type mapping instead of browser detection
         const correctMimeType = (extension && getMimeType(extension)) || mimetype;
+
         // Generate unique ID for the record
         const key: string = uuidv4();
         const webUrl = `/record/${key}`;
@@ -710,12 +715,51 @@ export const uploadRecordsToKB =
             ? lastModified
             : currentTime;
 
-        // Create record structure
+        // Create file metadata structure
+        const metadata: FileUploadMetadata = {
+          file,
+          filePath,
+          fileName,
+          extension,
+          correctMimeType,
+          key,
+          webUrl,
+          validLastModified,
+          size,
+        };
+
+        // Create placeholder document (fast, doesn't upload file yet)
+        const placeholderResult = await createPlaceholderDocument(
+          req,
+          file,
+          fileName,
+          isVersioned,
+          keyValueStoreService,
+          appConfig.storage,
+        );
+
+        placeholderResults.push({
+          placeholderResult,
+          metadata,
+        });
+      }
+
+      logger.info('✅ All placeholders created, returning response to frontend', {
+        totalFiles: files.length,
+        uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
+      });
+
+      // STEP 2: Build placeholder records for optimistic UI update (Google Drive-like experience)
+      const placeholderRecords = placeholderResults.map((result) => {
+        const { placeholderResult, metadata } = result;
+        const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
+
+        // Create record structure matching the format expected by frontend
         const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
-          recordName: fileName,
-          externalRecordId: '',
+          recordName: placeholderResult.documentName,
+          externalRecordId: placeholderResult.documentId,
           recordType: RECORD_TYPE.FILE,
           origin: ORIGIN_TYPE.UPLOAD,
           createdAtTimestamp: currentTime,
@@ -733,69 +777,77 @@ export const uploadRecordsToKB =
         const fileRecord: IFileRecordDocument = {
           _key: key,
           orgId: orgId,
-          name: fileName,
+          name: placeholderResult.documentName,
           isFile: true,
           extension: extension,
           mimeType: correctMimeType,
           sizeInBytes: size,
           webUrl: webUrl,
-          // path: filePath,
         };
 
-        // Save file to storage and get document ID
-        const { documentId, documentName } =
-          await saveFileToStorageAndGetDocumentId(
-            req,
-            file,
-            fileName,
-            isVersioned,
-            record,
-            fileRecord,
-            keyValueStoreService,
-            appConfig.storage,
-            recordRelationService,
-          );
-
-        // Update record and fileRecord with storage info
-        record.recordName = documentName;
-        record.externalRecordId = documentId;
-        fileRecord.name = documentName;
-
-        processedFiles.push({
+        return {
           record,
           fileRecord,
-          filePath,
+          filePath: metadata.filePath,
           lastModified: validLastModified,
-        });
-      }
+        };
+      });
 
-      console.log('✅ Files processed, calling Python service');
+      // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
+      // Frontend can display these records immediately with a "processing" status
+      res.status(200).json({
+        message: 'Upload initiated successfully',
+        totalFiles: files.length,
+        status: 'processing',
+        records: placeholderRecords.map((pr) => ({
+          _key: pr.record._key,
+          recordName: pr.record.recordName,
+          externalRecordId: pr.record.externalRecordId,
+          recordType: pr.record.recordType,
+          origin: pr.record.origin,
+          indexingStatus: 'PROCESSING', // Special status to indicate background processing
+          createdAtTimestamp: pr.record.createdAtTimestamp,
+          updatedAtTimestamp: pr.record.updatedAtTimestamp,
+          sourceCreatedAtTimestamp: pr.record.sourceCreatedAtTimestamp,
+          sourceLastModifiedTimestamp: pr.record.sourceLastModifiedTimestamp,
+          version: pr.record.version,
+          webUrl: pr.record.webUrl,
+          mimeType: pr.record.mimeType,
+          fileRecord: {
+            _key: pr.fileRecord._key,
+            name: pr.fileRecord.name,
+            extension: pr.fileRecord.extension,
+            mimeType: pr.fileRecord.mimeType,
+            sizeInBytes: pr.fileRecord.sizeInBytes,
+            webUrl: pr.fileRecord.webUrl,
+          },
+        })),
+      });
 
-      const response = await executeConnectorCommand(
+      // STEP 3: Process uploads and call Python service in background (non-blocking)
+      // This runs after the response is sent - uploads sequentially, then calls Python
+      processUploadsInBackground(
+        placeholderResults,
+        orgId,
+        userId,
+        currentTime,
         `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
-        HttpMethod.POST,
         req.headers as Record<string, string>,
-        {
-          files: processedFiles.map((pf) => ({
-            record: pf.record,
-            fileRecord: pf.fileRecord,
-            filePath: pf.filePath,
-            lastModified: pf.lastModified,
-          })),
-        },
-      );
-
-      handleConnectorResponse(
-        response,
-        res,
-        'Upload not found',
-        'Failed to process upload',
-      );
+        logger,
+        notificationService,
+      ).catch((error) => {
+        logger.error('Background processing error (non-fatal)', {
+          error: error.message,
+          stack: error.stack,
+          kbId,
+          userId,
+        });
+      });
     } catch (error: any) {
-      console.error('❌ Record upload failed:', {
+      logger.error('❌ Record upload failed', {
         error: error.message,
         userId: req.user?.userId,
-        kbId: req.body.kb_id,
+        kbId: req.params.kbId,
       });
       const backendError = handleBackendError(error, 'Record upload api');
       next(backendError);
@@ -804,9 +856,10 @@ export const uploadRecordsToKB =
 
 export const uploadRecordsToFolder =
   (
-    recordRelationService: RecordRelationService,
+    _recordRelationService: RecordRelationService,
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
+    notificationService?: any, // NotificationService - optional
   ) =>
   async (
     req: AuthenticatedUserRequest,
@@ -844,7 +897,7 @@ export const uploadRecordsToFolder =
         );
       }
 
-      console.log('📦 Processing folder upload:', {
+      logger.info('📦 Processing folder upload', {
         totalFiles: files.length,
         kbId,
         folderId,
@@ -854,8 +907,8 @@ export const uploadRecordsToFolder =
 
       const currentTime = Date.now();
 
-      // Process files and create records (storage operations)
-      const processedFiles = [];
+      // STEP 1: Create all placeholder documents first (fast operation)
+      const placeholderResults: PlaceholderResultWithMetadata[] = [];
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
@@ -885,12 +938,51 @@ export const uploadRecordsToFolder =
             ? lastModified
             : currentTime;
 
-        // Create record structure
+        // Create file metadata structure
+        const metadata: FileUploadMetadata = {
+          file,
+          filePath,
+          fileName,
+          extension,
+          correctMimeType,
+          key,
+          webUrl,
+          validLastModified,
+          size,
+        };
+
+        // Create placeholder document (fast, doesn't upload file yet)
+        const placeholderResult = await createPlaceholderDocument(
+          req,
+          file,
+          fileName,
+          isVersioned,
+          keyValueStoreService,
+          appConfig.storage,
+        );
+
+        placeholderResults.push({
+          placeholderResult,
+          metadata,
+        });
+      }
+
+      logger.info('✅ All placeholders created, returning response to frontend', {
+        totalFiles: files.length,
+        uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
+      });
+
+      // STEP 2: Build placeholder records for optimistic UI update (Google Drive-like experience)
+      const placeholderRecords = placeholderResults.map((result) => {
+        const { placeholderResult, metadata } = result;
+        const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
+
+        // Create record structure matching the format expected by frontend
         const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
-          recordName: fileName,
-          externalRecordId: '',
+          recordName: placeholderResult.documentName,
+          externalRecordId: placeholderResult.documentId,
           recordType: RECORD_TYPE.FILE,
           origin: ORIGIN_TYPE.UPLOAD,
           createdAtTimestamp: currentTime,
@@ -908,68 +1000,75 @@ export const uploadRecordsToFolder =
         const fileRecord: IFileRecordDocument = {
           _key: key,
           orgId: orgId,
-          name: fileName,
+          name: placeholderResult.documentName,
           isFile: true,
           extension: extension,
           mimeType: correctMimeType,
           sizeInBytes: size,
           webUrl: webUrl,
-          // path: filePath,
         };
 
-        // Save file to storage and get document ID
-        const { documentId, documentName } =
-          await saveFileToStorageAndGetDocumentId(
-            req,
-            file,
-            fileName,
-            isVersioned,
-            record,
-            fileRecord,
-            keyValueStoreService,
-            appConfig.storage,
-            recordRelationService,
-          );
-
-        // Update record and fileRecord with storage info
-        record.recordName = documentName;
-        record.externalRecordId = documentId;
-        fileRecord.name = documentName;
-
-        processedFiles.push({
+        return {
           record,
           fileRecord,
-          filePath,
+          filePath: metadata.filePath,
           lastModified: validLastModified,
-        });
-      }
+        };
+      });
 
-      console.log(
-        '✅ Files processed, calling Python service for folder upload',
-      );
+      // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
+      // Frontend can display these records immediately with a "processing" status
+      res.status(200).json({
+        message: 'Upload initiated successfully',
+        totalFiles: files.length,
+        status: 'processing',
+        records: placeholderRecords.map((pr) => ({
+          _key: pr.record._key,
+          recordName: pr.record.recordName,
+          externalRecordId: pr.record.externalRecordId,
+          recordType: pr.record.recordType,
+          origin: pr.record.origin,
+          indexingStatus: 'PROCESSING', // Special status to indicate background processing
+          createdAtTimestamp: pr.record.createdAtTimestamp,
+          updatedAtTimestamp: pr.record.updatedAtTimestamp,
+          sourceCreatedAtTimestamp: pr.record.sourceCreatedAtTimestamp,
+          sourceLastModifiedTimestamp: pr.record.sourceLastModifiedTimestamp,
+          version: pr.record.version,
+          webUrl: pr.record.webUrl,
+          mimeType: pr.record.mimeType,
+          fileRecord: {
+            _key: pr.fileRecord._key,
+            name: pr.fileRecord.name,
+            extension: pr.fileRecord.extension,
+            mimeType: pr.fileRecord.mimeType,
+            sizeInBytes: pr.fileRecord.sizeInBytes,
+            webUrl: pr.fileRecord.webUrl,
+          },
+        })),
+      });
 
-      const response = await executeConnectorCommand(
+      // STEP 4: Process uploads and call Python service in background (non-blocking)
+      // This runs after the response is sent - uploads sequentially, then calls Python
+      processUploadsInBackground(
+        placeholderResults,
+        orgId,
+        userId,
+        currentTime,
         `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
-        HttpMethod.POST,
         req.headers as Record<string, string>,
-        {
-          files: processedFiles.map((pf) => ({
-            record: pf.record,
-            fileRecord: pf.fileRecord,
-            filePath: pf.filePath,
-            lastModified: pf.lastModified,
-          })),
-        },
-      );
-
-      handleConnectorResponse(
-        response,
-        res,
-        'Upload not found',
-        'Failed to process upload',
-      );
+        logger,
+        notificationService,
+      ).catch((error) => {
+        logger.error('Background processing error (non-fatal)', {
+          error: error.message,
+          stack: error.stack,
+          kbId,
+          folderId,
+          userId,
+        });
+      });
     } catch (error: any) {
-      console.error('❌ Folder record upload failed:', {
+      logger.error('❌ Folder record upload failed', {
         error: error.message,
         userId: req.user?.userId,
         kbId: req.params.kbId,
