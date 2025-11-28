@@ -138,7 +138,7 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
 
 # Configuration for Qdrant limits based on context length.
 VECTOR_DB_LIMIT_TIERS = [
-    (17000, 187),  # For context lengths up to 17k
+    (17000, 65),  # For context lengths up to 17k
     (33000, 231),  # For context lengths up to 33k
     (65000, 320),  # For context lengths up to 65k
 ]
