@@ -572,6 +572,7 @@ class Processor:
             row_counter = 1
             domain_metadata = None
             sentence_data = []
+            metadata = None
 
             for sheet_result in all_sheets_result:
                 for table in sheet_result["tables"]:
