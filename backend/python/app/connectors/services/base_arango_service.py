@@ -7728,12 +7728,14 @@ class BaseArangoService:
         for file_data in files:
             _normalized = self._normalize_name(file_data["fileRecord"].get("name"))
             file_name = _normalized if _normalized is not None else ""
+            mime_type = file_data["fileRecord"].get("mimeType")
 
             # Check for name conflicts using the updated validation
             conflict_result = await self._check_name_conflict_in_parent(
                 kb_id=kb_id,
                 parent_folder_id=parent_folder_id,
                 item_name=file_name,
+                mime_type=mime_type,
                 transaction=transaction
             )
 
@@ -11744,11 +11746,25 @@ class BaseArangoService:
         kb_id: str,
         parent_folder_id: Optional[str],
         item_name: str,
+        mime_type: Optional[str] = None,
         transaction: Optional[TransactionDatabase] = None
     ) -> Dict:
         """
-        Check if an item (folder or file) name already exists in the target parent location
-        Handles different field names: folders have 'name', records have 'recordName'
+        Check if an item (folder or file) name already exists in the target parent location.
+        Handles different field names: folders have 'name', records have 'recordName'.
+
+        For files: Only conflicts if same name AND same MIME type (allows same name with different MIME types).
+        For folders: Conflicts if same name (folders must have unique names).
+
+        Args:
+            kb_id: Knowledge base ID
+            parent_folder_id: Parent folder ID (None for KB root)
+            item_name: Name of the item to check
+            mime_type: Optional MIME type - if provided, checking a file; if None, checking a folder
+            transaction: Optional transaction database context
+
+        Returns:
+            Dict with 'has_conflict' (bool) and 'conflicts' (list) keys
         """
         try:
             db = transaction if transaction else self.db
@@ -11756,57 +11772,73 @@ class BaseArangoService:
             # Prepare normalized lowercase variants (NFC/NFD) to catch visually-identical names
             name_variants = self._normalized_name_variants_lower(item_name)
 
-            if parent_folder_id:
-                # Check siblings in folder
+            # Determine the parent reference based on whether we're in a folder or KB root
+            parent_from = f"files/{parent_folder_id}" if parent_folder_id else f"recordGroups/{kb_id}"
+
+            bind_vars = {
+                "parent_from": parent_from,
+                "name_variants": name_variants,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@files_collection": CollectionNames.FILES.value,
+            }
+
+            if mime_type:
+                # Checking a FILE: Only conflict if same name AND same MIME type
+                # Files are stored as records, and we can filter by mimeType on the record before expensive lookups
+                # edge._to for files points to records/{record_id}
                 query = """
                 FOR edge IN @@record_relations
                     FILTER edge._from == @parent_from
                     FILTER edge.relationshipType == "PARENT_CHILD"
+                    // edge._to for files points to records/{record_id}
+                    FILTER edge._to LIKE "records/%"
                     LET child = DOCUMENT(edge._to)
                     FILTER child != null
-                    // Get the appropriate name field based on document type
-                    LET child_name = child.isFile == false ? child.name : child.recordName
-                    LET child_name_l = LOWER(child_name)
+                    // Verify it's a record and filter by mimeType early to reduce lookups
+                    FILTER child.recordName != null
+                    FILTER child.mimeType == @mime_type
+                    LET child_name_l = LOWER(child.recordName)
                     FILTER child_name_l IN @name_variants
+                    // Get the associated file document to confirm it's a file
+                    // Records and files share the same _key
+                    LET file_doc = DOCUMENT(@@files_collection, child._key)
+                    FILTER file_doc != null AND file_doc.isFile == true
                     RETURN {
                         id: child._key,
-                        name: child_name,
-                        type: child.isFile == false ? "folder" : "record",
-                        document_type: child.isFile == false ? "files" : "records"
+                        name: child.recordName,
+                        type: "record",
+                        document_type: "records",
+                        mimeType: file_doc.mimeType
                     }
                 """
-
-                cursor = db.aql.execute(query, bind_vars={
-                    "parent_from": f"files/{parent_folder_id}",
-                    "name_variants": name_variants,
-                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
-                })
+                bind_vars["mime_type"] = mime_type
             else:
-                # Check siblings in KB root
+                # Checking a FOLDER: Conflict if same name (folders must be unique)
+                # Folders are stored in files collection with isFile=false
+                # edge._to for folders points to files/{folder_id}
                 query = """
                 FOR edge IN @@record_relations
-                    FILTER edge._from == @kb_from
+                    FILTER edge._from == @parent_from
                     FILTER edge.relationshipType == "PARENT_CHILD"
+                    // edge._to for folders points to files/{folder_id}
+                    FILTER edge._to LIKE "files/%"
                     LET child = DOCUMENT(edge._to)
                     FILTER child != null
-                    // Get the appropriate name field based on document type
-                    LET child_name = child.isFile == false ? child.name : child.recordName
+                    // Only check folders (exclude files/records)
+                    FILTER child.isFile == false
+                    LET child_name = child.name
+                    FILTER child_name != null
                     LET child_name_l = LOWER(child_name)
                     FILTER child_name_l IN @name_variants
                     RETURN {
                         id: child._key,
                         name: child_name,
-                        type: child.isFile == false ? "folder" : "record",
-                        document_type: child.isFile == false ? "files" : "records"
+                        type: "folder",
+                        document_type: "files"
                     }
                 """
 
-                cursor = db.aql.execute(query, bind_vars={
-                    "kb_from": f"recordGroups/{kb_id}",
-                    "name_variants": name_variants,
-                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
-                })
-
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
             conflicts = list(cursor)
 
             return {

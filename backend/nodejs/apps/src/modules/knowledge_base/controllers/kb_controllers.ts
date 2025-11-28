@@ -10,7 +10,6 @@ import {
   ForbiddenError,
   InternalServerError,
   NotFoundError,
-  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
@@ -28,114 +27,13 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { getMimeType } from '../../storage/mimetypes/mimetypes';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
-  ConnectorServiceCommand,
-  ConnectorServiceCommandOptions,
-} from '../../../libs/commands/connector_service/connector.service.command';
-
+  executeConnectorCommand,
+  handleBackendError,
+  handleConnectorResponse,
+} from '../../tokens_manager/utils/connector.utils';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
-
-const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
-  'Connector Service is currently unavailable. Please check your network connection or try again later.';
-
-const handleBackendError = (error: any, operation: string): Error => {
-  if (
-    (error?.cause && error.cause.code === 'ECONNREFUSED') ||
-    (typeof error?.message === 'string' &&
-      error.message.includes('fetch failed'))
-  ) {
-    return new ServiceUnavailableError(
-      CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
-      error,
-    );
-  }
-
-  if (error.response) {
-    const { status, data } = error.response;
-    const errorDetail =
-      data?.error?.message ||
-      data?.detail ||
-      data?.reason ||
-      data?.message ||
-      error?.message ||
-      'Unknown error';
-
-    logger.error(`Backend error during ${operation}`, {
-      status,
-      errorDetail,
-      fullResponse: data,
-    });
-
-    if (errorDetail === 'ECONNREFUSED') {
-      throw new InternalServerError(
-        CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
-        error,
-      );
-    }
-
-    switch (status) {
-      case 400:
-        return new BadRequestError(errorDetail);
-      case 401:
-        return new UnauthorizedError(errorDetail);
-      case 403:
-        return new ForbiddenError(errorDetail);
-      case 404:
-        return new NotFoundError(errorDetail);
-      case 500:
-        return new InternalServerError(errorDetail);
-      default:
-        return new InternalServerError(`Backend error: ${errorDetail}`);
-    }
-  }
-
-  if (error.request) {
-    logger.error(`No response from backend during ${operation}`);
-    return new InternalServerError('Backend service unavailable');
-  }
-
-  return new InternalServerError(`${operation} failed: ${error.message}`);
-};
-
-const executeConnectorCommand = async (
-  uri: string,
-  method: HttpMethod,
-  headers: Record<string, string>,
-  body?: any,
-) => {
-  const connectorCommandOptions: ConnectorServiceCommandOptions = {
-    uri,
-    method,
-    headers: {
-      ...headers,
-      'Content-Type': 'application/json',
-    },
-    ...(body && { body }),
-  };
-  const connectorCommand = new ConnectorServiceCommand(connectorCommandOptions);
-  return await connectorCommand.execute();
-};
-
-const handleConnectorResponse = (
-  connectorResponse: any,
-  res: Response,
-  notFoundMessage: string,
-  failureMessage: string,
-) => {
-  if (
-    connectorResponse &&
-    connectorResponse.statusCode !== 200 &&
-    connectorResponse.statusCode !== 201
-  ) {
-    throw new BadRequestError(failureMessage);
-  }
-  const connectorsData = connectorResponse.data;
-  if (!connectorsData) {
-    throw new NotFoundError(notFoundMessage);
-  }
-  res.status(200).json(connectorsData);
-};
 
 // Types and helpers for active connector validation
 interface ConnectorInfo {
@@ -204,8 +102,8 @@ export const createKnowledgeBase =
       handleConnectorResponse(
         response,
         res,
-        'Knowledge base not found',
-        'Failed to create knowledge base',
+        'Creating knowledge base',
+        'Knowledge base creation failed',
       );
       logger.info(`Knowledge base '${kbName}' created successfully`);
     } catch (error: any) {
@@ -241,8 +139,8 @@ export const getKnowledgeBase =
       handleConnectorResponse(
         response,
         res,
+        'Getting knowledge base',
         'Knowledge base not found',
-        'Failed to get knowledge base',
       );
     } catch (error: any) {
       logger.error('Error getting knowledge base', {
@@ -363,8 +261,8 @@ export const listKnowledgeBases =
       handleConnectorResponse(
         response,
         res,
-        'Knowledge base not found',
-        'Failed to get knowledge bases',
+        'Getting knowledge bases',
+        'Knowledge bases not found',
       );
 
       // Log successful retrieval
@@ -410,8 +308,8 @@ export const updateKnowledgeBase =
       handleConnectorResponse(
         response,
         res,
+        'Updating knowledge base',
         'Knowledge base not found',
-        'Failed to update knowledge base',
       );
     } catch (error: any) {
       logger.error('Error updating knowledge base', { error: error.message });
@@ -445,8 +343,8 @@ export const deleteKnowledgeBase =
       handleConnectorResponse(
         response,
         res,
+        'Deleting knowledge base',
         'Knowledge base not found',
-        'Failed to delete knowledge base',
       );
     } catch (error: any) {
       logger.error('Error deleting knowledge base', { error: error.message });
@@ -485,8 +383,8 @@ export const createRootFolder =
       handleConnectorResponse(
         response,
         res,
+        'Creating folder',
         'Folder not found',
-        'Failed to create folder',
       );
     } catch (error: any) {
       logger.error('Error creating folder for knowledge base', {
@@ -531,8 +429,8 @@ export const createNestedFolder =
       handleConnectorResponse(
         response,
         res,
+        'Creating nested folder',
         'Folder not found',
-        'Failed to create nested folder',
       );
     } catch (error: any) {
       logger.error('Error creating subfolder folder', {
@@ -574,8 +472,8 @@ export const updateFolder =
       handleConnectorResponse(
         response,
         res,
+        'Updating folder',
         'Folder not found',
-        'Failed to update folder',
       );
     } catch (error: any) {
       logger.error('Error updating folder for knowledge base', {
@@ -616,8 +514,8 @@ export const deleteFolder =
       handleConnectorResponse(
         response,
         res,
+        'Deleting folder',
         'Folder not found',
-        'Failed to delete folder',
       );
     } catch (error: any) {
       logger.error('Error deleting folder for knowledge base', {
@@ -969,8 +867,8 @@ export const uploadRecordsToFolder =
       handleConnectorResponse(
         response,
         res,
-        'Upload not found',
-        'Failed to process upload',
+        'Uploading records to KB',
+        'Records not found',
       );
     } catch (error: any) {
       console.error('❌ Folder record upload failed:', {
@@ -1338,8 +1236,8 @@ export const getKBContent =
       handleConnectorResponse(
         response,
         res,
+        'Getting KB records',
         'KB records not found',
-        'Failed to get KB records',
       );
 
       // Log successful retrieval
@@ -1494,8 +1392,8 @@ export const getFolderContents =
       handleConnectorResponse(
         response,
         res,
-        'KB records not found',
-        'Failed to get KB records',
+        'Getting folder contents',
+        'Folder contents not found',
       );
 
       // Log successful retrieval
@@ -1752,8 +1650,8 @@ export const getRecordById =
       handleConnectorResponse(
         response,
         res,
+        'Getting record by id',
         'Record not found',
-        'Failed to get record',
       );
 
       // Log successful retrieval
@@ -1794,7 +1692,7 @@ export const reindexRecord =
         response,
         res,
         'Record not found',
-        'Failed to reindex record',
+        'Record not reindexed',
       );
 
       // Log successful retrieval
@@ -1834,8 +1732,8 @@ export const deleteRecord =
       handleConnectorResponse(
         response,
         res,
-        'Record not found',
-        'Failed to delete record',
+        'Deleting record',
+        'Record not deleted',
       );
 
       // Log successful retrieval

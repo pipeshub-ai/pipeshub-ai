@@ -3,116 +3,15 @@ import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
-  ForbiddenError,
-  InternalServerError,
-  NotFoundError,
-  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
-import {
-  ConnectorServiceCommand,
-  ConnectorServiceCommandOptions,
-} from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-
+import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector.utils';
 const logger = Logger.getInstance({
   service: 'Connector Controller',
 });
 
-const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
-  'Connector Service is currently unavailable. Please check your network connection or try again later.';
-
-const handleBackendError = (error: any, operation: string): Error => {
-  if (error) {
-    if (
-      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
-      (typeof error?.message === 'string' &&
-        error.message.includes('fetch failed'))
-    ) {
-      return new ServiceUnavailableError(
-        CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
-        error,
-      );
-    }
-    
-    const { statusCode, data, message } = error;
-    const errorDetail =
-      data?.detail || data?.reason || data?.message || message || 'Unknown error';
-
-    logger.error(`Backend error during ${operation}`, {
-      statusCode,
-      errorDetail,
-      fullResponse: data,
-    });
-
-    if (errorDetail === 'ECONNREFUSED') {
-      throw new ServiceUnavailableError(
-        CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
-        error,
-      );
-    }
-
-    switch (statusCode) {
-      case 400:
-        return new BadRequestError(errorDetail);
-      case 401:
-        return new UnauthorizedError(errorDetail);
-      case 403:
-        return new ForbiddenError(errorDetail);
-      case 404:
-        return new NotFoundError(errorDetail);
-      case 500:
-        return new InternalServerError(errorDetail);
-      default:
-        return new InternalServerError(`Backend error: ${errorDetail}`);
-    }
-  }
-
-  if (error.request) {
-    logger.error(`No response from backend during ${operation}`);
-    return new InternalServerError('Backend service unavailable');
-  }
-
-  return new InternalServerError(`${operation} failed: ${error.message}`);
-};
-
-// Helper function to execute connector service commands
-const executeConnectorCommand = async (
-  uri: string,
-  method: HttpMethod,
-  headers: Record<string, string>,
-  body?: any,
-) => {
-  const connectorCommandOptions: ConnectorServiceCommandOptions = {
-    uri,
-    method,
-    headers: {
-      ...headers,
-      'Content-Type': 'application/json',
-    },
-    ...(body && { body }),
-  };
-  const connectorCommand = new ConnectorServiceCommand(connectorCommandOptions);
-  return await connectorCommand.execute();
-};
-
-// Helper function to handle common connector response logic
-const handleConnectorResponse = (
-  connectorResponse: any,
-  res: Response,
-  operation: string,
-  failureMessage: string,
-) => {
-  if (connectorResponse && connectorResponse.statusCode !== 200) {
-    throw handleBackendError(connectorResponse, operation);
-  }
-  const connectorsData = connectorResponse.data;
-  if (!connectorsData) {
-    throw new NotFoundError(`${operation} failed: ${failureMessage}`);
-  }
-  res.status(200).json(connectorsData);
-};
 
 export const getConnectors =
   (appConfig: AppConfig) =>
@@ -138,8 +37,8 @@ export const getConnectors =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Getting all connectors',
         'Connectors not found',
-        'get all connectors',
       );
     } catch (error: any) {
       logger.error('Error getting all connectors', {
@@ -175,8 +74,8 @@ export const getConnectorByName =
       handleConnectorResponse(
         connectorResponse,
         res,
-        'Connector not found',
         'get connector by name',
+        'Connector by name not found',
       );
     } catch (error: any) {
       logger.error('Error getting connector by name', {
@@ -212,8 +111,8 @@ export const getActiveConnectors =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Getting all active connectors',
         'Active connectors not found',
-        'get all active connectors',
       );
     } catch (error: any) {
       logger.error('Error getting all active connectors', {
@@ -252,8 +151,8 @@ export const getInactiveConnectors =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Getting all inactive connectors',
         'Inactive connectors not found',
-        'get all inactive connectors',
       );
     } catch (error: any) {
       logger.error('Error getting all inactive connectors', {
@@ -292,8 +191,8 @@ export const getConnectorConfig =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Getting connector config',
         'Connector config not found',
-        'get connector config',
       );
     } catch (error: any) {
       logger.error('Error getting connector config', {
@@ -335,8 +234,8 @@ export const updateConnectorConfig =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Updating connector config',
         'Connector config not found',
-        'update connector config',
       );
     } catch (error: any) {
       logger.error('Error updating connector config', {
@@ -372,8 +271,8 @@ export const getConnectorSchema =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Getting connector schema',
         'Connector schema not found',
-        'get connector schema',
       );
     } catch (error: any) {
       logger.error('Error getting connector schema', {
@@ -409,8 +308,8 @@ export const getConnectorConfigAndSchema =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Getting connector config and schema',
         'Connector config and schema not found',
-        'get connector config and schema',
       );
     } catch (error: any) {
       logger.error('Error getting connector config and schema', {
@@ -446,8 +345,8 @@ export const toggleConnector =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Toggling connector',
         'Connector not found',
-        'toggle connector',
       );
     } catch (error: any) {
       logger.error('Error toggling connector', {
@@ -488,8 +387,8 @@ export const getOAuthAuthorizationUrl =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Getting OAuth authorization url',
         'OAuth authorization url not found',
-        'get OAuth authorization url',
       );
     } catch (error: any) {
       logger.error('Error getting OAuth authorization url', {
@@ -528,8 +427,8 @@ export const getConnectorFilterOptions =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Getting connector filter options',
         'Connector filter options not found',
-        'get connector filter options',
       );
     } catch (error: any) {
       logger.error('Error getting connector filter options', {
@@ -573,8 +472,8 @@ export const saveConnectorFilterOptions =
       handleConnectorResponse(
         connectorResponse,
         res,
+        'Saving connector filter options',
         'Connector filter options not found',
-        'save connector filter options',
       );
     } catch (error: any) {
       logger.error('Error saving connector filter options', {
@@ -661,8 +560,8 @@ export const handleOAuthCallback =
       handleConnectorResponse(
         connectorResponse,
         res,
-        'handle OAuth callback failed',
-        'handle OAuth callback',
+        'Handling OAuth callback',
+        'OAuth callback failed',
       );
     } catch (error: any) {
       logger.error('Error handling OAuth callback', {
