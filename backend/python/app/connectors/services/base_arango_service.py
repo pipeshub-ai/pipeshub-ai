@@ -738,7 +738,7 @@ class BaseArangoService:
                 RETURN {{
                     type: 'RECORD_GROUP',
                     source: recordGroup,
-                    role: recordGroupToRecordEdge.role
+                    role: groupToRecordGroupEdge.role
                 }}
             )
             LET inheritedRecordGroupAccess = (
@@ -760,7 +760,7 @@ class BaseArangoService:
                 RETURN {{
                     type: 'NESTED_RECORD_GROUP',
                     source: childRecordGroup,
-                    role: childRgToRecordEdge.role
+                    role: groupToRgEdge.role
                 }}
             )
             LET directUserToRecordGroupAccess = (
@@ -779,7 +779,7 @@ class BaseArangoService:
                         RETURN {{
                             type: 'DIRECT_USER_RECORD_GROUP',
                             source: recordGroup,
-                            role: finalEdge.role,
+                            role: userToRgEdge.role,
                             depth: LENGTH(path.edges)
                         }}
             )
@@ -792,6 +792,27 @@ class BaseArangoService:
                     source: org,
                     role: permEdge.role
                 }}
+            )
+            LET orgRecordGroupAccess = (
+                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FILTER belongsEdge.entityType == 'ORGANIZATION'
+
+                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER orgToRgEdge.type == 'ORG'
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                            FILTER record._key == @recordId
+                            FILTER IS_SAME_COLLECTION("records", record)
+
+                            LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
+
+                            RETURN {{
+                                type: 'ORG_RECORD_GROUP',
+                                source: recordGroup,
+                                role: orgToRgEdge.role,
+                                depth: LENGTH(path.edges)
+                            }}
             )
             LET kbAccess = kb ? (
                 FOR permEdge IN @@permission
@@ -827,6 +848,7 @@ class BaseArangoService:
                 inheritedRecordGroupAccess,
                 directUserToRecordGroupAccess,
                 orgAccessPermissionEdge,
+                orgRecordGroupAccess,
                 kbAccess,
                 anyoneAccess
             )
@@ -1199,6 +1221,44 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
+            LET orgRecordGroupAccess = {
+                f'''(
+                    // User -> Organization -> Record Group -> Record (with nested record groups support)
+                    FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+
+                        // Org -> record_group permission
+                        FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id @@permission
+                            FILTER orgToRgEdge.type == "ORG"
+                            FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                            // Record group -> nested record groups (0 to 2 levels) -> record
+                            FOR record, edge, path IN 0..2 INBOUND recordGroup._id @@inherit_permissions
+                                // Only process if final vertex is a record (not another record group)
+                                FILTER IS_SAME_COLLECTION("records", record)
+
+                                FILTER record != null
+                                FILTER record.recordType != @drive_record_type
+                                FILTER record.isDeleted != true
+                                FILTER record.orgId == org_id OR record.orgId == null
+                                FILTER record.origin == "CONNECTOR"
+
+                                {folder_filter}
+                                {record_filter}
+
+                                // Get the role from the last edge in the path (the one connecting to the record)
+                                LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
+
+                                RETURN {{
+                                    record: record,
+                                    permission: {{
+                                        role: finalEdge.role,
+                                        type: finalEdge.type
+                                    }}
+                                }}
+                )''' if include_connector_records else '[]'
+            }
+
             LET recordGroupConnectorRecords = {
                 f'''(
                     // First hop: user -> group
@@ -1309,6 +1369,7 @@ class BaseArangoService:
                 connectorRecordsNewPermission,
                 groupConnectorRecordsNewPermission,
                 orgAccessPermission,
+                orgRecordGroupAccess,
                 recordGroupConnectorRecords,
                 inheritedRecordGroupConnectorRecords,
                 directUserToRecordGroupRecords
@@ -1489,6 +1550,35 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
+            LET orgRecordGroupKeys = {
+                f'''(
+                    // User -> Organization -> Record Group -> Record (with nested record groups support)
+                    FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+
+                        // Org -> record_group permission
+                        FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id @@permission
+                            FILTER orgToRgEdge.type == "ORG"
+                            FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                            // Record group -> nested record groups (0 to 2 levels) -> record
+                            FOR record, edge, path IN 0..2 INBOUND recordGroup._id @@inherit_permissions
+                                // Only process if final vertex is a record (not another record group)
+                                FILTER IS_SAME_COLLECTION("records", record)
+
+                                FILTER record != null
+                                FILTER record.recordType != @drive_record_type
+                                FILTER record.isDeleted != true
+                                FILTER record.orgId == org_id OR record.orgId == null
+                                FILTER record.origin == "CONNECTOR"
+
+                                {folder_filter}
+                                {record_filter}
+
+                                RETURN record._key
+                )''' if include_connector_records else '[]'
+            }
+
             LET recordGroupConnectorRecordsCount = {
                 f'''(
                     // First hop: user -> group
@@ -1574,7 +1664,14 @@ class BaseArangoService:
             }
 
             // Combine all keys and count unique ones
-            LET allNewPermissionKeys = UNION_DISTINCT(connectorKeysNewPermission, groupConnectorKeysNewPermission, orgAccessKeys, recordGroupConnectorRecordsCount, inheritedRecordGroupConnectorRecordsCount, directUserToRecordGroupKeys)
+            LET allNewPermissionKeys = UNION_DISTINCT(
+                connectorKeysNewPermission,
+                groupConnectorKeysNewPermission,
+                orgAccessKeys, orgRecordGroupKeys,
+                recordGroupConnectorRecordsCount,
+                inheritedRecordGroupConnectorRecordsCount,
+                directUserToRecordGroupKeys
+            )
             LET uniqueNewPermissionCount = LENGTH(UNIQUE(allNewPermissionKeys))
 
             // RETURN kbCount + connectorCount + uniqueNewPermissionCount
@@ -1688,6 +1785,43 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
+            LET orgRecordGroupRecordsFilter = {
+                f'''(
+                    // User -> Organization -> Record Group -> Record (with nested record groups support)
+                    FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+
+                        // Org -> record_group permission
+                        FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id @@permission
+                            FILTER orgToRgEdge.type == "ORG"
+                            FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                            // Record group -> nested record groups (0 to 2 levels) -> record
+                            FOR record, edge, path IN 0..2 INBOUND recordGroup._id @@inherit_permissions
+                                // Only process if final vertex is a record (not another record group)
+                                FILTER IS_SAME_COLLECTION("records", record)
+
+                                FILTER record != null
+                                FILTER record.recordType != @drive_record_type
+                                FILTER record.isDeleted != true
+                                FILTER record.orgId == org_id OR record.orgId == null
+                                FILTER record.origin == "CONNECTOR"
+
+                                {folder_filter}
+
+                                // Get the role from the last edge in the path
+                                LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
+
+                                RETURN {{
+                                    record: record,
+                                    permission: {{
+                                        role: finalEdge.role,
+                                        type: finalEdge.type
+                                    }}
+                                }}
+                )''' if include_connector_records else '[]'
+            }
+
             LET recordGroupConnectorRecordsFilter = {
                 f'''(
                     FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
@@ -1789,6 +1923,7 @@ class BaseArangoService:
                 allConnectorRecordsNewPermission,
                 allGroupConnectorRecordsNewPermission,
                 allOrgAccessRecords,
+                orgRecordGroupRecordsFilter,
                 recordGroupConnectorRecordsFilter,
                 inheritedRecordGroupConnectorRecordsFilter,
                 directUserToRecordGroupRecordsFilter
@@ -3263,6 +3398,28 @@ class BaseArangoService:
                     RETURN anyone_perm.role
             ) : null
 
+            LET anyone_record_group_permission = FIRST(
+                // User -> Organization -> RecordGroup -> Record (with nested record groups support)
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+
+                    // Org -> record_group permission
+                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id @@permission
+                        FILTER orgToRgEdge.type == "ORG"
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                        // Record group -> nested record groups (0 to 2 levels) -> record
+                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id @@inherit_permissions
+                            FILTER record._id == record_from
+                            FILTER IS_SAME_COLLECTION("records", record)
+
+                            LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
+                            RETURN finalEdge.role
+            )
+
             // 5. Check Drive-level access (if enabled)
             LET drive_access = @check_drive_inheritance ? FIRST(
                 // Get the file record to find its drive
@@ -3300,6 +3457,7 @@ class BaseArangoService:
                 nested_record_group_permission ? nested_record_group_permission :
                 domain_permission ? domain_permission :
                 anyone_permission ? anyone_permission :
+                anyone_record_group_permission ? anyone_record_group_permission :
                 drive_access ? drive_access :
                 null
             )
@@ -3314,6 +3472,7 @@ class BaseArangoService:
                     nested_record_group_permission ? "NESTED_RECORD_GROUP" :
                     domain_permission ? "DOMAIN" :
                     anyone_permission ? "ANYONE" :
+                    anyone_record_group_permission ? "ANYONE_RECORD_GROUP" :
                     drive_access ? "DRIVE_ACCESS" :
                     "NONE"
                 )
@@ -12147,38 +12306,53 @@ class BaseArangoService:
                 RETURN user
             )
 
+
+            // User -> Direct Records (via permission edges)
             LET directRecords = (
                 FOR records IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
 
+            // User -> Group -> Records (via belongs_to edges)
             LET groupRecords = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
 
+            // User -> Group -> Records (via permission edges)
             LET groupRecordsPermissionEdge = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER edge.type == 'GROUP' or edge.type == 'ROLE'
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
 
+            // User -> Organization -> Records (direct)
             LET orgRecords = (
                 FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                 RETURN DISTINCT records
             )
 
+            // User -> Organization -> RecordGroup -> Records (direct and inherited)
+            LET orgRecordGroupRecords = (
+                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+
+                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                            FILTER IS_SAME_COLLECTION("records", record)
+                            RETURN DISTINCT record
+            )
+
+            // User -> Group/Role -> RecordGroup -> Record
             LET recordGroupRecords = (
-                // User -> Group/Role -> RecordGroup -> Record
+
                 FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER userToGroupEdge.type == 'USER'
                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                 FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                FILTER groupToRecordGroupEdge.type == 'GROUP' OR groupToRecordGroupEdge.type == 'ROLE'
 
                 // Support nested RecordGroups (0..5 levels)
                 FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -12186,9 +12360,9 @@ class BaseArangoService:
                 RETURN DISTINCT record
             )
 
+            // User -> Group/Role -> RecordGroup -> Records (inherited)
             LET inheritedRecordGroupRecords = (
                 FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER userToRgEdge.type == 'USER'
                 FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
                 FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -12196,7 +12370,16 @@ class BaseArangoService:
                 RETURN DISTINCT record
             )
 
-            LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords, groupRecordsPermissionEdge, recordGroupRecords, inheritedRecordGroupRecords)
+            LET directAndGroupRecords = UNION_DISTINCT(
+                directRecords,
+                groupRecords,
+                orgRecords,
+                groupRecordsPermissionEdge,
+                orgRecordsPermissionEdge,
+                recordGroupRecords,
+                inheritedRecordGroupRecords,
+                orgRecordGroupRecords
+            )
 
             LET anyoneRecords = (
                 FOR records IN @@anyone

@@ -11,12 +11,14 @@ interface FormData {
   auth: Record<string, any>;
   sync: Record<string, any>;
   filters: Record<string, any>;
+  [key: string]: Record<string, any>; // Index signature for dynamic access
 }
 
 interface FormErrors {
   auth: Record<string, string>;
   sync: Record<string, string>;
   filters: Record<string, string>;
+  [key: string]: Record<string, string>; // Index signature for dynamic access
 }
 
 interface UseConnectorConfigProps {
@@ -36,13 +38,23 @@ interface UseConnectorConfigReturn {
   saveError: string | null;
   conditionalDisplay: Record<string, boolean>;
 
-  // Business OAuth state
+  // Business OAuth state (Google Workspace)
   adminEmail: string;
   adminEmailError: string | null;
   selectedFile: File | null;
   fileName: string | null;
   fileError: string | null;
   jsonData: Record<string, any> | null;
+
+  // SharePoint Certificate OAuth state
+  certificateFile: File | null;
+  certificateFileName: string | null;
+  certificateError: string | null;
+  certificateData: Record<string, any> | null;
+  privateKeyFile: File | null;
+  privateKeyFileName: string | null;
+  privateKeyError: string | null;
+  privateKeyData: string | null;
 
   // Actions
   handleFieldChange: (section: string, fieldName: string, value: any) => void;
@@ -56,6 +68,15 @@ interface UseConnectorConfigReturn {
   validateAdminEmail: (email: string) => boolean;
   isBusinessGoogleOAuthValid: () => boolean;
   fileInputRef: React.RefObject<HTMLInputElement>;
+
+  // SharePoint Certificate actions
+  handleCertificateUpload: () => void;
+  handleCertificateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  handlePrivateKeyUpload: () => void;
+  handlePrivateKeyChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  certificateInputRef: React.RefObject<HTMLInputElement>;
+  privateKeyInputRef: React.RefObject<HTMLInputElement>;
+  isSharePointCertificateAuthValid: () => boolean;
 }
 
 export const useConnectorConfig = ({
@@ -65,6 +86,10 @@ export const useConnectorConfig = ({
 }: UseConnectorConfigProps): UseConnectorConfigReturn => {
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // SharePoint certificate refs
+  const certificateInputRef = useRef<HTMLInputElement>(null);
+  const privateKeyInputRef = useRef<HTMLInputElement>(null);
 
   // State
   const [connectorConfig, setConnectorConfig] = useState<ConnectorConfig | null>(null);
@@ -84,13 +109,25 @@ export const useConnectorConfig = ({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conditionalDisplay, setConditionalDisplay] = useState<Record<string, boolean>>({});
 
-  // Business OAuth specific state
+  // Business OAuth specific state (Google Workspace)
   const [adminEmail, setAdminEmail] = useState('');
   const [adminEmailError, setAdminEmailError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [jsonData, setJsonData] = useState<Record<string, any> | null>(null);
+
+  // SharePoint Certificate OAuth state
+  const [certificateFile, setCertificateFile] = useState<File | null>(null);
+  const [certificateFileName, setCertificateFileName] = useState<string | null>(null);
+  const [certificateError, setCertificateError] = useState<string | null>(null);
+  const [certificateData, setCertificateData] = useState<Record<string, any> | null>(null);
+  const [certificateContent, setCertificateContent] = useState<string | null>(null);
+
+  const [privateKeyFile, setPrivateKeyFile] = useState<File | null>(null);
+  const [privateKeyFileName, setPrivateKeyFileName] = useState<string | null>(null);
+  const [privateKeyError, setPrivateKeyError] = useState<string | null>(null);
+  const [privateKeyData, setPrivateKeyData] = useState<string | null>(null);
 
   // Memoized helper to check if this is custom Google Business OAuth
   const isCustomGoogleBusinessOAuth = useMemo(
@@ -99,6 +136,14 @@ export const useConnectorConfig = ({
       connector.appGroup === 'Google Workspace' &&
       connector.authType === 'OAUTH',
     [isBusiness, connector.appGroup, connector.authType]
+  );
+
+  // Memoized helper to check if this is SharePoint certificate auth
+  const isSharePointCertificateAuth = useMemo(
+    () =>
+      connector.name === 'SharePoint Online' &&
+      (connector.authType === 'OAUTH_CERTIFICATE' || connector.authType === 'OAUTH_ADMIN_CONSENT'),
+    [connector.name, connector.authType]
   );
 
   // Memoized helper functions
@@ -114,6 +159,17 @@ export const useConnectorConfig = ({
         authValues.client_id && authValues.project_id && authValues.type === 'service_account'
           ? 'existing-credentials.json'
           : null,
+    };
+  }, []);
+
+  // Helper to get SharePoint certificate data from existing config
+  const getSharePointCertificateData = useCallback((config: any) => {
+    const authValues = config?.config?.auth?.values || config?.config?.auth || {};
+    return {
+      certificate: authValues.certificate || null,
+      privateKey: authValues.privateKey || null,
+      certificateFileName: authValues.certificate ? 'existing-certificate.pem' : null,
+      privateKeyFileName: authValues.privateKey ? 'existing-privatekey.pem' : null,
     };
   }, []);
 
@@ -173,7 +229,7 @@ export const useConnectorConfig = ({
     };
   }, []);
 
-  // Business OAuth validation
+  // Business OAuth validation (Google Workspace)
   const validateAdminEmail = useCallback((email: string): boolean => {
     if (!email.trim()) {
       setAdminEmailError('Admin email is required for business OAuth');
@@ -277,6 +333,217 @@ export const useConnectorConfig = ({
     [adminEmail, jsonData, validateBusinessGoogleOAuth]
   );
 
+  // SharePoint Certificate validation functions
+  const validateCertificateFile = useCallback((content: string): boolean => {
+    const certificateRegex = /-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----/;
+    if (!certificateRegex.test(content)) {
+      setCertificateError(
+        'Invalid certificate format. Must contain BEGIN CERTIFICATE and END CERTIFICATE markers.'
+      );
+      return false;
+    }
+    setCertificateError(null);
+    return true;
+  }, []);
+
+  const validatePrivateKeyFile = useCallback((content: string): boolean => {
+    // Check for PKCS#8 format (no RSA in headers)
+    const pkcs8Regex = /-----BEGIN PRIVATE KEY-----[\s\S]+-----END PRIVATE KEY-----/;
+    const rsaRegex = /-----BEGIN RSA PRIVATE KEY-----/;
+
+    if (rsaRegex.test(content)) {
+      setPrivateKeyError(
+        'Private key must be in PKCS#8 format. Use: openssl pkcs8 -topk8 -inform PEM -outform PEM -in privatekey.key -out privatekey.key -nocrypt'
+      );
+      return false;
+    }
+
+    if (!pkcs8Regex.test(content)) {
+      setPrivateKeyError(
+        'Invalid private key format. Must contain BEGIN PRIVATE KEY and END PRIVATE KEY markers.'
+      );
+      return false;
+    }
+
+    // Check if encrypted (should not contain ENCRYPTED in headers)
+    if (content.includes('ENCRYPTED')) {
+      setPrivateKeyError(
+        'Private key must not be encrypted. Use -nocrypt flag during generation.'
+      );
+      return false;
+    }
+
+    setPrivateKeyError(null);
+    return true;
+  }, []);
+
+  const parseCertificateInfo = useCallback((certContent: string): Record<string, any> => ({
+    status: 'Valid',
+    format: 'X.509',
+    loaded: new Date().toISOString(),
+  }), []);
+
+  // SharePoint Certificate handlers
+  const handleCertificateUpload = useCallback(() => {
+    certificateInputRef.current?.click();
+  }, []);
+
+  const handleCertificateChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      // Validate file type
+      const validExtensions = ['.crt', '.cer', '.pem'];
+      const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
+
+      if (!validExtensions.includes(fileExtension)) {
+        setCertificateError('Invalid file type. Please upload a .crt, .cer, or .pem file.');
+        return;
+      }
+
+      try {
+        // Read file content
+        const content = await file.text();
+
+        // Validate certificate format
+        if (!validateCertificateFile(content)) {
+          return;
+        }
+
+        // Store certificate data
+        setCertificateFile(file);
+        setCertificateFileName(file.name);
+        setCertificateContent(content);
+        setCertificateError(null);
+
+        // Clear save error when user uploads a valid file
+        setSaveError(null);
+
+        // Parse certificate information (basic parsing for display)
+        try {
+          const certInfo = parseCertificateInfo(content);
+          setCertificateData(certInfo);
+        } catch (parseError) {
+          console.warn('Could not parse certificate info:', parseError);
+          setCertificateData({ status: 'Valid certificate loaded' });
+        }
+
+        // Update form data with certificate content
+        setFormData((prev) => ({
+          ...prev,
+          auth: {
+            ...prev.auth,
+            certificate: content,
+          },
+        }));
+      } catch (error) {
+        setCertificateError('Failed to read certificate file');
+        console.error('Certificate read error:', error);
+      }
+    },
+    [validateCertificateFile, parseCertificateInfo]
+  );
+
+  const handlePrivateKeyUpload = useCallback(() => {
+    privateKeyInputRef.current?.click();
+  }, []);
+
+  const handlePrivateKeyChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      // Validate file type
+      const validExtensions = ['.key', '.pem'];
+      const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
+
+      if (!validExtensions.includes(fileExtension)) {
+        setPrivateKeyError('Invalid file type. Please upload a .key or .pem file.');
+        return;
+      }
+
+      try {
+        // Read file content
+        const content = await file.text();
+
+        // Validate private key format
+        if (!validatePrivateKeyFile(content)) {
+          return;
+        }
+
+        // Store private key data
+        setPrivateKeyFile(file);
+        setPrivateKeyFileName(file.name);
+        setPrivateKeyData(content);
+        setPrivateKeyError(null);
+
+        // Clear save error when user uploads a valid file
+        setSaveError(null);
+
+        // Update form data with private key content
+        setFormData((prev) => ({
+          ...prev,
+          auth: {
+            ...prev.auth,
+            privateKey: content,
+          },
+        }));
+      } catch (error) {
+        setPrivateKeyError('Failed to read private key file');
+        console.error('Private key read error:', error);
+      }
+    },
+    [validatePrivateKeyFile]
+  );
+
+  const isSharePointCertificateAuthValid = useCallback((): boolean => {
+    if (!isSharePointCertificateAuth) {
+      return true; // Not SharePoint, so this validation doesn't apply
+    }
+
+    // Check required fields
+    const hasClientId = formData.auth.clientId && String(formData.auth.clientId).trim() !== '';
+    const hasTenantId = formData.auth.tenantId && String(formData.auth.tenantId).trim() !== '';
+    const hasSharePointDomain = formData.auth.sharepointDomain && String(formData.auth.sharepointDomain).trim() !== '';
+    const hasAdminConsent = formData.auth.hasAdminConsent === true;
+    
+    // Check for certificate content - either from file upload or from existing config in formData
+    const hasCertificate = !!(certificateContent || formData.auth.certificate);
+    const hasPrivateKey = !!(privateKeyData || formData.auth.privateKey);
+
+    // Check for validation errors (only if they have actual error messages)
+    const hasErrors =
+      (certificateError !== null && certificateError !== '') ||
+      (privateKeyError !== null && privateKeyError !== '');
+
+    const isValid = hasClientId && hasTenantId && hasSharePointDomain && hasAdminConsent && hasCertificate && hasPrivateKey && !hasErrors;
+    
+    // Debug logging (can be removed in production)
+    if (!isValid) {
+      console.log('SharePoint validation failed:', {
+        hasClientId,
+        hasTenantId,
+        hasSharePointDomain,
+        hasAdminConsent,
+        hasCertificate,
+        hasPrivateKey,
+        hasErrors,
+        certificateError,
+        privateKeyError,
+      });
+    }
+
+    return isValid;
+  }, [
+    isSharePointCertificateAuth,
+    formData.auth,
+    certificateContent,
+    privateKeyData,
+    certificateError,
+    privateKeyError,
+  ]);
+
   // Load connector configuration - simplified with proper dependency management
   useEffect(() => {
     // Skip if account type is still loading
@@ -311,6 +578,20 @@ export const useConnectorConfig = ({
           setFileName(businessData.fileName);
         }
 
+        // For SharePoint certificate auth, load existing certificate data
+        if (isSharePointCertificateAuth) {
+          const sharePointData = getSharePointCertificateData(mergedConfig);
+          if (sharePointData.certificate) {
+            setCertificateContent(sharePointData.certificate);
+            setCertificateFileName(sharePointData.certificateFileName);
+            setCertificateData({ status: 'Valid certificate loaded' });
+          }
+          if (sharePointData.privateKey) {
+            setPrivateKeyData(sharePointData.privateKey);
+            setPrivateKeyFileName(sharePointData.privateKeyFileName);
+          }
+        }
+
         setFormData(initialFormData);
 
         // Evaluate conditional display rules
@@ -326,7 +607,7 @@ export const useConnectorConfig = ({
       } catch (error: any) {
         if (!isMounted) return;
         console.error('Error fetching connector config:', error);
-        
+
         // Check if it's a beta connector access denied error (403)
         if (error?.response?.status === 403) {
           const errorMessage = error?.response?.data?.detail || error?.message || 'Beta connectors are not enabled. This connector is a beta connector and cannot be accessed. Please enable beta connectors in platform settings to use this connector.';
@@ -350,9 +631,11 @@ export const useConnectorConfig = ({
     connector.name,
     accountTypeLoading,
     isCustomGoogleBusinessOAuth,
+    isSharePointCertificateAuth,
     mergeConfigWithSchema,
     initializeFormData,
     getBusinessOAuthData,
+    getSharePointCertificateData,
   ]);
 
   // Recalculate conditional display when auth form data changes
@@ -410,7 +693,7 @@ export const useConnectorConfig = ({
     return '';
   }, []);
 
-  const validateSection = useCallback(
+   const validateSection = useCallback(
     (section: string, fields: any[], values: Record<string, any>): Record<string, string> => {
       const errors: Record<string, string> = {};
 
@@ -420,9 +703,9 @@ export const useConnectorConfig = ({
           errors[field.name] = error;
         }
       });
-
       return errors;
     },
+    
     [validateField]
   );
 
@@ -457,12 +740,18 @@ export const useConnectorConfig = ({
           [fieldName]: '',
         },
       }));
+
+      // Clear save error when user makes changes
+      setSaveError(null);
     },
     [connectorConfig]
   );
 
   const handleNext = useCallback(() => {
     if (!connectorConfig) return;
+
+    // Clear any previous save error when user tries again
+    setSaveError(null);
 
     let errors: Record<string, string> = {};
 
@@ -472,6 +761,12 @@ export const useConnectorConfig = ({
         if (isCustomGoogleBusinessOAuth) {
           if (!isBusinessGoogleOAuthValid()) {
             errors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+          }
+        } else if (isSharePointCertificateAuth) {
+          // Validate SharePoint certificate authentication
+          if (!isSharePointCertificateAuthValid()) {
+            setSaveError('Please complete all required SharePoint authentication fields and upload valid certificate and private key files.');
+            return;
           }
         } else {
           errors = validateSection(
@@ -504,6 +799,8 @@ export const useConnectorConfig = ({
     isCustomGoogleBusinessOAuth,
     isBusinessGoogleOAuthValid,
     adminEmailError,
+    isSharePointCertificateAuth,
+    isSharePointCertificateAuthValid,
   ]);
 
   const handleBack = useCallback(() => {
@@ -529,12 +826,24 @@ export const useConnectorConfig = ({
         }
       }
 
+      // For SharePoint certificate auth, validate certificate and key
+      if (isSharePointCertificateAuth) {
+        if (!isSharePointCertificateAuthValid()) {
+          setSaveError('Please provide valid certificate and private key files for SharePoint authentication');
+          return;
+        }
+      }
+
       // Validate all sections (skip auth validation for 'NONE' authType)
       let authErrors: Record<string, string> = {};
       if (!isNoAuthType) {
         if (isCustomGoogleBusinessOAuth) {
           if (!isBusinessGoogleOAuthValid()) {
             authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+          }
+        } else if (isSharePointCertificateAuth) {
+          if (!isSharePointCertificateAuthValid()) {
+            authErrors = { certificate: 'Invalid SharePoint certificate authentication' };
           }
         } else {
           authErrors = validateSection(
@@ -581,6 +890,22 @@ export const useConnectorConfig = ({
           ...configToSave.auth,
           ...jsonData,
           adminEmail,
+        };
+      }
+
+      // For SharePoint certificate auth, ensure certificate and private key are included
+      if (isSharePointCertificateAuth) {
+        const certContent = certificateContent || formData.auth.certificate;
+        const keyContent = privateKeyData || formData.auth.privateKey;
+        
+        if (!certContent || !keyContent) {
+          throw new Error('Certificate and private key are required for SharePoint authentication');
+        }
+
+        configToSave.auth = {
+          ...configToSave.auth,
+          certificate: certContent,
+          privateKey: keyContent,
         };
       }
 
@@ -679,6 +1004,10 @@ export const useConnectorConfig = ({
     isBusinessGoogleOAuthValid,
     isCustomGoogleBusinessOAuth,
     adminEmailError,
+    isSharePointCertificateAuth,
+    isSharePointCertificateAuthValid,
+    certificateContent,
+    privateKeyData,
   ]);
 
   // Admin email change handler
@@ -701,13 +1030,23 @@ export const useConnectorConfig = ({
     saveError,
     conditionalDisplay,
 
-    // Business OAuth state
+    // Business OAuth state (Google Workspace)
     adminEmail,
     adminEmailError,
     selectedFile,
     fileName,
     fileError,
     jsonData,
+
+    // SharePoint Certificate OAuth state
+    certificateFile,
+    certificateFileName,
+    certificateError,
+    certificateData,
+    privateKeyFile,
+    privateKeyFileName,
+    privateKeyError,
+    privateKeyData,
 
     // Actions
     handleFieldChange,
@@ -721,5 +1060,14 @@ export const useConnectorConfig = ({
     validateAdminEmail,
     isBusinessGoogleOAuthValid,
     fileInputRef,
+
+    // SharePoint Certificate actions
+    handleCertificateUpload,
+    handleCertificateChange,
+    handlePrivateKeyUpload,
+    handlePrivateKeyChange,
+    certificateInputRef,
+    privateKeyInputRef,
+    isSharePointCertificateAuthValid,
   };
 };

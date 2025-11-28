@@ -51,13 +51,23 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     saveError,
     conditionalDisplay,
 
-    // Business OAuth state
+    // Business OAuth state (Google Workspace)
     adminEmail,
     adminEmailError,
     selectedFile,
     fileName,
     fileError,
     jsonData,
+
+    // NEW: SharePoint Certificate OAuth state
+    certificateFile,
+    certificateFileName,
+    certificateError,
+    certificateData,
+    privateKeyFile,
+    privateKeyFileName,
+    privateKeyError,
+    privateKeyData,
 
     // Actions
     handleFieldChange,
@@ -71,6 +81,14 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     validateAdminEmail,
     isBusinessGoogleOAuthValid,
     fileInputRef,
+
+    // NEW: SharePoint Certificate actions
+    handleCertificateUpload,
+    handleCertificateChange,
+    handlePrivateKeyUpload,
+    handlePrivateKeyChange,
+    certificateInputRef,
+    privateKeyInputRef,
   } = useConnectorConfig({ connector, onClose, onSuccess });
 
   // Skip auth step if authType is 'NONE'
@@ -102,6 +120,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             conditionalDisplay={conditionalDisplay}
             accountTypeLoading={accountTypeLoading}
             isBusiness={isBusiness}
+            
+            // Google Workspace Business OAuth props
             adminEmail={adminEmail}
             adminEmailError={adminEmailError}
             selectedFile={selectedFile}
@@ -112,6 +132,23 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             onFileUpload={handleFileUpload}
             onFileChange={handleFileChange}
             fileInputRef={fileInputRef}
+            
+            // NEW: SharePoint Certificate OAuth props
+            certificateFile={certificateFile}
+            certificateFileName={certificateFileName}
+            certificateError={certificateError}
+            certificateData={certificateData}
+            privateKeyFile={privateKeyFile}
+            privateKeyFileName={privateKeyFileName}
+            privateKeyError={privateKeyError}
+            privateKeyData={privateKeyData}
+            onCertificateUpload={handleCertificateUpload}
+            onCertificateChange={handleCertificateChange}
+            onPrivateKeyUpload={handlePrivateKeyUpload}
+            onPrivateKeyChange={handlePrivateKeyChange}
+            certificateInputRef={certificateInputRef}
+            privateKeyInputRef={privateKeyInputRef}
+            
             onFieldChange={handleFieldChange}
           />
         );
