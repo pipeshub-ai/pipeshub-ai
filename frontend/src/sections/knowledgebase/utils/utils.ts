@@ -25,14 +25,23 @@ export const getIndexingStatusColor = (
       return 'error';
     case 'NOT_STARTED':
       return 'warning';
+    case 'PAUSED':
+      return 'warning';
+    case 'QUEUED':
+      return 'info';
     case 'FILE_TYPE_NOT_SUPPORTED':
       return 'default';
     case 'AUTO_INDEX_OFF':
       return 'default';
+    case 'EMPTY':
+      return 'info';
+    case 'ENABLE_MULTIMODAL_MODELS':
+      return 'info';
     default:
       return 'warning';
   }
 };
+
 
 // Helper function to format file size
 export const formatFileSize = (bytes: number): string => {
