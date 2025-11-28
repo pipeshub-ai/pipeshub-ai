@@ -12375,7 +12375,6 @@ class BaseArangoService:
                 groupRecords,
                 orgRecords,
                 groupRecordsPermissionEdge,
-                orgRecordsPermissionEdge,
                 recordGroupRecords,
                 inheritedRecordGroupRecords,
                 orgRecordGroupRecords
