@@ -50,6 +50,7 @@ import WelcomeMessage from './components/welcome-message';
 import { StreamingContext } from './components/chat-message';
 import { processStreamingContentLegacy } from './utils/styles/content-processing';
 import ImageHighlighter from './components/image-highlighter';
+import { Model, ChatMode } from './types';
 
 const DRAWER_WIDTH = 300;
 
@@ -323,6 +324,7 @@ class StreamingManager {
     let finalCitations = state?.citations || [];
     let finalMessageId = messageId;
     let finalConfidence = state?.confidence || '';
+    let finalModelInfo: any = null;
 
     if (completionData?.conversation) {
       const finalBotMessage = completionData.conversation.messages
@@ -340,7 +342,13 @@ class StreamingManager {
           finalContent = processedContent;
           finalCitations = processedCitations;
           finalConfidence = formatted.confidence || '';
+          // Get modelInfo from message first, then fallback to conversation
+          finalModelInfo =
+            formatted.modelInfo || (completionData.conversation as any).modelInfo || null;
         }
+      } else {
+        // If no bot message, use conversation-level modelInfo
+        finalModelInfo = (completionData.conversation as any).modelInfo || null;
       }
     }
 
@@ -353,6 +361,7 @@ class StreamingManager {
               content: finalContent,
               citations: finalCitations,
               confidence: finalConfidence,
+              modelInfo: finalModelInfo || msg.modelInfo || null,
             }
           : msg
       )
@@ -381,7 +390,12 @@ class StreamingManager {
       id: apiMessage._id,
       timestamp: new Date(apiMessage.createdAt || new Date()),
       content: apiMessage.content || '',
-      type: apiMessage.messageType === 'user_query' ? 'user' : apiMessage.messageType === 'error' ? 'error' : 'bot',
+      type:
+        apiMessage.messageType === 'user_query'
+          ? 'user'
+          : apiMessage.messageType === 'error'
+            ? 'error'
+            : 'bot',
       contentFormat: apiMessage.contentFormat || 'MARKDOWN',
       followUpQuestions: apiMessage.followUpQuestions || [],
       createdAt: apiMessage.createdAt ? new Date(apiMessage.createdAt) : new Date(),
@@ -398,6 +412,7 @@ class StreamingManager {
         ...baseMessage,
         type: 'bot',
         confidence: apiMessage.confidence || '',
+        modelInfo: apiMessage.modelInfo || null,
         citations: (apiMessage?.citations || []).map((citation: any) => ({
           id: citation.citationId,
           _id: citation?.citationData?._id || citation.citationId,
@@ -560,19 +575,11 @@ const ChatInterface = () => {
   const currentOpenDocumentRef = useRef<string | null>(null);
 
   // Model selection state
-  const [selectedModel, setSelectedModel] = useState<{
-    modelType: string;
-    provider: string;
-    modelName: string;
-    modelKey: string;
-    isMultimodal: boolean;
-    isDefault: boolean;
-  } | null>(null);
-  const [selectedChatMode, setSelectedChatMode] = useState<{
-    id: string;
-    name: string;
-    description: string;
-  } | null>(null);
+  const [selectedModel, setSelectedModel] = useState<Model | null>(null);
+  const [selectedChatMode, setSelectedChatMode] = useState<ChatMode | null>(null);
+
+  // Available models state
+  const [availableModels, setAvailableModels] = useState<Model[]>([]);
 
   const navigate = useNavigate();
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -630,6 +637,32 @@ const ChatInterface = () => {
   useEffect(() => {
     latestChatModeRef.current = selectedChatMode;
   }, [selectedChatMode]);
+
+  // Load available models once
+  useEffect(() => {
+    const fetchAvailableModels = async () => {
+      try {
+        const response = await axios.get('/api/v1/configurationManager/ai-models/available/llm');
+
+        if (response.data.status === 'success') {
+          // Handle both response formats: response.data.models or response.data.data
+          const models = response.data.models || response.data.data || [];
+          setAvailableModels(models);
+
+          // Set default model if not already selected
+          if (!selectedModel && models.length > 0) {
+            const defaultModel = models.find((model: Model) => model.isDefault) || models[0];
+            setSelectedModel(defaultModel);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch available models:', error);
+        setAvailableModels([]);
+      }
+    };
+    fetchAvailableModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Build app sources from connectors
   useEffect(() => {
@@ -707,6 +740,60 @@ const ChatInterface = () => {
     return () => streamingManager.removeUpdateCallback(forceUpdate);
   }, [streamingManager, forceUpdate]);
 
+  // Ref to store latest available models to avoid stale closures
+  const availableModelsRef = useRef<Model[]>([]);
+  useEffect(() => {
+    availableModelsRef.current = availableModels;
+  }, [availableModels]);
+
+  // Helper function to set model and chat mode from conversation modelInfo
+  // Defined early so it can be used in handleStreamingResponse
+  const setModelFromConversation = useCallback((conversationModelInfo: any) => {
+    if (!conversationModelInfo) return;
+
+    // Use ref to get latest models to avoid stale closure issues
+    const models = availableModelsRef.current;
+    if (models.length === 0) {
+      // Models not loaded yet, will be set by useEffect when models load
+      return;
+    }
+
+    // Set model from conversation if available
+    if (conversationModelInfo.modelName) {
+      // Try to find matching model by modelName first
+      let matchingModel = models.find(
+        (m) => m.modelName === conversationModelInfo.modelName
+      );
+
+      // If not found by name, try by modelKey
+      if (!matchingModel && conversationModelInfo.modelKey) {
+        matchingModel = models.find(
+          (m) => m.modelKey === conversationModelInfo.modelKey
+        );
+      }
+
+      if (matchingModel) {
+        setSelectedModel(matchingModel);
+      }
+    }
+
+    // Set chat mode from conversation if available
+    if (conversationModelInfo.chatMode) {
+      const chatModes = [
+        { id: 'quick', name: 'Quick', description: 'Quick responses with minimal context' },
+        {
+          id: 'standard',
+          name: 'Standard',
+          description: 'Balanced responses with moderate creativity',
+        },
+      ];
+      const matchingMode = chatModes.find((m) => m.id === conversationModelInfo.chatMode);
+      if (matchingMode) {
+        setSelectedChatMode(matchingMode);
+      }
+    }
+  }, []);
+
   const handleCloseSnackbar = (): void => {
     setSnackbar({ open: false, message: '', severity: 'success' });
   };
@@ -717,12 +804,18 @@ const ChatInterface = () => {
       id: apiMessage._id,
       timestamp: new Date(apiMessage.createdAt || new Date()),
       content: apiMessage.content || '',
-      type: apiMessage.messageType === 'user_query' ? 'user' : apiMessage.messageType === 'error' ? 'error' : 'bot',
+      type:
+        apiMessage.messageType === 'user_query'
+          ? 'user'
+          : apiMessage.messageType === 'error'
+            ? 'error'
+            : 'bot',
       contentFormat: apiMessage.contentFormat || 'MARKDOWN',
       followUpQuestions: apiMessage.followUpQuestions || [],
       createdAt: apiMessage.createdAt ? new Date(apiMessage.createdAt) : new Date(),
       updatedAt: apiMessage.updatedAt ? new Date(apiMessage.updatedAt) : new Date(),
       messageType: apiMessage.messageType,
+      modelInfo: apiMessage.modelInfo || null,
     };
     if (apiMessage.messageType === 'user_query') {
       return { ...baseMessage, type: 'user', feedback: apiMessage.feedback || [] };
@@ -732,6 +825,7 @@ const ChatInterface = () => {
         ...baseMessage,
         type: 'bot',
         confidence: apiMessage.confidence || '',
+        modelInfo: (apiMessage as any).modelInfo || null,
         citations: (apiMessage?.citations || []).map((citation: Citation) => ({
           id: citation.citationId,
           _id: citation?.citationData?._id || citation.citationId,
@@ -775,62 +869,66 @@ const ChatInterface = () => {
   }, []);
 
   // Extract the stream processing logic into a separate helper function
-  const processStreamChunk = useCallback(async (
-    reader: ReadableStreamDefaultReader<Uint8Array>,
-    decoder: TextDecoder,
-    parseSSELineFunc: (line: string) => { event?: string; data?: any } | null,
-    handleStreamingEvent: (event: string, data: any, context: any) => Promise<void>,
-    context: {
-      conversationKey: string;
-      streamingBotMessageId: string;
-      isNewConversation: boolean;
-      hasCreatedMessage: React.MutableRefObject<boolean>;
-      conversationIdRef: React.MutableRefObject<string | null>;
-    },
-    controller: AbortController
-  ): Promise<void> => {
-    let buffer = '';
-    let currentEvent = '';
+  const processStreamChunk = useCallback(
+    async (
+      reader: ReadableStreamDefaultReader<Uint8Array>,
+      decoder: TextDecoder,
+      parseSSELineFunc: (line: string) => { event?: string; data?: any } | null,
+      handleStreamingEvent: (event: string, data: any, context: any) => Promise<void>,
+      context: {
+        conversationKey: string;
+        streamingBotMessageId: string;
+        isNewConversation: boolean;
+        hasCreatedMessage: React.MutableRefObject<boolean>;
+        conversationIdRef: React.MutableRefObject<string | null>;
+      },
+      controller: AbortController
+    ): Promise<void> => {
+      let buffer = '';
+      let currentEvent = '';
 
-    const readNextChunk = async (): Promise<void> => {
-      const { done, value } = await reader.read();
-      if (done) return;
+      const readNextChunk = async (): Promise<void> => {
+        const { done, value } = await reader.read();
+        if (done) return;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      for (let i = 0; i < lines.length; i += 1) {
-        const line = lines[i];
-        const trimmedLine = line.trim();
-        // eslint-disable-next-line
-        if (!trimmedLine) continue;
-
-        const parsed = parseSSELineFunc(trimmedLine);
-        // eslint-disable-next-line
-        if (!parsed) continue;
-
-        if (parsed.event) {
-          currentEvent = parsed.event;
-        } else if (parsed.data && currentEvent) {
+        for (let i = 0; i < lines.length; i += 1) {
+          const line = lines[i];
+          const trimmedLine = line.trim();
           // eslint-disable-next-line
-          await handleStreamingEvent(currentEvent, parsed.data, context);
+          if (!trimmedLine) continue;
+
+          const parsed = parseSSELineFunc(trimmedLine);
+          // eslint-disable-next-line
+          if (!parsed) continue;
+
+          if (parsed.event) {
+            currentEvent = parsed.event;
+          } else if (parsed.data && currentEvent) {
+            // eslint-disable-next-line
+            await handleStreamingEvent(currentEvent, parsed.data, context);
+          }
         }
-      }
 
-      if (!controller.signal.aborted) {
-        await readNextChunk();
-      }
-    };
+        if (!controller.signal.aborted) {
+          await readNextChunk();
+        }
+      };
 
-    await readNextChunk();
-  }, []);
+      await readNextChunk();
+    },
+    []
+  );
 
   // Refactored main function as a standard async function
   const handleStreamingResponse = useCallback(
     async (url: string, body: any, isNewConversation: boolean): Promise<string | null> => {
       const streamingBotMessageId = `streaming-${Date.now()}`;
       const conversationKey = isNewConversation ? 'new' : getConversationKey(currentConversationId);
+      const currentConvId = currentConversationId; // Capture current conversation ID
 
       // Initialize streaming state
       streamingManager.updateStatus(conversationKey, 'Connecting...');
@@ -888,6 +986,20 @@ const ChatInterface = () => {
                 context.conversationIdRef.current = completedConversation._id;
               }
               streamingManager.finalizeStreaming(finalKey, context.streamingBotMessageId, data);
+              
+              // Update selectedChat with fresh conversation data to reflect updated modelInfo
+              // This ensures the model selection is updated when switching back to this conversation
+              const finalConvId = finalKey === 'new' ? context.conversationIdRef.current : finalKey;
+              if (finalConvId === currentConvId || finalConvId === context.conversationIdRef.current) {
+                // Use setTimeout to ensure this runs after state updates
+                setTimeout(() => {
+                  setSelectedChat(completedConversation);
+                  // Update model selection if modelInfo changed
+                  if ((completedConversation as any).modelInfo) {
+                    setModelFromConversation((completedConversation as any).modelInfo);
+                  }
+                }, 0);
+              }
             }
             break;
           }
@@ -991,7 +1103,14 @@ const ChatInterface = () => {
         throw error; // Re-throw non-abort errors
       }
     },
-    [currentConversationId, getConversationKey, streamingManager, parseSSELine, processStreamChunk]
+    [
+      currentConversationId,
+      getConversationKey,
+      streamingManager,
+      parseSSELine,
+      processStreamChunk,
+      setModelFromConversation,
+    ]
   );
 
   // Updated handleSendMessage to properly handle the promise
@@ -1042,14 +1161,19 @@ const ChatInterface = () => {
           setSelectedKbIds(filters.kb || []);
         }
 
+        // Use refs to get the latest values to avoid stale closures
+        const currentModel = latestModelRef.current;
+        const currentMode = latestChatModeRef.current;
+        const currentFiltersValue = latestFiltersRef.current;
+
         const createdConversationId = await handleStreamingResponse(
           streamingUrl,
           {
             query: trimmedInput,
-            modelKey: selectedModel?.modelKey,
-            modelName: selectedModel?.modelName,
-            chatMode,
-            filters: filters || currentFilters,
+            modelKey: currentModel?.modelKey,
+            modelName: currentModel?.modelName,
+            chatMode: chatMode || currentMode?.id,
+            filters: filters || currentFiltersValue,
           },
           wasCreatingNewConversation
         );
@@ -1072,8 +1196,6 @@ const ChatInterface = () => {
       handleStreamingResponse,
       isNavigationBlocked,
       isCurrentConversationLoading,
-      selectedModel,
-      currentFilters,
     ]
   );
 
@@ -1100,6 +1222,16 @@ const ChatInterface = () => {
     setSelectedApps([]);
     setSelectedKbIds([]);
   }, [navigate, streamingManager]);
+
+  // When models are loaded and we have a selected chat, try to set model from conversation
+  useEffect(() => {
+    if (availableModels.length > 0 && selectedChat) {
+      const conversationModelInfo = (selectedChat as any).modelInfo;
+      if (conversationModelInfo) {
+        setModelFromConversation(conversationModelInfo);
+      }
+    }
+  }, [availableModels.length, selectedChat, setModelFromConversation]);
 
   const handleChatSelect = useCallback(
     async (chat: Conversation) => {
@@ -1136,19 +1268,57 @@ const ChatInterface = () => {
 
         const existingMessages = streamingManager.getConversationMessages(chatKey);
 
-        if (!existingMessages.length && !isCurrentlyStreaming) {
-          // Only fetch if we don't have messages and it's not currently streaming
-          const response = await axios.get(`/api/v1/conversations/${chat._id}`);
-          const { conversation } = response.data;
-          if (conversation?.messages) {
-            const formattedMessages = conversation.messages
-              .map(formatMessage)
-              .filter(Boolean) as FormattedMessage[];
-            streamingManager.setConversationMessages(chatKey, formattedMessages);
-            setSelectedChat(conversation);
+        // Always fetch fresh conversation data to get the latest modelInfo
+        // This ensures model changes made during the conversation are reflected
+        if (!isCurrentlyStreaming) {
+          try {
+            const response = await axios.get(`/api/v1/conversations/${chat._id}`);
+            const { conversation } = response.data;
+            
+            if (conversation) {
+              // Update selectedChat with fresh data
+              setSelectedChat(conversation);
+              
+              // Update messages if we don't have them or if conversation was updated
+              if (!existingMessages.length || conversation.messages) {
+                const formattedMessages = (conversation.messages || [])
+                  .map((msg: any) => {
+                    const formatted = formatMessage(msg);
+                    if (
+                      formatted &&
+                      formatted.type === 'bot' &&
+                      !formatted.modelInfo &&
+                      (conversation as any).modelInfo
+                    ) {
+                      formatted.modelInfo = (conversation as any).modelInfo;
+                    }
+                    return formatted;
+                  })
+                  .filter(Boolean) as FormattedMessage[];
+                
+                // Only update messages if we got new data or didn't have messages
+                if (!existingMessages.length || formattedMessages.length > existingMessages.length) {
+                  streamingManager.setConversationMessages(chatKey, formattedMessages);
+                }
+              }
+              
+              // Always set model from fresh conversation data
+              setModelFromConversation((conversation as any).modelInfo);
+            }
+          } catch (err) {
+            console.error('Failed to fetch conversation data:', err);
+            // Fallback to using cached chat data if fetch fails
+            setSelectedChat(chat);
+            if ((chat as any).modelInfo) {
+              setModelFromConversation((chat as any).modelInfo);
+            }
           }
         } else {
+          // If streaming, use cached data but still try to update model if available
           setSelectedChat(chat);
+          if ((chat as any).modelInfo) {
+            setModelFromConversation((chat as any).modelInfo);
+          }
         }
       } catch (error) {
         console.error('❌ Error loading conversation:', error);
@@ -1170,7 +1340,15 @@ const ChatInterface = () => {
         }, 500);
       }
     },
-    [formatMessage, navigate, streamingManager, getConversationKey, isNavigationBlocked, onClosePdf]
+    [
+      formatMessage,
+      navigate,
+      streamingManager,
+      getConversationKey,
+      isNavigationBlocked,
+      onClosePdf,
+      setModelFromConversation,
+    ]
   );
 
   // Update the useEffect to better handle streaming conversations
@@ -1188,17 +1366,49 @@ const ChatInterface = () => {
         streamingState?.showStatus;
 
       if (existingMessages.length > 0 || isCurrentlyStreaming) {
-        // We have existing messages or it's streaming, just switch to this conversation
+        // We have existing messages or it's streaming, but still fetch fresh data for modelInfo
         setCurrentConversationId(urlConversationId);
         setShowWelcome(false);
-        const existingConversation =
-          selectedChat?._id === urlConversationId
-            ? selectedChat
-            : ({ _id: urlConversationId } as Conversation);
-        setSelectedChat(existingConversation);
-
-        // Don't set loading if it's currently streaming
+        
+        // Always fetch fresh conversation data to get latest modelInfo
+        // This ensures model changes made during the conversation are reflected
         if (!isCurrentlyStreaming) {
+          axios
+            .get(`/api/v1/conversations/${urlConversationId}`)
+            .then((response) => {
+              const { conversation } = response.data;
+              if (conversation) {
+                setSelectedChat(conversation);
+                if ((conversation as any).modelInfo) {
+                  setModelFromConversation((conversation as any).modelInfo);
+                }
+              }
+            })
+            .catch((err) => {
+              console.error('Failed to fetch conversation modelInfo:', err);
+              // Fallback to cached data
+              const existingConversation =
+                selectedChat?._id === urlConversationId
+                  ? selectedChat
+                  : ({ _id: urlConversationId } as Conversation);
+              setSelectedChat(existingConversation);
+              if ((existingConversation as any).modelInfo) {
+                setModelFromConversation((existingConversation as any).modelInfo);
+              }
+            })
+            .finally(() => {
+              setIsLoadingConversation(false);
+            });
+        } else {
+          // If streaming, use cached data
+          const existingConversation =
+            selectedChat?._id === urlConversationId
+              ? selectedChat
+              : ({ _id: urlConversationId } as Conversation);
+          setSelectedChat(existingConversation);
+          if ((existingConversation as any).modelInfo) {
+            setModelFromConversation((existingConversation as any).modelInfo);
+          }
           setIsLoadingConversation(false);
         }
       } else if (currentConversationId !== urlConversationId) {
@@ -1228,6 +1438,7 @@ const ChatInterface = () => {
     isNavigationBlocked,
     handleNewChat,
     getConversationKey,
+    setModelFromConversation,
   ]);
 
   // Update the shouldShowWelcome logic to consider streaming state
@@ -1568,7 +1779,7 @@ const ChatInterface = () => {
     async (messageId: string): Promise<void> => {
       if (!currentConversationId || !messageId || isCurrentConversationLoading) return;
 
-        const conversationKey = getConversationKey(currentConversationId);
+      const conversationKey = getConversationKey(currentConversationId);
       const streamingBotMessageId = `streaming-${Date.now()}`;
 
       // Find the message to regenerate and get its index
@@ -1651,15 +1862,15 @@ const ChatInterface = () => {
                 // Update expanded citations state
                 const formattedMessage = formatMessage(regeneratedMessage);
                 if (formattedMessage) {
-        setExpandedCitations((prevStates) => {
-          const newStates = { ...prevStates };
-            const hasCitations =
+                  setExpandedCitations((prevStates) => {
+                    const newStates = { ...prevStates };
+                    const hasCitations =
                       formattedMessage.citations && formattedMessage.citations.length > 0;
                     newStates[messageIndex] = hasCitations
                       ? prevStates[messageIndex] || false
                       : false;
-          return newStates;
-        });
+                    return newStates;
+                  });
                 }
               }
             }
@@ -1672,8 +1883,8 @@ const ChatInterface = () => {
               data.message || data.error || 'An error occurred while regenerating';
 
             // Update the streaming message with error
-        streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
-          prevMessages.map((msg) =>
+            streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
+              prevMessages.map((msg) =>
                 msg.id === streamingBotMessageId
                   ? { ...msg, content: errorMessage, messageType: 'error' }
                   : msg
@@ -1867,6 +2078,7 @@ const ChatInterface = () => {
                 initialSelectedApps={selectedApps}
                 initialSelectedKbIds={selectedKbIds}
                 onFiltersChange={handleFiltersChange}
+                models={availableModels}
               />
             ) : (
               <>
@@ -1896,6 +2108,7 @@ const ChatInterface = () => {
                   initialSelectedApps={selectedApps}
                   initialSelectedKbIds={selectedKbIds}
                   onFiltersChange={handleFiltersChange}
+                  models={availableModels}
                 />
               </>
             )}

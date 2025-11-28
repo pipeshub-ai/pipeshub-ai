@@ -19,24 +19,10 @@ import {
   Badge,
   Divider,
 } from '@mui/material';
-import axios from 'src/utils/axios';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 import ChatBotFilters from './chat-bot-filters';
-
-export interface Model {
-  modelType: string;
-  provider: string;
-  modelName: string;
-  modelKey: string;
-  isMultimodal: boolean;
-  isDefault: boolean;
-}
-
-export interface ChatMode {
-  id: string;
-  name: string;
-  description: string;
-}
+import { Model, ChatMode } from '../types';
+import { CHAT_MODES, formattedProvider } from '../utils/utils';
 
 export type ChatInputProps = {
   onSubmit: (
@@ -59,78 +45,9 @@ export type ChatInputProps = {
   initialSelectedApps?: string[];
   initialSelectedKbIds?: string[];
   onFiltersChange?: (filters: { apps: string[]; kb: string[] }) => void;
+  models: Model[];
 };
 
-// Define chat modes locally in the frontend
-const CHAT_MODES: ChatMode[] = [
-  {
-    id: 'quick',
-    name: 'Quick',
-    description: 'Quick responses with minimal context',
-  },
-  {
-    id: 'standard',
-    name: 'Standard',
-    description: 'Balanced responses with moderate creativity',
-  },
-];
-
-const normalizeDisplayName = (name: string): string =>
-  name
-    .split('_')
-    .map((word) => {
-      const upperWord = word.toUpperCase();
-      if (
-        [
-          'ID',
-          'URL',
-          'API',
-          'UI',
-          'DB',
-          'AI',
-          'ML',
-          'KB',
-          'PDF',
-          'CSV',
-          'JSON',
-          'XML',
-          'HTML',
-          'CSS',
-          'JS',
-          'GCP',
-          'AWS',
-        ].includes(upperWord)
-      ) {
-        return upperWord;
-      }
-      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-    })
-    .join(' ');
-
-const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-  azureAI: 'Azure AI',
-  azureOpenAI: 'Azure OpenAI',
-  openAI: 'OpenAI',
-  anthropic: 'Anthropic',
-  gemini: 'Gemini',
-  claude: 'Claude',
-  ollama: 'Ollama',
-  bedrock: 'AWS Bedrock',
-  xai: 'xAI',
-  together: 'Together',
-  groq: 'Groq',
-  fireworks: 'Fireworks',
-  cohere: 'Cohere',
-  openAICompatible: 'OpenAI API Compatible',
-  mistral: 'Mistral',
-  voyage: 'Voyage',
-  jinaAI: 'Jina AI',
-  sentenceTransformers: 'Default',
-  default: 'Default',
-};
-
-export const formattedProvider = (provider: string): string =>
-  PROVIDER_DISPLAY_NAMES[provider] || normalizeDisplayName(provider);
 
 const ChatInput: React.FC<ChatInputProps> = ({
   onSubmit,
@@ -147,14 +64,14 @@ const ChatInput: React.FC<ChatInputProps> = ({
   initialSelectedApps = [],
   initialSelectedKbIds = [],
   onFiltersChange,
+  models,
 }) => {
+  console.log('models', models);
   const [localValue, setLocalValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasText, setHasText] = useState(false);
-  const [models, setModels] = useState<Model[]>([]);
   const [modelMenuAnchor, setModelMenuAnchor] = useState<null | HTMLElement>(null);
   const [modeMenuAnchor, setModeMenuAnchor] = useState<null | HTMLElement>(null);
-  const [loadingModels, setLoadingModels] = useState(false);
   // Anchor for unified resources dropdown
   const [resourcesAnchor, setResourcesAnchor] = useState<null | HTMLElement>(null);
   const [selectedApps, setSelectedApps] = useState<string[]>(initialSelectedApps || []);
@@ -239,28 +156,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
     return knowledgeBases.filter((kb) => (kb?.name || '').toLowerCase().includes(term));
   }, [knowledgeBases, searchTerm]);
 
-  const fetchAvailableModels = async () => {
-    try {
-      setLoadingModels(true);
-      const response = await axios.get('/api/v1/configurationManager/ai-models/available/llm');
-
-      if (response.data.status === 'success') {
-        setModels(response.data.models || []);
-
-        // Set default model if not already selected
-        if (!selectedModel && response.data.data && response.data.data.length > 0) {
-          const defaultModel =
-            response.data.data.find((model: Model) => model.isDefault) || response.data.data[0];
-          onModelChange(defaultModel);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to fetch available models:', error);
-    } finally {
-      setLoadingModels(false);
-    }
-  };
-
   // Set default chat mode if not already selected
   useEffect(() => {
     if (!selectedChatMode && CHAT_MODES.length > 0) {
@@ -271,12 +166,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
       onModelChange(defaultModel); // Set first model as default
     }
   }, [selectedChatMode, onChatModeChange, models, onModelChange, selectedModel]);
-
-  useEffect(() => {
-    fetchAvailableModels();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   
   const openResourcesMenu = (event: React.MouseEvent<HTMLElement>) =>
     setResourcesAnchor(event.currentTarget);
@@ -439,10 +328,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
     setModelMenuAnchor(null);
   };
 
-  const handleModeMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
-    setModeMenuAnchor(event.currentTarget);
-  };
-
   const handleModeMenuClose = () => {
     setModeMenuAnchor(null);
   };
@@ -507,11 +392,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
 
   const canSubmit = hasText  && !isStreaming;
 
-  // Format model name for display
-  const getModelDisplayName = (model: Model | null) => {
-    if (!model) return 'Model';
-    return model.modelName || 'Model';
-  };
 
   return (
     <>

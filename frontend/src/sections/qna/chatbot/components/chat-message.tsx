@@ -1028,6 +1028,7 @@ const ChatMessage = React.memo(
               aggregatedCitations={aggregatedCitations}
               onRecordClick={handleOpenRecordDetails}
               onViewPdf={handleViewPdf}
+              modelInfo={(message as any).modelInfo || null}
             />
 
             {message.type === 'bot' && !isStreamingMessage && (

@@ -115,6 +115,12 @@ const messageSchema = new Schema<IMessage>(
       modelVersion: { type: String },
       aiTransactionId: { type: String },
     },
+    modelInfo: {
+      modelKey: { type: String },
+      modelName: { type: String },
+      modelProvider: { type: String },
+      chatMode: { type: String, default: 'quick' },
+    },
   },
   { timestamps: true },
 );
@@ -147,11 +153,12 @@ const conversationSchema = new Schema<IConversation>(
     },
     failReason: { type: String },
     // Model information used for this conversation
-    modelKey: { type: String },
-    modelName: { type: String },
-    modelProvider: { type: String },
-    // Chat mode used for this conversation
-    chatMode: { type: String, default: 'standard' },
+    modelInfo: {
+      modelKey: { type: String },
+      modelName: { type: String },
+      modelProvider: { type: String },
+      chatMode: { type: String, default: 'quick' },
+    },
     // Errors array to track errors during conversation
     conversationErrors: [
       {

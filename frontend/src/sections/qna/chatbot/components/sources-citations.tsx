@@ -103,6 +103,11 @@ interface SourcesAndCitationsProps {
     buffer?: ArrayBuffer
   ) => Promise<void>;
   className?: string;
+  modelInfo?: {
+    modelName?: string;
+    modelKey?: string;
+    chatMode?: string;
+  } | null;
 }
 
 const getFileIcon = (extension: string): IconifyIcon =>
@@ -284,43 +289,40 @@ const FileCard = React.memo(
             </Box>
 
             {/* Connector Icon */}
-            <Box
-              sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}
-            >
-              <Box sx={{ cursor: 'pointer', alignItems: 'center', display: 'flex', gap: 0.5 }} onClick={(e) => {
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+              <Box
+                sx={{ cursor: 'pointer', alignItems: 'center', display: 'flex', gap: 0.5 }}
+                onClick={(e) => {
                   e.stopPropagation();
                   window.open(file.webUrl, '_blank', 'noopener,noreferrer');
-                }}>
-              <Icon
-                icon={linkIcon}
-                width={14}
-                height={14}
-              />
-              <img
-                src={connectorInfo.iconPath}
-                alt={file.connector || 'UPLOAD'}
-                width={16}
-                height={16}
-                style={{
-                  objectFit: 'contain',
-                  borderRadius: '2px',
-                }}
-                onError={(e) => {
-                  e.currentTarget.src = '/assets/icons/connectors/default.svg';
-                }}
-              />
-              <Typography
-                variant="caption"
-                sx={{
-                  color: 'text.secondary',
-                  fontSize: '11px',
-                  fontWeight: 500,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.3px',
                 }}
               >
-                {file.connector || 'UPLOAD'}
-              </Typography>
+                <Icon icon={linkIcon} width={14} height={14} />
+                <img
+                  src={connectorInfo.iconPath}
+                  alt={file.connector || 'UPLOAD'}
+                  width={16}
+                  height={16}
+                  style={{
+                    objectFit: 'contain',
+                    borderRadius: '2px',
+                  }}
+                  onError={(e) => {
+                    e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                  }}
+                />
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: 'text.secondary',
+                    fontSize: '11px',
+                    fontWeight: 500,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.3px',
+                  }}
+                >
+                  {file.connector || 'UPLOAD'}
+                </Typography>
               </Box>
             </Box>
           </Stack>
@@ -393,11 +395,12 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
   onRecordClick,
   onViewPdf,
   className,
+  modelInfo,
 }) => {
   const theme = useTheme();
   const [isFilesExpanded, setIsFilesExpanded] = useState(false);
   const [isCitationsExpanded, setIsCitationsExpanded] = useState(false);
-
+  console.log('modelInfo', modelInfo);
   // Get connector data from the hook
   const { activeConnectors } = useConnectors();
 
@@ -482,54 +485,177 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
 
   // Don't render if no citations
   if (!citations || citations.length === 0) {
-    return null;
+    return modelInfo && modelInfo.modelName ? (
+      <Box
+        sx={{
+          my: 2,
+          display: 'flex',
+          gap: 0.75,
+          flexDirection: 'row',
+          justifyContent: 'flex-end',
+        }}
+      >
+        <Typography
+          variant="body2"
+          sx={{
+            color: 'text.primary',
+            fontSize: '13px',
+            fontWeight: 600,
+            fontFamily:
+              '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          }}
+        >
+          <Typography
+            variant="caption"
+            sx={{
+              color: 'text.secondary',
+              fontSize: '12px',
+              fontWeight: 500,
+              textTransform: 'uppercase',
+              letterSpacing: '0.5px',
+              mr: 0.5,
+            }}
+          >
+            Model:
+          </Typography>
+          {modelInfo.modelName}
+          {modelInfo.chatMode && (
+            <Box
+              component="span"
+              sx={{
+                ml: 0.75,
+                px: 0.75,
+                py: 0.25,
+                borderRadius: 1,
+                bgcolor: (t) =>
+                  t.palette.mode === 'dark'
+                    ? alpha(t.palette.primary.main, 0.15)
+                    : alpha(t.palette.primary.main, 0.1),
+                color: (t) =>
+                  t.palette.mode === 'dark' ? t.palette.primary.light : t.palette.primary.main,
+                fontSize: '11px',
+                fontWeight: 500,
+                textTransform: 'capitalize',
+              }}
+            >
+              {modelInfo.chatMode}
+            </Box>
+          )}
+        </Typography>
+      </Box>
+    ) : null;
   }
 
   return (
     <Box className={className} sx={{ mt: 2.5 }}>
-      {/* Compact Side by Side Buttons */}
-      <Stack direction="row" spacing={1.5} sx={{ mb: 2 }}>
-        {/* Source Files Button */}
-        {uniqueFiles.length > 0 && (
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        {/* Compact Side by Side Buttons */}
+        <Stack direction="row" spacing={1.5} sx={{ mb: 2 }}>
+          {/* Source Files Button */}
+          {uniqueFiles.length > 0 && (
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => setIsFilesExpanded(!isFilesExpanded)}
+              startIcon={
+                <Icon icon={isFilesExpanded ? downIcon : rightIcon} width={14} height={14} />
+              }
+              sx={{
+                ...getButtonStyles(theme, 'success'),
+                minWidth: 'auto',
+                '& .MuiButton-startIcon': {
+                  marginRight: 0.75,
+                },
+              }}
+            >
+              <Icon icon={folderIcon} width={14} height={14} style={{ marginRight: 6 }} />
+              {uniqueFiles.length} {uniqueFiles.length === 1 ? 'Source' : 'Sources'}
+            </Button>
+          )}
+
+          {/* Citations Button */}
           <Button
             variant="outlined"
             size="small"
-            onClick={() => setIsFilesExpanded(!isFilesExpanded)}
+            onClick={() => setIsCitationsExpanded(!isCitationsExpanded)}
             startIcon={
-              <Icon icon={isFilesExpanded ? downIcon : rightIcon} width={14} height={14} />
+              <Icon icon={isCitationsExpanded ? downIcon : rightIcon} width={14} height={14} />
             }
             sx={{
-              ...getButtonStyles(theme, 'success'),
+              ...getButtonStyles(theme, 'primary'),
               minWidth: 'auto',
               '& .MuiButton-startIcon': {
                 marginRight: 0.75,
               },
             }}
           >
-            <Icon icon={folderIcon} width={14} height={14} style={{ marginRight: 6 }} />
-            {uniqueFiles.length} {uniqueFiles.length === 1 ? 'Source' : 'Sources'}
+            {citations.length} {citations.length === 1 ? 'Citation' : 'Citations'}
           </Button>
-        )}
-
-        {/* Citations Button */}
-        <Button
-          variant="outlined"
-          size="small"
-          onClick={() => setIsCitationsExpanded(!isCitationsExpanded)}
-          startIcon={
-            <Icon icon={isCitationsExpanded ? downIcon : rightIcon} width={14} height={14} />
-          }
-          sx={{
-            ...getButtonStyles(theme, 'primary'),
-            minWidth: 'auto',
-            '& .MuiButton-startIcon': {
-              marginRight: 0.75,
-            },
-          }}
-        >
-          {citations.length} {citations.length === 1 ? 'Citation' : 'Citations'}
-        </Button>
-      </Stack>
+        </Stack>
+        <Box>
+          {/* Model Name Display */}
+          {modelInfo?.modelName && (
+            <Box
+              sx={{
+                mb: 1.5,
+                display: 'flex',
+                flexDirection: 'row',
+                gap: 0.75,
+              }}
+            >
+              <Typography
+                variant="body2"
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  mt: 0.4,
+                }}
+              >
+                Model:
+              </Typography>
+              <Typography
+                variant="body2"
+                sx={{
+                  color: 'text.primary',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  fontFamily:
+                    '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                }}
+              >
+                {modelInfo.modelName}
+                {modelInfo.chatMode && (
+                  <Box
+                    component="span"
+                    sx={{
+                      ml: 0.75,
+                      px: 0.75,
+                      py: 0.25,
+                      borderRadius: 1,
+                      bgcolor: (t) =>
+                        t.palette.mode === 'dark'
+                          ? alpha(t.palette.primary.main, 0.15)
+                          : alpha(t.palette.primary.main, 0.1),
+                      color: (t) =>
+                        t.palette.mode === 'dark'
+                          ? t.palette.primary.light
+                          : t.palette.primary.main,
+                      fontSize: '11px',
+                      fontWeight: 500,
+                      textTransform: 'capitalize',
+                    }}
+                  >
+                    {modelInfo.chatMode}
+                  </Box>
+                )}
+              </Typography>
+            </Box>
+          )}
+        </Box>
+      </Box>
 
       {/* File Sources Section */}
       {uniqueFiles.length > 0 && (
