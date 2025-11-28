@@ -35,7 +35,6 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     DocumentationLink,
 )
-from app.connectors.core.registry.connector_registry import IndexingStatus
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -51,6 +50,7 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -641,7 +641,9 @@ class ConfluenceConnector(BaseConnector):
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
 
             # Build modified_after parameter - use the LATEST of filter and checkpoint
-            filter_modified_after = self.sync_filters.get_value(SyncFilterKey.MODIFIED_AFTER)[0]
+            # Get filter value - it's a list for datetime type, extract first element
+            filter_value = self.sync_filters.get_value(SyncFilterKey.MODIFIED_AFTER)
+            filter_modified_after = filter_value[0] if filter_value else None
 
             modified_after = None
             if filter_modified_after and last_sync_time:
@@ -866,7 +868,9 @@ class ConfluenceConnector(BaseConnector):
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
 
             # Build modified_after parameter - use the LATEST of filter and checkpoint
-            filter_modified_after = self.sync_filters.get_value(SyncFilterKey.MODIFIED_AFTER)[0]
+            # Get filter value - it's a list for datetime type, extract first element
+            filter_value = self.sync_filters.get_value(SyncFilterKey.MODIFIED_AFTER)
+            filter_modified_after = filter_value[0] if filter_value else None
 
             modified_after = None
             if filter_modified_after and last_sync_time:

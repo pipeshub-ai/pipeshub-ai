@@ -58,9 +58,15 @@ Usage at runtime:
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Union
+from logging import Logger
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
+
+from app.config.configuration_service import ConfigurationService
+
+# Type alias for filter values (string, bool, list, number, or None)
+FilterValue = Union[str, bool, int, float, List[str], None]
 
 
 class FilterType(str, Enum):
@@ -253,14 +259,14 @@ class FilterField:
     options: List[str] = dataclass_field(default_factory=list)
     options_endpoint: Optional[str] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Set default values based on filter_type"""
         if self.default_value is None:
             self.default_value = self._get_default_for_type()
         if self.default_operator is None:
             self.default_operator = self._get_default_operator()
 
-    def _get_default_for_type(self) -> Any:
+    def _get_default_for_type(self) -> Union[str, bool, List[str], None]:
         """Get default value based on type"""
         defaults = {
             FilterType.STRING: "",
@@ -394,7 +400,9 @@ class FilterCollection(BaseModel):
                 return f
         return None
 
-    def get_value(self, key: Union[str, Enum], default: Any = None) -> Any:
+    def get_value(
+        self, key: Union[str, Enum], default: FilterValue = None
+    ) -> FilterValue:
         """
         Get filter value.
 
@@ -453,7 +461,7 @@ class FilterCollection(BaseModel):
     def __len__(self) -> int:
         return len(self.filters)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Filter]:
         return iter(self.filters)
 
     def __bool__(self) -> bool:
@@ -510,9 +518,9 @@ class FilterCollection(BaseModel):
 
 # LOAD FILTERS FROM CONFIG SERVICE
 async def load_connector_filters(
-    config_service: Any,
+    config_service: ConfigurationService,
     connector_name: str,
-    logger: Any = None
+    logger: Optional[Logger] = None
 ) -> Tuple[FilterCollection, FilterCollection]:
     """
     Load sync and indexing filters from config service.
