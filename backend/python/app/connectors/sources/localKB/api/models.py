@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from app.config.constants.arangodb import ProgressStatus
+
 
 class PermissionRole(str, Enum):
     """Valid permission roles for knowledge base access"""
@@ -27,16 +29,6 @@ class RecordType(str, Enum):
     OTHERS = "OTHERS"
 
 
-class IndexingStatus(str, Enum):
-    """Valid indexing status values"""
-    NOT_STARTED = "NOT_STARTED"
-    IN_PROGRESS = "IN_PROGRESS"
-    PAUSED = "PAUSED"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
-    MANUAL_SYNC = "MANUAL_SYNC"
-    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
 
 
 class SortOrder(str, Enum):
@@ -149,7 +141,7 @@ class RecordResponse(BaseModel):
     recordType: RecordType = Field(..., description="Record type")
     origin: str = Field(..., description="Origin")
     connectorName: Optional[str] = Field(..., description="Connector name")
-    indexingStatus: IndexingStatus = Field(..., description="Indexing status")
+    indexingStatus: ProgressStatus = Field(..., description="Indexing status")
     createdAtTimestamp: int = Field(..., description="Creation timestamp")
     updatedAtTimestamp: int = Field(..., description="Update timestamp")
     sourceCreatedAtTimestamp: Optional[int] = Field(None, description="Source creation timestamp")

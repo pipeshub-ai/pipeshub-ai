@@ -16,38 +16,54 @@ import {
 } from '@mui/material';
 
 const getReindexButtonText = (status: string): string => {
-    switch (status) {
-      case 'FAILED':
-        return 'Retry Indexing';
-      case 'FILE_TYPE_NOT_SUPPORTED':
-        return 'File Not Supported';
-      case 'AUTO_INDEX_OFF':
-        return 'Enable Indexing';
-      case 'NOT_STARTED':
-        return 'Start Indexing';
-      default:
-        return 'Reindex';
-    }
-  };
+  switch (status) {
+    case 'FAILED':
+      return 'Retry Indexing';
+    case 'FILE_TYPE_NOT_SUPPORTED':
+      return 'File Not Supported';
+    case 'AUTO_INDEX_OFF':
+      return 'Enable Indexing';
+    case 'NOT_STARTED':
+      return 'Start Indexing';
+    case 'PAUSED':
+      return 'Resume Indexing';
+    case 'QUEUED':
+      return 'Reindex';
+    case 'EMPTY':
+      return 'Retry Indexing';
+    case 'ENABLE_MULTIMODAL_MODELS':
+      return 'Retry Indexing';
+    default:
+      return 'Reindex';
+  }
+};
 
-  const getReindexTooltip = (status: string): string => {
-    switch (status) {
-      case 'FAILED':
-        return 'Document indexing failed. Click to retry.';
-      case 'FILE_TYPE_NOT_SUPPORTED':
-        return 'This file type is not supported for indexing';
-      case 'AUTO_INDEX_OFF':
-        return 'Document indexing is turned off';
-      case 'NOT_STARTED':
-        return 'Document indexing has not started yet';
-      case 'IN_PROGRESS':
-        return 'Document is currently being indexed';
-      case 'COMPLETED':
-        return 'Document has been successfully indexed. Click to reindex.';
-      default:
-        return 'Reindex document to update search indexes';
-    }
-  };
+const getReindexTooltip = (status: string): string => {
+  switch (status) {
+    case 'FAILED':
+      return 'Document indexing failed. Click to retry.';
+    case 'FILE_TYPE_NOT_SUPPORTED':
+      return 'This file type is not supported for indexing';
+    case 'AUTO_INDEX_OFF':
+      return 'Document indexing is turned off';
+    case 'NOT_STARTED':
+      return 'Document indexing has not started yet';
+    case 'PAUSED':
+      return 'Document indexing is paused. Click to resume.';
+    case 'QUEUED':
+      return 'Document is queued for indexing.';
+    case 'IN_PROGRESS':
+      return 'Document is currently being indexed';
+    case 'COMPLETED':
+      return 'Document has been successfully indexed. Click to reindex.';
+    case 'EMPTY':
+      return 'Document has no content.';
+    case 'ENABLE_MULTIMODAL_MODELS':
+      return 'Enable Multimodal LLM or Embedding Model to index document.';
+    default:
+      return 'Reindex document to update search indexes';
+  }
+};
 
 // Reusable ReindexButton component to eliminate code duplication
 interface ReindexButtonProps {

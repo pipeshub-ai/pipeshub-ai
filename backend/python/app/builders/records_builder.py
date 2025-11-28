@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import List
 
+from app.config.constants.arangodb import ProgressStatus
 from app.models.records import FileRecord, MailRecord, Record
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -81,8 +82,7 @@ class RecordBuilder:
         return self
 
     def with_indexing_status(self, status: str) -> 'RecordBuilder':
-        valid_statuses = ["NOT_STARTED", "IN_PROGRESS", "PAUSED", "FAILED",
-                         "COMPLETED", "FILE_TYPE_NOT_SUPPORTED", "AUTO_INDEX_OFF"]
+        valid_statuses = [status.value for status in ProgressStatus]
         if status not in valid_statuses:
             raise ValueError(f"Invalid indexing status: {status}")
         self._indexing_status = status

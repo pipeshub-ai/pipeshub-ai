@@ -199,7 +199,9 @@ record_schema = {
                     "COMPLETED",
                     "FILE_TYPE_NOT_SUPPORTED",
                     "AUTO_INDEX_OFF",
-                    "ENABLE_MULTIMODAL_MODELS"
+                    "EMPTY",
+                    "ENABLE_MULTIMODAL_MODELS",
+                    "QUEUED"
                 ],
             },
             "extractionStatus": {
@@ -211,7 +213,8 @@ record_schema = {
                     "FAILED",
                     "COMPLETED",
                     "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF"
+                    "AUTO_INDEX_OFF",
+                    "EMPTY"
                 ],
             },
             "isLatestVersion": {"type": "boolean", "default": True},

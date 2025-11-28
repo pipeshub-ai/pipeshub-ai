@@ -41,7 +41,6 @@ class DoclingProcessor():
         doc = conv_res.document
         doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger,config=self.config)
         block_containers = await doc_to_blocks_converter.convert(doc)
-
         return block_containers
 
     def process_document(self) -> None:

@@ -359,11 +359,15 @@ const StatusIndicator = styled(Box, {
 // Status icons mapping
 const statusIcons: Record<string, React.ComponentProps<typeof IconifyIcon>['icon']> = {
   NOT_STARTED: circleOutlineIcon,
+  PAUSED: circleOutlineIcon,
   IN_PROGRESS: progressClockIcon,
-  FAILED: alertCircleOutlineIcon,
   COMPLETED: checkCircleOutlineIcon,
+  FAILED: alertCircleOutlineIcon,
   FILE_TYPE_NOT_SUPPORTED: fileAlertIcon,
   AUTO_INDEX_OFF: timerOffIcon,
+  EMPTY: fileAlertIcon,
+  ENABLE_MULTIMODAL_MODELS: alertCircleOutlineIcon,
+  QUEUED: progressClockIcon,
 };
 
 // Helper function to format labels
@@ -445,11 +449,15 @@ export default function KnowledgeBaseSideBar({
   const statusColors: Record<string, string> = React.useMemo(
     () => ({
       NOT_STARTED: theme.palette.grey[500],
+      PAUSED: theme.palette.warning.main,
       IN_PROGRESS: theme.palette.info.main,
-      FAILED: theme.palette.error.main,
       COMPLETED: theme.palette.success.main,
+      FAILED: theme.palette.error.main,
       FILE_TYPE_NOT_SUPPORTED: theme.palette.warning.main,
       AUTO_INDEX_OFF: theme.palette.grey[600],
+      EMPTY: theme.palette.grey[500],
+      ENABLE_MULTIMODAL_MODELS: theme.palette.info.main,
+      QUEUED: theme.palette.info.main,
     }),
     [
       theme.palette.grey,
@@ -1345,11 +1353,15 @@ export default function KnowledgeBaseSideBar({
           <FormGroup>
             {[
               'NOT_STARTED',
+              'PAUSED',
               'IN_PROGRESS',
-              'FAILED',
               'COMPLETED',
+              'FAILED',
               'FILE_TYPE_NOT_SUPPORTED',
               'AUTO_INDEX_OFF',
+              'EMPTY',
+              'ENABLE_MULTIMODAL_MODELS',
+              'QUEUED',
             ].map((status) => {
               const isChecked = (localFilters.indexingStatus || []).includes(status);
 

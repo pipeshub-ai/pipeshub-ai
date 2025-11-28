@@ -53,6 +53,7 @@ class DocumentExtraction(Transformer):
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
         blocks = record.block_containers.blocks
+
         document_classification = await self.process_document(blocks, record.org_id)
         if document_classification is None:
             record.semantic_metadata = None

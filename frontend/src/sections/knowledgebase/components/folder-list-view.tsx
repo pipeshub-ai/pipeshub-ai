@@ -375,6 +375,14 @@ export const ListView: React.FC<ListViewProps> = ({
         displayLabel = 'NOT STARTED';
         color = theme.palette.warning.main;
         break;
+      case 'PAUSED':
+        displayLabel = 'PAUSED';
+        color = theme.palette.warning.main;
+        break;
+      case 'QUEUED':
+        displayLabel = 'QUEUED';
+        color = theme.palette.info.main;
+        break;
       case 'FILE_TYPE_NOT_SUPPORTED':
         displayLabel = 'FILE TYPE NOT SUPPORTED';
         color = theme.palette.text.secondary;
@@ -382,6 +390,14 @@ export const ListView: React.FC<ListViewProps> = ({
       case 'AUTO_INDEX_OFF':
         displayLabel = 'MANUAL SYNC';
         color = theme.palette.primary.main;
+        break;
+      case 'EMPTY':
+        displayLabel = 'EMPTY';
+        color = theme.palette.text.secondary;
+        break;
+      case 'ENABLE_MULTIMODAL_MODELS':
+        displayLabel = 'ENABLE MULTIMODAL MODELS';
+        color = theme.palette.text.secondary;
         break;
       default:
         displayLabel = status.replace(/_/g, ' ').toLowerCase();

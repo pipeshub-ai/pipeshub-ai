@@ -67,11 +67,10 @@ class ExcelParser:
             self.file_binary = file_binary
             # Load workbook from binary or file path
             if self.file_binary:
+
                 self.workbook = load_workbook(
                     io.BytesIO(self.file_binary), data_only=True
                 )
-            else:
-                self.workbook = load_workbook(self.file_path, data_only=True)
 
             return await self.get_blocks_from_workbook(llm)
 

@@ -13,6 +13,7 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
+    RecordTypes,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
@@ -74,12 +75,54 @@ class RecordEventHandler(BaseEventService):
         redis_url = build_redis_url(redis_config)
         return SchedulerFactory.scheduler("redis", redis_url, logger, config_service, delay_hours=1)
 
+    async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
+        try:
+            self.logger.info(f"🔍 Looking for next queued duplicate for record {record_id}")
+
+            # Find the next queued duplicate
+            next_queued_record = await self.event_processor.arango_service.find_next_queued_duplicate(record_id)
+
+            if not next_queued_record:
+                self.logger.info(f"✅ No queued duplicates found for record {record_id}")
+                return
+
+            next_record_id = next_queued_record.get("_key")
+            self.logger.info(f"🚀 Found queued duplicate: {next_record_id}, triggering indexing")
+
+            # Get file record for the queued duplicate
+            file_record = None
+            if next_queued_record.get("recordType") == RecordTypes.FILE.value:
+                file_record = await self.event_processor.arango_service.get_document(
+                    next_record_id, CollectionNames.FILES.value
+                )
+
+            # Create event payload for the queued record
+            payload = await self.event_processor.arango_service._create_reindex_event_payload(
+                next_queued_record,
+                file_record,
+            )
+
+            # Publish the event to trigger indexing
+            await self.event_processor.arango_service._publish_record_event("newRecord", payload)
+
+            self.logger.info(f"✅ Successfully triggered indexing for queued duplicate: {next_record_id}")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to trigger next queued duplicate: {str(e)}")
+            try:
+                await self.event_processor.arango_service.update_queued_duplicates_status(record_id, ProgressStatus.FAILED.value, virtual_record_id)
+            except Exception as e:
+                self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
+
+
+
     async def process_event(self, event_type: str, payload: dict) -> bool:
         start_time = datetime.now()
         record_id = None
         message_id = f"{event_type}-unknown"
         error_occurred = False
         error_msg = None
+        record = None
         try:
             record_id = payload.get("recordId")
             extension = payload.get("extension", "unknown")
@@ -97,7 +140,6 @@ class RecordEventHandler(BaseEventService):
             record = await self.event_processor.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
-
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
@@ -179,8 +221,6 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.JPEG.value,
                 ExtensionTypes.WEBP.value,
                 ExtensionTypes.SVG.value,
-                ExtensionTypes.HEIC.value,
-                ExtensionTypes.HEIF.value,
             ]
 
             if (
@@ -329,27 +369,48 @@ class RecordEventHandler(BaseEventService):
             )
 
             if error_occurred and record_id:
-                await self.__update_document_status(
+                record = await self.__update_document_status(
                     record_id=record_id,
                     indexing_status=ProgressStatus.FAILED.value,
                     extraction_status=ProgressStatus.FAILED.value,
                     reason=error_msg,
                 )
+                virtual_record_id = record.get("virtualRecordId") if record else None
+                self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
+                await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
                 return False
 
+            if record is None:
+                return
 
-    async def __create_scheduler(self, scheduler_type: str, logger: Logger, config_service: ConfigurationService) -> Scheduler:
-        """Create a Redis scheduler instance"""
-        redis_config = await config_service.get_config(config_node_constants.REDIS.value)
-        if not redis_config or not isinstance(redis_config, dict):
-            raise ValueError("Redis configuration not found")
-        # Build Redis URL with password if provided
-        password = redis_config.get('password', '')
-        if password:
-            redis_url = f"redis://:{password}@{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
-        else:
-            redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
-        return SchedulerFactory.scheduler(scheduler_type, redis_url, logger, config_service, delay_hours=1)
+            record_type = record.get("recordType")
+
+            if record_type == RecordTypes.FILE.value and event_type != EventTypes.DELETE_RECORD.value:
+                record = await self.event_processor.arango_service.get_document(
+                    record_id, CollectionNames.RECORDS.value
+                )
+
+                if record is None:
+                    self.logger.warning(f"Record {record_id} not found in database")
+                    return
+
+                # if record is None:
+                #     self.logger.warning(f"Record {record_id} not found in database")
+                #     self.logger.warning(f"Triggering next queued duplicate for record {record_id}")
+                #     if md5_checksum and size_in_bytes:
+                #         await self._trigger_next_queued_duplicate(md5_checksum, size_in_bytes, None)
+                #     else:
+                #         self.logger.warning(f"Missing md5Checksum or sizeInBytes, skipping next queued duplicate")
+                #     return
+
+                indexing_status = record.get("indexingStatus")
+                virtual_record_id = record.get("virtualRecordId")
+                if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
+                    await self.event_processor.arango_service.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
+                elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
+                    # Find and trigger indexing for the next queued duplicate
+                    self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
+                    await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
 
     async def __update_document_status(
         self,
@@ -357,7 +418,7 @@ class RecordEventHandler(BaseEventService):
         indexing_status: str,
         extraction_status: str,
         reason: Optional[str] = None,
-    ) -> None:
+    ) -> dict|None:
         """Update document status in Arango"""
         try:
             record = await self.event_processor.arango_service.get_document(
@@ -365,7 +426,7 @@ class RecordEventHandler(BaseEventService):
             )
             if not record:
                 self.logger.error(f"❌ Record {record_id} not found for status update")
-                return
+                return None
 
             doc = dict(record)
             if doc.get("extractionStatus") == ProgressStatus.COMPLETED.value:
@@ -385,9 +446,10 @@ class RecordEventHandler(BaseEventService):
                 docs, CollectionNames.RECORDS.value
             )
             self.logger.info(f"✅ Updated document status for record {record_id}")
-
+            return record
         except Exception as e:
             self.logger.error(f"❌ Failed to update document status: {str(e)}")
+            return None
 
     async def clean_event_handler(self) -> None:
         """Clean up the event handler"""

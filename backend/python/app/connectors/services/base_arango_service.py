@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     GraphNames,
     LegacyGraphNames,
     OriginTypes,
+    ProgressStatus,
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -467,7 +468,7 @@ class BaseArangoService:
             self.logger.error(f"Failed to get organizations: {str(e)}")
             raise
 
-    async def get_document(self, document_key: str, collection: str) -> Optional[Dict]:
+    async def get_document(self, document_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
         """Get a document by its key"""
         try:
             query = """
@@ -475,7 +476,8 @@ class BaseArangoService:
                 FILTER doc._key == @document_key
                 RETURN doc
             """
-            cursor = self.db.aql.execute(
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
                 query,
                 bind_vars={"document_key": document_key, "@collection": collection},
             )
@@ -530,7 +532,10 @@ class BaseArangoService:
                         COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
                         FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
                         FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                        AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
+                        AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
+                        ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
+                        EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
+                        QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
                     }
                 }
 
@@ -548,7 +553,11 @@ class BaseArangoService:
                                 COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
                                 FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
                                 FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                                AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
+                                AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
+                                ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
+                                EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
+                                QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
+                                PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
                             }
                         }
                 )
@@ -594,7 +603,11 @@ class BaseArangoService:
                         COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
                         FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
                         FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                        AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
+                        AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
+                        ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
+                        EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
+                        QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
+                        PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
                     }
                 }
 
@@ -612,7 +625,11 @@ class BaseArangoService:
                                 COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
                                 FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
                                 FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                                AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
+                                AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
+                                ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
+                                EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
+                                QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
+                                PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
                             }
                         }
                 )
@@ -661,7 +678,11 @@ class BaseArangoService:
                                 "COMPLETED": 0,
                                 "FAILED": 0,
                                 "FILE_TYPE_NOT_SUPPORTED": 0,
-                                "AUTO_INDEX_OFF": 0
+                                "AUTO_INDEX_OFF": 0,
+                                "ENABLE_MULTIMODAL_MODELS": 0,
+                                "EMPTY": 0,
+                                "QUEUED": 0,
+                                "PAUSED": 0,
                             }
                         },
                         "by_record_type": []
@@ -12288,6 +12309,241 @@ class BaseArangoService:
 
         cursor = self.db.aql.execute(query, bind_vars=bind_vars)
         return list(cursor)
+
+
+    async def update_queued_duplicates_status(
+        self,
+        record_id: str,
+        new_indexing_status: str,
+        virtual_record_id: Optional[str|None] = None,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> int:
+        """
+        Find all QUEUED duplicate records with the same file md5 hash and update their status.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            new_indexing_status (str): The new indexing status to set
+            new_extraction_status (Optional[str]): The new extraction status to set (if provided)
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            int: Number of records updated
+        """
+        try:
+            self.logger.info(
+                f"🔍 Finding QUEUED duplicate records for record {record_id}"
+            )
+
+            # First get the file info for the reference record
+            file_query = f"""
+            FOR file IN {CollectionNames.FILES.value}
+                FILTER file._key == @record_id
+                RETURN file
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                file_query,
+                bind_vars={"record_id": record_id}
+            )
+
+            file_doc = None
+            try:
+                file_doc = cursor.next()
+            except StopIteration:
+                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate update")
+                return 0
+
+            if not file_doc:
+                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate update")
+                return 0
+
+            md5_checksum = file_doc.get("md5Checksum")
+            size_in_bytes = file_doc.get("sizeInBytes")
+
+            if not md5_checksum or size_in_bytes is None:
+                self.logger.warning(f"File {record_id} missing md5Checksum or sizeInBytes")
+                return 0
+
+            # Find all queued duplicate records
+            query = f"""
+            FOR file IN {CollectionNames.FILES.value}
+                FILTER file.md5Checksum == @md5_checksum
+                AND file.sizeInBytes == @size_in_bytes
+                AND file._key != @record_id
+                LET record = (
+                    FOR r IN {CollectionNames.RECORDS.value}
+                        FILTER r._key == file._key
+                        AND r.indexingStatus == @queued_status
+                        RETURN r
+                )[0]
+                FILTER record != null
+                RETURN record
+            """
+
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "md5_checksum": md5_checksum,
+                    "size_in_bytes": size_in_bytes,
+                    "record_id": record_id,
+                    "queued_status": "QUEUED"
+                }
+            )
+
+            queued_records = list(cursor)
+
+            if not queued_records:
+                self.logger.info("✅ No QUEUED duplicate records found")
+                return 0
+
+            self.logger.info(
+                f"✅ Found {len(queued_records)} QUEUED duplicate record(s) to update"
+            )
+
+            # Update all queued records
+            current_timestamp = get_epoch_timestamp_in_ms()
+            updated_records = []
+
+            for queued_record in queued_records:
+                doc = dict(queued_record)
+
+                # Map indexing status to extraction status
+                # For EMPTY status, extraction status should also be EMPTY, not FAILED
+                if new_indexing_status == ProgressStatus.COMPLETED.value:
+                    extraction_status = ProgressStatus.COMPLETED.value
+                elif new_indexing_status == ProgressStatus.EMPTY.value:
+                    extraction_status = ProgressStatus.EMPTY.value
+                else:
+                    extraction_status = ProgressStatus.FAILED.value
+
+                update_data = {
+                    "indexingStatus": new_indexing_status,
+                    "lastIndexTimestamp": current_timestamp,
+                    "isDirty": False,
+                    "virtualRecordId": virtual_record_id,
+                    "extractionStatus": extraction_status,
+                }
+
+
+                doc.update(update_data)
+                updated_records.append(doc)
+
+            # Batch update all queued records
+            await self.batch_upsert_nodes(updated_records, CollectionNames.RECORDS.value,transaction)
+
+            self.logger.info(
+                f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
+            )
+
+            return len(queued_records)
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to update queued duplicates status: {str(e)}"
+            )
+            return -1
+
+
+    async def find_next_queued_duplicate(
+        self,
+        record_id: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Optional[dict]:
+        """
+        Find the next QUEUED duplicate record with the same file md5 hash.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[dict]: The next queued record if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                f"🔍 Finding next QUEUED duplicate record for record {record_id}"
+            )
+
+            # First get the file info for the reference record
+            file_query = f"""
+            FOR file IN {CollectionNames.FILES.value}
+                FILTER file._key == @record_id
+                RETURN file
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                file_query,
+                bind_vars={"record_id": record_id}
+            )
+
+            file_doc = None
+            try:
+                file_doc = cursor.next()
+            except StopIteration:
+                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate search")
+                return None
+
+            if not file_doc:
+                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate search")
+                return None
+
+            md5_checksum = file_doc.get("md5Checksum")
+            size_in_bytes = file_doc.get("sizeInBytes")
+
+            if not md5_checksum or size_in_bytes is None:
+                self.logger.warning(f"File {record_id} missing md5Checksum or sizeInBytes")
+                return None
+
+            # Find the first queued duplicate record
+            query = f"""
+            FOR file IN {CollectionNames.FILES.value}
+                FILTER file.md5Checksum == @md5_checksum
+                AND file.sizeInBytes == @size_in_bytes
+                AND file._key != @record_id
+                LET record = (
+                    FOR r IN {CollectionNames.RECORDS.value}
+                        FILTER r._key == file._key
+                        AND r.indexingStatus == @queued_status
+                        RETURN r
+                )[0]
+                FILTER record != null
+                LIMIT 1
+                RETURN record
+            """
+
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "md5_checksum": md5_checksum,
+                    "size_in_bytes": size_in_bytes,
+                    "record_id": record_id,
+                    "queued_status": "QUEUED"
+                }
+            )
+
+            queued_record = None
+            try:
+                queued_record = cursor.next()
+            except StopIteration:
+                self.logger.info("✅ No QUEUED duplicate record found")
+                return None
+
+            if queued_record:
+                self.logger.info(
+                    f"✅ Found QUEUED duplicate record: {queued_record.get('_key')}"
+                )
+                return dict(queued_record)
+
+            return None
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to find next queued duplicate: {str(e)}"
+            )
+            return None
 
     async def get_accessible_records(
         self, user_id: str, org_id: str, filters: dict = None

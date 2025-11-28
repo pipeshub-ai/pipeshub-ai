@@ -11,9 +11,15 @@ export type ConnectorName =
   | 'GMAIL';
 export type IndexingStatus =
   | 'NOT_STARTED'
+  | 'PAUSED'
   | 'IN_PROGRESS'
+  | 'COMPLETED'
   | 'FAILED'
-  | 'COMPLETED';
+  | 'FILE_TYPE_NOT_SUPPORTED'
+  | 'AUTO_INDEX_OFF'
+  | 'EMPTY'
+  | 'ENABLE_MULTIMODAL_MODELS'
+  | 'QUEUED';
 
 // Interface for a generic record document.
 export interface IRecordDocument {

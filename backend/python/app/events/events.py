@@ -28,6 +28,8 @@ class EventProcessor:
         self.arango_service = arango_service
         self.config_service = config_service
 
+
+
     async def _download_from_signed_url(
         self, signed_url: str, record_id: str, doc: dict
     ) -> bytes:
@@ -186,13 +188,9 @@ class EventProcessor:
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
-
-
             # For both create and update events, we need to process the document
             if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
                 # For updates, first delete existing embeddings
-                if virtual_record_id is None:
-                    raise Exception(f"❌ Virtual record ID not found for record {record_id} for event {event_type}")
 
                 self.logger.info(
                     f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}"""
@@ -210,7 +208,6 @@ class EventProcessor:
             extension = event_data.get("extension", "unknown")
             mime_type = event_data.get("mimeType", "unknown")
             origin = event_data.get("origin", "CONNECTOR" if connector != "" else "UPLOAD")
-            record_type = event_data.get("recordType", "unknown")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
             if mime_type == "text/gmail_content":
@@ -257,12 +254,13 @@ class EventProcessor:
 
                     # Add indexingStatus to initial duplicate check to find in-progress files
                     duplicate_files = await self.arango_service.find_duplicate_files(file_doc.get('_key'), md5_checksum, size_in_bytes)
+
                     duplicate_files = [f for f in duplicate_files if f is not None]
                     if duplicate_files:
                         # Wait and check for processed duplicates
                         for attempt in range(60):
                             processed_duplicate = next(
-                                (f for f in duplicate_files if f.get("virtualRecordId")),
+                                (f for f in duplicate_files if (f.get("virtualRecordId") and f.get("indexingStatus") == ProgressStatus.COMPLETED.value) or (f.get("indexingStatus") == ProgressStatus.EMPTY.value)),
                                 None
                             )
 
@@ -272,9 +270,9 @@ class EventProcessor:
                                     "isDirty": False,
                                     "summaryDocumentId": processed_duplicate.get("summaryDocumentId"),
                                     "virtualRecordId": processed_duplicate.get("virtualRecordId"),
-                                    "indexingStatus": ProgressStatus.COMPLETED.value,
+                                    "indexingStatus": processed_duplicate.get("indexingStatus"),
                                     "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                                    "extractionStatus": ProgressStatus.COMPLETED.value,
+                                    "extractionStatus": processed_duplicate.get("extractionStatus"),
                                     "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
                                 })
                                 await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
@@ -292,15 +290,16 @@ class EventProcessor:
                                 None
                             )
 
+                            # TODO: handle race condition here
                             if in_progress:
-                                self.logger.info(f"🚀 Duplicate file {in_progress.get('_key')} is being processed, waiting...")
+                                self.logger.info(f"🚀 Duplicate file {in_progress.get('_key')} is being processed, changing status to QUEUED.")
                                 self.logger.info(f"Retried {attempt} times")
-                                # TODO: Remove this sleep
-                                await asyncio.sleep(30)
-                                # Refresh duplicate files list
-                                duplicate_files = await self.arango_service.find_duplicate_files(
-                                    file_doc.get('_key'), md5_checksum, size_in_bytes
-                                )
+
+                                doc.update({
+                                    "indexingStatus": ProgressStatus.QUEUED.value,
+                                })
+                                await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+                                return
                             else:
                                 # No file is being processed, we can proceed
                                 break
@@ -538,18 +537,12 @@ class EventProcessor:
                     ExtensionTypes.JPG.value,
                     ExtensionTypes.JPEG.value,
                     ExtensionTypes.WEBP.value,
-                    # ExtensionTypes.SVG.value,
-                    # ExtensionTypes.HEIC.value,
-                    # ExtensionTypes.HEIF.value,
                 }
                 or mime_type in {
                     MimeTypes.PNG.value,
                     MimeTypes.JPG.value,
                     MimeTypes.JPEG.value,
                     MimeTypes.WEBP.value,
-                    # MimeTypes.SVG.value,
-                    # MimeTypes.HEIC.value,
-                    # MimeTypes.HEIF.value,
                 }
             ):
                 # Route image files to the image processor
@@ -571,3 +564,4 @@ class EventProcessor:
             # Let the error bubble up to Kafka consumer
             self.logger.error(f"❌ Error in event processor: {repr(e)}")
             raise
+

@@ -289,12 +289,10 @@ class BlobStorage(Transformer):
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
             query = 'FOR doc IN @@collection FILTER doc.virtualRecordId == @virtualRecordId OR doc._key == @virtualRecordId RETURN doc.documentId'
-
             bind_vars = {
                 '@collection': collection_name,
                 'virtualRecordId': virtual_record_id
             }
-
             cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
 
             # Check if cursor has any results before calling next()

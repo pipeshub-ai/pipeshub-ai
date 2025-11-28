@@ -18,11 +18,15 @@ import { ConnectorStatsCard } from './connector-stats-card';
 
 interface IndexingStatusStats {
   NOT_STARTED: number;
+  PAUSED: number;
   IN_PROGRESS: number;
   COMPLETED: number;
   FAILED: number;
   FILE_TYPE_NOT_SUPPORTED: number;
   AUTO_INDEX_OFF: number;
+  EMPTY: number;
+  ENABLE_MULTIMODAL_MODELS: number;
+  QUEUED: number;
 }
 
 interface BasicStats {
@@ -221,6 +225,10 @@ const ConnectorStatistics = ({
               FAILED: 10,
               FILE_TYPE_NOT_SUPPORTED: index === 0 ? 5 : 0,
               AUTO_INDEX_OFF: index === 1 ? 3 : 0,
+              EMPTY: index === 2 ? 10 : 0,
+              ENABLE_MULTIMODAL_MODELS: index === 3 ? 10 : 0,
+              QUEUED: index === 4 ? 10 : 0,
+              PAUSED: index === 5 ? 10 : 0,
             },
           },
           by_record_type: [],
@@ -237,6 +245,10 @@ const ConnectorStatistics = ({
                   FAILED: 5,
                   FILE_TYPE_NOT_SUPPORTED: 0,
                   AUTO_INDEX_OFF: 0,
+                  EMPTY: 0,
+                  ENABLE_MULTIMODAL_MODELS: 0,
+                  QUEUED: 0,
+                  PAUSED: 0,
                 },
                 by_record_type: [],
               },
