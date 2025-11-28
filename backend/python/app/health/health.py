@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import aiohttp  # type: ignore
@@ -6,7 +7,7 @@ from redis.asyncio import Redis, RedisError  #type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.utils.redis_util import build_redis_url
 
 
@@ -22,6 +23,65 @@ class Health:
         await Health.health_check_redis(container)
         await Health.health_check_vector_db(container)
         logger.info("✅ External services health check passed")
+
+    @staticmethod
+    async def health_check_connector_service(container) -> None:
+        """Health check connector service via /health with simple retry logic.
+
+        Polls up to 5 times with a 4-second interval before raising an exception.
+        """
+        logger = container.logger()
+        logger.info("🔍 Starting Connector service health check...")
+
+        # Get connector endpoint from config service
+        config_service: ConfigurationService = container.config_service()
+        endpoints = await config_service.get_config(config_node_constants.ENDPOINTS.value)
+        connector_endpoint = (
+            (endpoints or {}).get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+        )
+        connector_url = f"{connector_endpoint}/health"
+
+        last_error_msg = None
+
+        for attempt in range(1, 6):
+            try:
+                logger.debug(
+                    f"Checking connector service health at endpoint: {connector_url} "
+                    f"(attempt {attempt}/5)"
+                )
+
+                # TODO: remove aiohttp dependency and use http client from sources module
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(connector_url) as response:
+                        if response.status == HttpStatusCode.SUCCESS.value:
+                            logger.info("✅ Connector service health check passed")
+                            return
+                        else:
+                            error_body = await response.text()
+                            last_error_msg = (
+                                f"Connector service health check failed with status "
+                                f"{response.status}: {error_body}"
+                            )
+                            logger.warning(f"❌ {last_error_msg}")
+
+            except aiohttp.ClientError as e:
+                last_error_msg = (
+                    f"Connection error during connector service health check: {str(e)}"
+                )
+                logger.warning(f"❌ {last_error_msg}")
+            except Exception as e:
+                last_error_msg = f"Connector service health check failed: {str(e)}"
+                logger.warning(f"❌ {last_error_msg}")
+
+            # If not the last attempt, wait before retrying
+            if attempt < 5:
+                logger.info("⏳ Retrying connector service health check in 4 seconds...")
+                await asyncio.sleep(4)
+
+        # All attempts failed
+        final_msg = last_error_msg or "Connector service health check failed after retries"
+        logger.error(f"❌ {final_msg}")
+        raise Exception(final_msg)
 
     @staticmethod
     async def health_check_etcd(container) -> None:

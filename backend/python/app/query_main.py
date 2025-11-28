@@ -33,16 +33,17 @@ async def initialize_container(container: QueryAppContainer) -> bool:
     logger.info("🚀 Initializing application resources")
 
     try:
-        # Connect to ArangoDB and Redis
-        logger.info("Connecting to ArangoDB")
+        # Ensure connector service is healthy before starting query service
+        logger.info("Checking Connector service health before startup")
+        from app.health.health import Health
+        await Health.health_check_connector_service(container)
+
+        # Ensure ArangoDB service is initialized (connection is handled in the resource factory)
+        logger.info("Ensuring ArangoDB service is initialized")
         arango_service = await container.arango_service()
-        if arango_service:
-            arango_connected = await arango_service.connect()
-            if not arango_connected:
-                raise Exception("Failed to connect to ArangoDB")
-            logger.info("✅ Connected to ArangoDB")
-        else:
-            raise Exception("Failed to connect to ArangoDB")
+        if not arango_service:
+            raise Exception("Failed to initialize ArangoDB service")
+        logger.info("✅ ArangoDB service initialized")
 
         return True
 
