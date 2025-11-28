@@ -274,6 +274,7 @@ class RetrievalService:
             accessible_records, vector_store, user = await asyncio.gather(*init_tasks)
 
             if not accessible_records:
+                self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             # FIX: Filter out None records before processing
