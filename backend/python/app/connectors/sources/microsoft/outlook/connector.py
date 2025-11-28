@@ -30,7 +30,6 @@ from app.connectors.core.registry.connector_builder import (
     AuthField,
     ConnectorBuilder,
     DocumentationLink,
-    FilterField,
 )
 from app.connectors.sources.microsoft.common.apps import OutlookApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -130,17 +129,6 @@ class OutlookCredentials:
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        .add_filter_field(FilterField(
-            name="mailFolders",
-            display_name="Mail Folders",
-            description="Select mail folders to sync"
-        ), "static")
-        .add_filter_field(FilterField(
-            name="dateRange",
-            display_name="Date Range",
-            description="Select date range for emails",
-            field_type="DATERANGE"
-        ), "static")
     )\
     .build_decorator()
 class OutlookConnector(BaseConnector):
