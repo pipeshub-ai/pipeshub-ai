@@ -2781,11 +2781,7 @@ export const updateAIModelProvider =
       targetModel.isMultimodal = isMultimodal;
       targetModel.isDefault = isDefault;
       targetModel.isReasoning = isReasoning;
-      if (contextLength) {
-        targetModel.contextLength = contextLength;
-      }else{
-        targetModel.contextLength = null;
-      }
+      targetModel.contextLength = contextLength || null;
       // If this is set as default, remove default flag from other models of the same type
       if (isDefault) {
         for (const config of aiModels[targetModelType]) {

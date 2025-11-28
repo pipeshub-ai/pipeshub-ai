@@ -205,9 +205,7 @@ class DomainExtractor:
         self.logger.info("🎯 Extracting domain metadata")
         try:
             self.llm, config = await get_llm(self.config_service)
-            context_length = config.get("contextLength",DEFAULT_CONTEXT_LENGTH)
-            if context_length is None:
-                context_length = DEFAULT_CONTEXT_LENGTH
+            context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
             self.logger.info(f"Context length: {context_length}")
 
             self.logger.info("✅ LLM initialized successfully")

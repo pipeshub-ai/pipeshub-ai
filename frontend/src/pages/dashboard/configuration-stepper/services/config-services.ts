@@ -409,6 +409,7 @@ export const updateStepperAiModelsConfig = async (
         configuration: Record<string, any>;
         isMultimodal?: boolean;
         isReasoning?: boolean;
+        contextLength?: number;
       }[]
     | null,
   embeddingConfig?:

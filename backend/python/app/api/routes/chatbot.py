@@ -465,9 +465,7 @@ async def askAIStream(
                     query_info.chatMode
                 )
                 is_multimodal_llm = config.get("isMultimodal")
-                context_length = config.get("contextLength",DEFAULT_CONTEXT_LENGTH)
-                if context_length is None:
-                    context_length = DEFAULT_CONTEXT_LENGTH
+                context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
                 logger.info(f"Context length: {context_length}")
                 logger.info(f"LLM used for streaming: {llm.model_name}")

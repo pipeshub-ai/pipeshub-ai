@@ -177,9 +177,7 @@ class DocumentExtraction(Transformer):
         self.logger.info("🎯 Extracting domain metadata")
         self.llm, config= await get_llm(self.config_service)
         is_multimodal_llm = config.get("isMultimodal")
-        context_length = config.get("contextLength",DEFAULT_CONTEXT_LENGTH)
-        if context_length is None:
-            context_length = DEFAULT_CONTEXT_LENGTH
+        context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
         self.logger.info(f"Context length: {context_length}")
 
