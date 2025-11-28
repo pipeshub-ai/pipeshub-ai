@@ -1,35 +1,20 @@
 // RecordDetails.js - Modified to display both file and mail records
 import type { User } from 'src/context/UserContext';
-import type { Icon as IconifyIcon } from '@iconify/react';
 
 import { Icon } from '@iconify/react';
 import robotIcon from '@iconify-icons/mdi/robot';
 import closeIcon from '@iconify-icons/mdi/close';
-import React, { useState, useEffect } from 'react';
-import pencilIcon from '@iconify-icons/mdi/pencil';
+import { useState, useEffect } from 'react';
 import updateIcon from '@iconify-icons/mdi/update';
 import accountIcon from '@iconify-icons/mdi/account';
-import refreshIcon from '@iconify-icons/mdi/refresh';
 import clockIcon from '@iconify-icons/mdi/clock-outline';
 import emailIcon from '@iconify-icons/mdi/email-outline';
 import { useParams, useNavigate } from 'react-router-dom';
 import arrowLeftIcon from '@iconify-icons/mdi/arrow-left';
-import trashCanIcon from '@iconify-icons/mdi/trash-can-outline';
 import fileAlertIcon from '@iconify-icons/mdi/file-alert-outline';
 import connectorIcon from '@iconify-icons/mdi/cloud-sync-outline';
 import fileDocumentBoxIcon from '@iconify-icons/mdi/file-document-box';
 import descriptionIcon from '@iconify-icons/mdi/file-document-outline';
-import linkIcon from '@iconify-icons/mdi/open-in-new';
-import pdfIcon from '@iconify-icons/vscode-icons/file-type-pdf2';
-import docIcon from '@iconify-icons/vscode-icons/file-type-word';
-import xlsIcon from '@iconify-icons/vscode-icons/file-type-excel';
-import pptIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
-import txtIcon from '@iconify-icons/vscode-icons/file-type-text';
-import mdIcon from '@iconify-icons/vscode-icons/file-type-markdown';
-import htmlIcon from '@iconify-icons/vscode-icons/file-type-html';
-import jsonIcon from '@iconify-icons/vscode-icons/file-type-json';
-import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
-import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
 import databaseIcon from '@iconify-icons/mdi/database';
 import infoIcon from '@iconify-icons/mdi/information-outline';
 
@@ -56,11 +41,7 @@ import {
   CircularProgress,
   Dialog,
   DialogContent,
-  DialogTitle,
   Menu,
-  MenuItem,
-  ListItemIcon,
-  ListItemText,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -74,74 +55,19 @@ import RecordDocumentViewer from './show-documents';
 import EditRecordDialog from './edit-record-dialog';
 import DeleteRecordDialog from './delete-record-dialog';
 import type { MetadataItem, Permissions, RecordDetailsResponse } from './types/record-details';
-
-const getIndexingStatusColor = (
-  status: string
-): 'success' | 'info' | 'error' | 'warning' | 'default' => {
-  switch (status) {
-    case 'COMPLETED':
-      return 'success';
-    case 'IN_PROGRESS':
-      return 'info';
-    case 'FAILED':
-      return 'error';
-    case 'NOT_STARTED':
-      return 'warning';
-    case 'FILE_TYPE_NOT_SUPPORTED':
-      return 'default';
-    case 'AUTO_INDEX_OFF':
-      return 'default';
-    default:
-      return 'warning';
-  }
-};
-
-const getReindexButtonText = (status: string): string => {
-  switch (status) {
-    case 'FAILED':
-      return 'Retry Indexing';
-    case 'FILE_TYPE_NOT_SUPPORTED':
-      return 'File Not Supported';
-    case 'AUTO_INDEX_OFF':
-      return 'Enable Indexing';
-    case 'NOT_STARTED':
-      return 'Start Indexing';
-    default:
-      return 'Reindex';
-  }
-};
-
-const getReindexButtonColor = (status: string): 'warning' | 'error' | 'primary' | 'info' => {
-  switch (status) {
-    case 'FAILED':
-      return 'warning';
-    case 'FILE_TYPE_NOT_SUPPORTED':
-      return 'error';
-    case 'NOT_STARTED':
-      return 'info';
-    default:
-      return 'primary';
-  }
-};
-
-const getReindexTooltip = (status: string): string => {
-  switch (status) {
-    case 'FAILED':
-      return 'Document indexing failed. Click to retry.';
-    case 'FILE_TYPE_NOT_SUPPORTED':
-      return 'This file type is not supported for indexing';
-    case 'AUTO_INDEX_OFF':
-      return 'Document indexing is turned off';
-    case 'NOT_STARTED':
-      return 'Document indexing has not started yet';
-    case 'IN_PROGRESS':
-      return 'Document is currently being indexed';
-    case 'COMPLETED':
-      return 'Document has been successfully indexed. Click to reindex.';
-    default:
-      return 'Reindex document to update search indexes';
-  }
-};
+import {
+  DeleteButton,
+  EditButton,
+  OpenButton,
+  ReindexButton,
+  SummaryButton,
+} from './components/buttons';
+import {
+  formatFileSize,
+  getFileIcon,
+  getFileIconColor,
+  getIndexingStatusColor,
+} from './utils/utils';
 
 export default function RecordDetails() {
   const { recordId } = useParams<{ recordId: string }>();
@@ -222,10 +148,8 @@ export default function RecordDetails() {
       );
       setSnackbar({
         open: true,
-        message: response.data.reindexResponse.success
-          ? 'File indexing started'
-          : 'Failed to start reindexing',
-        severity: response.data.reindexResponse.success ? 'success' : 'error',
+        message: response.data.success ? 'File indexing started' : 'Failed to start reindexing',
+        severity: response.data.success ? 'success' : 'error',
       });
     } catch (error) {
       console.log('error in re indexing', error);
@@ -470,229 +394,28 @@ export default function RecordDetails() {
               >
                 {/* Edit button */}
                 {!isRecordConnector && (
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={pencilIcon} style={{ fontSize: '1rem' }} />}
-                    onClick={() => setIsEditDialogOpen(true)}
-                    sx={{
-                      height: 32,
-                      px: 1.75,
-                      py: 0.75,
-                      borderRadius: '4px',
-                      textTransform: 'none',
-                      fontSize: '0.8125rem',
-                      fontWeight: 500,
-                      minWidth: 100,
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? alpha(themeVal.palette.primary.main, 0.7)
-                          : themeVal.palette.primary.main,
-                      color: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? themeVal.palette.primary.light
-                          : themeVal.palette.primary.main,
-                      borderWidth: '1px',
-                      bgcolor: 'transparent',
-                      '&:hover': {
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? themeVal.palette.primary.light
-                            : themeVal.palette.primary.dark,
-                        bgcolor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? alpha(themeVal.palette.primary.main, 0.1)
-                            : alpha(themeVal.palette.primary.main, 0.05),
-                      },
-                    }}
-                  >
-                    Edit
-                  </Button>
+                  <EditButton onClick={() => setIsEditDialogOpen(true)} variant="default" />
                 )}
 
                 {/* Summary button */}
                 {record.summaryDocumentId && (
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={descriptionIcon} style={{ fontSize: '1rem' }} />}
-                    onClick={handleShowSummary}
-                    sx={{
-                      height: 32,
-                      px: 1.75,
-                      py: 0.75,
-                      borderRadius: '4px',
-                      textTransform: 'none',
-                      fontSize: '0.8125rem',
-                      fontWeight: 500,
-                      minWidth: 100,
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? 'rgba(255,255,255,0.23)'
-                          : 'rgba(0,0,0,0.23)',
-                      color: (themeVal) =>
-                        themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
-                      borderWidth: '1px',
-                      bgcolor: 'transparent',
-                      '&:hover': {
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.4)'
-                            : 'rgba(0,0,0,0.4)',
-                        bgcolor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.05)'
-                            : 'rgba(0,0,0,0.03)',
-                      },
-                    }}
-                  >
-                    Summary
-                  </Button>
+                  <SummaryButton onClick={handleShowSummary} variant="default" />
                 )}
 
-                {webUrl && (
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={linkIcon} style={{ fontSize: '1rem' }} />}
-                    onClick={() => window.open(webUrl, '_blank', 'noopener,noreferrer')}
-                    sx={{
-                      height: 32,
-                      px: 1.75,
-                      py: 0.75,
-                      borderRadius: '4px',
-                      textTransform: 'none',
-                      fontSize: '0.8125rem',
-                      fontWeight: 500,
-                      minWidth: 100,
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? 'rgba(255,255,255,0.23)'
-                          : 'rgba(0,0,0,0.23)',
-                      color: (themeVal) =>
-                        themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
-                      borderWidth: '1px',
-                      bgcolor: 'transparent',
-                      '&:hover': {
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.4)'
-                            : 'rgba(0,0,0,0.4)',
-                        bgcolor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.05)'
-                            : 'rgba(0,0,0,0.03)',
-                      },
-                    }}
-                  >
-                    Open
-                  </Button>
-                )}
+                {webUrl && <OpenButton webUrl={webUrl} variant="default" />}
 
                 {/* Reindex button */}
-                {!isRecordConnector && recordId && (
-                  <Tooltip title={getReindexTooltip(record.indexingStatus)} placement="top" arrow>
-                    <span>
-                      <Button
-                        variant="outlined"
-                        startIcon={<Icon icon={refreshIcon} style={{ fontSize: '1rem' }} />}
-                        disabled={
-                          record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
-                          record.indexingStatus === 'IN_PROGRESS'
-                        }
-                        onClick={() => handleRetryIndexing(recordId)}
-                        sx={{
-                          height: 32,
-                          px: 1.75,
-                          py: 0.75,
-                          borderRadius: '4px',
-                          textTransform: 'none',
-                          fontSize: '0.8125rem',
-                          fontWeight: 500,
-                          minWidth: 100,
-                          borderColor: (themeVal) =>
-                            record.indexingStatus === 'FAILED'
-                              ? themeVal.palette.mode === 'dark'
-                                ? '#FACC15'
-                                : '#D97706'
-                              : themeVal.palette.mode === 'dark'
-                                ? 'rgba(255,255,255,0.23)'
-                                : 'rgba(0,0,0,0.23)',
-                          color: (themeVal) =>
-                            record.indexingStatus === 'FAILED'
-                              ? themeVal.palette.mode === 'dark'
-                                ? '#FACC15'
-                                : '#D97706'
-                              : themeVal.palette.mode === 'dark'
-                                ? '#E0E0E0'
-                                : '#4B5563',
-                          borderWidth: '1px',
-                          bgcolor: 'transparent',
-                          '&:hover': {
-                            borderColor: (themeVal) =>
-                              record.indexingStatus === 'FAILED'
-                                ? themeVal.palette.mode === 'dark'
-                                  ? '#FDE68A'
-                                  : '#B45309'
-                                : themeVal.palette.mode === 'dark'
-                                  ? 'rgba(255,255,255,0.4)'
-                                  : 'rgba(0,0,0,0.4)',
-                            bgcolor: (themeVal) =>
-                              record.indexingStatus === 'FAILED'
-                                ? themeVal.palette.mode === 'dark'
-                                  ? 'rgba(250,204,21,0.08)'
-                                  : 'rgba(217,119,6,0.04)'
-                                : themeVal.palette.mode === 'dark'
-                                  ? 'rgba(255,255,255,0.05)'
-                                  : 'rgba(0,0,0,0.03)',
-                          },
-                          '&.Mui-disabled': {
-                            borderColor: (themeVal) =>
-                              themeVal.palette.mode === 'dark'
-                                ? 'rgba(255,255,255,0.12)'
-                                : 'rgba(0,0,0,0.12)',
-                            color: (themeVal) =>
-                              themeVal.palette.mode === 'dark'
-                                ? 'rgba(255,255,255,0.3)'
-                                : 'rgba(0,0,0,0.38)',
-                          },
-                        }}
-                      >
-                        {getReindexButtonText(record.indexingStatus)}
-                      </Button>
-                    </span>
-                  </Tooltip>
+                {recordId && (
+                  <ReindexButton
+                    recordId={recordId}
+                    indexingStatus={record.indexingStatus}
+                    onRetryIndexing={handleRetryIndexing}
+                    variant="default"
+                  />
                 )}
 
                 {/* Delete button */}
-                <Button
-                  variant="outlined"
-                  color="error"
-                  startIcon={<Icon icon={trashCanIcon} style={{ fontSize: '1rem' }} />}
-                  onClick={() => setIsDeleteDialogOpen(true)}
-                  sx={{
-                    height: 32,
-                    px: 1.75,
-                    py: 0.75,
-                    borderRadius: '4px',
-                    textTransform: 'none',
-                    fontSize: '0.8125rem',
-                    fontWeight: 500,
-                    minWidth: 100,
-                    borderColor: (themeVal) =>
-                      themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626',
-                    color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626'),
-                    borderWidth: '1px',
-                    bgcolor: 'transparent',
-                    '&:hover': {
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark' ? '#F87171' : '#B91C1C',
-                      bgcolor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? 'rgba(239,68,68,0.08)'
-                          : 'rgba(220,38,38,0.04)',
-                    },
-                  }}
-                >
-                  Delete
-                </Button>
+                <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="default" />
               </Box>
               <Box
                 sx={{
@@ -708,229 +431,28 @@ export default function RecordDetails() {
               >
                 {/* Edit button */}
                 {!isRecordConnector && (
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={pencilIcon} style={{ fontSize: '1rem' }} />}
-                    onClick={() => setIsEditDialogOpen(true)}
-                    sx={{
-                      height: 32,
-                      px: 1.75,
-                      py: 0.75,
-                      borderRadius: '4px',
-                      textTransform: 'none',
-                      fontSize: '0.8125rem',
-                      fontWeight: 500,
-                      minWidth: 100,
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? alpha(themeVal.palette.primary.main, 0.7)
-                          : themeVal.palette.primary.main,
-                      color: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? themeVal.palette.primary.light
-                          : themeVal.palette.primary.main,
-                      borderWidth: '1px',
-                      bgcolor: 'transparent',
-                      '&:hover': {
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? themeVal.palette.primary.light
-                            : themeVal.palette.primary.dark,
-                        bgcolor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? alpha(themeVal.palette.primary.main, 0.1)
-                            : alpha(themeVal.palette.primary.main, 0.05),
-                      },
-                    }}
-                  >
-                    Edit
-                  </Button>
+                  <EditButton onClick={() => setIsEditDialogOpen(true)} variant="default" />
                 )}
 
                 {/* Summary button */}
                 {record.summaryDocumentId && (
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={descriptionIcon} style={{ fontSize: '1rem' }} />}
-                    onClick={handleShowSummary}
-                    sx={{
-                      height: 32,
-                      px: 1.75,
-                      py: 0.75,
-                      borderRadius: '4px',
-                      textTransform: 'none',
-                      fontSize: '0.8125rem',
-                      fontWeight: 500,
-                      minWidth: 100,
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? 'rgba(255,255,255,0.23)'
-                          : 'rgba(0,0,0,0.23)',
-                      color: (themeVal) =>
-                        themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
-                      borderWidth: '1px',
-                      bgcolor: 'transparent',
-                      '&:hover': {
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.4)'
-                            : 'rgba(0,0,0,0.4)',
-                        bgcolor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.05)'
-                            : 'rgba(0,0,0,0.03)',
-                      },
-                    }}
-                  >
-                    Summary
-                  </Button>
+                  <SummaryButton onClick={handleShowSummary} variant="default" />
                 )}
 
-                {webUrl && (
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={linkIcon} style={{ fontSize: '1rem' }} />}
-                    onClick={() => window.open(webUrl, '_blank', 'noopener,noreferrer')}
-                    sx={{
-                      height: 32,
-                      px: 1.75,
-                      py: 0.75,
-                      borderRadius: '4px',
-                      textTransform: 'none',
-                      fontSize: '0.8125rem',
-                      fontWeight: 500,
-                      minWidth: 100,
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? 'rgba(255,255,255,0.23)'
-                          : 'rgba(0,0,0,0.23)',
-                      color: (themeVal) =>
-                        themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
-                      borderWidth: '1px',
-                      bgcolor: 'transparent',
-                      '&:hover': {
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.4)'
-                            : 'rgba(0,0,0,0.4)',
-                        bgcolor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.05)'
-                            : 'rgba(0,0,0,0.03)',
-                      },
-                    }}
-                  >
-                    Open
-                  </Button>
-                )}
+                {webUrl && <OpenButton webUrl={webUrl} variant="default" />}
 
                 {/* Reindex button */}
-                {!isRecordConnector && recordId && (
-                  <Tooltip title={getReindexTooltip(record.indexingStatus)} placement="top" arrow>
-                    <span>
-                      <Button
-                        variant="outlined"
-                        startIcon={<Icon icon={refreshIcon} style={{ fontSize: '1rem' }} />}
-                        disabled={
-                          record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
-                          record.indexingStatus === 'IN_PROGRESS'
-                        }
-                        onClick={() => handleRetryIndexing(recordId)}
-                        sx={{
-                          height: 32,
-                          px: 1.75,
-                          py: 0.75,
-                          borderRadius: '4px',
-                          textTransform: 'none',
-                          fontSize: '0.8125rem',
-                          fontWeight: 500,
-                          minWidth: 100,
-                          borderColor: (themeVal) =>
-                            record.indexingStatus === 'FAILED'
-                              ? themeVal.palette.mode === 'dark'
-                                ? '#FACC15'
-                                : '#D97706'
-                              : themeVal.palette.mode === 'dark'
-                                ? 'rgba(255,255,255,0.23)'
-                                : 'rgba(0,0,0,0.23)',
-                          color: (themeVal) =>
-                            record.indexingStatus === 'FAILED'
-                              ? themeVal.palette.mode === 'dark'
-                                ? '#FACC15'
-                                : '#D97706'
-                              : themeVal.palette.mode === 'dark'
-                                ? '#E0E0E0'
-                                : '#4B5563',
-                          borderWidth: '1px',
-                          bgcolor: 'transparent',
-                          '&:hover': {
-                            borderColor: (themeVal) =>
-                              record.indexingStatus === 'FAILED'
-                                ? themeVal.palette.mode === 'dark'
-                                  ? '#FDE68A'
-                                  : '#B45309'
-                                : themeVal.palette.mode === 'dark'
-                                  ? 'rgba(255,255,255,0.4)'
-                                  : 'rgba(0,0,0,0.4)',
-                            bgcolor: (themeVal) =>
-                              record.indexingStatus === 'FAILED'
-                                ? themeVal.palette.mode === 'dark'
-                                  ? 'rgba(250,204,21,0.08)'
-                                  : 'rgba(217,119,6,0.04)'
-                                : themeVal.palette.mode === 'dark'
-                                  ? 'rgba(255,255,255,0.05)'
-                                  : 'rgba(0,0,0,0.03)',
-                          },
-                          '&.Mui-disabled': {
-                            borderColor: (themeVal) =>
-                              themeVal.palette.mode === 'dark'
-                                ? 'rgba(255,255,255,0.12)'
-                                : 'rgba(0,0,0,0.12)',
-                            color: (themeVal) =>
-                              themeVal.palette.mode === 'dark'
-                                ? 'rgba(255,255,255,0.3)'
-                                : 'rgba(0,0,0,0.38)',
-                          },
-                        }}
-                      >
-                        {getReindexButtonText(record.indexingStatus)}
-                      </Button>
-                    </span>
-                  </Tooltip>
+                {recordId && (
+                  <ReindexButton
+                    recordId={recordId}
+                    indexingStatus={record.indexingStatus}
+                    onRetryIndexing={handleRetryIndexing}
+                    variant="default"
+                  />
                 )}
 
                 {/* Delete button */}
-                <Button
-                  variant="outlined"
-                  color="error"
-                  startIcon={<Icon icon={trashCanIcon} style={{ fontSize: '1rem' }} />}
-                  onClick={() => setIsDeleteDialogOpen(true)}
-                  sx={{
-                    height: 32,
-                    px: 1.75,
-                    py: 0.75,
-                    borderRadius: '4px',
-                    textTransform: 'none',
-                    fontSize: '0.8125rem',
-                    fontWeight: 500,
-                    minWidth: 100,
-                    borderColor: (themeVal) =>
-                      themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626',
-                    color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626'),
-                    borderWidth: '1px',
-                    bgcolor: 'transparent',
-                    '&:hover': {
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark' ? '#F87171' : '#B91C1C',
-                      bgcolor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? 'rgba(239,68,68,0.08)'
-                          : 'rgba(220,38,38,0.04)',
-                    },
-                  }}
-                >
-                  Delete
-                </Button>
+                <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="default" />
               </Box>
 
               {/* Tablet: Compact buttons with text */}
@@ -945,248 +467,28 @@ export default function RecordDetails() {
               >
                 {/* Edit button - Compact */}
                 {!isRecordConnector && (
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={pencilIcon} style={{ fontSize: '14px' }} />}
-                    onClick={() => setIsEditDialogOpen(true)}
-                    sx={{
-                      height: 28,
-                      px: 1,
-                      py: 0.25,
-                      borderRadius: '6px',
-                      textTransform: 'none',
-                      fontSize: '0.75rem',
-                      fontWeight: 500,
-                      minWidth: 0,
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? alpha(themeVal.palette.primary.main, 0.7)
-                          : themeVal.palette.primary.main,
-                      color: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? themeVal.palette.primary.light
-                          : themeVal.palette.primary.main,
-                      borderWidth: '1px',
-                      bgcolor: 'transparent',
-                      '&:hover': {
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? themeVal.palette.primary.light
-                            : themeVal.palette.primary.dark,
-                        bgcolor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? alpha(themeVal.palette.primary.main, 0.1)
-                            : alpha(themeVal.palette.primary.main, 0.05),
-                      },
-                      '& .MuiButton-startIcon': {
-                        marginRight: '4px',
-                        marginLeft: 0,
-                      },
-                    }}
-                  >
-                    Edit
-                  </Button>
+                  <EditButton onClick={() => setIsEditDialogOpen(true)} variant="compact" />
                 )}
 
                 {/* Summary button - Compact */}
                 {record.summaryDocumentId && (
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={descriptionIcon} style={{ fontSize: '14px' }} />}
-                    onClick={handleShowSummary}
-                    sx={{
-                      height: 28,
-                      px: 1,
-                      py: 0.25,
-                      borderRadius: '6px',
-                      textTransform: 'none',
-                      fontSize: '0.75rem',
-                      fontWeight: 500,
-                      minWidth: 0,
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? 'rgba(255,255,255,0.23)'
-                          : 'rgba(0,0,0,0.23)',
-                      color: (themeVal) =>
-                        themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
-                      borderWidth: '1px',
-                      bgcolor: 'transparent',
-                      '&:hover': {
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.4)'
-                            : 'rgba(0,0,0,0.4)',
-                        bgcolor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.05)'
-                            : 'rgba(0,0,0,0.03)',
-                      },
-                      '& .MuiButton-startIcon': {
-                        marginRight: '4px',
-                        marginLeft: 0,
-                      },
-                    }}
-                  >
-                    Summary
-                  </Button>
+                  <SummaryButton onClick={handleShowSummary} variant="compact" />
                 )}
 
                 {/* Reindex button - Compact */}
-                {!isRecordConnector && recordId && (
-                  <Tooltip title={getReindexTooltip(record.indexingStatus)} arrow>
-                    <span>
-                      <Button
-                        variant="outlined"
-                        startIcon={<Icon icon={refreshIcon} style={{ fontSize: '14px' }} />}
-                        onClick={() => handleRetryIndexing(recordId)}
-                        disabled={
-                          record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
-                          record.indexingStatus === 'IN_PROGRESS'
-                        }
-                        sx={{
-                          height: 28,
-                          px: 1,
-                          py: 0.25,
-                          borderRadius: '6px',
-                          textTransform: 'none',
-                          fontSize: '0.75rem',
-                          fontWeight: 500,
-                          minWidth: 0,
-                          borderColor: (themeVal) =>
-                            record.indexingStatus === 'FAILED'
-                              ? themeVal.palette.mode === 'dark'
-                                ? '#FACC15'
-                                : '#D97706'
-                              : themeVal.palette.mode === 'dark'
-                                ? 'rgba(255,255,255,0.23)'
-                                : 'rgba(0,0,0,0.23)',
-                          color: (themeVal) =>
-                            record.indexingStatus === 'FAILED'
-                              ? themeVal.palette.mode === 'dark'
-                                ? '#FACC15'
-                                : '#D97706'
-                              : themeVal.palette.mode === 'dark'
-                                ? '#E0E0E0'
-                                : '#4B5563',
-                          borderWidth: '1px',
-                          bgcolor: 'transparent',
-                          '&:hover': {
-                            borderColor: (themeVal) =>
-                              record.indexingStatus === 'FAILED'
-                                ? themeVal.palette.mode === 'dark'
-                                  ? '#FDE68A'
-                                  : '#B45309'
-                                : themeVal.palette.mode === 'dark'
-                                  ? 'rgba(255,255,255,0.4)'
-                                  : 'rgba(0,0,0,0.4)',
-                            bgcolor: (themeVal) =>
-                              record.indexingStatus === 'FAILED'
-                                ? themeVal.palette.mode === 'dark'
-                                  ? 'rgba(250,204,21,0.08)'
-                                  : 'rgba(217,119,6,0.04)'
-                                : themeVal.palette.mode === 'dark'
-                                  ? 'rgba(255,255,255,0.05)'
-                                  : 'rgba(0,0,0,0.03)',
-                          },
-                          '&.Mui-disabled': {
-                            borderColor: (themeVal) =>
-                              themeVal.palette.mode === 'dark'
-                                ? 'rgba(255,255,255,0.12)'
-                                : 'rgba(0,0,0,0.12)',
-                            color: (themeVal) =>
-                              themeVal.palette.mode === 'dark'
-                                ? 'rgba(255,255,255,0.3)'
-                                : 'rgba(0,0,0,0.38)',
-                          },
-                          '& .MuiButton-startIcon': {
-                            marginRight: '4px',
-                            marginLeft: 0,
-                          },
-                        }}
-                      >
-                        {record.indexingStatus === 'FAILED' ? 'Retry' : 'Sync'}
-                      </Button>
-                    </span>
-                  </Tooltip>
+                {recordId && (
+                  <ReindexButton
+                    recordId={recordId}
+                    indexingStatus={record.indexingStatus}
+                    onRetryIndexing={handleRetryIndexing}
+                    variant="compact"
+                  />
                 )}
 
-                {webUrl && (
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={linkIcon} style={{ fontSize: '14px' }} />}
-                    onClick={() => window.open(webUrl, '_blank', 'noopener,noreferrer')}
-                    sx={{
-                      height: 28,
-                      px: 1,
-                      py: 0.25,
-                      borderRadius: '6px',
-                      textTransform: 'none',
-                      fontSize: '0.75rem',
-                      fontWeight: 500,
-                      minWidth: 0,
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? 'rgba(255,255,255,0.23)'
-                          : 'rgba(0,0,0,0.23)',
-                      color: (themeVal) =>
-                        themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
-                      borderWidth: '1px',
-                      bgcolor: 'transparent',
-                      '&:hover': {
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.4)'
-                            : 'rgba(0,0,0,0.4)',
-                        bgcolor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.05)'
-                            : 'rgba(0,0,0,0.03)',
-                      },
-                      '& .MuiButton-startIcon': {
-                        marginRight: '4px',
-                        marginLeft: 0,
-                      },
-                    }}
-                  >
-                    Open
-                  </Button>
-                )}
+                {webUrl && <OpenButton webUrl={webUrl} variant="compact" />}
 
                 {/* Delete button - Compact */}
-                <Button
-                  variant="outlined"
-                  startIcon={<Icon icon={trashCanIcon} style={{ fontSize: '14px' }} />}
-                  onClick={() => setIsDeleteDialogOpen(true)}
-                  sx={{
-                    height: 28,
-                    px: 1,
-                    py: 0.25,
-                    borderRadius: '6px',
-                    textTransform: 'none',
-                    fontSize: '0.75rem',
-                    fontWeight: 500,
-                    minWidth: 0,
-                    borderColor: (themeVal) =>
-                      themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626',
-                    color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626'),
-                    borderWidth: '1px',
-                    bgcolor: 'transparent',
-                    '&:hover': {
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark' ? '#F87171' : '#B91C1C',
-                      bgcolor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? 'rgba(239,68,68,0.08)'
-                          : 'rgba(220,38,38,0.04)',
-                    },
-                    '& .MuiButton-startIcon': {
-                      marginRight: '4px',
-                      marginLeft: 0,
-                    },
-                  }}
-                >
-                  Delete
-                </Button>
+                <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="compact" />
               </Box>
 
               {/* Mobile: Priority action + Hamburger Menu */}
@@ -1209,43 +511,7 @@ export default function RecordDetails() {
                 >
                   {/* Most important action - Edit (if available) */}
                   {!isRecordConnector && (
-                    <Button
-                      variant="outlined"
-                      startIcon={<Icon icon={pencilIcon} style={{ fontSize: '0.875rem' }} />}
-                      onClick={() => setIsEditDialogOpen(true)}
-                      sx={{
-                        height: 36,
-                        px: 1.5,
-                        py: 0.75,
-                        borderRadius: '4px',
-                        textTransform: 'none',
-                        fontSize: '0.8125rem',
-                        fontWeight: 500,
-                        flex: 1,
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? alpha(themeVal.palette.primary.main, 0.7)
-                            : themeVal.palette.primary.main,
-                        color: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? themeVal.palette.primary.light
-                            : themeVal.palette.primary.main,
-                        borderWidth: '1px',
-                        bgcolor: 'transparent',
-                        '&:hover': {
-                          borderColor: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? themeVal.palette.primary.light
-                              : themeVal.palette.primary.dark,
-                          bgcolor: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? alpha(themeVal.palette.primary.main, 0.1)
-                              : alpha(themeVal.palette.primary.main, 0.05),
-                        },
-                      }}
-                    >
-                      Edit
-                    </Button>
+                    <EditButton onClick={() => setIsEditDialogOpen(true)} variant="mobile" />
                   )}
 
                   {/* Actions Menu Button */}
@@ -1317,158 +583,41 @@ export default function RecordDetails() {
                 >
                   {/* Summary */}
                   {record.summaryDocumentId && (
-                    <MenuItem
-                      onClick={() => {
-                        handleShowSummary();
-                        handleActionMenuClose();
-                      }}
-                      sx={{
-                        py: 1,
-                        px: 1,
-                        '&:hover': {
-                          bgcolor: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? 'rgba(255, 255, 255, 0.05)'
-                              : 'rgba(0, 0, 0, 0.04)',
-                        },
-                      }}
-                    >
-                      <ListItemIcon sx={{ minWidth: 36 }}>
-                        <Icon icon={descriptionIcon} style={{ fontSize: '1.125rem' }} />
-                      </ListItemIcon>
-                      <ListItemText
-                        primary="View Summary"
-                        secondary="Show document summary"
-                        primaryTypographyProps={{
-                          fontSize: '0.775rem',
-                          fontWeight: 500,
-                        }}
-                        secondaryTypographyProps={{
-                          fontSize: '0.65rem',
-                        }}
-                      />
-                    </MenuItem>
+                    <SummaryButton
+                      onClick={handleShowSummary}
+                      variant="menu"
+                      onMenuClose={handleActionMenuClose}
+                    />
                   )}
 
-                  {/* Open - NEW */}
+                  {/* Open */}
                   {webUrl && (
-                    <MenuItem
-                      onClick={() => {
-                        window.open(webUrl, '_blank', 'noopener,noreferrer');
-                        handleActionMenuClose();
-                      }}
-                      sx={{
-                        py: 1,
-                        px: 1,
-                        '&:hover': {
-                          bgcolor: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? 'rgba(255, 255, 255, 0.05)'
-                              : 'rgba(0, 0, 0, 0.04)',
-                        },
-                      }}
-                    >
-                      <ListItemIcon sx={{ minWidth: 36 }}>
-                        <Icon icon={linkIcon} style={{ fontSize: '1.125rem' }} />
-                      </ListItemIcon>
-                      <ListItemText
-                        primary="Open Link"
-                        secondary="Open in new tab"
-                        primaryTypographyProps={{
-                          fontSize: '0.775rem',
-                          fontWeight: 500,
-                        }}
-                        secondaryTypographyProps={{
-                          fontSize: '0.65rem',
-                        }}
-                      />
-                    </MenuItem>
+                    <OpenButton
+                      webUrl={webUrl}
+                      variant="menu"
+                      onMenuClose={handleActionMenuClose}
+                    />
                   )}
 
                   {/* Reindex */}
-                  {!isRecordConnector && recordId && (
-                    <MenuItem
-                      onClick={() => {
-                        handleRetryIndexing(recordId);
-                        handleActionMenuClose();
-                      }}
-                      disabled={
-                        record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
-                        record.indexingStatus === 'IN_PROGRESS'
-                      }
-                      sx={{
-                        py: 1,
-                        px: 1,
-                        '&:hover': {
-                          bgcolor: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? 'rgba(255, 255, 255, 0.05)'
-                              : 'rgba(0, 0, 0, 0.04)',
-                        },
-                      }}
-                    >
-                      <ListItemIcon sx={{ minWidth: 36 }}>
-                        <Icon
-                          icon={refreshIcon}
-                          style={{
-                            fontSize: '1rem',
-                            color: record.indexingStatus === 'FAILED' ? '#FACC15' : 'inherit',
-                          }}
-                        />
-                      </ListItemIcon>
-                      <ListItemText
-                        primary={getReindexButtonText(record.indexingStatus)}
-                        secondary={getReindexTooltip(record.indexingStatus)}
-                        primaryTypographyProps={{
-                          fontSize: '0.775rem',
-                          fontWeight: 500,
-                          color: record.indexingStatus === 'FAILED' ? '#FACC15' : 'inherit',
-                        }}
-                        secondaryTypographyProps={{
-                          fontSize: '0.65rem',
-                        }}
-                      />
-                    </MenuItem>
+                  {recordId && (
+                    <ReindexButton
+                      recordId={recordId}
+                      indexingStatus={record.indexingStatus}
+                      onRetryIndexing={handleRetryIndexing}
+                      variant="menu"
+                      onMenuClose={handleActionMenuClose}
+                    />
                   )}
 
                   <Divider sx={{ my: 0.5 }} />
 
                   {/* Delete - Dangerous action at bottom */}
-                  <MenuItem
-                    onClick={() => {
-                      setIsDeleteDialogOpen(true);
-                      handleActionMenuClose();
-                    }}
-                    sx={{
-                      py: 1,
-                      px: 1,
-                      color: '#DC2626',
-                      '&:hover': {
-                        bgcolor: 'rgba(220, 38, 38, 0.04)',
-                      },
-                    }}
-                  >
-                    <ListItemIcon sx={{ minWidth: 36 }}>
-                      <Icon
-                        icon={trashCanIcon}
-                        style={{
-                          fontSize: '1.125rem',
-                          color: '#DC2626',
-                        }}
-                      />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary="Delete Record"
-                      secondary="Permanently remove this record"
-                      primaryTypographyProps={{
-                        fontSize: '0.775rem',
-                        fontWeight: 500,
-                      }}
-                      secondaryTypographyProps={{
-                        fontSize: '0.65rem',
-                      }}
-                    />
-                  </MenuItem>
+                  <DeleteButton
+                    onClick={() => setIsDeleteDialogOpen(true)}
+                    variant="menu"
+                    onMenuClose={handleActionMenuClose}
+                  />
                 </Menu>
               </Box>
             </Box>
@@ -1903,7 +1052,7 @@ export default function RecordDetails() {
                   boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
                   overflow: 'hidden',
                 }}
-              > 
+              >
                 <RecordDocumentViewer record={record} />
               </Card>
             </Grid>
@@ -2922,82 +2071,4 @@ export default function RecordDetails() {
       </Snackbar>
     </>
   );
-}
-
-// Helper function to format file size
-const formatFileSize = (bytes: number): string => {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
-};
-
-// Get file icon based on extension
-function getFileIcon(extension: string): React.ComponentProps<typeof IconifyIcon>['icon'] {
-  const ext = extension?.toLowerCase() || '';
-
-  switch (ext) {
-    case 'pdf':
-      return pdfIcon;
-    case 'doc':
-    case 'docx':
-      return docIcon;
-    case 'xls':
-    case 'xlsx':
-    case 'csv':
-      return xlsIcon;
-    case 'ppt':
-    case 'pptx':
-      return pptIcon;
-    case 'jpg':
-    case 'jpeg':
-    case 'png':
-    case 'gif':
-    case 'bmp':
-    case 'tiff':
-    case 'ico':
-    case 'webp':
-      return imageIcon;
-    case 'zip':
-    case 'rar':
-    case '7z':
-      return zipIcon;
-    case 'txt':
-      return txtIcon;
-    case 'html':
-    case 'css':
-    case 'js':
-      return htmlIcon;
-    case 'md':
-    case 'mdx':
-      return mdIcon;
-    case 'json':
-      return jsonIcon;
-    case 'database':
-      return databaseIcon;
-    default:
-      return descriptionIcon;
-  }
-}
-
-// Get file icon color based on extension
-function getFileIconColor(extension: string): string {
-  const ext = extension?.toLowerCase() || '';
-
-  switch (ext) {
-    case 'pdf':
-      return '#f44336';
-    case 'doc':
-    case 'docx':
-      return '#2196f3';
-    case 'xls':
-    case 'xlsx':
-      return '#4caf50';
-    case 'ppt':
-    case 'pptx':
-      return '#ff9800';
-    default:
-      return '#1976d2';
-  }
 }
