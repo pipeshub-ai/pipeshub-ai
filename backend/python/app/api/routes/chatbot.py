@@ -597,6 +597,7 @@ async def askAIStream(
                 all_queries = all_queries
 
             except HTTPException as e:
+                logger.error(f"HTTPException: {str(e)}", exc_info=True)
                 result = e.detail
                 yield create_sse_event("error", {
                     "status": result.get("status", "error"),
@@ -604,6 +605,7 @@ async def askAIStream(
                 })
                 return
             except Exception as e:
+                logger.error(f"Exception: {str(e)}", exc_info=True)
                 yield create_sse_event("error", {"error": str(e)})
                 return
 

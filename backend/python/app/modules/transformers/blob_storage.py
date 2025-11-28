@@ -352,6 +352,7 @@ class BlobStorage(Transformer):
                         if resp.status == HttpStatusCode.SUCCESS.value:
                             data = await resp.json()
                             if data.get("record"):
+                                self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
                                 return data.get("record")
                             elif data.get("signedUrl"):
                                 signed_url = data.get("signedUrl")
@@ -361,6 +362,7 @@ class BlobStorage(Transformer):
                                         data = await res.json()
 
                                         if data.get("record"):
+                                            self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
                                             return data.get("record")
                                         else:
                                             self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
