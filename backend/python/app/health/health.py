@@ -7,11 +7,16 @@ from redis.asyncio import Redis, RedisError  #type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service import (
+    DefaultEndpoints,
+    HealthCheckConfig,
+    config_node_constants,
+)
 from app.utils.redis_util import build_redis_url
 
 
 class Health:
+
     @staticmethod
     async def system_health_check(container) -> None:
         """Health check method that verifies external services health"""
@@ -28,7 +33,8 @@ class Health:
     async def health_check_connector_service(container) -> None:
         """Health check connector service via /health with simple retry logic.
 
-        Polls up to 5 times with a 4-second interval before raising an exception.
+        Polls up to CONNECTOR_HEALTH_CHECK_MAX_RETRIES times with a configurable interval
+        before raising an exception.
         """
         logger = container.logger()
         logger.info("🔍 Starting Connector service health check...")
@@ -41,13 +47,15 @@ class Health:
         )
         connector_url = f"{connector_endpoint}/health"
 
+        max_retries = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value
+        retry_interval = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_RETRY_INTERVAL_SECONDS.value
         last_error_msg = None
 
-        for attempt in range(1, 6):
+        for attempt in range(1, max_retries + 1):
             try:
                 logger.debug(
                     f"Checking connector service health at endpoint: {connector_url} "
-                    f"(attempt {attempt}/5)"
+                    f"(attempt {attempt}/{max_retries})"
                 )
 
                 # TODO: remove aiohttp dependency and use http client from sources module
@@ -74,9 +82,9 @@ class Health:
                 logger.warning(f"❌ {last_error_msg}")
 
             # If not the last attempt, wait before retrying
-            if attempt < 5:
-                logger.info("⏳ Retrying connector service health check in 4 seconds...")
-                await asyncio.sleep(4)
+            if attempt < max_retries:
+                logger.info(f"⏳ Retrying connector service health check in {retry_interval} seconds...")
+                await asyncio.sleep(retry_interval)
 
         # All attempts failed
         final_msg = last_error_msg or "Connector service health check failed after retries"
