@@ -506,6 +506,69 @@ class ConnectorRegistry:
 
         return None
 
+    async def get_connectors_by_names(self, app_names: List[str]) -> List[Dict[str, Any]]:
+        """
+        Get connectors by a list of app names with their current status.
+
+        Args:
+            app_names: List of application names
+
+        Returns:
+            List of connector metadata with status (only includes connectors found in registry)
+        """
+        if not app_names:
+            return []
+
+        # Batch fetch all app statuses in one query for efficiency
+        db_statuses = await self._get_all_db_statuses()
+
+        normalized_connectors = {
+            self._normalize_app_name(key): (key, value)
+            for key, value in self._connectors.items()
+        }
+
+        connectors = []
+        for app_name in app_names:
+            normalized_app_name = self._normalize_app_name(app_name)
+            if normalized_app_name in normalized_connectors:
+                original_app_name, metadata = normalized_connectors[normalized_app_name]
+                connector_info = {
+                    'name': original_app_name,
+                    'appGroup': metadata['appGroup'],
+                    'authType': metadata['authType'],
+                    'appDescription': metadata.get('appDescription', ''),
+                    'appCategories': metadata.get('appCategories', []),
+                    'iconPath': metadata.get('config', {}).get('iconPath', '/assets/icons/connectors/default.svg'),
+                    'supportsRealtime': metadata.get('config', {}).get('supportsRealtime', False),
+                    'supportsSync': metadata.get('config', {}).get('supportsSync', False),
+                    'config': metadata.get('config', {}),
+                    'isActive': False,
+                    'isConfigured': False,
+                    'isAuthenticated': False,
+                    'createdAtTimestamp': None,
+                    'updatedAtTimestamp': None
+                }
+
+                # Look up DB status from batch-fetched map
+                normalized_name = self._normalize_app_name(app_name)
+                db_status = db_statuses.get(normalized_name)
+                if db_status and db_status.get('createdAtTimestamp'):  # If app exists in DB
+                    connector_info.update({
+                        'isActive': db_status.get('isActive', False),
+                        'isConfigured': db_status.get('isConfigured', False),
+                        'isAuthenticated': db_status.get('isAuthenticated', False),
+                        'createdAtTimestamp': db_status.get('createdAtTimestamp'),
+                        'updatedAtTimestamp': db_status.get('updatedAtTimestamp'),
+                        'appGroupId': db_status.get('appGroupId'),
+                    })
+                    # Do not override metadata, authType or config from DB
+
+                connectors.append(connector_info)
+            else:
+                self.logger.debug(f"Connector {app_name} not found in registry, skipping")
+
+        return connectors
+
     async def get_connectors_by_group(self, app_group: str) -> List[Dict[str, Any]]:
         """
         Get all connectors in a specific group with their status.
