@@ -2382,3 +2382,46 @@ export const resyncConnectorRecords =
       return; // Added return statement
     }
   };
+
+export const getUniqueConnectors =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId, orgId } = req.user || {};
+
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      logger.info('Getting unique connectors with records', {
+        userId,
+        orgId,
+        requestId: req.context?.requestId,
+      });
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/with-records`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+
+      if (response.statusCode !== 200) {
+        throw handleBackendError(response, 'get unique connectors');
+      }
+
+      res.status(200).json(response.data);
+      return;
+    } catch (error: any) {
+      logger.error('Error getting unique connectors', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      next(error);
+      return;
+    }
+  };

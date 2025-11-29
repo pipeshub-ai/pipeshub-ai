@@ -12157,6 +12157,46 @@ class BaseArangoService:
         cursor = self.db.aql.execute(query)
         return list(cursor)
 
+    async def get_unique_connectors(self, org_id: str) -> List[str]:
+        """
+        Get all unique connector names from records for a given organization.
+        Only returns connectors that have records (non-deleted records with connectorName).
+
+        Args:
+            org_id (str): Organization ID to filter records
+
+        Returns:
+            List[str]: List of unique connector names
+        """
+        try:
+            self.logger.info(f"Getting unique connectors for organization: {org_id}")
+
+            query = f"""
+                FOR record IN {CollectionNames.RECORDS.value}
+                    FILTER record.orgId == @org_id
+                        AND record.origin == "CONNECTOR"
+                        AND record.isDeleted != true
+                        AND record.connectorName != null
+                        AND record.connectorName != ""
+                    COLLECT connectorName = record.connectorName
+                    RETURN connectorName
+            """
+
+            bind_vars = {"org_id": org_id}
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            connectors = list(cursor)
+
+            self.logger.info(
+                f"✅ Successfully retrieved {len(connectors)} unique connectors for org {org_id}"
+            )
+            return connectors
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve unique connectors for org {org_id}: {str(e)}"
+            )
+            return []
+
     async def find_duplicate_files(
         self,
         file_key: str,

@@ -2302,6 +2302,62 @@ async def get_inactive_connector(
     return {"success": True, "connectors": result}
 
 
+@router.get("/api/v1/connectors/with-records")
+@inject
+async def get_connectors_with_records(
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict[str, Any]:
+    """
+    Get all unique connector names from which records are sourced for the user's organization.
+    Only returns connectors that have at least one non-deleted record.
+
+    Args:
+        request: FastAPI request object
+        arango_service: BaseArangoService dependency
+
+    Returns:
+        Dict containing success status, list of connector names, and count
+
+    Raises:
+        HTTPException: 401 if user is not authenticated
+    """
+    try:
+        container = request.app.container
+        logger = container.logger()
+
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated or missing organization ID"
+            )
+
+        logger.info(f"Getting unique connectors with records for user {user_id}, org {org_id}")
+
+        connectors = await arango_service.get_unique_connectors(org_id=org_id)
+        connector_registry = request.app.state.connector_registry
+        connectorsDetails = await connector_registry.get_connectors_by_names(connectors)
+
+        return {
+            "success": True,
+            "connectorNamesFromRecords": connectors,
+            "count": len(connectors),
+            "connectors": connectorsDetails
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting unique connectors with records: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to retrieve connectors: {str(e)}"
+        )
+
+
 @router.get("/api/v1/connectors/{app_name}")
 async def get_connector_by_name(
     app_name: str,
