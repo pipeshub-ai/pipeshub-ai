@@ -7,9 +7,8 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 import aiohttp
 from fastapi import HTTPException
 from langchain.chat_models.base import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain.output_parsers import PydanticOutputParser
-
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.qna.prompt_templates import AnswerWithMetadataJSON
@@ -1273,7 +1272,7 @@ async def call_aiter_llm_stream(
 
     # Try to parse the full JSON buffer
     try:
-        
+
         response_text = state.full_json_buf.strip()
         if '</think>' in response_text:
                 response_text = response_text.split('</think>')[-1]
@@ -1285,7 +1284,7 @@ async def call_aiter_llm_stream(
         try:
             parsed = parser.parse(response_text)
         except Exception as e:
-            
+
             # JSON parsing failed - use reflection to guide the LLM
             if reflection_retry_count < max_reflection_retries:
                 yield {"event": "restreaming","data": {}}
@@ -1348,7 +1347,7 @@ async def call_aiter_llm_stream(
                         },
                     }
                 return
-        
+
         final_answer = parsed.answer if parsed.answer else state.answer_buf
         normalized, c = normalize_citations_and_chunks(final_answer, final_results, records)
         yield {
@@ -1365,4 +1364,3 @@ async def call_aiter_llm_stream(
         return
 
 
-        
