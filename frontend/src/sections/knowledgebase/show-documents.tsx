@@ -486,11 +486,13 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     mailRecord,
     origin,
     recordType,
+    mimeType,
   } = record;
 
   // Get the appropriate record data and extension
-  const currentRecord = fileRecord || mailRecord;
-  const extension = fileRecord?.extension ? fileRecord.extension : getExtensionFromMimeType(fileRecord?.mimeType || ''); // Use 'eml' for email records
+  const extension = fileRecord?.extension
+    ? fileRecord.extension
+    : getExtensionFromMimeType(mimeType || '');
   const recordTypeForDisplay = recordType || 'FILE';
 
   const handleDownload = async () => {
@@ -656,7 +658,9 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
         }, 800);
 
         // Support mail records in addition to existing types
-        if (!['pdf', 'excel', 'docx', 'html', 'text', 'md', 'mdx', 'image'].includes(documentType)) {
+        if (
+          !['pdf', 'excel', 'docx', 'html', 'text', 'md', 'mdx', 'image'].includes(documentType)
+        ) {
           setSnackbar({
             open: true,
             message: `Unsupported document type: ${extension}`,
@@ -845,25 +849,27 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
           </Tooltip>
 
           {/* View Document Button */}
-          <Tooltip
-            title={recordTypeForDisplay === 'MAIL' ? 'Preview email' : 'Preview document'}
-            arrow
-            placement="top"
-          >
-            <IconButton
-              onClick={viewDocument}
-              sx={{
-                color: 'primary.main',
-                '&:hover': {
-                  backgroundColor: 'primary.light',
-                  color: 'white',
-                },
-              }}
-              disabled={viewerState.phase === 'loading'}
+          {extension && (
+            <Tooltip
+              title={recordTypeForDisplay === 'MAIL' ? 'Preview email' : 'Preview document'}
+              arrow
+              placement="top"
             >
-              <Icon icon={eyeIcon} width={24} />
-            </IconButton>
-          </Tooltip>
+              <IconButton
+                onClick={viewDocument}
+                sx={{
+                  color: 'primary.main',
+                  '&:hover': {
+                    backgroundColor: 'primary.light',
+                    color: 'white',
+                  },
+                }}
+                disabled={viewerState.phase === 'loading'}
+              >
+                <Icon icon={eyeIcon} width={24} />
+              </IconButton>
+            </Tooltip>
+          )}
         </Stack>
       </Box>
 

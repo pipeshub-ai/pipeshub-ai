@@ -280,91 +280,49 @@ export const addTextFragmentToUrl = (webUrl: string, textFragment: string): stri
   }
 };
 
-export const getExtensionFromMimeType = (mimeType: string): string => {
-  switch (mimeType) {
-    case 'application/pdf':
-      return 'pdf';
-    case 'application/msword':
-      return 'doc';
-    case 'application/vnd.ms-excel':
-      return 'xls';
-    case 'application/vnd.ms-powerpoint':
-      return 'ppt';
-    case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-      return 'docx';
-    case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
-      return 'xlsx';
-    case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
-      return 'pptx';
-    case 'application/vnd.google-apps.spreadsheet':
-      return 'xlsx';
-    case 'application/vnd.google-apps.document':
-      return 'docx';
-    case 'application/vnd.google-apps.presentation':
-      return 'pptx';
-    case 'text/plain':
-      return 'txt';
-    case 'text/html':
-      return 'html';
-    case 'text/markdown':
-      return 'md';
-    case 'text/mdx':
-      return 'mdx';
-    case 'text/csv':
-      return 'csv';
-    case 'text/tab-separated-values':
-      return 'tsv';
-    case 'application/json':
-      return 'json';
-    case 'application/xml':
-      return 'xml';
-    case 'application/zip':
-      return 'zip';
-    case 'application/x-rar-compressed':
-      return 'rar';
-    case 'application/x-7z-compressed':
-      return '7z';
-    case 'application/x-tar':
-      return 'tar';
-    case 'application/x-sh':
-      return 'sh';
-    case 'application/x-msdownload':
-      return 'exe';
-    case 'application/x-python-code':
-      return 'py';
-    case 'application/x-java-archive':
-      return 'jar';
-    case 'application/x-genesis-32x-rom':
-      return 'genesis';
-    case 'application/x-icns':
-      return 'icns';
-    case 'image/svg+xml':
-      return 'svg';
-    case 'image/jpeg':
-      return 'jpg';
-    case 'image/png':
-      return 'png';
-    case 'image/gif':
-      return 'gif';
-    case 'image/bmp':
-      return 'bmp';
-    case 'image/tiff':
-      return 'tiff';
-    case 'image/ico':
-      return 'ico';
-    case 'image/webp':
-      return 'webp';
-    case 'image/heic':
-      return 'heic';
-    case 'image/heif':
-      return 'heif';
-    case 'image/avif':
-      return 'avif';
-    case 'image/jxr':
-      return 'jxr';
-    case 'image/icns':
-      return 'icns';
-    default:
-      return '';
-  }
+const mimeTypeToExtensionMap: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'application/vnd.google-apps.spreadsheet': 'xlsx',
+  'application/vnd.google-apps.document': 'docx',
+  'application/vnd.google-apps.presentation': 'pptx',
+  'text/plain': 'txt',
+  'text/html': 'html',
+  'text/markdown': 'md',
+  'text/mdx': 'mdx',
+  'text/csv': 'csv',
+  'text/tab-separated-values': 'tsv',
+  'application/json': 'json',
+  'application/xml': 'xml',
+  'application/zip': 'zip',
+  'application/x-rar-compressed': 'rar',
+  'application/x-7z-compressed': '7z',
+  'application/x-tar': 'tar',
+  'application/x-sh': 'sh',
+  'application/x-msdownload': 'exe',
+  'application/x-python-code': 'py',
+  'application/x-java-archive': 'jar',
+  'application/x-genesis-32x-rom': 'genesis',
+  'application/x-icns': 'icns',
+  'image/svg+xml': 'svg',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+  'image/tiff': 'tiff',
+  'image/ico': 'ico',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'image/avif': 'avif',
+  'image/jxr': 'jxr',
+  'image/icns': 'icns',
 };
+
+export const getExtensionFromMimeType = (mimeType: string): string =>
+  mimeTypeToExtensionMap[mimeType] || '';

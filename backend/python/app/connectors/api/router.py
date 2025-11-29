@@ -81,6 +81,60 @@ logger = create_logger("connector_service")
 router = APIRouter()
 
 
+async def _stream_google_api_request(request, error_context: str = "download") -> AsyncGenerator[bytes, None]:
+    """
+    Helper function to stream data from a Google API request using MediaIoBaseDownload.
+
+    Args:
+        request: Google API request object (from files().get_media() or files().export_media())
+        error_context: Context string for error messages (e.g., "PDF export", "file export")
+    Yields:
+        bytes: Chunks of data from the download
+    """
+    buffer = io.BytesIO()
+    try:
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+
+        while not done:
+            try:
+                _, done = downloader.next_chunk()
+
+                buffer.seek(0)
+                chunk = buffer.read()
+
+                if chunk:  # Only yield if we have data
+                    yield chunk
+
+                # Clear buffer for next chunk
+                buffer.seek(0)
+                buffer.truncate(0)
+
+                # Yield control back to event loop
+                await asyncio.sleep(0)
+
+            except HttpError as http_error:
+                logger.error(f"HTTP error during {error_context}: {str(http_error)}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail=f"Error during {error_context}: {str(http_error)}",
+                )
+            except Exception as chunk_error:
+                logger.error(f"Error during {error_context} chunk: {str(chunk_error)}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail=f"Error during {error_context}",
+                )
+    except Exception as stream_error:
+        logger.error(f"Error in {error_context} stream: {str(stream_error)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error setting up {error_context} stream",
+        )
+    finally:
+        buffer.close()
+
+
 class ReindexFailedRequest(BaseModel):
     connector: str  # GOOGLE_DRIVE, GOOGLE_MAIL, KNOWLEDGE_BASE
     origin: str     # CONNECTOR, UPLOAD
@@ -901,50 +955,9 @@ async def stream_record(
                 if convertTo == MimeTypes.PDF.value and mime_type in google_workspace_export_formats:
                     logger.info(f"Exporting Google Workspace file ({mime_type}) directly to PDF")
 
-                    async def pdf_export_stream() -> AsyncGenerator[bytes, None]:
-                        try:
-                            request = drive_service.files().export_media(fileId=file_id, mimeType="application/pdf")
-                            buffer = io.BytesIO()
-                            downloader = MediaIoBaseDownload(buffer, request)
-
-                            done = False
-                            while not done:
-                                try:
-                                    _, done = downloader.next_chunk()
-
-                                    buffer.seek(0)
-                                    chunk = buffer.read()
-
-                                    if chunk:
-                                        yield chunk
-
-                                    buffer.seek(0)
-                                    buffer.truncate(0)
-                                    await asyncio.sleep(0)
-
-                                except HttpError as http_error:
-                                    logger.error(f"HTTP error exporting to PDF: {str(http_error)}")
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                        detail=f"Error exporting to PDF: {str(http_error)}",
-                                    )
-                                except Exception as chunk_error:
-                                    logger.error(f"Error exporting PDF chunk: {str(chunk_error)}")
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                        detail="Error during PDF export",
-                                    )
-                        except Exception as export_error:
-                            logger.error(f"Error in PDF export stream: {str(export_error)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail="Error setting up PDF export stream",
-                            )
-                        finally:
-                            buffer.close()
-
+                    request = drive_service.files().export_media(fileId=file_id, mimeType="application/pdf")
                     return StreamingResponse(
-                        pdf_export_stream(),
+                        _stream_google_api_request(request, error_context="PDF export"),
                         media_type="application/pdf",
                         headers={
                             "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
@@ -957,50 +970,7 @@ async def stream_record(
                     logger.info(f"Exporting Google Workspace file ({mime_type}) to {export_mime_type}")
 
                     # Export and stream the file
-                    async def export_stream() -> AsyncGenerator[bytes, None]:
-                        try:
-                            request = drive_service.files().export_media(fileId=file_id, mimeType=export_mime_type)
-                            buffer = io.BytesIO()
-                            downloader = MediaIoBaseDownload(buffer, request)
-
-                            done = False
-                            while not done:
-                                try:
-                                    _, done = downloader.next_chunk()
-
-                                    buffer.seek(0)
-                                    chunk = buffer.read()
-
-                                    if chunk:  # Only yield if we have data
-                                        yield chunk
-
-                                    # Clear buffer for next chunk
-                                    buffer.seek(0)
-                                    buffer.truncate(0)
-
-                                    # Yield control back to event loop
-                                    await asyncio.sleep(0)
-
-                                except HttpError as http_error:
-                                    logger.error(f"HTTP error exporting Google Workspace file: {str(http_error)}")
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                        detail=f"Error exporting Google Workspace file: {str(http_error)}",
-                                    )
-                                except Exception as chunk_error:
-                                    logger.error(f"Error exporting chunk: {str(chunk_error)}")
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                        detail="Error during file export",
-                                    )
-                        except Exception as export_error:
-                            logger.error(f"Error in export stream: {str(export_error)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail="Error setting up file export stream",
-                            )
-                        finally:
-                            buffer.close()
+                    request = drive_service.files().export_media(fileId=file_id, mimeType=export_mime_type)
 
                     # Determine the appropriate file extension and media type for the response
                     export_media_types = {
@@ -1014,7 +984,9 @@ async def stream_record(
 
                     headers = {"Content-Disposition": f'attachment; filename="{file_name_with_ext}"'}
                     return StreamingResponse(
-                        export_stream(), media_type=response_media_type, headers=headers
+                        _stream_google_api_request(request, error_context="Google Workspace file export"),
+                        media_type=response_media_type,
+                        headers=headers
                     )
 
                 # Check if PDF conversion is requested (for regular files only, Google Workspace handled above)
@@ -1038,7 +1010,7 @@ async def stream_record(
                                     )
                         except HttpError as http_error:
                             # Check if this is a Google Workspace file that can't be downloaded directly
-                            if http_error.resp.status == 403:
+                            if http_error.resp.status == HttpStatusCode.FORBIDDEN.value:
                                 error_details = http_error.error_details if hasattr(http_error, 'error_details') else []
                                 for detail in error_details:
                                     if detail.get('reason') == 'fileNotDownloadable':
@@ -1115,9 +1087,9 @@ async def stream_record(
                         logger.info(f"File streamed: {chunk_count} chunks, {total_bytes} bytes")
 
                     except HttpError as http_error:
-                        logger.info(f"HTTP error in file stream: {str(http_error)}")
+                        logger.debug(f"HTTP error in file stream: {str(http_error)}")
                         # Check if this is a Google Workspace file that can't be downloaded directly
-                        if http_error.resp.status == 403:
+                        if http_error.resp.status == HttpStatusCode.FORBIDDEN.value:
                             error_details = http_error.error_details if hasattr(http_error, 'error_details') else []
                             for detail in error_details:
                                 if detail.get('reason') == 'fileNotDownloadable':

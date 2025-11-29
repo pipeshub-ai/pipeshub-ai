@@ -252,8 +252,10 @@ export default function RecordDetails() {
   let extension = '';
   if (isFileRecord && record.fileRecord) {
     fileSize = formatFileSize(record.fileRecord.sizeInBytes);
-    extension = record.fileRecord.extension ? record.fileRecord.extension.toUpperCase() : getExtensionFromMimeType(record.fileRecord.mimeType || '');
-    fileType = record.fileRecord.extension ? record.fileRecord.extension.toUpperCase() : getExtensionFromMimeType(record.fileRecord.mimeType || '');
+    extension = record.fileRecord.extension
+      ? record.fileRecord.extension.toUpperCase()
+      : getExtensionFromMimeType(record.fileRecord.mimeType || record.mimeType || '');
+    fileType = extension.toUpperCase() || 'N/A';
     fileIcon = getFileIcon(extension || '');
     fileIconColor = getFileIconColor(extension || '');
   } else if (isMailRecord) {
@@ -675,7 +677,7 @@ export default function RecordDetails() {
                     <Icon icon={updateIcon} style={{ fontSize: '16px' }} />
                     <Box component="span">Indexing Status:</Box>
                     <Chip
-                      label={record.indexingStatus.replace('_', ' ')}
+                      label={record.indexingStatus.replaceAll('_', ' ')}
                       size="small"
                       color={getIndexingStatusColor(record.indexingStatus)}
                       sx={{
