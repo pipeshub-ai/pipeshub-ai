@@ -550,8 +550,7 @@ class ConnectorRegistry:
                 }
 
                 # Look up DB status from batch-fetched map
-                normalized_name = self._normalize_app_name(app_name)
-                db_status = db_statuses.get(normalized_name)
+                db_status = db_statuses.get(normalized_app_name)
                 if db_status and db_status.get('createdAtTimestamp'):  # If app exists in DB
                     connector_info.update({
                         'isActive': db_status.get('isActive', False),
