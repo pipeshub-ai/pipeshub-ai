@@ -26,6 +26,7 @@ from app.utils.citations import (
     normalize_citations_and_chunks_for_agent,
 )
 from app.utils.logger import create_logger
+
 logger = create_logger("streaming")
 parser = PydanticOutputParser(pydantic_object=AnswerWithMetadataJSON)
 format_instructions = parser.get_format_instructions()
@@ -126,7 +127,7 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
     try:
         # Prepare config with optional Langfuse callback
         config = {"callbacks": [langfuse_handler]} if langfuse_handler else {}
-        
+
         if hasattr(llm, "astream"):
             async for part in llm.astream(messages, config=config):
                 if not part:

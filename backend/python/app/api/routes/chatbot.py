@@ -357,7 +357,7 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
     """Handle tool calls for non-streaming responses with reflection for invalid tool calls"""
 
     llm_with_tools = llm.bind_tools(tools)
-    
+
     # Prepare config with optional Langfuse callback
     config = {"callbacks": [langfuse_handler]} if langfuse_handler else {}
 
