@@ -84,7 +84,7 @@ HTTP_STATUS_200 = 200
         ))
         .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/atlassian/confluence',
+            'https://docs.pipeshub.com/connectors/confluence/confluence',
             'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Confluence", True)

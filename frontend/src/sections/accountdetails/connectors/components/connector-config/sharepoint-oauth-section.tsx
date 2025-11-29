@@ -12,11 +12,13 @@ import {
   Divider,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
-import keyIcon from '@iconify-icons/mdi/key';
-import checkIcon from '@iconify-icons/mdi/check';
+import cloudIcon from '@iconify-icons/mdi/microsoft-azure';
 import certificateIcon from '@iconify-icons/mdi/certificate';
 import lockIcon from '@iconify-icons/mdi/lock';
-import cloudIcon from '@iconify-icons/mdi/microsoft-azure';
+import checkCircleIcon from '@iconify-icons/mdi/check-circle';
+import fileDocumentIcon from '@iconify-icons/mdi/file-document-outline';
+import uploadIcon from '@iconify-icons/mdi/upload';
+import alertCircleIcon from '@iconify-icons/mdi/alert-circle-outline';
 
 interface SharePointOAuthSectionProps {
   // Basic Auth Fields
@@ -90,20 +92,20 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
     <Paper
       variant="outlined"
       sx={{
-        p: 3,
-        borderRadius: 1.5,
-        bgcolor: alpha(theme.palette.primary.main, 0.02),
-        borderColor: alpha(theme.palette.primary.main, 0.12),
-        mb: 3,
+        p: 2,
+        borderRadius: 1.25,
+        bgcolor: alpha(theme.palette.info.main, 0.02),
+        borderColor: alpha(theme.palette.divider, 0.1),
+        mb: 2,
       }}
     >
-      {/* Header */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2.5 }}>
+      {/* Section Header */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
         <Box
           sx={{
-            p: 1,
+            p: 0.625,
             borderRadius: 1,
-            bgcolor: alpha(theme.palette.primary.main, 0.1),
+            bgcolor: alpha(theme.palette.info.main, 0.1),
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -111,54 +113,173 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
         >
           <Iconify
             icon={cloudIcon}
-            width={20}
-            height={20}
-            color={theme.palette.primary.main}
+            width={16}
+            sx={{ color: theme.palette.info.main }}
           />
         </Box>
-        <Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 600 }}>
-          SharePoint Online OAuth Configuration
-        </Typography>
+        <Box sx={{ flex: 1 }}>
+          <Typography 
+            variant="subtitle2" 
+            sx={{ 
+              fontSize: '0.875rem', 
+              fontWeight: 600,
+              color: theme.palette.text.primary,
+            }}
+          >
+            SharePoint OAuth Configuration
+          </Typography>
+          <Typography 
+            variant="caption" 
+            sx={{ 
+              fontSize: '0.75rem',
+              color: theme.palette.text.secondary,
+              mt: 0.25,
+              display: 'block',
+            }}
+          >
+            Azure AD application credentials and certificate authentication
+          </Typography>
+        </Box>
       </Box>
 
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3, fontSize: '0.8125rem' }}>
-        Configure your Azure AD application credentials to connect to SharePoint Online.
-        Upload your certificate and private key files for secure authentication.
-      </Typography>
-
       {/* Azure AD Application Fields */}
-      <Box sx={{ mb: 3 }}>
+      <Box sx={{ mb: 2 }}>
         <TextField
           fullWidth
+          size="small"
           label="Application (Client) ID"
           value={clientId}
           onChange={(e) => onClientIdChange(e.target.value)}
           error={!!clientIdError}
-          helperText={clientIdError || 'Enter your Azure AD Application (Client) ID'}
+          helperText={clientIdError || 'Azure AD Application (Client) ID'}
           placeholder="00000000-0000-0000-0000-000000000000"
-          sx={{ mb: 2 }}
+          sx={{
+            mb: 2,
+            '& .MuiOutlinedInput-root': {
+              borderRadius: 1.25,
+              fontSize: '0.875rem',
+              backgroundColor: alpha(theme.palette.background.paper, 0.8),
+              transition: 'all 0.2s',
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.background.paper, 1),
+              },
+              '&:hover .MuiOutlinedInput-notchedOutline': {
+                borderColor: alpha(theme.palette.primary.main, 0.3),
+              },
+              '&.Mui-focused': {
+                backgroundColor: theme.palette.background.paper,
+              },
+              '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                borderWidth: 1.5,
+              },
+            },
+            '& .MuiOutlinedInput-input': {
+              fontSize: '0.875rem',
+              padding: '10.5px 14px',
+              fontWeight: 400,
+            },
+            '& .MuiInputLabel-root': {
+              fontSize: '0.875rem',
+              fontWeight: 500,
+            },
+            '& .MuiFormHelperText-root': {
+              fontSize: '0.75rem',
+              mt: 0.75,
+              ml: 1,
+            },
+          }}
         />
 
         <TextField
           fullWidth
+          size="small"
           label="Directory (Tenant) ID"
           value={tenantId}
           onChange={(e) => onTenantIdChange(e.target.value)}
           error={!!tenantIdError}
-          helperText={tenantIdError || 'Enter your Azure AD Directory (Tenant) ID (Optional)'}
+          helperText={tenantIdError || 'Azure AD Directory (Tenant) ID (Optional)'}
           placeholder="00000000-0000-0000-0000-000000000000"
-          sx={{ mb: 2 }}
+          sx={{
+            mb: 2,
+            '& .MuiOutlinedInput-root': {
+              borderRadius: 1.25,
+              fontSize: '0.875rem',
+              backgroundColor: alpha(theme.palette.background.paper, 0.8),
+              transition: 'all 0.2s',
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.background.paper, 1),
+              },
+              '&:hover .MuiOutlinedInput-notchedOutline': {
+                borderColor: alpha(theme.palette.primary.main, 0.3),
+              },
+              '&.Mui-focused': {
+                backgroundColor: theme.palette.background.paper,
+              },
+              '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                borderWidth: 1.5,
+              },
+            },
+            '& .MuiOutlinedInput-input': {
+              fontSize: '0.875rem',
+              padding: '10.5px 14px',
+              fontWeight: 400,
+            },
+            '& .MuiInputLabel-root': {
+              fontSize: '0.875rem',
+              fontWeight: 500,
+            },
+            '& .MuiFormHelperText-root': {
+              fontSize: '0.75rem',
+              mt: 0.75,
+              ml: 1,
+            },
+          }}
         />
 
         <TextField
           fullWidth
+          size="small"
           label="SharePoint Domain"
           value={sharepointDomain}
           onChange={(e) => onSharePointDomainChange(e.target.value)}
           error={!!sharepointDomainError}
-          helperText={sharepointDomainError || 'Enter your SharePoint domain URL'}
+          helperText={sharepointDomainError || 'SharePoint domain URL'}
           placeholder="https://your-domain.sharepoint.com"
-          sx={{ mb: 2 }}
+          sx={{
+            mb: 2,
+            '& .MuiOutlinedInput-root': {
+              borderRadius: 1.25,
+              fontSize: '0.875rem',
+              backgroundColor: alpha(theme.palette.background.paper, 0.8),
+              transition: 'all 0.2s',
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.background.paper, 1),
+              },
+              '&:hover .MuiOutlinedInput-notchedOutline': {
+                borderColor: alpha(theme.palette.primary.main, 0.3),
+              },
+              '&.Mui-focused': {
+                backgroundColor: theme.palette.background.paper,
+              },
+              '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                borderWidth: 1.5,
+              },
+            },
+            '& .MuiOutlinedInput-input': {
+              fontSize: '0.875rem',
+              padding: '10.5px 14px',
+              fontWeight: 400,
+            },
+            '& .MuiInputLabel-root': {
+              fontSize: '0.875rem',
+              fontWeight: 500,
+            },
+            '& .MuiFormHelperText-root': {
+              fontSize: '0.75rem',
+              mt: 0.75,
+              ml: 1,
+            },
+          }}
         />
 
         <FormControlLabel
@@ -167,29 +288,36 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
               checked={hasAdminConsent}
               onChange={(e) => onAdminConsentChange(e.target.checked)}
               color="primary"
+              sx={{
+                '& .MuiSvgIcon-root': {
+                  fontSize: '1.25rem',
+                },
+              }}
             />
           }
           label={
             <Box>
-              <Typography variant="body2">Has Admin Consent</Typography>
-              <Typography variant="caption" color="text.secondary">
-                Check if admin consent has been granted for the application
+              <Typography variant="body2" sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
+                Has Admin Consent
+              </Typography>
+              <Typography variant="caption" sx={{ fontSize: '0.75rem', color: theme.palette.text.secondary }}>
+                Admin consent has been granted for the application
               </Typography>
             </Box>
           }
         />
       </Box>
 
-      <Divider sx={{ my: 3 }} />
+      <Divider sx={{ my: 2 }} />
 
       {/* Certificate Authentication Section */}
       <Box sx={{ mb: 2 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
           <Box
             sx={{
-              p: 0.75,
+              p: 0.625,
               borderRadius: 1,
-              bgcolor: alpha(theme.palette.info.main, 0.1),
+              bgcolor: alpha(theme.palette.warning.main, 0.1),
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -197,76 +325,124 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
           >
             <Iconify
               icon={certificateIcon}
-              width={18}
-              height={18}
-              color={theme.palette.info.main}
+              width={16}
+              sx={{ color: theme.palette.warning.main }}
             />
           </Box>
-          <Typography variant="subtitle1" sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>
-            Certificate-Based Authentication
-          </Typography>
+          <Box sx={{ flex: 1 }}>
+            <Typography 
+              variant="subtitle2" 
+              sx={{ 
+                fontSize: '0.875rem', 
+                fontWeight: 600,
+                color: theme.palette.text.primary,
+              }}
+            >
+              Certificate-Based Authentication
+            </Typography>
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                fontSize: '0.75rem',
+                color: theme.palette.text.secondary,
+                mt: 0.25,
+                display: 'block',
+              }}
+            >
+              X.509 certificate and private key for secure authentication
+            </Typography>
+          </Box>
         </Box>
-
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5, fontSize: '0.8125rem' }}>
-          Upload your X.509 certificate (.crt) and private key (.key) files for secure authentication.
-        </Typography>
 
         {/* Certificate File Upload */}
         <Box sx={{ mb: 2 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1.5, fontSize: '0.875rem' }}>
+          <Typography 
+            variant="subtitle2" 
+            sx={{ 
+              fontSize: '0.875rem', 
+              fontWeight: 500,
+              mb: 1,
+              color: theme.palette.text.primary,
+            }}
+          >
             Client Certificate (.crt)
           </Typography>
           
           <Paper
             variant="outlined"
+            onClick={onCertificateUpload}
             sx={{
               p: 2,
-              borderRadius: 1,
+              borderRadius: 1.25,
+              borderWidth: '1.5px',
               borderStyle: (certificateFile || certificateData) ? 'solid' : 'dashed',
               borderColor: (certificateFile || certificateData)
                 ? alpha(theme.palette.success.main, 0.3)
-                : alpha(theme.palette.info.main, 0.3),
+                : alpha(theme.palette.divider, 0.3),
               bgcolor: (certificateFile || certificateData)
-                ? alpha(theme.palette.success.main, 0.02)
-                : alpha(theme.palette.info.main, 0.02),
+                ? alpha(theme.palette.success.main, 0.04)
+                : 'transparent',
               cursor: 'pointer',
-              transition: 'all 0.2s ease-in-out',
+              transition: 'all 0.2s',
               '&:hover': {
-                borderColor: alpha(theme.palette.info.main, 0.5),
-                bgcolor: alpha(theme.palette.info.main, 0.04),
+                borderColor: (certificateFile || certificateData)
+                  ? alpha(theme.palette.success.main, 0.5)
+                  : alpha(theme.palette.primary.main, 0.4),
+                bgcolor: (certificateFile || certificateData)
+                  ? alpha(theme.palette.success.main, 0.06)
+                  : alpha(theme.palette.primary.main, 0.04),
               },
             }}
-            onClick={onCertificateUpload}
           >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
               <Box
                 sx={{
                   p: 1,
                   borderRadius: 1,
                   bgcolor: (certificateFile || certificateData)
-                    ? alpha(theme.palette.success.main, 0.1)
-                    : alpha(theme.palette.info.main, 0.1),
+                    ? alpha(theme.palette.success.main, 0.12)
+                    : alpha(theme.palette.primary.main, 0.08),
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
               >
                 <Iconify
-                  icon={(certificateFile || certificateData) ? checkIcon : certificateIcon}
-                  width={24}
-                  height={24}
-                  color={(certificateFile || certificateData) ? theme.palette.success.main : theme.palette.info.main}
+                  icon={(certificateFile || certificateData) ? checkCircleIcon : fileDocumentIcon}
+                  width={18}
+                  sx={{
+                    color: (certificateFile || certificateData) 
+                      ? theme.palette.success.main 
+                      : theme.palette.primary.main
+                  }}
                 />
               </Box>
               
-              <Box sx={{ flex: 1 }}>
-                <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                  {certificateFileName || 'Click to upload certificate file'}
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography 
+                  variant="body2" 
+                  sx={{ 
+                    fontSize: '0.875rem',
+                    fontWeight: 500,
+                    mb: 0.25,
+                    color: theme.palette.text.primary,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {certificateFileName || 'No file selected'}
                 </Typography>
-                <Typography variant="caption" color="text.secondary">
+                <Typography 
+                  variant="caption" 
+                  sx={{ 
+                    fontSize: '0.75rem',
+                    color: theme.palette.text.secondary,
+                  }}
+                >
                   {(certificateFile || certificateData)
-                    ? 'Certificate file loaded (BEGIN CERTIFICATE format)'
-                    : 'Upload your .crt certificate file'
+                    ? 'Certificate file loaded successfully'
+                    : 'Click to upload .crt, .cer, or .pem file'
                   }
                 </Typography>
               </Box>
@@ -274,11 +450,25 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
               <Button
                 variant="outlined"
                 size="small"
+                startIcon={<Iconify icon={uploadIcon} width={14} />}
                 onClick={(e) => {
                   e.stopPropagation();
                   onCertificateUpload();
                 }}
-                sx={{ minWidth: 100 }}
+                sx={{
+                  textTransform: 'none',
+                  fontWeight: 500,
+                  px: 2,
+                  py: 0.625,
+                  borderRadius: 1,
+                  fontSize: '0.8125rem',
+                  flexShrink: 0,
+                  borderColor: alpha(theme.palette.divider, 0.3),
+                  '&:hover': {
+                    borderColor: theme.palette.primary.main,
+                    backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                  },
+                }}
               >
                 {certificateFile ? 'Replace' : 'Upload'}
               </Button>
@@ -286,7 +476,16 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
           </Paper>
 
           {certificateError && (
-            <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                color: theme.palette.error.main,
+                mt: 0.75,
+                ml: 1,
+                display: 'block',
+                fontSize: '0.75rem',
+              }}
+            >
               {certificateError}
             </Typography>
           )}
@@ -302,60 +501,93 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
 
         {/* Private Key File Upload */}
         <Box sx={{ mb: 2 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1.5, fontSize: '0.875rem' }}>
+          <Typography 
+            variant="subtitle2" 
+            sx={{ 
+              fontSize: '0.875rem', 
+              fontWeight: 500,
+              mb: 1,
+              color: theme.palette.text.primary,
+            }}
+          >
             Private Key (.key)
           </Typography>
           
           <Paper
             variant="outlined"
+            onClick={onPrivateKeyUpload}
             sx={{
               p: 2,
-              borderRadius: 1,
+              borderRadius: 1.25,
+              borderWidth: '1.5px',
               borderStyle: (privateKeyFile || privateKeyData) ? 'solid' : 'dashed',
               borderColor: (privateKeyFile || privateKeyData)
                 ? alpha(theme.palette.success.main, 0.3)
-                : alpha(theme.palette.warning.main, 0.3),
+                : alpha(theme.palette.divider, 0.3),
               bgcolor: (privateKeyFile || privateKeyData)
-                ? alpha(theme.palette.success.main, 0.02)
-                : alpha(theme.palette.warning.main, 0.02),
+                ? alpha(theme.palette.success.main, 0.04)
+                : 'transparent',
               cursor: 'pointer',
-              transition: 'all 0.2s ease-in-out',
+              transition: 'all 0.2s',
               '&:hover': {
-                borderColor: alpha(theme.palette.warning.main, 0.5),
-                bgcolor: alpha(theme.palette.warning.main, 0.04),
+                borderColor: (privateKeyFile || privateKeyData)
+                  ? alpha(theme.palette.success.main, 0.5)
+                  : alpha(theme.palette.primary.main, 0.4),
+                bgcolor: (privateKeyFile || privateKeyData)
+                  ? alpha(theme.palette.success.main, 0.06)
+                  : alpha(theme.palette.primary.main, 0.04),
               },
             }}
-            onClick={onPrivateKeyUpload}
           >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
               <Box
                 sx={{
                   p: 1,
                   borderRadius: 1,
                   bgcolor: (privateKeyFile || privateKeyData)
-                    ? alpha(theme.palette.success.main, 0.1)
-                    : alpha(theme.palette.warning.main, 0.1),
+                    ? alpha(theme.palette.success.main, 0.12)
+                    : alpha(theme.palette.warning.main, 0.08),
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
               >
                 <Iconify
-                  icon={(privateKeyFile || privateKeyData) ? checkIcon : lockIcon}
-                  width={24}
-                  height={24}
-                  color={(privateKeyFile || privateKeyData) ? theme.palette.success.main : theme.palette.warning.main}
+                  icon={(privateKeyFile || privateKeyData) ? checkCircleIcon : lockIcon}
+                  width={18}
+                  sx={{
+                    color: (privateKeyFile || privateKeyData) 
+                      ? theme.palette.success.main 
+                      : theme.palette.warning.main
+                  }}
                 />
               </Box>
               
-              <Box sx={{ flex: 1 }}>
-                <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                  {privateKeyFileName || 'Click to upload private key file'}
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography 
+                  variant="body2" 
+                  sx={{ 
+                    fontSize: '0.875rem',
+                    fontWeight: 500,
+                    mb: 0.25,
+                    color: theme.palette.text.primary,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {privateKeyFileName || 'No file selected'}
                 </Typography>
-                <Typography variant="caption" color="text.secondary">
+                <Typography 
+                  variant="caption" 
+                  sx={{ 
+                    fontSize: '0.75rem',
+                    color: theme.palette.text.secondary,
+                  }}
+                >
                   {(privateKeyFile || privateKeyData)
-                    ? 'Private key loaded (BEGIN PRIVATE KEY format, PKCS#8)'
-                    : 'Upload your .key private key file'
+                    ? 'Private key loaded successfully (PKCS#8)'
+                    : 'Click to upload .key or .pem file'
                   }
                 </Typography>
               </Box>
@@ -363,11 +595,25 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
               <Button
                 variant="outlined"
                 size="small"
+                startIcon={<Iconify icon={uploadIcon} width={14} />}
                 onClick={(e) => {
                   e.stopPropagation();
                   onPrivateKeyUpload();
                 }}
-                sx={{ minWidth: 100 }}
+                sx={{
+                  textTransform: 'none',
+                  fontWeight: 500,
+                  px: 2,
+                  py: 0.625,
+                  borderRadius: 1,
+                  fontSize: '0.8125rem',
+                  flexShrink: 0,
+                  borderColor: alpha(theme.palette.divider, 0.3),
+                  '&:hover': {
+                    borderColor: theme.palette.primary.main,
+                    backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                  },
+                }}
               >
                 {privateKeyFile ? 'Replace' : 'Upload'}
               </Button>
@@ -375,7 +621,16 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
           </Paper>
 
           {privateKeyError && (
-            <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                color: theme.palette.error.main,
+                mt: 0.75,
+                ml: 1,
+                display: 'block',
+                fontSize: '0.75rem',
+              }}
+            >
               {privateKeyError}
             </Typography>
           )}
@@ -393,61 +648,99 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
         <Paper
           variant="outlined"
           sx={{
-            p: 2,
-            borderRadius: 1,
-            bgcolor: alpha(theme.palette.warning.main, 0.02),
+            p: 1.5,
+            borderRadius: 1.25,
+            bgcolor: alpha(theme.palette.warning.main, 0.04),
             borderColor: alpha(theme.palette.warning.main, 0.2),
           }}
         >
           <Box sx={{ display: 'flex', gap: 1.5 }}>
             <Iconify
-              icon={keyIcon}
-              width={20}
-              height={20}
-              color={theme.palette.warning.main}
-              sx={{ flexShrink: 0, mt: 0.25 }}
+              icon={alertCircleIcon}
+              width={18}
+              sx={{ 
+                color: theme.palette.warning.main,
+                flexShrink: 0,
+                mt: 0.25,
+              }}
             />
             <Box>
-              <Typography variant="subtitle2" sx={{ mb: 0.5, fontSize: '0.875rem' }}>
+              <Typography 
+                variant="subtitle2" 
+                sx={{ 
+                  mb: 0.75, 
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                  color: theme.palette.text.primary,
+                }}
+              >
                 Security Requirements
               </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                • Certificate must be in X.509 format (BEGIN CERTIFICATE / END CERTIFICATE)
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                • Private key must be in PKCS#8 format (BEGIN PRIVATE KEY / END PRIVATE KEY)
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                • Private key must not be encrypted (use -nocrypt flag during generation)
-              </Typography>
+              <Box component="ul" sx={{ m: 0, pl: 2, '& li': { mb: 0.5 } }}>
+                <Typography 
+                  component="li" 
+                  variant="caption" 
+                  sx={{ 
+                    fontSize: '0.75rem',
+                    color: theme.palette.text.secondary,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Certificate must be in X.509 format (BEGIN CERTIFICATE)
+                </Typography>
+                <Typography 
+                  component="li" 
+                  variant="caption" 
+                  sx={{ 
+                    fontSize: '0.75rem',
+                    color: theme.palette.text.secondary,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Private key must be in PKCS#8 format (BEGIN PRIVATE KEY)
+                </Typography>
+                <Typography 
+                  component="li" 
+                  variant="caption" 
+                  sx={{ 
+                    fontSize: '0.75rem',
+                    color: theme.palette.text.secondary,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Private key must not be encrypted (use -nocrypt flag)
+                </Typography>
+              </Box>
             </Box>
           </Box>
         </Paper>
       </Box>
 
-      {/* Private Key Preview (Show only that it's loaded, not the actual key) */}
+      {/* Private Key Status */}
       {privateKeyData && (
         <Box sx={{ mt: 2 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1, fontSize: '0.875rem' }}>
-            Private Key Status
-          </Typography>
           <Paper
             variant="outlined"
             sx={{
-              p: 2,
-              borderRadius: 1,
+              p: 1.5,
+              borderRadius: 1.25,
               bgcolor: alpha(theme.palette.success.main, 0.04),
-              borderColor: alpha(theme.palette.success.main, 0.12),
+              borderColor: alpha(theme.palette.success.main, 0.2),
             }}
           >
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
               <Iconify
-                icon={checkIcon}
-                width={20}
-                height={20}
-                color={theme.palette.success.main}
+                icon={checkCircleIcon}
+                width={18}
+                sx={{ color: theme.palette.success.main }}
               />
-              <Typography variant="caption" color="text.secondary">
+              <Typography 
+                variant="body2" 
+                sx={{ 
+                  fontSize: '0.875rem',
+                  color: theme.palette.text.secondary,
+                }}
+              >
                 Private key successfully loaded and validated (PKCS#8 format)
               </Typography>
             </Box>

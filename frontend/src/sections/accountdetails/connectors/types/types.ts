@@ -68,7 +68,7 @@ interface SyncCustomField extends BaseField {
 
 // Filter schema field
 interface FilterSchemaField extends BaseField {
-  fieldType:
+  fieldType?:
     | 'TEXT'
     | 'SELECT'
     | 'MULTISELECT'
@@ -77,18 +77,10 @@ interface FilterSchemaField extends BaseField {
     | 'NUMBER'
     | 'BOOLEAN'
     | 'TAGS';
-  operators?: (
-    | 'EQUALS'
-    | 'NOT_EQUALS'
-    | 'CONTAINS'
-    | 'NOT_CONTAINS'
-    | 'STARTS_WITH'
-    | 'ENDS_WITH'
-    | 'GREATER_THAN'
-    | 'LESS_THAN'
-    | 'IN'
-    | 'NOT_IN'
-  )[];
+  filterType?: 'list' | 'datetime' | 'text' | 'number' | 'boolean';
+  category?: 'sync' | 'indexing';
+  defaultOperator?: string;
+  operators?: string[];
 }
 
 // Filter custom field
@@ -187,8 +179,20 @@ interface ConnectorSyncConfig {
   values?: Record<string, any>;
 }
 
+// Filter category configuration (sync/indexing)
+interface FilterCategoryConfig {
+  schema?: {
+    fields: FilterSchemaField[];
+  };
+  values?: Record<string, any>;
+  customFields?: FilterCustomField[];
+  customValues?: Record<string, any>;
+}
+
 // Filters configuration interface
 interface ConnectorFiltersConfig {
+  sync?: FilterCategoryConfig;
+  indexing?: FilterCategoryConfig;
   schema?: {
     fields: FilterSchemaField[];
   };
@@ -243,6 +247,7 @@ export type {
   ConnectorAuthConfig,
   ConnectorSyncConfig,
   ConnectorFiltersConfig,
+  FilterCategoryConfig,
   ScheduledConfig,
   WebhookConfig,
   RealtimeConfig,

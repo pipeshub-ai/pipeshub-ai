@@ -30,41 +30,83 @@ interface BaseFieldProps {
   disabled?: boolean;
 }
 
-const getBaseFieldStyles = (theme: any) => ({
-  '& .MuiOutlinedInput-root': {
-    borderRadius: 1.5,
-    backgroundColor: alpha(theme.palette.background.paper, 0.8),
-    '&:hover .MuiOutlinedInput-notchedOutline': {
-      borderColor: theme.palette.primary.main,
+const getBaseFieldStyles = (theme: any) => {
+  const isDark = theme.palette.mode === 'dark';
+  return {
+    '& .MuiOutlinedInput-root': {
+      borderRadius: 1.25,
+      backgroundColor: isDark
+        ? alpha(theme.palette.background.paper, 0.6)
+        : alpha(theme.palette.background.paper, 0.8),
+      transition: 'all 0.2s',
+      '&:hover': {
+        backgroundColor: isDark
+          ? alpha(theme.palette.background.paper, 0.8)
+          : alpha(theme.palette.background.paper, 1),
+      },
+      '&:hover .MuiOutlinedInput-notchedOutline': {
+        borderColor: alpha(theme.palette.primary.main, isDark ? 0.4 : 0.3),
+      },
+      '&.Mui-focused': {
+        backgroundColor: isDark
+          ? alpha(theme.palette.background.paper, 0.9)
+          : theme.palette.background.paper,
+      },
+      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+        borderWidth: 1.5,
+        borderColor: theme.palette.primary.main,
+      },
     },
-    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-      borderWidth: 1.5,
-    },
-  },
   '& .MuiInputLabel-root': {
-    fontSize: '0.8125rem',
+    fontSize: '0.875rem',
     fontWeight: 500,
     '&.Mui-focused': {
-      fontSize: '0.8125rem',
+      fontSize: '0.875rem',
     },
   },
   '& .MuiOutlinedInput-input': {
-    fontSize: '0.8125rem',
-    padding: '12px 14px',
+    fontSize: '0.875rem',
+    padding: '10.5px 14px',
     fontWeight: 400,
   },
   '& .MuiFormHelperText-root': {
     fontSize: '0.75rem',
     fontWeight: 400,
-    marginTop: 0.5,
+    marginTop: 0.75,
     marginLeft: 1,
   },
-});
+  };
+};
 
-const FieldDescription: React.FC<{ description: string; error?: string; marginLeft?: number }> = ({ 
+const FieldLabel: React.FC<{ 
+  displayName: string; 
+  required?: boolean;
+  marginBottom?: number;
+}> = ({ displayName, required, marginBottom = 1 }) => (
+  <Typography 
+    variant="body2" 
+    sx={{ 
+      mb: marginBottom,
+      fontWeight: 600, 
+      fontSize: '0.875rem',
+      color: 'text.primary',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 0.5,
+    }}
+  >
+    {displayName}
+    {required && (
+      <Typography component="span" sx={{ color: 'error.main', fontSize: '0.875rem' }}>
+        *
+      </Typography>
+    )}
+  </Typography>
+);
+
+const FieldDescription: React.FC<{ description: string; error?: string }> = ({ 
   description, 
-  error, 
-  marginLeft = 0.5 
+  error,
 }) => {
   if (!description || error) return null;
   
@@ -74,12 +116,11 @@ const FieldDescription: React.FC<{ description: string; error?: string; marginLe
       color="text.secondary" 
       sx={{ 
         display: 'block', 
-        mt: 0.5, 
-        ml: marginLeft,
-        fontSize: '0.75rem',
-        lineHeight: 1.4,
+        mt: 0.75,
+        ml: 1,
+        fontSize: '0.8125rem',
+        lineHeight: 1.5,
         fontWeight: 400,
-        opacity: 0.85,
       }}
     >
       {description}
@@ -122,11 +163,12 @@ export const TextFieldRenderer: React.FC<BaseFieldProps> = ({
                 sx={{
                   color: theme.palette.text.secondary,
                   '&:hover': {
-                    backgroundColor: alpha(theme.palette.text.secondary, 0.08),
+                    backgroundColor: alpha(theme.palette.primary.main, 0.08),
+                    color: theme.palette.primary.main,
                   },
                 }}
               >
-                <Iconify icon={showPassword ? eyeOffIcon : eyeIcon} width={16} height={16} />
+                <Iconify icon={showPassword ? eyeOffIcon : eyeIcon} width={18} />
               </IconButton>
             </InputAdornment>
           ) : undefined,
@@ -173,11 +215,12 @@ export const PasswordFieldRenderer: React.FC<BaseFieldProps> = ({
                 sx={{
                   color: theme.palette.text.secondary,
                   '&:hover': {
-                    backgroundColor: alpha(theme.palette.text.secondary, 0.08),
+                    backgroundColor: alpha(theme.palette.primary.main, 0.08),
+                    color: theme.palette.primary.main,
                   },
                 }}
               >
-                <Iconify icon={showPassword ? eyeOffIcon : eyeIcon} width={16} height={16} />
+                <Iconify icon={showPassword ? eyeOffIcon : eyeIcon} width={18} />
               </IconButton>
             </InputAdornment>
           ),
@@ -279,8 +322,8 @@ export const TextareaFieldRenderer: React.FC<BaseFieldProps> = ({
         sx={{
           ...getBaseFieldStyles(theme),
           '& .MuiOutlinedInput-input': {
-            ...getBaseFieldStyles(theme)['& .MuiOutlinedInput-input'],
-            padding: '12px 14px',
+            fontSize: '0.875rem',
+            padding: '10.5px 14px',
           },
         }}
       />
@@ -301,35 +344,76 @@ export const SelectFieldRenderer: React.FC<BaseFieldProps> = ({
   return (
     <Box>
       <FormControl fullWidth size="small" error={!!error}>
-        <InputLabel sx={{ fontSize: '0.8125rem', fontWeight: 500 }}>{field.displayName}</InputLabel>
+        <InputLabel sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
+          {field.displayName}
+        </InputLabel>
         <Select
           value={value || ''}
           onChange={(e) => onChange(e.target.value)}
           label={field.displayName}
           disabled={disabled}
+          MenuProps={{
+            PaperProps: {
+              sx: {
+                maxHeight: 300,
+                '& .MuiMenuItem-root': {
+                  fontSize: '0.875rem',
+                  transition: 'all 0.15s',
+                  '&:hover': {
+                    backgroundColor: alpha(theme.palette.primary.main, 0.08),
+                  },
+                  '&.Mui-selected': {
+                    backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                    fontWeight: 600,
+                    '&:hover': {
+                      backgroundColor: alpha(theme.palette.primary.main, 0.16),
+                    },
+                  },
+                },
+              },
+            },
+          }}
           sx={{
-            borderRadius: 1.5,
-            backgroundColor: alpha(theme.palette.background.paper, 0.8),
+            borderRadius: 1.25,
+            backgroundColor: theme.palette.mode === 'dark'
+              ? alpha(theme.palette.background.paper, 0.6)
+              : alpha(theme.palette.background.paper, 0.8),
+            transition: 'all 0.2s',
+            '&:hover': {
+              backgroundColor: theme.palette.mode === 'dark'
+                ? alpha(theme.palette.background.paper, 0.8)
+                : alpha(theme.palette.background.paper, 1),
+            },
             '&:hover .MuiOutlinedInput-notchedOutline': {
-              borderColor: theme.palette.primary.main,
+              borderColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.4 : 0.3),
+            },
+            '&.Mui-focused': {
+              backgroundColor: theme.palette.mode === 'dark'
+                ? alpha(theme.palette.background.paper, 0.9)
+                : theme.palette.background.paper,
             },
             '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
               borderWidth: 1.5,
+              borderColor: theme.palette.primary.main,
             },
             '& .MuiSelect-select': {
-              fontSize: '0.8125rem',
-              padding: '12px 14px',
-              fontWeight: 400,
+              fontSize: '0.875rem',
+              padding: '10.5px 14px',
+              fontWeight: 500,
             },
           }}
         >
           {field.options?.map((option: string) => (
-            <MenuItem key={option} value={option} sx={{ fontSize: '0.8125rem' }}>
+            <MenuItem key={option} value={option}>
               {option}
             </MenuItem>
           ))}
         </Select>
-        {error && <FormHelperText sx={{ fontSize: '0.75rem', mt: 0.5, ml: 1 }}>{error}</FormHelperText>}
+        {error && (
+          <FormHelperText sx={{ fontSize: '0.75rem', mt: 0.75, ml: 1 }}>
+            {error}
+          </FormHelperText>
+        )}
       </FormControl>
       <FieldDescription description={field.description} error={error} />
     </Box>
@@ -368,11 +452,17 @@ export const MultiSelectFieldRenderer: React.FC<BaseFieldProps> = ({
               {...getTagProps({ index })}
               key={option}
               sx={{
-                fontSize: '0.75rem',
-                height: 22,
+                fontSize: '0.8125rem',
+                height: 24,
                 borderRadius: 1,
                 '& .MuiChip-label': {
-                  px: 0.75,
+                  px: 1,
+                  fontWeight: 500,
+                },
+                borderColor: alpha(theme.palette.primary.main, 0.2),
+                '&:hover': {
+                  borderColor: alpha(theme.palette.primary.main, 0.4),
+                  bgcolor: alpha(theme.palette.primary.main, 0.04),
                 },
               }}
             />
@@ -389,8 +479,8 @@ export const MultiSelectFieldRenderer: React.FC<BaseFieldProps> = ({
             sx={{
               ...getBaseFieldStyles(theme),
               '& .MuiOutlinedInput-input': {
-                fontSize: '0.8125rem',
-                padding: '10px 12px !important',
+                fontSize: '0.875rem',
+                padding: '6px 10px !important',
                 fontWeight: 400,
               },
             }}
@@ -421,25 +511,36 @@ export const CheckboxFieldRenderer: React.FC<BaseFieldProps> = ({
             disabled={disabled}
             size="small"
             sx={{
+              p: 1,
               '& .MuiSvgIcon-root': {
-                fontSize: '1.125rem',
+                fontSize: '1.25rem',
               },
             }}
           />
         }
         label={
-          <Typography variant="body2" sx={{ fontSize: '0.8125rem', fontWeight: 500 }}>
-            {field.displayName}
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+            <Typography variant="body2" sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
+              {field.displayName}
+            </Typography>
+            {field.required && (
+              <Typography component="span" sx={{ color: 'error.main', fontSize: '0.875rem' }}>
+                *
+              </Typography>
+            )}
+          </Box>
         }
-        sx={{ mb: error ? 0.5 : 0 }}
+        sx={{ 
+          mb: error ? 0.75 : 0,
+          ml: 0,
+        }}
       />
       {error && (
-        <FormHelperText error sx={{ mt: 0, ml: 4, fontSize: '0.75rem' }}>
+        <FormHelperText error sx={{ mt: 0, ml: 5, fontSize: '0.75rem' }}>
           {error}
         </FormHelperText>
       )}
-      <FieldDescription description={field.description} error={error} marginLeft={4.25} />
+      <FieldDescription description={field.description} error={error} />
     </Box>
   );
 };
@@ -479,6 +580,67 @@ export const NumberFieldRenderer: React.FC<BaseFieldProps> = ({
   );
 };
 
+export const DateTimeFieldRenderer: React.FC<BaseFieldProps> = ({
+  field,
+  value,
+  onChange,
+  error,
+  disabled,
+}) => {
+  const theme = useTheme();
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleContainerClick = () => {
+    if (!disabled && inputRef.current) {
+      inputRef.current.showPicker?.();
+    }
+  };
+
+  return (
+    <Box>
+      <TextField
+        fullWidth
+        label={field.displayName}
+        type="datetime-local"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        required={field.required}
+        error={!!error}
+        helperText={error}
+        disabled={disabled}
+        variant="outlined"
+        size="small"
+        inputRef={inputRef}
+        onClick={handleContainerClick}
+        InputLabelProps={{
+          shrink: true,
+          sx: { fontSize: '0.875rem', fontWeight: 500 },
+        }}
+        sx={{
+          ...getBaseFieldStyles(theme),
+          '& .MuiOutlinedInput-input': {
+            fontSize: '0.875rem',
+            padding: '10.5px 14px',
+            fontWeight: 500,
+            cursor: 'pointer',
+            '&::-webkit-calendar-picker-indicator': {
+              cursor: 'pointer',
+              fontSize: '1.125rem',
+              padding: '4px',
+              borderRadius: '4px',
+              transition: 'all 0.2s',
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.primary.main, 0.08),
+              },
+            },
+          },
+        }}
+      />
+      <FieldDescription description={field.description} error={error} />
+    </Box>
+  );
+};
+
 export const DateFieldRenderer: React.FC<BaseFieldProps> = ({
   field,
   value,
@@ -487,6 +649,13 @@ export const DateFieldRenderer: React.FC<BaseFieldProps> = ({
   disabled,
 }) => {
   const theme = useTheme();
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleContainerClick = () => {
+    if (!disabled && inputRef.current) {
+      inputRef.current.showPicker?.();
+    }
+  };
 
   return (
     <Box>
@@ -502,10 +671,31 @@ export const DateFieldRenderer: React.FC<BaseFieldProps> = ({
         disabled={disabled}
         variant="outlined"
         size="small"
+        inputRef={inputRef}
+        onClick={handleContainerClick}
         InputLabelProps={{
           shrink: true,
+          sx: { fontSize: '0.875rem', fontWeight: 500 },
         }}
-        sx={getBaseFieldStyles(theme)}
+        sx={{
+          ...getBaseFieldStyles(theme),
+          '& .MuiOutlinedInput-input': {
+            fontSize: '0.875rem',
+            padding: '10.5px 14px',
+            fontWeight: 500,
+            cursor: 'pointer',
+            '&::-webkit-calendar-picker-indicator': {
+              cursor: 'pointer',
+              fontSize: '1.125rem',
+              padding: '4px',
+              borderRadius: '4px',
+              transition: 'all 0.2s',
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.primary.main, 0.08),
+              },
+            },
+          },
+        }}
       />
       <FieldDescription description={field.description} error={error} />
     </Box>
@@ -521,6 +711,8 @@ export const DateRangeFieldRenderer: React.FC<BaseFieldProps> = ({
 }) => {
   const theme = useTheme();
   const rangeValue = value || { start: '', end: '' };
+  const startInputRef = React.useRef<HTMLInputElement>(null);
+  const endInputRef = React.useRef<HTMLInputElement>(null);
 
   const handleStartChange = (startDate: string) => {
     onChange({ ...rangeValue, start: startDate });
@@ -530,12 +722,21 @@ export const DateRangeFieldRenderer: React.FC<BaseFieldProps> = ({
     onChange({ ...rangeValue, end: endDate });
   };
 
+  const handleStartClick = () => {
+    if (!disabled && startInputRef.current) {
+      startInputRef.current.showPicker?.();
+    }
+  };
+
+  const handleEndClick = () => {
+    if (!disabled && endInputRef.current) {
+      endInputRef.current.showPicker?.();
+    }
+  };
+
   return (
     <Box>
-      <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 600, fontSize: '0.8125rem' }}>
-        {field.displayName}
-        {field.required && <span style={{ color: 'red', marginLeft: 4 }}>*</span>}
-      </Typography>
+      <FieldLabel displayName={field.displayName} required={field.required} />
       <Box sx={{ display: 'flex', gap: 1.5 }}>
         <TextField
           label="Start Date"
@@ -547,12 +748,31 @@ export const DateRangeFieldRenderer: React.FC<BaseFieldProps> = ({
           disabled={disabled}
           variant="outlined"
           size="small"
+          inputRef={startInputRef}
+          onClick={handleStartClick}
           InputLabelProps={{
             shrink: true,
+            sx: { fontSize: '0.875rem', fontWeight: 500 },
           }}
           sx={{
             flex: 1,
             ...getBaseFieldStyles(theme),
+            '& .MuiOutlinedInput-input': {
+              fontSize: '0.875rem',
+              padding: '10.5px 14px',
+              fontWeight: 500,
+              cursor: 'pointer',
+              '&::-webkit-calendar-picker-indicator': {
+                cursor: 'pointer',
+                fontSize: '1.125rem',
+                padding: '4px',
+                borderRadius: '4px',
+                transition: 'all 0.2s',
+                '&:hover': {
+                  backgroundColor: alpha(theme.palette.primary.main, 0.08),
+                },
+              },
+            },
           }}
         />
         <TextField
@@ -565,17 +785,36 @@ export const DateRangeFieldRenderer: React.FC<BaseFieldProps> = ({
           disabled={disabled}
           variant="outlined"
           size="small"
+          inputRef={endInputRef}
+          onClick={handleEndClick}
           InputLabelProps={{
             shrink: true,
+            sx: { fontSize: '0.875rem', fontWeight: 500 },
           }}
           sx={{
             flex: 1,
             ...getBaseFieldStyles(theme),
+            '& .MuiOutlinedInput-input': {
+              fontSize: '0.875rem',
+              padding: '10.5px 14px',
+              fontWeight: 500,
+              cursor: 'pointer',
+              '&::-webkit-calendar-picker-indicator': {
+                cursor: 'pointer',
+                fontSize: '1.125rem',
+                padding: '4px',
+                borderRadius: '4px',
+                transition: 'all 0.2s',
+                '&:hover': {
+                  backgroundColor: alpha(theme.palette.primary.main, 0.08),
+                },
+              },
+            },
           }}
         />
       </Box>
       {error && (
-        <FormHelperText error sx={{ mt: 0.5, ml: 1, fontSize: '0.75rem' }}>
+        <FormHelperText error sx={{ mt: 0.75, ml: 1, fontSize: '0.75rem' }}>
           {error}
         </FormHelperText>
       )}
@@ -590,39 +829,7 @@ export const BooleanFieldRenderer: React.FC<BaseFieldProps> = ({
   onChange,
   error,
   disabled,
-}) => {
-  const theme = useTheme();
-
-  return (
-    <Box>
-      <FormControl fullWidth error={!!error}>
-        <FormControlLabel
-          control={
-            <Checkbox
-              checked={!!value}
-              onChange={(e) => onChange(e.target.checked)}
-              disabled={disabled}
-              size="small"
-              sx={{
-                '& .MuiSvgIcon-root': {
-                  fontSize: '1.125rem',
-                },
-              }}
-            />
-          }
-          label={
-            <Typography variant="body2" sx={{ fontSize: '0.8125rem', fontWeight: 500 }}>
-              {field.displayName}
-            </Typography>
-          }
-          sx={{ mb: error ? 0.5 : 0 }}
-        />
-        {error && <FormHelperText sx={{ fontSize: '0.75rem', ml: 4 }}>{error}</FormHelperText>}
-      </FormControl>
-      <FieldDescription description={field.description} error={error} marginLeft={4.25} />
-    </Box>
-  );
-};
+}) => <CheckboxFieldRenderer field={field} value={value} onChange={onChange} error={error} disabled={disabled} />;
 
 export const TagsFieldRenderer: React.FC<BaseFieldProps> = ({
   field,
@@ -673,7 +880,7 @@ export const TagsFieldRenderer: React.FC<BaseFieldProps> = ({
         }}
       />
       {tags.length > 0 && (
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 1 }}>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 0.75 }}>
           {tags.map((tag, index) => (
             <Chip
               key={index}
@@ -682,14 +889,23 @@ export const TagsFieldRenderer: React.FC<BaseFieldProps> = ({
               size="small"
               variant="outlined"
               sx={{
-                fontSize: '0.75rem',
-                height: 22,
+                fontSize: '0.8125rem',
+                height: 24,
                 borderRadius: 1,
                 '& .MuiChip-label': {
-                  px: 0.75,
+                  px: 1,
+                  fontWeight: 500,
+                },
+                borderColor: alpha(theme.palette.primary.main, 0.2),
+                '&:hover': {
+                  borderColor: alpha(theme.palette.primary.main, 0.4),
+                  bgcolor: alpha(theme.palette.primary.main, 0.04),
                 },
                 '& .MuiChip-deleteIcon': {
-                  fontSize: '0.875rem',
+                  fontSize: '1rem',
+                  '&:hover': {
+                    color: theme.palette.error.main,
+                  },
                 },
               }}
             />
@@ -758,9 +974,9 @@ export const JsonFieldRenderer: React.FC<BaseFieldProps> = ({
           ...getBaseFieldStyles(theme),
           '& .MuiOutlinedInput-input': {
             fontSize: '0.8125rem',
-            fontFamily: 'Monaco, Consolas, "Roboto Mono", monospace',
-            padding: '12px 14px',
-            lineHeight: 1.5,
+            fontFamily: '"SF Mono", "Roboto Mono", Monaco, Consolas, monospace',
+            padding: '10.5px 14px',
+            lineHeight: 1.6,
           },
         }}
       />
@@ -812,20 +1028,25 @@ export const FileFieldRenderer: React.FC<BaseFieldProps> = ({
         <Box
           sx={{
             p: 1.5,
-            borderRadius: 1.5,
-            border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-            backgroundColor: alpha(theme.palette.background.paper, 0.8),
+            borderRadius: 1.25,
+            border: `1px solid ${alpha(theme.palette.divider, theme.palette.mode === 'dark' ? 0.2 : 0.15)}`,
+            backgroundColor: theme.palette.mode === 'dark'
+              ? alpha(theme.palette.background.paper, 0.6)
+              : alpha(theme.palette.background.paper, 0.8),
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
             gap: 1.5,
-            transition: 'all 0.15s ease-in-out',
+            transition: 'all 0.2s',
             '&:hover': {
-              borderColor: alpha(theme.palette.primary.main, 0.3),
+              borderColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.4 : 0.3),
+              backgroundColor: theme.palette.mode === 'dark'
+                ? alpha(theme.palette.background.paper, 0.8)
+                : alpha(theme.palette.background.paper, 1),
             },
           }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flex: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flex: 1, minWidth: 0 }}>
             <Box
               sx={{
                 p: 0.75,
@@ -834,17 +1055,25 @@ export const FileFieldRenderer: React.FC<BaseFieldProps> = ({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
+                flexShrink: 0,
               }}
             >
               <Iconify
                 icon="eva:file-outline"
-                width={16}
-                height={16}
+                width={18}
                 color={theme.palette.primary.main}
               />
             </Box>
             <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography variant="body2" sx={{ fontWeight: 500, fontSize: '0.8125rem', wordBreak: 'break-all' }}>
+              <Typography 
+                variant="body2" 
+                sx={{ 
+                  fontWeight: 500, 
+                  fontSize: '0.875rem', 
+                  wordBreak: 'break-all',
+                  lineHeight: 1.4,
+                }}
+              >
                 {value.name}
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
@@ -858,13 +1087,14 @@ export const FileFieldRenderer: React.FC<BaseFieldProps> = ({
             disabled={disabled}
             sx={{
               color: theme.palette.text.secondary,
+              flexShrink: 0,
               '&:hover': {
                 backgroundColor: alpha(theme.palette.error.main, 0.08),
                 color: theme.palette.error.main,
               },
             }}
           >
-            <Iconify icon="eva:close-outline" width={16} height={16} />
+            <Iconify icon="eva:close-outline" width={18} />
           </IconButton>
         </Box>
       ) : (
@@ -874,22 +1104,25 @@ export const FileFieldRenderer: React.FC<BaseFieldProps> = ({
           disabled={disabled}
           fullWidth
           sx={{
-            height: 48,
-            borderRadius: 1.5,
+            height: 46,
+            borderRadius: 1.25,
             borderStyle: 'dashed',
-            borderColor: alpha(theme.palette.divider, 0.3),
-            backgroundColor: alpha(theme.palette.background.paper, 0.8),
+            borderWidth: 1.5,
+            borderColor: alpha(theme.palette.divider, theme.palette.mode === 'dark' ? 0.3 : 0.3),
+            backgroundColor: theme.palette.mode === 'dark'
+              ? alpha(theme.palette.background.paper, 0.6)
+              : alpha(theme.palette.background.paper, 0.8),
+            transition: 'all 0.2s',
             '&:hover': {
               borderStyle: 'solid',
               borderColor: theme.palette.primary.main,
-              backgroundColor: alpha(theme.palette.primary.main, 0.04),
+              backgroundColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.12 : 0.04),
             },
-            transition: 'all 0.15s ease-in-out',
           }}
         >
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Iconify icon="eva:upload-outline" width={16} height={16} />
-            <Typography variant="body2" sx={{ fontSize: '0.8125rem', fontWeight: 500 }}>
+            <Iconify icon="eva:upload-outline" width={18} />
+            <Typography variant="body2" sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
               {field.placeholder || 'Click to upload file'}
             </Typography>
           </Box>
@@ -897,7 +1130,7 @@ export const FileFieldRenderer: React.FC<BaseFieldProps> = ({
       )}
       
       {error && (
-        <FormHelperText error sx={{ mt: 0.5, ml: 1, fontSize: '0.75rem' }}>
+        <FormHelperText error sx={{ mt: 0.75, ml: 1, fontSize: '0.75rem' }}>
           {error}
         </FormHelperText>
       )}
@@ -932,6 +1165,8 @@ export const FieldRenderer: React.FC<BaseFieldProps> = (props) => {
       return <NumberFieldRenderer {...props} />;
     case 'DATE':
       return <DateFieldRenderer {...props} />;
+    case 'DATETIME':
+      return <DateTimeFieldRenderer {...props} />;
     case 'DATERANGE':
       return <DateRangeFieldRenderer {...props} />;
     case 'BOOLEAN':

@@ -195,8 +195,14 @@ export const useConnectorConfig = ({
         },
         filters: {
           ...schemaResponse.filters,
-          values: configResponse.config.filters?.values || configResponse.config.filters || {},
-          customValues: configResponse.config.filters?.customValues || {},
+          sync: {
+            ...schemaResponse.filters?.sync,
+            values: configResponse.config.filters?.sync?.values || {},
+          },
+          indexing: {
+            ...schemaResponse.filters?.indexing,
+            values: configResponse.config.filters?.indexing?.values || {},
+          },
         },
       },
     }),
@@ -215,6 +221,50 @@ export const useConnectorConfig = ({
       });
     }
 
+    // Initialize filters
+    const filtersData: Record<string, any> = {};
+    const syncFilters = config.config.filters?.sync;
+    
+    if (syncFilters?.schema?.fields) {
+      syncFilters.schema.fields.forEach((field: any) => {
+        // Check the correct path: filters.sync.values (the actual saved filter values)
+        const existingValue = config.config.filters?.sync?.values?.[field.name];
+        
+        if (existingValue !== undefined && existingValue !== null) {
+          // If value exists, use it (could be { operator, value } or just value)
+          if (typeof existingValue === 'object' && !Array.isArray(existingValue) && existingValue.operator !== undefined) {
+            // Already in the correct format: { operator: '...', value: '...' }
+            // Handle relative date operators and empty operators that don't need values
+            const operator = existingValue.operator || field.defaultOperator || '';
+            const needsValue = !operator.startsWith('last_') && operator !== 'empty';
+            
+            filtersData[field.name] = {
+              operator,
+              value: needsValue 
+                ? (existingValue.value !== undefined 
+                    ? existingValue.value 
+                    : (field.defaultValue !== undefined 
+                        ? field.defaultValue 
+                        : (field.filterType === 'list' ? [] : '')))
+                : null,
+            };
+          } else {
+            // Value exists but not in the right format, wrap it
+            filtersData[field.name] = {
+              operator: field.defaultOperator || '',
+              value: existingValue,
+            };
+          }
+        } else {
+          // Initialize with default operator and value
+          filtersData[field.name] = {
+            operator: field.defaultOperator || '',
+            value: field.defaultValue !== undefined ? field.defaultValue : (field.filterType === 'list' ? [] : ''),
+          };
+        }
+      });
+    }
+
     return {
       auth: authData,
       sync: {
@@ -225,7 +275,7 @@ export const useConnectorConfig = ({
         scheduledConfig: config.config.sync?.scheduledConfig || {},
         ...(config.config.sync?.values || config.config.sync || {}),
       },
-      filters: config.config.filters?.values || config.config.filters || {},
+      filters: filtersData,
     };
   }, []);
 
@@ -753,47 +803,69 @@ export const useConnectorConfig = ({
     // Clear any previous save error when user tries again
     setSaveError(null);
 
+    const isNoAuthType = isNoneAuthType(connector.authType);
+    const hasFilters = (connectorConfig.config.filters?.sync?.schema?.fields?.length ?? 0) > 0;
+    
+    // Determine which step we're on
+    let currentSection = '';
+    let maxStep = 0;
+    
+    if (isNoAuthType) {
+      maxStep = hasFilters ? 1 : 0; // Filters (0) -> Sync (1) or just Sync (0)
+      if (hasFilters) {
+        currentSection = activeStep === 0 ? 'filters' : 'sync';
+      } else {
+        currentSection = 'sync';
+      }
+    } else {
+      maxStep = hasFilters ? 2 : 1; // Auth (0) -> Filters (1) -> Sync (2) or Auth (0) -> Sync (1)
+      if (hasFilters) {
+        currentSection = activeStep === 0 ? 'auth' : activeStep === 1 ? 'filters' : 'sync';
+      } else {
+        currentSection = activeStep === 0 ? 'auth' : 'sync';
+      }
+    }
+
     let errors: Record<string, string> = {};
 
     // Validate current step
-    switch (activeStep) {
-      case 0: // Auth
-        if (isCustomGoogleBusinessOAuth) {
-          if (!isBusinessGoogleOAuthValid()) {
-            errors = { adminEmail: adminEmailError || 'Invalid business credentials' };
-          }
-        } else if (isSharePointCertificateAuth) {
-          // Validate SharePoint certificate authentication
-          if (!isSharePointCertificateAuthValid()) {
-            setSaveError('Please complete all required SharePoint authentication fields and upload valid certificate and private key files.');
-            return;
-          }
-        } else {
-          errors = validateSection(
-            'auth',
-            connectorConfig.config.auth.schema.fields,
-            formData.auth
-          );
+    if (currentSection === 'auth') {
+      if (isCustomGoogleBusinessOAuth) {
+        if (!isBusinessGoogleOAuthValid()) {
+          errors = { adminEmail: adminEmailError || 'Invalid business credentials' };
         }
-        break;
-      case 1: // Sync
-        errors = validateSection('sync', connectorConfig.config.sync.customFields, formData.sync);
-        break;
-      default:
-        break;
+      } else if (isSharePointCertificateAuth) {
+        // Validate SharePoint certificate authentication
+        if (!isSharePointCertificateAuthValid()) {
+          setSaveError('Please complete all required SharePoint authentication fields and upload valid certificate and private key files.');
+          return;
+        }
+      } else {
+        errors = validateSection(
+          'auth',
+          connectorConfig.config.auth.schema.fields,
+          formData.auth
+        );
+      }
+    } else if (currentSection === 'filters') {
+      // Filters are optional, so no validation needed
+      errors = {};
+    } else if (currentSection === 'sync') {
+      errors = validateSection('sync', connectorConfig.config.sync.customFields, formData.sync);
     }
 
     setFormErrors((prev) => ({
       ...prev,
-      [activeStep === 0 ? 'auth' : 'sync']: errors,
+      [currentSection]: errors,
     }));
 
-    if (Object.keys(errors).length === 0 && activeStep < 1) {
+    if (Object.keys(errors).length === 0 && activeStep < maxStep) {
       setActiveStep((prev) => prev + 1);
     }
   }, [
     activeStep,
     connectorConfig,
+    connector,
     formData,
     validateSection,
     isCustomGoogleBusinessOAuth,
@@ -878,10 +950,36 @@ export const useConnectorConfig = ({
         delete syncToSave.scheduledConfig;
       }
 
+      // Prepare filters for API - convert to the format expected by backend
+      const filtersToSave: Record<string, any> = {};
+      if (connectorConfig.config.filters?.sync?.schema?.fields) {
+        connectorConfig.config.filters.sync.schema.fields.forEach((field: any) => {
+          const filterValue = formData.filters[field.name];
+          if (filterValue && filterValue.operator) {
+            // Only include filters that have an operator set
+            // For relative dates and empty, we might not have a value
+            if (filterValue.operator.startsWith('last_') || filterValue.operator === 'empty') {
+              filtersToSave[field.name] = { operator: filterValue.operator };
+            } else if (filterValue.value !== undefined && filterValue.value !== null && filterValue.value !== '') {
+              // Only include if value is not empty
+              if (Array.isArray(filterValue.value) && filterValue.value.length > 0) {
+                filtersToSave[field.name] = { operator: filterValue.operator, value: filterValue.value };
+              } else if (!Array.isArray(filterValue.value) && filterValue.value !== '') {
+                filtersToSave[field.name] = { operator: filterValue.operator, value: filterValue.value };
+              }
+            }
+          }
+        });
+      }
+
       const configToSave: any = {
         auth: formData.auth,
         sync: syncToSave,
-        filters: formData.filters || {},
+        filters: {
+          sync: {
+            values: filtersToSave,
+          },
+        },
       };
 
       // For business OAuth, merge JSON data and admin email into auth config
