@@ -803,7 +803,7 @@ async def run_kb_migration(container) -> Dict:
     """
     try:
         logger = container.logger()
-        kb_arango_service = await container.kb_arango_service()
+        kb_arango_service = await container.arango_service()
 
         migration_service = KnowledgeBaseMigrationService(kb_arango_service,logger)
         result = await migration_service.run_migration()

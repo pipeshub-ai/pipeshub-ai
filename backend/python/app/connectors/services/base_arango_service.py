@@ -152,13 +152,21 @@ class BaseArangoService:
         return [nfc.lower(), nfd.lower()]
 
     def __init__(
-        self, logger, arango_client: ArangoClient, config_service: ConfigurationService, kafka_service: Optional[KafkaService] = None,
+        self,
+        logger,
+        arango_client: ArangoClient,
+        config_service: ConfigurationService,
+        kafka_service: Optional[KafkaService] = None,
+        enable_schema_init: bool = False,
     ) -> None:
         self.logger = logger
         self.config_service = config_service
         self.client = arango_client
         self.kafka_service = kafka_service
         self.db = None
+        # Controls whether this instance is allowed to create/update Arango collections/graphs.
+        # Connector service should set this to True; other processes should pass False.
+        self.enable_schema_init = enable_schema_init
 
         self.connector_delete_permissions = {
             Connectors.GOOGLE_DRIVE.value: {
@@ -298,7 +306,7 @@ class BaseArangoService:
             raise
 
     async def connect(self) -> bool:
-        """Connect to ArangoDB and initialize collections"""
+        """Connect to ArangoDB. Schema initialization is controlled separately."""
         try:
             self.logger.info("🚀 Connecting to ArangoDB...")
             arangodb_config = await self.config_service.get_config(
@@ -345,30 +353,10 @@ class BaseArangoService:
             )
             self.logger.debug("Our DB: %s", self.db)
 
-            # Initialize collections with schema update handling
-            try:
-                # Initialize all collections (both nodes and edges)
-                await self._initialize_new_collections()
+            if self.enable_schema_init:
+                await self.initialize_schema()
 
-                # Initialize or update the file access graph
-                if not self.db.has_graph(LegacyGraphNames.FILE_ACCESS_GRAPH.value) and not self.db.has_graph(GraphNames.KNOWLEDGE_GRAPH.value):
-                    # No graph exists, create new graph (Knowledge Graph)
-                    await self._create_graph()
-                else:
-                    self.logger.info("Knowledge base graph already exists - skipping creation")
-
-                # Initialize departments
-                try:
-                    await self._initialize_departments()
-                except Exception as e:
-                    self.logger.error("❌ Error initializing departments: %s", str(e))
-                    raise
-
-                return True
-
-            except Exception as e:
-                self.logger.error("❌ Error initializing collections: %s", str(e))
-                raise
+            return True
 
         except Exception as e:
             self.logger.error("❌ Failed to connect to ArangoDB: %s", str(e))
@@ -408,6 +396,45 @@ class BaseArangoService:
                 new_departments
             )
             self.logger.info("✅ Departments initialized successfully")
+
+    async def initialize_schema(self) -> None:
+        """
+        Initialize ArangoDB schema (collections, graph, departments).
+        Should be called only from the connector service during startup.
+        """
+        if not self.enable_schema_init:
+            self.logger.info("📦 Schema initialization disabled for this service instance. Skipping.")
+            return
+
+        if not self.db:
+            raise RuntimeError("Cannot initialize schema: database connection is not established.")
+
+        try:
+            self.logger.info("🚀 Initializing ArangoDB schema (collections, graph, departments)...")
+
+            # Initialize all collections (both nodes and edges)
+            await self._initialize_new_collections()
+
+            # Initialize or update the knowledge graph
+            if not self.db.has_graph(LegacyGraphNames.FILE_ACCESS_GRAPH.value) and not self.db.has_graph(
+                GraphNames.KNOWLEDGE_GRAPH.value
+            ):
+                await self._create_graph()
+            else:
+                self.logger.info("Knowledge base graph already exists - skipping creation")
+
+            # Initialize departments
+            try:
+                await self._initialize_departments()
+            except Exception as e:
+                self.logger.error("❌ Error initializing departments: %s", str(e))
+                raise
+
+            self.logger.info("✅ ArangoDB schema initialization completed successfully")
+
+        except Exception as e:
+            self.logger.error("❌ Error during schema initialization: %s", str(e))
+            raise
 
     async def disconnect(self) -> bool | None:
         """Disconnect from ArangoDB"""
