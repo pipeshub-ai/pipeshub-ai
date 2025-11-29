@@ -3,7 +3,6 @@ from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
     DocumentationLink,
-    FilterField,
 )
 
 
@@ -45,9 +44,6 @@ from app.connectors.core.registry.connector_builder import (
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
-        .add_filter_field(CommonFields.file_types_filter(), "static")
-        .add_filter_field(CommonFields.folders_filter(),
-                          "https://www.googleapis.com/drive/v3/files?q=mimeType='application/vnd.google-apps.folder'&fields=files(id,name,parents)")
     )\
     .build_decorator()
 class GoogleDriveConnector:
@@ -96,11 +92,6 @@ class GoogleDriveConnector:
         .with_webhook_config(True, ["message.created", "message.modified", "message.deleted"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        .add_filter_field(FilterField(
-            name="labels",
-            display_name="Gmail Labels",
-            description="Select Gmail labels to sync messages from"
-        ), "https://gmail.googleapis.com/gmail/v1/users/me/labels")
     )\
     .build_decorator()
 class GmailConnector:
@@ -144,8 +135,6 @@ class GmailConnector:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        .add_filter_field(CommonFields.channels_filter(),
-                          "https://slack.com/api/conversations.list")
     )\
     .build_decorator()
 class SlackConnector:

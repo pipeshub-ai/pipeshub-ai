@@ -185,9 +185,6 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
-        .add_filter_field(CommonFields.file_types_filter(), "static")
-        .add_filter_field(CommonFields.folders_filter(),
-                          "https://api.dropboxapi.com/2/files/list_folder")
     )\
     .build_decorator()
 class DropboxConnector(BaseConnector):

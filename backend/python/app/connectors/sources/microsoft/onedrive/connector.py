@@ -29,7 +29,6 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
-    CommonFields,
     ConnectorBuilder,
     DocumentationLink,
 )
@@ -117,9 +116,6 @@ class OneDriveCredentials:
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        .add_filter_field(CommonFields.file_types_filter(), "static")
-        .add_filter_field(CommonFields.folders_filter(),
-                          "https://graph.microsoft.com/v1.0/me/drive/root/children")
     )\
     .build_decorator()
 class OneDriveConnector(BaseConnector):
