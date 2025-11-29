@@ -1305,7 +1305,7 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
         try:
             enc = tiktoken.get_encoding("cl200k_base")
         except Exception:
-            logger.warning("tiktoken encoding failed, falling back to heuristic.")  
+            logger.warning("tiktoken encoding failed, falling back to heuristic.")
             enc = None
     except Exception:
         enc = None

@@ -7,7 +7,6 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 import aiohttp
 from fastapi import HTTPException
 from langchain.chat_models.base import BaseChatModel
-from langchain.output_parsers import PydanticOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
@@ -1312,7 +1311,7 @@ async def call_aiter_llm_stream(
                 reflection_retry_count,
                 str(e)
             )
-            
+
             parse_error = str(e)
             # Create reflection message to guide the LLM
             reflection_message = HumanMessage(
@@ -1329,8 +1328,8 @@ async def call_aiter_llm_stream(
                 updated_messages.append(ai_message)
 
             updated_messages.append(reflection_message)
-            
-            
+
+
 
             # Recursively call the function with updated messages
             async for event in call_aiter_llm_stream(
