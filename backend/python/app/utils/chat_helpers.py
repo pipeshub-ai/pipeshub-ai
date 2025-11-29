@@ -524,7 +524,7 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
     try:
         page_num = metadata.get("pageNum")
         if page_num:
-            page_num = page_num[0]
+            page_num = page_num[0] if isinstance(page_num, list) else page_num
         else:
             page_num = None
         citation_metadata = {
