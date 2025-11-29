@@ -16,6 +16,7 @@ export interface LlmFormValues extends BaseFormValues {
   provider?: string;
   isMultimodal?: boolean;
   isReasoning?: boolean;
+  contextLength?: number;
   }
 
 export interface EmbeddingFormValues extends BaseFormValues {
@@ -27,6 +28,7 @@ export interface EmbeddingFormValues extends BaseFormValues {
   region?: string;
   provider?: string;
   isMultimodal?: boolean;
+  contextLength?: number;
 }
 
 export interface StorageFormValues extends BaseFormValues {
