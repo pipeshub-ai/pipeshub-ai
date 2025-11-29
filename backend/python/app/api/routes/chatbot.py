@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from dependency_injector.wiring import inject
@@ -26,6 +27,17 @@ from app.utils.query_transform import setup_followup_query_transformation
 from app.utils.streaming import create_sse_event, stream_llm_response_with_tools
 
 DEFAULT_CONTEXT_LENGTH = 128000
+
+# Conditionally import and initialize Langfuse only if required keys are present
+langfuse_handler = None
+if os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"):
+    try:
+        from langfuse.langchain import CallbackHandler
+        langfuse_handler = CallbackHandler()
+        print("Langfuse handler initialized")
+    except Exception as e:
+        print(f"Failed to initialize Langfuse handler: {e}")
+        langfuse_handler = None
 
 router = APIRouter()
 
@@ -345,10 +357,13 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
     """Handle tool calls for non-streaming responses with reflection for invalid tool calls"""
 
     llm_with_tools = llm.bind_tools(tools)
+    
+    # Prepare config with optional Langfuse callback
+    config = {"callbacks": [langfuse_handler]} if langfuse_handler else {}
 
     # Initial call with provider-level error handling
     try:
-        ai: AIMessage = await llm_with_tools.ainvoke(messages)
+        ai: AIMessage = await llm_with_tools.ainvoke(messages, config=config)
     except Exception as e:
         error_str = str(e).lower()
         # Check if this is a tool-related error from the provider

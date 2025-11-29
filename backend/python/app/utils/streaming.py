@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
@@ -25,15 +26,23 @@ from app.utils.citations import (
     normalize_citations_and_chunks_for_agent,
 )
 from app.utils.logger import create_logger
-
-MAX_TOKENS_THRESHOLD = 80000
-TOOL_EXECUTION_TOKEN_RATIO = 0.5
-
-# Create a logger for this module
 logger = create_logger("streaming")
 parser = PydanticOutputParser(pydantic_object=AnswerWithMetadataJSON)
 format_instructions = parser.get_format_instructions()
 
+# Conditionally import and initialize Langfuse only if required keys are present
+langfuse_handler = None
+if os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"):
+    try:
+        from langfuse.langchain import CallbackHandler
+        langfuse_handler = CallbackHandler()
+        logger.info("Langfuse handler initialized")
+    except Exception as e:
+        logger.info(f"Failed to initialize Langfuse handler: {e}")
+        langfuse_handler = None
+
+MAX_TOKENS_THRESHOLD = 80000
+TOOL_EXECUTION_TOKEN_RATIO = 0.5
 
 async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
     try:
@@ -115,8 +124,11 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
     if parts is None:
         parts = []
     try:
+        # Prepare config with optional Langfuse callback
+        config = {"callbacks": [langfuse_handler]} if langfuse_handler else {}
+        
         if hasattr(llm, "astream"):
-            async for part in llm.astream(messages):
+            async for part in llm.astream(messages, config=config):
                 if not part:
                     continue
                 parts.append(part)
@@ -126,7 +138,7 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
                     yield text
         else:
             # Non-streaming – yield whole blob once
-            response = await llm.ainvoke(messages)
+            response = await llm.ainvoke(messages, config=config)
             content = getattr(response, "content", response)
             parts.append(response)
 
