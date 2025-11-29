@@ -42,7 +42,6 @@ export const getIndexingStatusColor = (
   }
 };
 
-
 // Helper function to format file size
 export const formatFileSize = (bytes: number): string => {
   if (bytes === 0) return '0 Bytes';
@@ -278,5 +277,94 @@ export const addTextFragmentToUrl = (webUrl: string, textFragment: string): stri
     }
     // No hash exists, add #:~:text=
     return `${webUrl}#:~:text=${encodedFragment}`;
+  }
+};
+
+export const getExtensionFromMimeType = (mimeType: string): string => {
+  switch (mimeType) {
+    case 'application/pdf':
+      return 'pdf';
+    case 'application/msword':
+      return 'doc';
+    case 'application/vnd.ms-excel':
+      return 'xls';
+    case 'application/vnd.ms-powerpoint':
+      return 'ppt';
+    case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+      return 'docx';
+    case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+      return 'xlsx';
+    case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+      return 'pptx';
+    case 'application/vnd.google-apps.spreadsheet':
+      return 'xlsx';
+    case 'application/vnd.google-apps.document':
+      return 'docx';
+    case 'application/vnd.google-apps.presentation':
+      return 'pptx';
+    case 'text/plain':
+      return 'txt';
+    case 'text/html':
+      return 'html';
+    case 'text/markdown':
+      return 'md';
+    case 'text/mdx':
+      return 'mdx';
+    case 'text/csv':
+      return 'csv';
+    case 'text/tab-separated-values':
+      return 'tsv';
+    case 'application/json':
+      return 'json';
+    case 'application/xml':
+      return 'xml';
+    case 'application/zip':
+      return 'zip';
+    case 'application/x-rar-compressed':
+      return 'rar';
+    case 'application/x-7z-compressed':
+      return '7z';
+    case 'application/x-tar':
+      return 'tar';
+    case 'application/x-sh':
+      return 'sh';
+    case 'application/x-msdownload':
+      return 'exe';
+    case 'application/x-python-code':
+      return 'py';
+    case 'application/x-java-archive':
+      return 'jar';
+    case 'application/x-genesis-32x-rom':
+      return 'genesis';
+    case 'application/x-icns':
+      return 'icns';
+    case 'image/svg+xml':
+      return 'svg';
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/png':
+      return 'png';
+    case 'image/gif':
+      return 'gif';
+    case 'image/bmp':
+      return 'bmp';
+    case 'image/tiff':
+      return 'tiff';
+    case 'image/ico':
+      return 'ico';
+    case 'image/webp':
+      return 'webp';
+    case 'image/heic':
+      return 'heic';
+    case 'image/heif':
+      return 'heif';
+    case 'image/avif':
+      return 'avif';
+    case 'image/jxr':
+      return 'jxr';
+    case 'image/icns':
+      return 'icns';
+    default:
+      return '';
   }
 };

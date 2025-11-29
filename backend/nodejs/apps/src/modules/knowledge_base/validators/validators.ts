@@ -4,6 +4,7 @@ import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';
 
 export const getRecordByIdSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
+  query: z.object({ convertTo: z.string().optional() }),
 });
 
 export const updateRecordSchema = z.object({
