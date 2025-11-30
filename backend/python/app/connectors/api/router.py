@@ -25,6 +25,7 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
@@ -78,6 +79,60 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 logger = create_logger("connector_service")
 
 router = APIRouter()
+
+
+async def _stream_google_api_request(request, error_context: str = "download") -> AsyncGenerator[bytes, None]:
+    """
+    Helper function to stream data from a Google API request using MediaIoBaseDownload.
+
+    Args:
+        request: Google API request object (from files().get_media() or files().export_media())
+        error_context: Context string for error messages (e.g., "PDF export", "file export")
+    Yields:
+        bytes: Chunks of data from the download
+    """
+    buffer = io.BytesIO()
+    try:
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+
+        while not done:
+            try:
+                _, done = downloader.next_chunk()
+
+                buffer.seek(0)
+                chunk = buffer.read()
+
+                if chunk:  # Only yield if we have data
+                    yield chunk
+
+                # Clear buffer for next chunk
+                buffer.seek(0)
+                buffer.truncate(0)
+
+                # Yield control back to event loop
+                await asyncio.sleep(0)
+
+            except HttpError as http_error:
+                logger.error(f"HTTP error during {error_context}: {str(http_error)}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail=f"Error during {error_context}: {str(http_error)}",
+                )
+            except Exception as chunk_error:
+                logger.error(f"Error during {error_context} chunk: {str(chunk_error)}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail=f"Error during {error_context}",
+                )
+    except Exception as stream_error:
+        logger.error(f"Error in {error_context} stream: {str(stream_error)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error setting up {error_context} stream",
+        )
+    finally:
+        buffer.close()
 
 
 class ReindexFailedRequest(BaseModel):
@@ -811,7 +866,7 @@ async def download_file(
 async def stream_record(
     request: Request,
     record_id: str,
-    convertTo: Optional[str] = None,
+    convertTo: str = Query(None, description="Convert file to this format"),
     arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
     google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
@@ -822,6 +877,7 @@ async def stream_record(
     try:
         try:
             logger.info(f"Stream Record Start: {time.time()}")
+            logger.info(f"Convert To: {convertTo}")
             auth_header = request.headers.get("Authorization")
             if not auth_header or not auth_header.startswith("Bearer "):
                 raise HTTPException(
@@ -887,26 +943,89 @@ async def stream_record(
 
                 mime_type = file.get("mimeType", "application/octet-stream")
 
-                # Check if PDF conversion is requested
+                # Handle Google Workspace files (they need to be exported, not downloaded)
+                # Map Google Workspace mime types to export formats
+                google_workspace_export_formats = {
+                    "application/vnd.google-apps.spreadsheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # Excel format
+                    "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # Word format
+                    "application/vnd.google-apps.presentation": "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # PowerPoint format
+                }
+
+                # Check if PDF conversion is requested for Google Workspace files
+                if convertTo == MimeTypes.PDF.value and mime_type in google_workspace_export_formats:
+                    logger.info(f"Exporting Google Workspace file ({mime_type}) directly to PDF")
+
+                    request = drive_service.files().export_media(fileId=file_id, mimeType="application/pdf")
+                    return StreamingResponse(
+                        _stream_google_api_request(request, error_context="PDF export"),
+                        media_type="application/pdf",
+                        headers={
+                            "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
+                        },
+                    )
+
+                # Regular export for Google Workspace files (not PDF conversion)
+                if mime_type in google_workspace_export_formats:
+                    export_mime_type = google_workspace_export_formats[mime_type]
+                    logger.info(f"Exporting Google Workspace file ({mime_type}) to {export_mime_type}")
+
+                    # Export and stream the file
+                    request = drive_service.files().export_media(fileId=file_id, mimeType=export_mime_type)
+
+                    # Determine the appropriate file extension and media type for the response
+                    export_media_types = {
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"),
+                        "application/vnd.openxmlformats-officedocument.presentationml.presentation": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"),
+                    }
+
+                    response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
+                    file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
+
+                    headers = {"Content-Disposition": f'attachment; filename="{file_name_with_ext}"'}
+                    return StreamingResponse(
+                        _stream_google_api_request(request, error_context="Google Workspace file export"),
+                        media_type=response_media_type,
+                        headers=headers
+                    )
+
+                # Check if PDF conversion is requested (for regular files only, Google Workspace handled above)
                 if convertTo == MimeTypes.PDF.value:
+                    logger.info(f"Converting file to PDF: {file_name}")
+                    # For regular files, download and convert to PDF
                     with tempfile.TemporaryDirectory() as temp_dir:
                         temp_file_path = os.path.join(temp_dir, file_name)
 
                         # Download file to temp directory
-                        with open(temp_file_path, "wb") as f:
-                            request = drive_service.files().get_media(fileId=file_id)
-                            downloader = MediaIoBaseDownload(f, request)
+                        try:
+                            with open(temp_file_path, "wb") as f:
+                                request = drive_service.files().get_media(fileId=file_id)
+                                downloader = MediaIoBaseDownload(f, request)
 
-                            done = False
-                            while not done:
-                                status, done = downloader.next_chunk()
-                                logger.info(
-                                    f"Download {int(status.progress() * 100)}%."
-                                )
+                                done = False
+                                while not done:
+                                    status, done = downloader.next_chunk()
+                                    logger.info(
+                                        f"Download {int(status.progress() * 100)}%."
+                                    )
+                        except HttpError as http_error:
+                            # Check if this is a Google Workspace file that can't be downloaded directly
+                            if http_error.resp.status == HttpStatusCode.FORBIDDEN.value:
+                                error_details = http_error.error_details if hasattr(http_error, 'error_details') else []
+                                for detail in error_details:
+                                    if detail.get('reason') == 'fileNotDownloadable':
+                                        logger.error(
+                                            f"Google Workspace file cannot be downloaded for PDF conversion: {str(http_error)}"
+                                        )
+                                        raise HTTPException(
+                                            status_code=HttpStatusCode.BAD_REQUEST.value,
+                                            detail="Google Workspace files (Sheets, Docs, Slides) cannot be converted to PDF using direct download. Please use the file's native export functionality.",
+                                        )
+                            raise
 
                         # Convert to PDF
                         pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
-
+                        logger.info(f"PDF file converted: {pdf_path}")
                         # Create async generator to properly handle file cleanup
                         async def file_iterator() -> AsyncGenerator[bytes, None]:
                             try:
@@ -965,7 +1084,27 @@ async def stream_record(
                                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                                     detail="Error during file streaming",
                                 )
+                        logger.info(f"File streamed: {chunk_count} chunks, {total_bytes} bytes")
 
+                    except HttpError as http_error:
+                        logger.debug(f"HTTP error in file stream: {str(http_error)}")
+                        # Check if this is a Google Workspace file that can't be downloaded directly
+                        if http_error.resp.status == HttpStatusCode.FORBIDDEN.value:
+                            error_details = http_error.error_details if hasattr(http_error, 'error_details') else []
+                            for detail in error_details:
+                                if detail.get('reason') == 'fileNotDownloadable':
+                                    logger.error(
+                                        f"Google Workspace file cannot be downloaded directly: {str(http_error)}"
+                                    )
+                                    raise HTTPException(
+                                        status_code=HttpStatusCode.BAD_REQUEST.value,
+                                        detail="Google Workspace files (Sheets, Docs, Slides) must be processed using their specific parsers. This file type is not supported for direct download.",
+                                    )
+                        logger.error(f"HTTP error in file stream: {str(http_error)}")
+                        raise HTTPException(
+                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                            detail=f"Error setting up file stream: {str(http_error)}",
+                        )
                     except Exception as stream_error:
                         logger.error(f"Error in file stream: {str(stream_error)}")
                         raise HTTPException(

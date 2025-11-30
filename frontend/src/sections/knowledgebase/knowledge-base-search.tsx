@@ -410,7 +410,7 @@ export default function KnowledgeBaseSearch() {
           let params = {};
           if (['pptx', 'ppt'].includes(record?.extension)) {
             params = {
-              convertTo: 'pdf',
+              convertTo: 'application/pdf',
             };
             handleLargePPTFile(record);
           }

@@ -1602,7 +1602,7 @@ const AgentChat = () => {
           let params = {};
           if (['pptx', 'ppt'].includes(citationMeta?.extension)) {
             params = {
-              convertTo: 'pdf',
+              convertTo: 'application/pdf',
             };
             handleLargePPTFile(record);
           }
