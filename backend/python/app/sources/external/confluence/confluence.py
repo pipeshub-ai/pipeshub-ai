@@ -2195,7 +2195,7 @@ class ConfluenceDataSource:
     async def get_page_permissions_v1(
         self,
         page_id: str,
-        expand: str = "restrictions.user,restrictions.group",
+        expand: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Fetch page permissions using v1 content API.
@@ -2211,12 +2211,15 @@ class ConfluenceDataSource:
             raise ValueError("HTTP client is not initialized")
         _headers: Dict[str, Any] = dict(headers or {})
 
-        _query: Dict[str, Any] = {"expand": expand}
+        if expand:
+            _query: Dict[str, Any] = {"expand": expand}
+        else:
+            _query: Dict[str, Any] = {}
         _path: Dict[str, Any] = {"id": page_id}
 
         # v1 API uses /wiki/rest/api instead of /wiki/api/v2
         v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        rel_path = "/rest/api/content/{id}/restriction/byOperation"
+        rel_path = "/rest/api/content/{id}/restriction"
         url = v1_base_url + _safe_format_url(rel_path, _path)
 
         req = HTTPRequest(
@@ -7641,6 +7644,195 @@ class ConfluenceDataSource:
         )
         resp = await self._client.execute(req)
         return resp
+
+    async def get_audit_logs(
+        self,
+        start_date: Optional[int] = None,
+        end_date: Optional[int] = None,
+        start: int = 0,
+        limit: int = 1000,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """Fetch audit logs from Confluence with date range filtering.
+
+        Uses the Confluence REST API audit endpoint to retrieve audit records.
+        This is useful for tracking permission changes that don't update
+        the page's lastModified timestamp.
+
+        HTTP GET /wiki/rest/api/audit
+
+        Args:
+            start_date: Start of date range in milliseconds (Unix epoch * 1000)
+            end_date: End of date range in milliseconds (Unix epoch * 1000)
+            start: Pagination offset (default: 0)
+            limit: Number of results per page (default: 1000, max: 1000)
+            headers: Additional headers
+
+        Returns:
+            HTTPResponse with audit log records in format:
+            {
+                "results": [
+                    {
+                        "author": {"displayName": "...", "accountId": "..."},
+                        "creationDate": 1764074955065,
+                        "summary": "Content restriction added",
+                        "category": "Permissions",
+                        "affectedObject": {"name": "...", "objectType": "User|Group"},
+                        "changedValues": [...],
+                        "associatedObjects": [
+                            {"name": "Page Title", "objectType": "Page|Blog"},
+                            {"name": "Space Name", "objectType": "Space"}
+                        ]
+                    }
+                ],
+                "start": 0,
+                "limit": 1000,
+                "size": 100,
+                "_links": {...}
+            }
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {
+            'start': start,
+            'limit': limit,
+        }
+
+        if start_date is not None:
+            _query['startDate'] = start_date
+        if end_date is not None:
+            _query['endDate'] = end_date
+
+        # Use REST API base URL (not v2)
+        rest_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
+        url = f"{rest_base_url}/audit"
+
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def search_content_by_titles(
+        self,
+        titles: list[str],
+        content_type: Optional[str] = None,
+        expand: str = "version,space,history.lastUpdated,ancestors",
+        limit: int = 200,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """Search for content (pages/blogs) by their titles using CQL.
+
+        Uses the Confluence REST API content search endpoint with CQL query
+        to find pages and blogposts by their titles.
+
+        HTTP GET /wiki/rest/api/content/search
+
+        Args:
+            titles: List of content titles to search for
+            content_type: Filter by type - "page", "blogpost", or None for both
+            expand: Comma-separated properties to expand
+            limit: Max results to return (default: 200)
+            headers: Additional headers
+
+        Returns:
+            HTTPResponse with matching content items
+
+        Example:
+            # Search for specific pages
+            response = await datasource.search_content_by_titles(
+                titles=["My Page", "Another Page"],
+                content_type="page"
+            )
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+
+        if not titles:
+            raise ValueError('At least one title is required')
+
+        _headers: Dict[str, Any] = dict(headers or {})
+
+        # Build CQL query: title IN ("Title1", "Title2", ...)
+        # Escape quotes in titles
+        escaped_titles = [title.replace('"', '\\"') for title in titles]
+        titles_str = ', '.join(f'"{title}"' for title in escaped_titles)
+        cql = f'title IN ({titles_str})'
+
+        # Add content type filter if specified
+        if content_type:
+            cql = f'{cql} AND type="{content_type}"'
+
+        _query: Dict[str, Any] = {
+            'cql': cql,
+            'limit': limit,
+        }
+
+        if expand:
+            _query['expand'] = expand
+
+        # Use REST API v1 for content search
+        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
+        url = f"{v1_base_url}/rest/api/content/search"
+
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    @staticmethod
+    def iso_to_millis(iso_date: str) -> int:
+        """Convert ISO 8601 datetime string to milliseconds timestamp.
+
+        Handles various ISO formats including:
+        - 2025-11-13T07:51:50.526Z
+        - 2025-11-13T07:51:50Z
+        - 2025-11-13T07:51:50+00:00
+
+        Args:
+            iso_date: ISO 8601 formatted datetime string
+
+        Returns:
+            Unix timestamp in milliseconds
+
+        Example:
+            millis = ConfluenceDataSource.iso_to_millis("2025-11-13T07:51:50.526Z")
+            # Returns: 1731484310526
+        """
+        # Replace 'Z' with '+00:00' for proper ISO format parsing
+        normalized = iso_date.replace('Z', '+00:00')
+        dt = datetime.fromisoformat(normalized)
+        return int(dt.timestamp() * 1000)
+
+    @staticmethod
+    def millis_to_iso(millis: int) -> str:
+        """Convert milliseconds timestamp to ISO 8601 datetime string.
+
+        Args:
+            millis: Unix timestamp in milliseconds
+
+        Returns:
+            ISO 8601 formatted datetime string with Z suffix
+
+        Example:
+            iso = ConfluenceDataSource.millis_to_iso(1731484310526)
+            # Returns: "2025-11-13T07:51:50.526Z"
+        """
+        dt = datetime.fromtimestamp(millis / 1000, tz=pytz.UTC)
+        return dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
 # ---- Helpers used by generated methods ----
 def _safe_format_url(template: str, params: Dict[str, object]) -> str:
