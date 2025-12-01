@@ -367,14 +367,22 @@ class LocalStorageAdapter implements StorageServiceInterface {
     // Build the full local filesystem path
     const fullPath = path.join(this.mountPath, filePath);
 
-    // Handle Windows paths specially
+    // Convert backslashes to forward slashes for URL format
+    const urlPath = fullPath.replace(/\\/g, '/');
+
+    // Encode each path component to handle #, ?, %, spaces, etc.
+    const encodedPath = urlPath
+      .split('/')
+      .map((component) => encodeURIComponent(component))
+      .join('/');
+
     if (process.platform === 'win32') {
-      // Windows paths need an extra / after file:// and forward slashes
-      return `file:///${fullPath.replace(/\\/g, '/')}`;
+      // Windows paths: file:///C:/encoded/path
+      return `file:///${encodedPath}`;
     }
 
-    // Unix-like systems (macOS, Linux)
-    return `file://${fullPath}`;
+    // Unix-like systems: file:///encoded/path
+    return `file://${encodedPath}`;
   }
 
   private getLocalPathFromUrl(url?: string): string | null {
