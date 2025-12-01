@@ -63,8 +63,14 @@ class ContainerUtils:
         config_service: ConfigurationService,
         kafka_service,
     ) -> BaseArangoService:
-        """Async factory to create and connect BaseArangoService"""
-        service = BaseArangoService(logger, arango_client, config_service, kafka_service)
+        """Async factory to create and connect BaseArangoService (without schema init)"""
+        service = BaseArangoService(
+            logger,
+            arango_client,
+            config_service,
+            kafka_service,
+            enable_schema_init=False,
+        )
         await service.connect()
         return service
 
@@ -204,18 +210,6 @@ class ContainerUtils:
             delay_hours=1
         )
         return redis_scheduler
-
-    async def create_retrieval_arango_service(
-        self,
-        logger: Logger,
-        arango_client: ArangoClient,
-        config_service: ConfigurationService,
-        kafka_service,
-    ) -> BaseArangoService:
-        """Async factory to create and connect BaseArangoService"""
-        service = BaseArangoService(logger, arango_client, config_service, kafka_service)
-        await service.connect()
-        return service
 
     async def create_retrieval_service(
         self,
