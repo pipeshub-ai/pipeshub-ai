@@ -12,6 +12,7 @@ import { Document, StorageVendor } from '../types/storage.service.types';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ErrorMetadata } from '../../../libs/errors/base.error';
 import { createReadStream } from 'fs';
+import fs from 'fs';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
 import {
   AuthenticatedServiceRequest,
@@ -317,7 +318,6 @@ export function serveFileFromLocalStorage(document: Document, res: Response) {
 
     // Check if file exists using synchronous access
     try {
-      const fs = require('fs');
       fs.accessSync(filePath, fs.constants.R_OK);
     } catch (err) {
       logger.error('File not accessible:', {

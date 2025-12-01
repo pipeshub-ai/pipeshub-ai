@@ -371,9 +371,14 @@ class LocalStorageAdapter implements StorageServiceInterface {
     const urlPath = fullPath.replace(/\\/g, '/');
 
     // Encode each path component to handle #, ?, %, spaces, etc.
+    // On Windows, don't encode the drive letter (first component)
     const encodedPath = urlPath
       .split('/')
-      .map((component) => encodeURIComponent(component))
+      .map((component, index) =>
+        process.platform === 'win32' && index === 0
+          ? component
+          : encodeURIComponent(component),
+      )
       .join('/');
 
     if (process.platform === 'win32') {
