@@ -150,8 +150,6 @@ async def search(
                 "total_accessible": len(accessible_kbs)
             }
 
-        logger.info(f"Results: {results}")
-
         return JSONResponse(status_code=custom_status_code, content=results)
 
     except Exception as e:

@@ -2477,6 +2477,7 @@ export const addAIModelProvider =
         isMultimodal = false,
         isDefault = false,
         isReasoning = false,
+        contextLength,
       } = req.body;
 
       // Validate required fields
@@ -2512,6 +2513,7 @@ export const addAIModelProvider =
         isMultimodal,
         isDefault,
         isReasoning,
+        contextLength,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -2592,6 +2594,7 @@ export const addAIModelProvider =
         isMultimodal,
         isDefault,
         isReasoning,
+        contextLength,
       };
 
       // If this is set as default, remove default flag from other models
@@ -2633,6 +2636,7 @@ export const addAIModelProvider =
           provider,
           model: configuration.model,
           isDefault,
+          contextLength,
         },
       });
     } catch (error: any) {
@@ -2657,6 +2661,7 @@ export const updateAIModelProvider =
         isMultimodal = false,
         isReasoning = false,
         isDefault = false,
+        contextLength,
       } = req.body;
 
       logger.debug('updateAIModelProvider', {
@@ -2667,6 +2672,7 @@ export const updateAIModelProvider =
         isMultimodal,
         isReasoning,
         isDefault,
+        contextLength,
       });
 
       // Validate required fields
@@ -2685,6 +2691,7 @@ export const updateAIModelProvider =
         isMultimodal,
         isReasoning,
         isDefault,
+        contextLength,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -2774,6 +2781,7 @@ export const updateAIModelProvider =
       targetModel.isMultimodal = isMultimodal;
       targetModel.isDefault = isDefault;
       targetModel.isReasoning = isReasoning;
+      targetModel.contextLength = contextLength || null;
       // If this is set as default, remove default flag from other models of the same type
       if (isDefault) {
         for (const config of aiModels[targetModelType]) {
@@ -2810,6 +2818,9 @@ export const updateAIModelProvider =
           modelType: targetModelType,
           provider: targetModel.provider,
           model: targetModel.configuration?.model,
+          contextLength: targetModel.contextLength,
+          isMultimodal: targetModel.isMultimodal,
+          isReasoning: targetModel.isReasoning,
         },
       });
     } catch (error: any) {
@@ -2929,6 +2940,7 @@ export const deleteAIModelProvider =
           provider: deletedModel.provider,
           model: deletedModel.configuration?.model,
           wasDefault,
+          contextLength: deletedModel.contextLength,
         },
       });
     } catch (error: any) {
@@ -3035,6 +3047,7 @@ export const updateDefaultAIModel =
           modelType: targetModelType,
           provider: targetModel.provider,
           model: targetModel.configuration?.model,
+          contextLength: targetModel.contextLength,
         },
       });
     } catch (error: any) {

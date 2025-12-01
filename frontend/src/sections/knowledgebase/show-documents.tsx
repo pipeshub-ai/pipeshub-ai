@@ -47,6 +47,9 @@ import TextViewer from '../qna/chatbot/components/text-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { KnowledgeBaseAPI } from './services/api';
 import ImageHighlighter from '../qna/chatbot/components/image-highlighter';
+import { getExtensionFromMimeType } from './utils/utils';
+
+const MAX_FILE_SIZE_MB = 10; // 10MB
 
 // Simplified state management for viewport mode
 interface DocumentViewerState {
@@ -152,7 +155,7 @@ function getDocumentType(extension: string, recordType?: string) {
   if (extension === 'txt') return 'text';
   if (extension === 'md') return 'md';
   if (extension === 'mdx') return 'mdx';
-  if (['ppt', 'pptx'].includes(extension)) return 'ppt';
+  if (['ppt', 'pptx'].includes(extension)) return 'pdf'; // have to convert to pdf
   if (['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(extension)) return 'image';
   return 'other';
 }
@@ -483,11 +486,13 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     mailRecord,
     origin,
     recordType,
+    mimeType,
   } = record;
 
   // Get the appropriate record data and extension
-  const currentRecord = fileRecord || mailRecord;
-  const extension = fileRecord?.extension || 'eml'; // Use 'eml' for email records
+  const extension = fileRecord?.extension
+    ? fileRecord.extension
+    : getExtensionFromMimeType(mimeType || '');
   const recordTypeForDisplay = recordType || 'FILE';
 
   const handleDownload = async () => {
@@ -586,8 +591,8 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
 
           // Handle PowerPoint files
           if (record?.fileRecord && ['pptx', 'ppt'].includes(record?.fileRecord?.extension)) {
-            params = { convertTo: 'pdf' };
-            if (record.fileRecord.sizeInBytes / 1048576 > 5) {
+            params = { convertTo: 'application/pdf' };
+            if (record.fileRecord.sizeInBytes / 1048576 > MAX_FILE_SIZE_MB) {
               throw new Error('Large file size, redirecting to web page');
             }
           }
@@ -653,7 +658,9 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
         }, 800);
 
         // Support mail records in addition to existing types
-        if (!['pdf', 'excel', 'docx', 'html', 'text', 'md', 'mdx', 'image'].includes(documentType)) {
+        if (
+          !['pdf', 'excel', 'docx', 'html', 'text', 'md', 'mdx', 'image'].includes(documentType)
+        ) {
           setSnackbar({
             open: true,
             message: `Unsupported document type: ${extension}`,
@@ -842,25 +849,27 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
           </Tooltip>
 
           {/* View Document Button */}
-          <Tooltip
-            title={recordTypeForDisplay === 'MAIL' ? 'Preview email' : 'Preview document'}
-            arrow
-            placement="top"
-          >
-            <IconButton
-              onClick={viewDocument}
-              sx={{
-                color: 'primary.main',
-                '&:hover': {
-                  backgroundColor: 'primary.light',
-                  color: 'white',
-                },
-              }}
-              disabled={viewerState.phase === 'loading'}
+          {extension && (
+            <Tooltip
+              title={recordTypeForDisplay === 'MAIL' ? 'Preview email' : 'Preview document'}
+              arrow
+              placement="top"
             >
-              <Icon icon={eyeIcon} width={24} />
-            </IconButton>
-          </Tooltip>
+              <IconButton
+                onClick={viewDocument}
+                sx={{
+                  color: 'primary.main',
+                  '&:hover': {
+                    backgroundColor: 'primary.light',
+                    color: 'white',
+                  },
+                }}
+                disabled={viewerState.phase === 'loading'}
+              >
+                <Icon icon={eyeIcon} width={24} />
+              </IconButton>
+            </Tooltip>
+          )}
         </Stack>
       </Box>
 

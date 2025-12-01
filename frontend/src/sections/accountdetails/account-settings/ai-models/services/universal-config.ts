@@ -18,6 +18,7 @@ export const modelService = {
           isDefault: model.isDefault || false,
           isMultimodal: model.isMultimodal || false,
           isReasoning: model.isReasoning || false,
+          contextLength: model.contextLength,
         }));
       }
       return [];
@@ -37,6 +38,7 @@ export const modelService = {
         isMultimodal: modelData.isMultimodal || false,
         isReasoning: modelData.isReasoning || false,
         isDefault: modelData.isDefault || false,
+        contextLength: modelData.contextLength,
       };
 
       const response = await axios.post(
@@ -65,6 +67,7 @@ export const modelService = {
         isMultimodal: modelData.isMultimodal || false,
         isDefault: modelData.isDefault || false,
         isReasoning: modelData.isReasoning || false,
+        contextLength: modelData.contextLength,
       };
 
       const response = await axios.put(
@@ -129,6 +132,7 @@ export const modelService = {
         modelType: activeModel.provider,
         isMultimodal: activeModel.isMultimodal,
         isReasoning: activeModel.isReasoning,
+        contextLength: activeModel.contextLength,
       };
     }
     return null;
@@ -169,6 +173,7 @@ export const modelService = {
         isDefault: true,
         isMultimodal: Boolean(isMultimodal),
         isReasoning: Boolean(isReasoning),
+        contextLength: cleanConfig.contextLength,
       });
     }
     return this.addModel('llm', {
@@ -177,6 +182,7 @@ export const modelService = {
       isDefault: true,
       isMultimodal: Boolean(isMultimodal),
       isReasoning: Boolean(isReasoning),
+      contextLength: cleanConfig.contextLength,
     });
   },
 
