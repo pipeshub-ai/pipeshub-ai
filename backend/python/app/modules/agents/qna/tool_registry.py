@@ -181,8 +181,8 @@ class RegistryToolWrapper(BaseTool):
         self,
         tool_function: Callable,
         arguments: Dict[str, Union[str, int, bool, dict, list, None]]
-    ) -> ToolResult:
-        """Execute a class method tool.
+        ) -> ToolResult:
+        """Execute a class method tool with instance caching.
 
         Args:
             tool_function: Tool function object
@@ -190,7 +190,6 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Tool execution result
-
         Raises:
             RuntimeError: If instance creation fails
         """
@@ -201,13 +200,65 @@ class RegistryToolWrapper(BaseTool):
             action_module = __import__(module_name, fromlist=[class_name])
             action_class = getattr(action_module, class_name)
 
-            instance = self._create_tool_instance_with_factory(action_class)
+            # PERFORMANCE: Use cached instance instead of creating new one every time
+            cache_key = f"{module_name}.{class_name}_{self.app_name}"
+            instance = self._get_or_create_tool_instance(action_class, cache_key)
+
             bound_method = getattr(instance, self.tool_name)
             return bound_method(**arguments)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to create instance for tool '{self.app_name}.{self.tool_name}': {str(e)}"
             ) from e
+
+    def _get_or_create_tool_instance(
+        self,
+        action_class: type,
+        cache_key: str
+    ) -> object:
+        """Get cached tool instance or create new one.
+
+        This significantly improves performance by avoiding:
+        - Module re-imports
+        - Class re-instantiation
+        - Client re-creation
+        - Background thread/event loop recreation
+
+        Args:
+            action_class: Action class to instantiate
+            cache_key: Unique key for caching
+
+        Returns:
+            Cached or new tool instance
+        """
+        # Initialize cache in state if not exists
+        if not hasattr(self.state, 'get') or not callable(self.state.get):
+            # State is not dict-like, can't cache
+            return self._create_tool_instance_with_factory(action_class)
+
+        instance_cache = self.state.setdefault("_tool_instance_cache", {})
+
+        # Return cached instance if available
+        if cache_key in instance_cache:
+            logger = self.state.get("logger")
+            if logger:
+                logger.debug(f"⚡ Using cached instance for {self.app_name}.{self.tool_name}")
+            return instance_cache[cache_key]
+
+        # Create new instance
+        logger = self.state.get("logger")
+        if logger:
+            logger.debug(f"🔨 Creating new instance for {self.app_name}.{self.tool_name}")
+
+        instance = self._create_tool_instance_with_factory(action_class)
+
+        # Cache it for future use
+        instance_cache[cache_key] = instance
+
+        if logger:
+            logger.info(f"✅ Cached instance for {self.app_name}.{self.tool_name} (total cached: {len(instance_cache)})")
+
+        return instance
 
     def _create_tool_instance_with_factory(self, action_class: type) -> object:
         """Use factory pattern for client creation.
@@ -364,15 +415,15 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     # If cache exists and blocked tools haven't changed, return cached tools
     if cached_tools is not None and blocked_tools == cached_blocked_tools:
         if logger:
-            logger.debug(f"⚡ Using cached tools ({len(cached_tools)} tools) - significant performance boost")
+            logger.debug(f"⚡ Using cached tools ({len(cached_tools)} tools) - skipping {len(_global_tools_registry.get_all_tools())} tool loads")
         return cached_tools
 
     # Cache miss or blocked tools changed - rebuild tool list
     if logger:
         if cached_tools is not None:
-            logger.info("🔄 Blocked tools changed - rebuilding tool cache")
+            logger.warning("🔄 Blocked tools changed - rebuilding tool cache")
         else:
-            logger.info("📦 First tool load - building cache")
+            logger.warning("📦 CACHE MISS - First tool load - building cache (this should only happen once per query!)")
 
     tools: List[RegistryToolWrapper] = []
     registry_tools = _global_tools_registry.get_all_tools()
@@ -412,8 +463,7 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
                     state
                 )
                 tools.append(wrapper_tool)
-                if logger:
-                    logger.debug(f"✅ Added tool: {full_tool_name}")
+                # Removed excessive debug logging - was cluttering logs
 
         except Exception as e:
             if logger:

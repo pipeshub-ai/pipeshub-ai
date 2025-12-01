@@ -986,7 +986,7 @@ def build_agent_prompt(state, max_iterations=30) -> str:
 
 def create_agent_messages(state) -> List[Any]:
     """
-    Create messages for the agent with enhanced context
+    Create messages for the agent with enhanced context and conversation memory
     """
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -996,56 +996,19 @@ def create_agent_messages(state) -> List[Any]:
     system_prompt = build_agent_prompt(state)
     messages.append(SystemMessage(content=system_prompt))
 
-    # 2. Conversation history (last N turns) with key information extraction
+    # 2. Conversation history (last N turns) - CRITICAL FOR MEMORY
     previous_conversations = state.get("previous_conversations", [])
     max_history = 5
 
     recent_convs = previous_conversations[-max_history:] if len(previous_conversations) > max_history else previous_conversations
 
-    # **CRITICAL**: Extract and remember key information from conversation history
-    # Generic extraction - works for ANY tool/service, not hardcoded
-    extracted_context = []
-    import re
+    # ⚡ TRILLION-DOLLAR FIX: Proper conversation memory extraction
+    from app.modules.agents.qna.conversation_memory import ConversationMemory
 
-    for conv in recent_convs:
-        content = str(conv.get("content", ""))
+    memory = ConversationMemory.extract_tool_context_from_history(previous_conversations)
+    state["conversation_memory"] = memory  # Store for later use
 
-        # Extract any UUID/ID patterns (UUIDs, hex IDs, alphanumeric IDs)
-        # Matches: 32-char hex, UUIDs with dashes, long alphanumeric IDs
-        id_patterns = re.findall(r'\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b', content, re.IGNORECASE)  # UUID
-        if not id_patterns:
-            id_patterns = re.findall(r'\b[a-f0-9]{20,}\b', content)  # Long hex IDs
-        if not id_patterns:
-            id_patterns = re.findall(r'\b[A-Z0-9]{10,}\b', content)  # Alphanumeric IDs
-
-        if id_patterns:
-            extracted_context.append(f"ID/Key mentioned: {id_patterns[0][:20]}...")  # Generic ID reference
-
-        # Extract ISO timestamps (YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, etc.)
-        timestamp_patterns = re.findall(r'\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?', content)
-        if timestamp_patterns:
-            extracted_context.append(f"Timestamp: {timestamp_patterns[0]}")
-
-        # Extract email addresses (generic pattern)
-        emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', content)
-        if emails:
-            extracted_context.append(f"Contact(s): {', '.join(emails[:2])}")
-
-        # Extract URLs (for any service - Google Drive, Slack, Notion, etc.)
-        urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', content)
-        if urls:
-            extracted_context.append(f"Link: {urls[0][:50]}...")
-
-        # Extract @mentions (works for Slack, email, any platform)
-        mentions = re.findall(r'@[\w\-\.]+', content)
-        if mentions:
-            extracted_context.append(f"Mentions: {', '.join(mentions[:3])}")
-
-        # Extract #channels or #tags (works for Slack, social media, etc.)
-        channels = re.findall(r'#[\w\-]+', content)
-        if channels:
-            extracted_context.append(f"Channels/Tags: {', '.join(channels[:3])}")
-
+    # Add conversation history as proper messages (CRITICAL for context)
     for conv in recent_convs:
         role = conv.get("role")
         content = conv.get("content", "")
@@ -1055,14 +1018,17 @@ def create_agent_messages(state) -> List[Any]:
         elif role == "bot_response":
             messages.append(AIMessage(content=content))
 
-    # Add extracted context as a subtle reminder if we found any
-    if extracted_context and len(recent_convs) > 0:
-        context_reminder = "\n\n💡 **Context from previous conversation**:\n" + "\n".join(f"- {ctx}" for ctx in extracted_context[:5])
-        # Note: This will be added to the system prompt, not as a separate message
-        state["conversation_context_hints"] = context_reminder
-
-    # 3. Current query with agent hints
+    # 3. Current query with intelligent context enrichment
     current_query = state["query"]
+
+    # ⚡ CRITICAL FIX: Enrich follow-up queries with context
+    if ConversationMemory.should_reuse_tool_results(current_query, previous_conversations):
+        # This is a follow-up! Enrich with context
+        enriched_query = ConversationMemory.enrich_query_with_context(current_query, previous_conversations)
+        current_query = enriched_query
+        state["is_contextual_followup"] = True  # Flag for later use
+    else:
+        state["is_contextual_followup"] = False
 
     # Add context about available tools
     available_tools = state.get("available_tools") or []

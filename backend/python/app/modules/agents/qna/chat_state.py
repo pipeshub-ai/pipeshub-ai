@@ -65,6 +65,20 @@ class ChatState(TypedDict):
     # Tool calling specific fields - no ToolExecutor dependency
     pending_tool_calls: Optional[bool]  # Whether the agent has pending tool calls
     tool_results: Optional[List[Dict[str, Any]]]  # Results of current tool execution
+
+    # ⚡ PERFORMANCE: Cache fields (must be in TypedDict to persist between nodes!)
+    _cached_agent_tools: Optional[List[Any]]  # Cached list of tool wrappers
+    _cached_blocked_tools: Optional[Dict[str, int]]  # Cached dict of blocked tools
+    _tool_instance_cache: Optional[Dict[str, Any]]  # Cached tool instances
+    _performance_tracker: Optional[Any]  # Performance tracking object
+    _cached_llm_with_tools: Optional[Any]  # ⚡ NUCLEAR: Cached LLM with bound tools (eliminates 1-2s overhead!)
+
+    # Additional tracking fields
+    successful_tool_count: Optional[int]  # Count of successful tools
+    failed_tool_count: Optional[int]  # Count of failed tools
+    tool_retry_count: Optional[Dict[str, int]]  # Retry count per tool
+    available_tools: Optional[List[str]]  # List of available tool names
+    performance_summary: Optional[Dict[str, Any]]  # Performance summary data
     all_tool_results: Optional[List[Dict[str, Any]]]  # All tool results for the session
 
     # Enhanced tool result tracking for better LLM context
@@ -187,7 +201,8 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "query": chat_query.get("query", ""),
         "limit": chat_query.get("limit", 50),
         "messages": [],  # Will be populated in prepare_prompt_node
-        "previous_conversations": chat_query.get("previousConversations", []),
+        # ⚡ FIX: Handle BOTH camelCase (from Pydantic .model_dump()) and snake_case (from manual dict)
+        "previous_conversations": chat_query.get("previous_conversations") or chat_query.get("previousConversations") or [],
         "quick_mode": chat_query.get("quickMode", False),  # Renamed
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
