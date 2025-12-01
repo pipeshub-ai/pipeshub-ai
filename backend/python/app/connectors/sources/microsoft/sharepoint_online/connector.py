@@ -682,7 +682,7 @@ class SharePointConnector(BaseConnector):
                 if record_update.is_deleted:
                     await self._handle_record_updates(record_update)
                     continue
-                if record_update.is_updated:
+                elif record_update.is_updated:
                     await self._handle_record_updates(record_update)
                     continue
                 elif record:
@@ -695,19 +695,22 @@ class SharePointConnector(BaseConnector):
                         batch_records = []
                         await asyncio.sleep(0.1)  # Brief pause
 
-            # # Process lists
-            # self.logger.info(f"Processing lists for site: {site_name}")
-            # async for record, permissions, record_update in self._process_site_lists(site_id):
-            #     if record_update.is_deleted:
-            #         await self._handle_record_updates(record_update)
-            #     elif record:
-            #         batch_records.append((record, permissions))
-            #         total_processed += 1
+            # Process lists
+            self.logger.info(f"Processing lists for site: {site_name}")
+            async for record, permissions, record_update in self._process_site_lists(site_id):
+                if record_update.is_deleted:
+                    await self._handle_record_updates(record_update)
+                elif record_update.is_updated:
+                    await self._handle_record_updates(record_update)
+                    continue
+                elif record:
+                    batch_records.append((record, permissions))
+                    total_processed += 1
 
-            #         if len(batch_records) >= self.batch_size:
-            #             await self.data_entities_processor.on_new_records(batch_records)
-            #             batch_records = []
-            #             await asyncio.sleep(0.1)
+                    if len(batch_records) >= self.batch_size:
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        batch_records = []
+                        await asyncio.sleep(0.1)
 
             # Process pages
             self.logger.info(f"\n\n\n\n\nProcessing pages for site: {site_name}\n\n\n\n\n")
@@ -715,7 +718,7 @@ class SharePointConnector(BaseConnector):
                 if record_update.is_deleted:
                     await self._handle_record_updates(record_update)
                     continue
-                if record_update.is_updated:
+                elif record_update.is_updated:
                     await self._handle_record_updates(record_update)
                     continue
                 elif record:
@@ -1202,7 +1205,6 @@ class SharePointConnector(BaseConnector):
                 record_type=RecordType.SHAREPOINT_LIST,
                 record_status=ProgressStatus.NOT_STARTED,
                 record_group_type=RecordGroupType.SHAREPOINT_SITE,
-                parent_record_type=RecordType.SITE,
                 external_record_id=list_id,
                 external_revision_id=getattr(list_obj, 'e_tag', None),
                 version=0,
@@ -1215,7 +1217,7 @@ class SharePointConnector(BaseConnector):
                 weburl=getattr(list_obj, 'web_url', None),
                 parent_external_record_id=site_id,
                 external_record_group_id=site_id,
-                metadata=metadata
+                semantic_metadata=metadata
             )
 
         except Exception as e:
@@ -1351,10 +1353,10 @@ class SharePointConnector(BaseConnector):
             return SharePointListItemRecord(
                 id=str(uuid.uuid4()),
                 record_name=str(title)[:255],
-                record_type=RecordType.SHAREPOINT_LIST_ITEM.value,
+                record_type=RecordType.SHAREPOINT_LIST_ITEM,
                 record_status=ProgressStatus.NOT_STARTED,
-                record_group_type=RecordGroupType.SHAREPOINT_LIST.value,
-                parent_record_type=RecordType.SHAREPOINT_LIST.value,
+                record_group_type=RecordGroupType.SHAREPOINT_SITE,
+                parent_record_type=RecordType.SHAREPOINT_LIST,
                 external_record_id=item_id,
                 external_revision_id=getattr(item, 'e_tag', None),
                 version=0,
@@ -1367,7 +1369,7 @@ class SharePointConnector(BaseConnector):
                 weburl=getattr(item, 'web_url', None),
                 parent_external_record_id=list_id,
                 external_record_group_id=site_id,
-                metadata=metadata
+                semantic_metadata=metadata
             )
 
         except Exception as e:
@@ -1404,7 +1406,8 @@ class SharePointConnector(BaseConnector):
                 try:
                     page_id = getattr(page, 'id', None)
                     if not page_id:
-                        return
+                        self.logger.debug(f"Skipping page with missing ID in site {site_id}")
+                        continue
                         
                     existing_record = None
                     # Get existing record for change detection
@@ -1498,7 +1501,8 @@ class SharePointConnector(BaseConnector):
                 external_record_group_id=site_id,
                 mime_type=MimeTypes.HTML.value,
                 inherit_permissions=True,
-                semantic_metadata=metadata
+                semantic_metadata=metadata,
+                preview_renderable=False,
             )
 
         except Exception as e:
@@ -2684,9 +2688,6 @@ class SharePointConnector(BaseConnector):
         """
         Fetches SharePoint page content via REST API using the page's UniqueId (GUID).
         """
-        # Ensure these are imported from the async library at the top of your file:
-        # from azure.identity.aio import CertificateCredential, ClientSecretCredential
-        
         try:
             # 1. Resolve Site URL via Graph
             site_info = await self.client.sites.by_site_id(site_id).get()
@@ -2695,11 +2696,9 @@ class SharePointConnector(BaseConnector):
             parsed_url = urlparse(site_url)
             hostname = parsed_url.netloc
             
-            # 2. Get Token for SharePoint Scope (ROBUST FIX)
+            # 2. Get Token for SharePoint Scope
             scope = f"https://{hostname}/.default"
             
-            # Instantiate a fresh credential locally to avoid "Transport closed" errors
-            # We use the configuration saved during init
             if self.certificate_path:
                 credential = CertificateCredential(
                     tenant_id=self.tenant_id,
@@ -2713,7 +2712,6 @@ class SharePointConnector(BaseConnector):
                     client_secret=self.client_secret
                 )
 
-            # Use async context manager to strictly manage the transport lifecycle
             async with credential:
                 token_result = await credential.get_token(scope)
             
@@ -2724,50 +2722,40 @@ class SharePointConnector(BaseConnector):
                 "Accept": "application/json;odata=verbose"
             }
 
-            # 3. Fetch Page Content (Robust Method)
-            # We use GetFileById because it works regardless of the list name (Site Pages vs Pages)
-            # and accesses the properties directly.
+            # 3. Fetch Page Content
             api_url = f"{site_url}/_api/web/GetFileById('{page_id}')/ListItemAllFields"
             
-            
             self.logger.info(f"Fetching page content from: {api_url}")
-            self.logger.info(f"Page ID: {page_id}")
             
-            # Select the content field
-            params = {
-                "$select": "CanvasContent1,Title"
-            }
+            params = { "$select": "CanvasContent1,Title" }
 
             async with httpx.AsyncClient() as http_client:
                 resp = await http_client.get(api_url, headers=headers, params=params)
                 
-                # Check for 404 (Invalid GUID)
                 if resp.status_code == 404:
                     self.logger.warning(f"❌ Page not found via GetFileById: {page_id}")
                     return None
                 
-                # Check for other errors
                 if resp.status_code != 200:
                     self.logger.error(f"❌ API Error: {resp.status_code} - {resp.text}")
                     return None
 
                 data = resp.json()
-                
-                # With GetFileById, the data is directly in 'd', not 'd.results' list
                 item = data.get('d', {})
                 raw_html = item.get('CanvasContent1', '')
                 
                 if not raw_html:
                     self.logger.warning(f"⚠️ Page found but CanvasContent1 is empty: {page_id}")
-                    print("!!!!!!!!!!1 here's the item:", item)
                     return ""
 
                 # 4. Clean HTML & Embed Images
                 soup = BeautifulSoup(raw_html, "html.parser")
 
+                # Remove unwanted tags
                 for tag in soup(['script', 'style', 'meta', 'link', 'noscript']):
                     tag.decompose()
                 
+                # Remove comments
                 for c in soup.find_all(string=lambda text: isinstance(text, Comment)):
                     c.extract()
 
@@ -2775,12 +2763,22 @@ class SharePointConnector(BaseConnector):
 
                 for img in images:
                     src = img.get('src')
-                    if not src or "data:image" in src or "http" not in src:
+                    
+                    # LOGIC CHANGE: Skip external links (http), skip data URIs. 
+                    # Only process relative paths (starting with /)
+                    if not src or "data:image" in src or src.lower().startswith(('http:', 'https:')):
                         continue
 
                     try:
+                        # Clean path (decode first)
                         clean_path = unquote(src.split('?')[0])
+                        
+                        # Use GetFileByServerRelativeUrl for relative paths
+                        # SharePoint REST format: 
+                        # https://<site_url>/_api/web/GetFileByServerRelativeUrl('<path>')/$value
                         image_api_url = f"{site_url}/_api/web/GetFileByServerRelativeUrl('{quote(clean_path)}')/$value"
+
+                        self.logger.info(f"Downloading relative image: {clean_path}")
 
                         img_resp = await http_client.get(image_api_url, headers=headers)
 
@@ -2789,9 +2787,13 @@ class SharePointConnector(BaseConnector):
                             b64_str = base64.b64encode(img_resp.content).decode('utf-8')
                             img['src'] = f"data:{content_type};base64,{b64_str}"
                             
+                            # Cleanup bloat attributes
                             attrs_to_remove = ['data-sp-prop-name', 'data-sp-original-src', 'aria-label']
                             for attr in attrs_to_remove:
                                 if attr in img.attrs: del img[attr]
+                        else:
+                            self.logger.warning(f"⚠️ Failed to download image {clean_path}: {img_resp.status_code}")
+
                     except Exception as img_error:
                         self.logger.warning(f"Failed to process image {src}: {img_error}")
 
