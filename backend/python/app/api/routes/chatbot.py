@@ -468,7 +468,6 @@ async def askAIStream(
                 context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
                 logger.info(f"Context length: {context_length}")
-                logger.info(f"LLM used for streaming: {llm.model_name}")
 
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
