@@ -97,5 +97,5 @@ class RedisConfig(Enum):
 class HealthCheckConfig(Enum):
     """Constants for health check configuration"""
 
-    CONNECTOR_HEALTH_CHECK_MAX_RETRIES = 5
-    CONNECTOR_HEALTH_CHECK_RETRY_INTERVAL_SECONDS = 4
+    CONNECTOR_HEALTH_CHECK_MAX_RETRIES = 120
+    CONNECTOR_HEALTH_CHECK_RETRY_INTERVAL_SECONDS = 1
