@@ -393,7 +393,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             boxShadow: isDark 
               ? '0 24px 48px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05)'
               : '0 20px 60px rgba(0, 0, 0, 0.12)',
-            bgcolor: isDark ? 'rgba(18, 18, 23, 0.98)' : 'background.paper',
           },
         }}
         slotProps={{
@@ -425,7 +424,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           boxShadow: isDark 
             ? '0 24px 48px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05)'
             : '0 20px 60px rgba(0, 0, 0, 0.12)',
-          bgcolor: isDark ? 'rgba(18, 18, 23, 0.98)' : 'background.paper',
           overflow: 'hidden',
           height: '85vh',
           maxHeight: '85vh',
@@ -610,7 +608,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               left: 0,
               right: 0,
               height: 24,
-              background: topFadeGradient,
               pointerEvents: 'none',
               zIndex: 1,
             }}
@@ -626,7 +623,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               left: 0,
               right: 0,
               height: 24,
-              background: bottomFadeGradient,
               pointerEvents: 'none',
               zIndex: 1,
             }}
@@ -685,9 +681,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           borderTop: isDark
             ? `1px solid ${alpha(theme.palette.divider, 0.12)}`
             : `1px solid ${alpha(theme.palette.divider, 0.08)}`,
-          backgroundColor: isDark 
-            ? 'rgba(18, 18, 23, 0.95)'
-            : theme.palette.background.paper,
           flexShrink: 0,
         }}
       >
