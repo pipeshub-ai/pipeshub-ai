@@ -510,7 +510,7 @@ class BookStackConnector(BaseConnector):
             self.logger.info("User delete event handling not implemented yet !")
 
     async def _handle_user_create_event(self, user_create_events: List[Dict], app_users: List[AppUser]) -> None:
-        self.logger.info("New users found !")
+        self.logger.info("Processing new or updated users from audit log !")
         # 2. Parse the audit log to get the IDs of newly created users
         new_user_ids = set()
         log_entries = user_create_events
@@ -550,9 +550,9 @@ class BookStackConnector(BaseConnector):
             self.logger.warning("Found new user IDs in audit log, but no matching user objects were found in the full user list.")
 
     async def _handle_user_upsert_event(self, user_upsert_events: List[Dict], app_users: List[AppUser]) -> None:
-        self.logger.info("Updated users found !")
+        self.logger.info("Processing user upsert events... !")
 
-        # First handle the user update itself (updates the user record)
+        # First handle the user update itself (updates the user record in arango)
         await self._handle_user_create_event(user_upsert_events, app_users)
 
         # Build user email map for role updates
