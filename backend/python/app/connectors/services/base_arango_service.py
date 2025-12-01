@@ -3370,22 +3370,6 @@ class BaseArangoService:
                         RETURN finalEdge.role
             )
 
-            LET direct_user_record_group_permission = FIRST(
-                // Direct user -> record_group (with nested record groups support)
-                FOR recordGroup, userToRgEdge IN 1..1 ANY user_from @@permission
-                    FILTER userToRgEdge.type == "USER"
-                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-
-                    // Record group -> nested record groups (0 to 5 levels) -> record
-                    FOR record, edge, path IN 0..5 INBOUND recordGroup._id @@inherit_permissions
-                        // Only process if final vertex is the target record
-                        FILTER record._id == record_from
-                        FILTER IS_SAME_COLLECTION("records", record)
-
-                        LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
-                        RETURN finalEdge.role
-            )
-
             // 3. Check domain/organization permissions
 
             LET domain_permission = FIRST(
