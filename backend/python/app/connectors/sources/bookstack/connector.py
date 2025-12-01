@@ -502,12 +502,12 @@ class BookStackConnector(BaseConnector):
         )
 
         if user_create_response.success and user_create_response.data.get('data'):
-            await self._handle_user_create_event(user_create_response.data.get('data'), app_users)
+            await self._handle_user_upsert_event(user_create_response.data.get('data'), app_users)
         if user_update_response.success and user_update_response.data.get('data'):
-            await self._handle_user_update_event(user_update_response.data.get('data'), app_users)
+            await self._handle_user_upsert_event(user_update_response.data.get('data'), app_users)
         if user_delete_response.success and user_delete_response.data.get('data'):
             # await self._handle_user_delete_event(user_delete_response.data.get('data'), app_users)
-            self.logger.info("Method not implemenet yet !")
+            self.logger.info("User delete event handling not implemented yet !")
 
     async def _handle_user_create_event(self, user_create_events: List[Dict], app_users: List[AppUser]) -> None:
         self.logger.info("New users found !")
@@ -549,11 +549,11 @@ class BookStackConnector(BaseConnector):
         else:
             self.logger.warning("Found new user IDs in audit log, but no matching user objects were found in the full user list.")
 
-    async def _handle_user_update_event(self, user_update_events: List[Dict], app_users: List[AppUser]) -> None:
+    async def _handle_user_upsert_event(self, user_upsert_events: List[Dict], app_users: List[AppUser]) -> None:
         self.logger.info("Updated users found !")
 
         # First handle the user update itself (updates the user record)
-        await self._handle_user_create_event(user_update_events, app_users)
+        await self._handle_user_create_event(user_upsert_events, app_users)
 
         # Build user email map for role updates
         user_email_map = {
@@ -562,8 +562,8 @@ class BookStackConnector(BaseConnector):
             if user.source_user_id and user.email
         }
 
-        # Process each user update event
-        for event in user_update_events:
+        # Process each user upsert event
+        for event in user_upsert_events:
             user_id, name = self._parse_id_and_name_from_event(event)
 
             if user_id is None:
@@ -615,9 +615,9 @@ class BookStackConnector(BaseConnector):
                         self.logger.warning(f"Role '{role_name}' has no ID, skipping resync")
 
             except Exception as e:
-                self.logger.error(f"Error processing user update for user ID {user_id}: {e}", exc_info=True)
+                self.logger.error(f"Error processing user upsert for user ID {user_id}: {e}", exc_info=True)
 
-        self.logger.info("✅ Finished processing user update events and role resyncs")
+        self.logger.info("✅ Finished processing user upsert events and role resyncs")
 
 
     async def _handle_user_delete_event(self, user_delete_events: List[Dict], app_users: List[AppUser]) -> None:
