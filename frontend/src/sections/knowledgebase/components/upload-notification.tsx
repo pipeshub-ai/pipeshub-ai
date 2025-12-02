@@ -6,6 +6,7 @@ import closeIcon from '@iconify-icons/mdi/close';
 import chevronDownIcon from '@iconify-icons/mdi/chevron-down';
 import chevronUpIcon from '@iconify-icons/mdi/chevron-up';
 import fileDocumentIcon from '@iconify-icons/mdi/file-document';
+import alertCircleIcon from '@iconify-icons/mdi/alert-circle';
 
 import {
   Box,
@@ -29,6 +30,13 @@ interface UploadNotificationProps {
     startTime: number;
     recordIds?: string[];
     status?: 'uploading' | 'processing' | 'completed';
+    failedFiles?: Array<{
+      recordId: string;
+      fileName: string;
+      filePath: string;
+      error: string;
+    }>;
+    hasFailures?: boolean;
   }>;
   onDismiss?: (uploadKey: string) => void;
   currentKBId?: string;
@@ -64,19 +72,6 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
   });
 
   // Debug logging
-  useEffect(() => {
-    if (uploads.size > 0) {
-      console.log('[UploadNotification] Component render - Total uploads:', uploads.size);
-      console.log('[UploadNotification] Component render - Filtered uploads:', uploadsArray.length);
-      console.log('[UploadNotification] Component render - Current KB:', currentKBId, 'Folder:', currentFolderId);
-      console.log('[UploadNotification] Upload entries:', Array.from(uploads.entries()));
-      if (uploadsArray.length > 0) {
-        console.log('[UploadNotification] Will render', uploadsArray.length, 'notifications');
-      } else {
-        console.log('[UploadNotification] Filtered out all uploads');
-      }
-    }
-  }, [uploads, uploadsArray.length, currentKBId, currentFolderId]);
 
   if (uploadsArray.length === 0) {
     return null;
@@ -108,10 +103,36 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
         const isUploading = upload.status === 'uploading' || (!upload.status && !upload.recordIds);
         const isProcessing = upload.status === 'processing' || (upload.recordIds && upload.status !== 'completed' && !isUploading);
         const isCompleted = upload.status === 'completed';
+        const hasFailures = upload.hasFailures || (upload.failedFiles && upload.failedFiles.length > 0);
+        const failedFiles = upload.failedFiles || [];
+        const failedFileNames = new Set(failedFiles.map((ff) => ff.fileName || ff.filePath));
+        const successfulFiles = upload.files.filter(
+          (fileName) => !failedFileNames.has(fileName)
+        );
         const isExpanded = expanded.get(uploadKey) ?? false;
         const totalFiles = upload.files.length;
-        const filesToShow = isExpanded ? upload.files : upload.files.slice(0, 3);
-        const remainingCount = totalFiles > 3 ? totalFiles - 3 : 0;
+        const totalSuccessful = successfulFiles.length;
+        const totalFailed = failedFiles.length;
+        
+        // Show successful files first (prioritize showing successes), then failed files
+        // When collapsed, show successful files first to emphasize positive outcome
+        const maxFilesToShow = 3;
+        const successfulToShow = isExpanded 
+          ? successfulFiles 
+          : successfulFiles.slice(0, Math.min(maxFilesToShow, successfulFiles.length));
+        const failedToShow = isExpanded
+          ? failedFiles
+          : failedFiles.slice(0, Math.max(0, maxFilesToShow - successfulToShow.length));
+        
+        const allFilesToShow: Array<{ name: string; isFailed: boolean; error?: string }> = [
+          ...successfulToShow.map((name) => ({ name, isFailed: false })),
+          ...failedToShow.map((ff) => ({ 
+            name: ff.fileName || ff.filePath, 
+            isFailed: true, 
+            error: ff.error 
+          }))
+        ];
+        const remainingCount = totalFiles > maxFilesToShow ? totalFiles - maxFilesToShow : 0;
 
         return (
           <Slide direction="left" in mountOnEnter unmountOnExit key={uploadKey}>
@@ -136,7 +157,9 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                 sx={{
                   px: 1.5,
                   py: 1,
-                  backgroundColor: isCompleted
+                  backgroundColor: isCompleted && !hasFailures
+                    ? alpha(theme.palette.success.main, 0.1)
+                    : isCompleted && hasFailures
                     ? alpha(theme.palette.success.main, 0.08)
                     : alpha(theme.palette.primary.main, 0.08),
                   display: 'flex',
@@ -145,7 +168,14 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                 }}
               >
                 <Stack direction="row" alignItems="center" spacing={1}>
-                  {isCompleted ? (
+                  {isCompleted && !hasFailures ? (
+                    <Icon
+                      icon={checkCircleIcon}
+                      width={18}
+                      height={18}
+                      style={{ color: theme.palette.success.main }}
+                    />
+                  ) : isCompleted && hasFailures ? (
                     <Icon
                       icon={checkCircleIcon}
                       width={18}
@@ -173,16 +203,45 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                     fontWeight={500}
                     sx={{
                       fontSize: '0.8125rem',
-                      color: isCompleted ? theme.palette.success.main : 'text.primary',
+                      color: isCompleted && !hasFailures
+                        ? theme.palette.success.main
+                        : 'text.primary',
                     }}
                   >
-                    {isCompleted
+                    {isCompleted && hasFailures
+                      ? `${totalSuccessful} succeeded`
+                      : isCompleted
                       ? `${totalFiles} upload${totalFiles > 1 ? 's' : ''} complete`
                       : isProcessing
                       ? `Processing ${totalFiles} file${totalFiles > 1 ? 's' : ''}...`
                       : isUploading
                       ? `Uploading ${totalFiles} file${totalFiles > 1 ? 's' : ''}...`
                       : `Uploading ${totalFiles} file${totalFiles > 1 ? 's' : ''}...`}
+                    {isCompleted && hasFailures && totalFailed > 0 && (
+                      <>
+                        <Typography
+                          component="span"
+                          sx={{
+                            color: 'text.secondary',
+                            fontWeight: 500,
+                            mx: 0.5,
+                            fontSize: '0.8125rem',
+                          }}
+                        >
+                          ,
+                        </Typography>
+                        <Typography
+                          component="span"
+                          sx={{
+                            color: theme.palette.error.main,
+                            fontWeight: 500,
+                            fontSize: '0.8125rem',
+                          }}
+                        >
+                          {totalFailed} failed
+                        </Typography>
+                      </>
+                    )}
                   </Typography>
                 </Stack>
 
@@ -254,57 +313,90 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                   }}
                 >
                   <Stack spacing={0.5}>
-                    {filesToShow.map((fileName, index) => (
-                      <Stack
-                        key={index}
-                        direction="row"
-                        alignItems="center"
-                        spacing={1}
-                        sx={{
-                          py: 0.5,
-                          px: 0.75,
-                          borderRadius: 0.75,
-                          '&:hover': {
-                            backgroundColor: alpha(theme.palette.action.hover, 0.3),
-                          },
-                        }}
-                      >
-                        <Icon
-                          icon={fileDocumentIcon}
-                          width={16}
-                          height={16}
-                          style={{
-                            color: theme.palette.text.secondary,
-                            flexShrink: 0,
-                          }}
-                        />
-                        <Typography
-                          variant="body2"
+                    {allFilesToShow.map((fileInfo, index) => {
+                      const { name, isFailed, error } = fileInfo;
+                      
+                      return (
+                        <Stack
+                          key={index}
+                          direction="row"
+                          alignItems="center"
+                          spacing={1}
                           sx={{
-                            fontSize: '0.8125rem',
-                            color: 'text.primary',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                            flex: 1,
+                            py: 0.5,
+                            px: 0.75,
+                            borderRadius: 0.75,
+                            backgroundColor: isCompleted && !isFailed
+                              ? alpha(theme.palette.success.main, 0.05)
+                              : 'transparent',
+                            '&:hover': {
+                              backgroundColor: isCompleted && !isFailed
+                                ? alpha(theme.palette.success.main, 0.1)
+                                : alpha(theme.palette.action.hover, 0.3),
+                            },
                           }}
-                          title={fileName}
                         >
-                          {fileName}
-                        </Typography>
-                        {isCompleted && (
-                          <Icon
-                            icon={checkCircleIcon}
-                            width={16}
-                            height={16}
-                            style={{
-                              color: theme.palette.success.main,
-                              flexShrink: 0,
-                            }}
-                          />
-                        )}
-                      </Stack>
-                    ))}
+                          {/* Show green checkmark for successful files, neutral icon for failed files */}
+                          {isCompleted && !isFailed ? (
+                            <Icon
+                              icon={checkCircleIcon}
+                              width={16}
+                              height={16}
+                              style={{
+                                color: theme.palette.success.main,
+                                flexShrink: 0,
+                              }}
+                            />
+                          ) : (
+                            <Icon
+                              icon={fileDocumentIcon}
+                              width={16}
+                              height={16}
+                              style={{
+                                color: theme.palette.text.secondary,
+                                flexShrink: 0,
+                              }}
+                            />
+                          )}
+                          <Box sx={{ flex: 1, minWidth: 0 }}>
+                            <Typography
+                              variant="body2"
+                              sx={{
+                                fontSize: '0.8125rem',
+                                color: isCompleted && !isFailed
+                                  ? theme.palette.success.main
+                                  : 'text.primary',
+                                fontWeight: isCompleted && !isFailed ? 500 : 400,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                              title={name}
+                            >
+                              {name}
+                            </Typography>
+                            {isFailed && error && (
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  fontSize: '0.7rem',
+                                  color: theme.palette.text.secondary,
+                                  display: 'block',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  mt: 0.25,
+                                  fontStyle: 'italic',
+                                }}
+                                title={error}
+                              >
+                                {error}
+                              </Typography>
+                            )}
+                          </Box>
+                        </Stack>
+                      );
+                    })}
 
                     {/* Show remaining count if collapsed and more files */}
                     {!isExpanded && remainingCount > 0 && (
@@ -341,6 +433,40 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                         },
                       }}
                     />
+                  </Box>
+                )}
+                
+                {/* Show summary for completed uploads with failures */}
+                {isCompleted && hasFailures && (
+                  <Box 
+                    sx={{ 
+                      mt: 1.5, 
+                      pt: 1.5, 
+                      borderTop: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
+                      backgroundColor: alpha(theme.palette.error.main, 0.04),
+                      borderRadius: 1,
+                      px: 1,
+                      py: 0.75,
+                    }}
+                  >
+                    <Stack direction="row" alignItems="center" spacing={1}>
+                      <Icon
+                        icon={alertCircleIcon}
+                        width={16}
+                        height={16}
+                        style={{ color: theme.palette.error.main }}
+                      />
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          fontSize: '0.8125rem',
+                          color: theme.palette.error.main,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {totalFailed} file{totalFailed > 1 ? 's' : ''} failed to upload
+                      </Typography>
+                    </Stack>
                   </Box>
                 )}
               </Box>
