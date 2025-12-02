@@ -858,7 +858,8 @@ class OutlookConnector(BaseConnector):
         attachment: Dict,
         message_id: str,
         folder_id: str,
-        existing_record: Optional[Record] = None
+        existing_record: Optional[Record] = None,
+        parent_weburl: Optional[str] = None,
     ) -> FileRecord:
         """Helper method to create a FileRecord from an attachment.
 
@@ -868,6 +869,7 @@ class OutlookConnector(BaseConnector):
             message_id: Parent message ID
             folder_id: Folder ID
             existing_record: Existing record if updating
+            parent_weburl: Web URL of the parent mail
 
         Returns:
             FileRecord: Created attachment record
@@ -884,6 +886,9 @@ class OutlookConnector(BaseConnector):
             extension = file_name.split('.')[-1].lower()
 
         attachment_record_id = existing_record.id if existing_record else str(uuid.uuid4())
+
+        if not parent_weburl:
+            self.logger.error(f"No parent weburl found for attachment id {attachment_id}, file name {file_name}, with parent message id {message_id}")
 
         return FileRecord(
             id=attachment_record_id,
@@ -902,7 +907,7 @@ class OutlookConnector(BaseConnector):
             parent_record_type=RecordType.MAIL,
             external_record_group_id=folder_id,
             record_group_type=RecordGroupType.MAILBOX,
-            weburl="",
+            weburl=parent_weburl,
             is_file=True,
             size_in_bytes=self._safe_get_attr(attachment, 'size', 0),
             extension=extension,
@@ -916,6 +921,7 @@ class OutlookConnector(BaseConnector):
         try:
             user_id = user.source_user_id
             message_id = self._safe_get_attr(message, 'id')
+            parent_weburl = self._safe_get_attr(message, 'web_link')
 
             attachments = await self._get_message_attachments_external(user_id, message_id)
 
@@ -941,7 +947,7 @@ class OutlookConnector(BaseConnector):
                         is_updated = True
 
                 attachment_record = await self._create_attachment_record(
-                    org_id, attachment, message_id, folder_id, existing_record
+                    org_id, attachment, message_id, folder_id, existing_record, parent_weburl
                 )
 
                 attachment_updates.append(RecordUpdate(
@@ -1370,9 +1376,10 @@ class OutlookConnector(BaseConnector):
                 return None
 
             email_permissions = await self._extract_email_permissions(message, None, user_email)
+            parent_weburl = self._safe_get_attr(message, 'web_link')
 
             attachment_record = await self._create_attachment_record(
-                org_id, attachment, parent_message_id, folder_id, existing_record=record
+                org_id, attachment, parent_message_id, folder_id, existing_record=record, parent_weburl=parent_weburl
             )
 
             return (attachment_record, email_permissions)

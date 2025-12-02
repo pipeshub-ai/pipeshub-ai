@@ -42,7 +42,6 @@ export const getIndexingStatusColor = (
   }
 };
 
-
 // Helper function to format file size
 export const formatFileSize = (bytes: number): string => {
   if (bytes === 0) return '0 Bytes';
@@ -280,3 +279,50 @@ export const addTextFragmentToUrl = (webUrl: string, textFragment: string): stri
     return `${webUrl}#:~:text=${encodedFragment}`;
   }
 };
+
+const mimeTypeToExtensionMap: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'application/vnd.google-apps.spreadsheet': 'xlsx',
+  'application/vnd.google-apps.document': 'docx',
+  'application/vnd.google-apps.presentation': 'pptx',
+  'text/plain': 'txt',
+  'text/html': 'html',
+  'text/markdown': 'md',
+  'text/mdx': 'mdx',
+  'text/csv': 'csv',
+  'text/tab-separated-values': 'tsv',
+  'application/json': 'json',
+  'application/xml': 'xml',
+  'application/zip': 'zip',
+  'application/x-rar-compressed': 'rar',
+  'application/x-7z-compressed': '7z',
+  'application/x-tar': 'tar',
+  'application/x-sh': 'sh',
+  'application/x-msdownload': 'exe',
+  'application/x-python-code': 'py',
+  'application/x-java-archive': 'jar',
+  'application/x-genesis-32x-rom': 'genesis',
+  'application/x-icns': 'icns',
+  'image/svg+xml': 'svg',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+  'image/tiff': 'tiff',
+  'image/ico': 'ico',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'image/avif': 'avif',
+  'image/jxr': 'jxr',
+  'image/icns': 'icns',
+};
+
+export const getExtensionFromMimeType = (mimeType: string): string =>
+  mimeTypeToExtensionMap[mimeType] || '';

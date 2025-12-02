@@ -12,8 +12,8 @@ import { Document, StorageVendor } from '../types/storage.service.types';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ErrorMetadata } from '../../../libs/errors/base.error';
 import { createReadStream } from 'fs';
+import fs from 'fs';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
-import { access } from 'fs';
 import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
@@ -183,7 +183,7 @@ export async function createPlaceholderDocument(
   req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
   next: NextFunction,
   size: number,
-  extension : string,
+  extension: string,
   originalname?: string,
 ): Promise<DocumentInfoResponse | undefined> {
   try {
@@ -197,10 +197,10 @@ export async function createPlaceholderDocument(
     } = req.body as Partial<Document>;
     const orgId = extractOrgId(req);
     const userId = extractUserId(req);
-    
+
     // Use originalname or documentName for error messages
     const fileNameForError = originalname || documentName || 'the file';
-    
+
     // Validate file extension, MIME type, and document name constraints
     validateFileAndDocumentName(extension, documentName, fileNameForError);
 
@@ -215,7 +215,7 @@ export async function createPlaceholderDocument(
       customMetadata,
       sizeInBytes: size,
       storageVendor: StorageVendor.S3,
-      extension
+      extension,
     };
 
     const savedDocument = await DocumentModel.create(documentInfo);
@@ -286,39 +286,77 @@ export function serveFileFromLocalStorage(document: Document, res: Response) {
       throw new NotFoundError('Local file path not found');
     }
 
-    // Parse the file:// URL to get the actual filesystem path
-    const urlObj = new URL(localFilePath);
-    const fsPath = decodeURIComponent(urlObj.pathname);
+    // DON'T use new URL() - it treats # as a fragment identifier!
+    // Instead, manually parse the file:// URL
 
-    // Handle Windows paths by removing leading slash if needed
-    const filePath =
-      process.platform === 'win32' ? fsPath.replace(/^\//, '') : fsPath;
+    let filePath: string;
 
-    // Check if file exists
-    access(filePath, (err: any) => {
-      if (err) {
-        throw new NotFoundError('File not found');
+    if (localFilePath.startsWith('file://')) {
+      // Remove the file:// protocol
+      let pathPart = localFilePath.substring(7); // Remove 'file://'
+
+      if (process.platform === 'win32') {
+        // Windows: file:///C:/path/to/file
+        // Remove leading / if present (file:/// becomes /C:/...)
+        if (pathPart.startsWith('/')) {
+          pathPart = pathPart.substring(1);
+        }
+        // Decode URI components and convert forward slashes to backslashes
+        filePath = decodeURIComponent(pathPart).replace(/\//g, '\\');
+      } else {
+        // Unix: file:///path/to/file or file://path/to/file
+        // Remove leading / if we have // (file:// case)
+        if (pathPart.startsWith('//')) {
+          pathPart = pathPart.substring(1);
+        }
+        filePath = decodeURIComponent(pathPart);
       }
-    });
+    } else {
+      // If it's not a file:// URL, treat it as a direct path
+      filePath = localFilePath;
+    }
 
-    // convert the document.mimeType to a valid mime type
+    // Check if file exists using synchronous access
+    try {
+      fs.accessSync(filePath, fs.constants.R_OK);
+    } catch (err) {
+      logger.error('File not accessible:', {
+        filePath,
+        originalPath: localFilePath,
+        documentName: document.documentName,
+        extension: document.extension,
+        error: err,
+      });
+      throw new NotFoundError(
+        `File not found or not accessible: ${document.documentName}${document.extension}`,
+      );
+    }
+
+    // Get mime type from extension
     const mimeType = getMimeType(document.extension);
-    // Helper to safely encode Content-Disposition with UTF-8 filename support 
+
+    // Encode filename for Content-Disposition header
     const fullName = `${document.documentName}${document.extension}`;
     const filenameStar = encodeRFC5987(fullName);
 
-    // Set appropriate headers - use UTF-8 filename* as primary, ASCII as fallback
+    // Set headers
     res.setHeader('Content-Type', mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filenameStar}`);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename*=UTF-8''${filenameStar}`,
+    );
 
-    // Stream the file directly to the response
+    // Stream the file
     const fileStream = createReadStream(filePath);
     fileStream.pipe(res);
 
-    // Handle potential errors during streaming
+    // Handle streaming errors
     fileStream.on('error', (error) => {
-      logger.error('Error streaming file:', error);
-      // Only send error if headers haven't been sent yet
+      logger.error('Error streaming file:', {
+        filePath,
+        documentName: document.documentName,
+        error,
+      });
       if (!res.headersSent) {
         res
           .status(HTTP_STATUS.INTERNAL_SERVER)

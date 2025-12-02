@@ -64,6 +64,7 @@ import {
 } from './components/buttons';
 import {
   formatFileSize,
+  getExtensionFromMimeType,
   getFileIcon,
   getFileIconColor,
   getIndexingStatusColor,
@@ -248,12 +249,15 @@ export default function RecordDetails() {
   let fileType = 'N/A';
   let fileIcon: any = fileDocumentBoxIcon;
   let fileIconColor = '#1976d2';
-
+  let extension = '';
   if (isFileRecord && record.fileRecord) {
     fileSize = formatFileSize(record.fileRecord.sizeInBytes);
-    fileType = record.fileRecord.extension ? record.fileRecord.extension.toUpperCase() : 'N/A';
-    fileIcon = getFileIcon(record.fileRecord.extension || '');
-    fileIconColor = getFileIconColor(record.fileRecord.extension || '');
+    extension = record.fileRecord.extension
+      ? record.fileRecord.extension.toUpperCase()
+      : getExtensionFromMimeType(record.fileRecord.mimeType || record.mimeType || '');
+    fileType = extension.toUpperCase() || 'N/A';
+    fileIcon = getFileIcon(extension || '');
+    fileIconColor = getFileIconColor(extension || '');
   } else if (isMailRecord) {
     fileIcon = emailIcon;
     fileIconColor = '#2196f3';
@@ -673,7 +677,7 @@ export default function RecordDetails() {
                     <Icon icon={updateIcon} style={{ fontSize: '16px' }} />
                     <Box component="span">Indexing Status:</Box>
                     <Chip
-                      label={record.indexingStatus.replace('_', ' ')}
+                      label={record.indexingStatus.replaceAll('_', ' ')}
                       size="small"
                       color={getIndexingStatusColor(record.indexingStatus)}
                       sx={{

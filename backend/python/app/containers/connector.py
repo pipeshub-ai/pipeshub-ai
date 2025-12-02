@@ -742,8 +742,14 @@ class ConnectorAppContainer(BaseAppContainer):
     # First create an async factory for the connected BaseArangoService
     @staticmethod
     async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService:
-        """Async factory to create and connect BaseArangoService"""
-        service = BaseArangoService(logger, arango_client, config_service, kafka_service)
+        """Async factory to create and connect BaseArangoService (with schema init allowed)"""
+        service = BaseArangoService(
+            logger,
+            arango_client,
+            config_service,
+            kafka_service,
+            enable_schema_init=True,
+        )
         await service.connect()
         return service
 
@@ -756,26 +762,10 @@ class ConnectorAppContainer(BaseAppContainer):
         config_service=config_service,
     )
 
-    # First create an async factory for the connected BaseArangoService
-    @staticmethod
-    async def _create_kb_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService:
-        """Async factory to create and connect BaseArangoService"""
-        service = BaseArangoService(logger, arango_client, config_service, kafka_service)
-        await service.connect()
-        return service
-
-    kb_arango_service = providers.Resource(
-        _create_kb_arango_service,
-        logger=logger,
-        arango_client=arango_client,
-        kafka_service=kafka_service,
-        config_service=config_service,
-    )
-
     kb_service = providers.Singleton(
         KnowledgeBaseService,
         logger= logger,
-        arango_service= kb_arango_service,
+        arango_service= arango_service,
         kafka_service= kafka_service
     )
 
@@ -899,25 +889,11 @@ async def initialize_container(container) -> bool:
     try:
         await Health.system_health_check(container)
 
-        logger.info("Connecting to ArangoDB")
+        logger.info("Ensuring ArangoDB service is initialized")
         arango_service = await container.arango_service()
-        if arango_service:
-            arango_connected = await arango_service.connect()
-            if not arango_connected:
-                raise Exception("Failed to connect to ArangoDB")
-            logger.info("✅ Connected to ArangoDB")
-        else:
+        if not arango_service:
             raise Exception("Failed to initialize ArangoDB service")
-
-        logger.info("Connecting to ArangoDB (KnowledgeBase)")
-        kb_arango_service = await container.kb_arango_service()
-        if kb_arango_service:
-            kb_arango_connected = await kb_arango_service.connect()
-            if not kb_arango_connected:
-                raise Exception("Failed to connect to ArangoDB (KnowledgeBase)")
-            logger.info("✅ Connected to ArangoDB (KnowledgeBase)")
-        else:
-            raise Exception("Failed to initialize ArangoDB service (KnowledgeBase)")
+        logger.info("✅ ArangoDB service initialized")
 
         logger.info("✅ Container initialization completed successfully")
 
