@@ -696,7 +696,7 @@ class ConfluenceConnector(BaseConnector):
             modified_before = None
 
             if modified_filter:
-                modified_after, modified_before = modified_filter.get_datetime_iso(default=(None, None))
+                modified_after, modified_before = modified_filter.get_datetime_iso()
 
             # Get created filter
             created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
@@ -704,7 +704,7 @@ class ConfluenceConnector(BaseConnector):
             created_before = None
 
             if created_filter:
-                created_after, created_before = created_filter.get_datetime_iso(default=(None, None))
+                created_after, created_before = created_filter.get_datetime_iso()
 
             # Merge modified_after with checkpoint (use the latest)
             if modified_after and last_sync_time:
