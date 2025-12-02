@@ -277,8 +277,8 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
         from langchain_aws import ChatBedrock
-        provider_in_bedrock = configuration.get("provider", "anthropic")
-        if provider_in_bedrock == "anthropic":
+        provider_in_bedrock = configuration.get("provider", LLMProvider.ANTHROPIC.value)
+        if provider_in_bedrock == LLMProvider.ANTHROPIC.value:
             model_kwargs = {
                 "max_tokens": MAX_OUTPUT_TOKENS,
             }
