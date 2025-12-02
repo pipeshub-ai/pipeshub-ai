@@ -167,11 +167,12 @@ class OAuthProvider:
 
         session = await self.session
         async with session.post(self.config.token_url, data=data) as response:
-            if response.status != 200:
+            if response.status != HttpStatusCode.SUCCESS.value:
                 # Get detailed error info for debugging
                 error_text = await response.text()
                 # Log detailed error but mask sensitive data
-                masked_client_id = self.config.client_id[:8] + "..." if len(self.config.client_id) > 8 else "***"
+                FIRST_8_CHARS = 8
+                masked_client_id = self.config.client_id[:FIRST_8_CHARS] + "..." if len(self.config.client_id) > FIRST_8_CHARS else "***"
                 error_msg = (
                     f"OAuth token exchange failed with status {response.status}. "
                     f"Token URL: {self.config.token_url}, "
