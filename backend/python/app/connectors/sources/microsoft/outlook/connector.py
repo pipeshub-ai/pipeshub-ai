@@ -887,6 +887,9 @@ class OutlookConnector(BaseConnector):
 
         attachment_record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
+        if not parent_weburl:
+            self.logger.error(f"No parent weburl found for attachment id {attachment_id}, file name {file_name}, with parent message id {message_id}")
+
         return FileRecord(
             id=attachment_record_id,
             org_id=org_id,
