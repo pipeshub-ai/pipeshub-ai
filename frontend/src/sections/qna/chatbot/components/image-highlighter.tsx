@@ -37,6 +37,7 @@ type ImageHighlighterProps = {
   sx?: Record<string, unknown>;
   highlightCitation?: SearchResult | CustomCitation | null;
   onClosePdf: () => void;
+  fileExtension?: string;
 };
 
 const ViewerContainer = styled(Box)(({ theme }) => ({
@@ -192,6 +193,28 @@ const normalizeText = (text: string | null | undefined): string => {
   return text.trim().replace(/\s+/g, ' ');
 };
 
+const MIME_TYPES: Record<string, string> = {
+  svg: 'image/svg+xml',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+};
+
+// Get MIME type from file extension
+const getMimeType = (extension: string | undefined): string => {
+  if (!extension) return 'image/png';
+  const ext = extension.toLowerCase().replace(/^\./, '');
+  return MIME_TYPES[ext] || 'image/png';
+};
+
+// Check if extension is SVG
+const isSvg = (extension: string | undefined): boolean => {
+  if (!extension) return false;
+  return extension.toLowerCase().replace(/^\./, '') === 'svg';
+};
+
 const processImageHighlight = (
   citation: DocumentContent | CustomCitation,
   index: number
@@ -212,12 +235,10 @@ const processImageHighlight = (
     else if ('_id' in citation && citation._id) id = citation._id as string;
     else id = getNextId();
 
-    // Create a position that will be used for overlay placement
-    // We'll calculate actual positions based on image dimensions later
     const position: Position = {
-      pageNumber: 1, // Images are single "page"
+      pageNumber: 1,
       boundingRect: {
-        x1: 10 + index * 5, // Offset each highlight slightly
+        x1: 10 + index * 5,
         y1: 10 + index * 5,
         x2: 30 + index * 5,
         y2: 30 + index * 5,
@@ -247,11 +268,13 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
   citations = [],
   highlightCitation = null,
   onClosePdf,
+  fileExtension,
 }) => {
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const imageContainerRef = useRef<HTMLDivElement | null>(null);
   const blobUrlRef = useRef<string | null>(null);
+  const fullScreenContainerRef = useRef<HTMLDivElement>(null);
+  
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string>('');
@@ -263,13 +286,13 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
   const [processedCitations, setProcessedCitations] = useState<ProcessedCitation[]>([]);
   const [highlightedCitationId, setHighlightedCitationId] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const fullScreenContainerRef = useRef<HTMLDivElement>(null);
+  
   const theme = useTheme();
   const scrollableStyles = createScrollableContainerStyle(theme);
+  const isSvgImage = isSvg(fileExtension);
 
   // Load image
   useEffect(() => {
-    // Cleanup previous blob URL if it exists
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current);
       blobUrlRef.current = null;
@@ -284,8 +307,8 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
         if (url) {
           loadedUrl = url;
         } else if (buffer) {
-          // Convert buffer to blob URL
-          const blob = new Blob([buffer], { type: 'image/png' });
+          const mimeType = getMimeType(fileExtension);
+          const blob = new Blob([buffer], { type: mimeType });
           loadedUrl = URL.createObjectURL(blob);
           blobUrlRef.current = loadedUrl;
         } else {
@@ -304,22 +327,29 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
     loadImage();
 
     return () => {
-      // Cleanup blob URLs
       if (blobUrlRef.current) {
         URL.revokeObjectURL(blobUrlRef.current);
         blobUrlRef.current = null;
       }
     };
-  }, [url, buffer]);
+  }, [url, buffer, fileExtension]);
 
   // Handle image load to get dimensions
   const handleImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
-    setImageDimensions({
-      width: img.naturalWidth,
-      height: img.naturalHeight,
-    });
-  }, []);
+    
+    if (isSvgImage) {
+      // For SVG, use client dimensions as natural dimensions may be 0
+      const width = img.clientWidth || img.width || 800;
+      const height = img.clientHeight || img.height || 600;
+      setImageDimensions({ width, height });
+    } else {
+      // For raster images, use natural dimensions
+      const width = img.naturalWidth || img.clientWidth || 800;
+      const height = img.naturalHeight || img.clientHeight || 600;
+      setImageDimensions({ width, height });
+    }
+  }, [isSvgImage]);
 
   // Process citations
   useEffect(() => {
@@ -358,8 +388,17 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
     if (imageContainerRef.current && imageRef.current) {
       const containerWidth = imageContainerRef.current.clientWidth;
       const containerHeight = imageContainerRef.current.clientHeight;
-      const imageWidth = imageRef.current.naturalWidth;
-      const imageHeight = imageRef.current.naturalHeight;
+      
+      let imageWidth: number;
+      let imageHeight: number;
+      
+      if (isSvgImage) {
+        imageWidth = imageRef.current.clientWidth || imageDimensions.width || containerWidth;
+        imageHeight = imageRef.current.clientHeight || imageDimensions.height || containerHeight;
+      } else {
+        imageWidth = imageRef.current.naturalWidth || imageDimensions.width || containerWidth;
+        imageHeight = imageRef.current.naturalHeight || imageDimensions.height || containerHeight;
+      }
 
       const scaleX = containerWidth / imageWidth;
       const scaleY = containerHeight / imageHeight;
@@ -368,7 +407,7 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
       setZoom(newZoom);
       setPan({ x: 0, y: 0 });
     }
-  }, []);
+  }, [isSvgImage, imageDimensions]);
 
   // Pan controls
   const handleMouseDown = useCallback(
@@ -395,15 +434,6 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
 
   const handleMouseUp = useCallback(() => {
     setIsPanning(false);
-  }, []);
-
-  // Handle highlight click
-  const handleHighlightClick = useCallback((highlightId: string) => {
-    setHighlightedCitationId(highlightId);
-    const highlightElement = document.querySelector(`[data-highlight-id="${highlightId}"]`);
-    if (highlightElement) {
-      highlightElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
   }, []);
 
   // Scroll to highlight from sidebar
@@ -441,36 +471,6 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
     }
   }, []);
 
-  // Calculate highlight positions based on current image size
-  const getHighlightStyle = useCallback((highlight: HighlightType) => {
-    if (!imageRef.current) return {};
-
-    const imgRect = imageRef.current.getBoundingClientRect();
-    const containerRect = imageContainerRef.current?.getBoundingClientRect();
-
-    if (!containerRect) return {};
-
-    // Calculate actual image display size
-    const displayWidth = imgRect.width;
-    const displayHeight = imgRect.height;
-
-    // Calculate position relative to container
-    const highlightWidth = 150; // Fixed width for highlights
-    const highlightHeight = 100; // Fixed height for highlights
-
-    // Position highlights in a grid pattern
-    const { x1, y1 } = highlight.position.boundingRect;
-    const left = (x1 / 100) * displayWidth;
-    const top = (y1 / 100) * displayHeight;
-
-    return {
-      left: `${left}px`,
-      top: `${top}px`,
-      width: `${highlightWidth}px`,
-      height: `${highlightHeight}px`,
-    };
-  }, []);
-
   return (
     <ViewerContainer ref={fullScreenContainerRef} component={Paper} sx={sx}>
       {loading && (
@@ -488,7 +488,6 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
         </ErrorOverlay>
       )}
 
-      {/* Container for main content and sidebar */}
       <Box
         sx={{
           display: 'flex',
@@ -497,7 +496,6 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
           visibility: loading || error ? 'hidden' : 'visible',
         }}
       >
-        {/* Image Content Area */}
         <Box
           sx={{
             height: '100%',
@@ -511,7 +509,6 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
                 : 'none',
           }}
         >
-          {/* Zoom Controls */}
           <ZoomControls>
             <IconButton size="small" onClick={handleZoomIn} title="Zoom In">
               <Icon icon={zoomInIcon} style={{ fontSize: 20 }} />
@@ -568,7 +565,6 @@ const ImageHighlighter: React.FC<ImageHighlighterProps> = ({
           </ImageContainer>
         </Box>
 
-        {/* Sidebar Area (Conditional) */}
         {processedCitations.length > 0 && !loading && !error && (
           <Box
             sx={{
