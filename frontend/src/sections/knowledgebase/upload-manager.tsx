@@ -397,12 +397,12 @@ export default function UploadManager({
       }> = [];
       
       responses.forEach((response) => {
-        if (response?.data?.records && Array.isArray(response.data.records)) {
-          allRecords.push(...response.data.records);
+        if (response?.records && Array.isArray(response.records)) {
+          allRecords.push(...response.records);
         }
         // Collect failed files from response
-        if (response?.data?.failedFilesDetails && Array.isArray(response.data.failedFilesDetails)) {
-          allFailedFiles.push(...response.data.failedFilesDetails);
+        if (response?.failedFilesDetails && Array.isArray(response.failedFilesDetails)) {
+          allFailedFiles.push(...response.failedFilesDetails);
         }
       });
 

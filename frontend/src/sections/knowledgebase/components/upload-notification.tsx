@@ -353,7 +353,7 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                               width={16}
                               height={16}
                               style={{
-                                color: theme.palette.text.secondary,
+                                color: isFailed ? theme.palette.error.main : theme.palette.text.secondary,
                                 flexShrink: 0,
                               }}
                             />
@@ -365,7 +365,7 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                                 fontSize: '0.8125rem',
                                 color: isCompleted && !isFailed
                                   ? theme.palette.success.main
-                                  : 'text.primary',
+                                  :  isFailed ? theme.palette.error.main : 'text.primary',
                                 fontWeight: isCompleted && !isFailed ? 500 : 400,
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',

@@ -230,6 +230,8 @@ export const processUploadsInBackground = async (
   headers: Record<string, string>,
   logger: Logger,
   notificationService?: NotificationService,
+  kbId?: string,
+  folderId?: string,
 ): Promise<void> => {
   const uploadStartTime = Date.now();
   
@@ -287,12 +289,18 @@ export const processUploadsInBackground = async (
       durationMs: uploadDuration,
     });
 
-    // STEP 2: Extract kbId and folderId from URL for notifications
-    const urlParts = pythonServiceUrl.split('/');
-    const kbIdIndex = urlParts.findIndex((part) => part === 'kb') + 1;
-    const kbId = kbIdIndex > 0 && kbIdIndex < urlParts.length ? urlParts[kbIdIndex] : undefined;
-    const folderIdIndex = urlParts.findIndex((part) => part === 'folder');
-    const folderId = folderIdIndex > 0 && folderIdIndex + 1 < urlParts.length ? urlParts[folderIdIndex + 1] : undefined;
+    // STEP 2: Use provided kbId and folderId, or extract from URL as fallback
+    // Prefer explicit parameters over URL parsing for better reliability
+    const finalKbId = kbId || (() => {
+      const urlParts = pythonServiceUrl.split('/');
+      const kbIdIndex = urlParts.findIndex((part) => part === 'kb') + 1;
+      return kbIdIndex > 0 && kbIdIndex < urlParts.length ? urlParts[kbIdIndex] : undefined;
+    })();
+    const finalFolderId = folderId || (() => {
+      const urlParts = pythonServiceUrl.split('/');
+      const folderIdIndex = urlParts.findIndex((part) => part === 'folder');
+      return folderIdIndex > 0 && folderIdIndex + 1 < urlParts.length ? urlParts[folderIdIndex + 1] : undefined;
+    })();
 
     // STEP 3: Send failed files notification if any
     // Event-driven: Send immediately when failures are detected, no delays
@@ -309,8 +317,8 @@ export const processUploadsInBackground = async (
         const eventData = {
           failedFiles,
           orgId,
-          kbId,
-          folderId,
+          kbId: finalKbId,
+          folderId: finalFolderId,
           totalFailed: failedResults.length,
           timestamp: Date.now(),
         };
@@ -321,8 +329,8 @@ export const processUploadsInBackground = async (
         logger.info('Notification sent for failed records', {
           userId,
           totalFailed: failedResults.length,
-          kbId,
-          folderId,
+          kbId: finalKbId,
+          folderId: finalFolderId,
           sentImmediately,
         });
       } catch (socketError: unknown) {
@@ -331,8 +339,8 @@ export const processUploadsInBackground = async (
           error: error.message,
           stack: error.stack,
           userId,
-          kbId,
-          folderId,
+          kbId: finalKbId,
+          folderId: finalFolderId,
         });
         // Don't fail the upload if notification fails - this is a non-critical notification
       }
@@ -432,8 +440,8 @@ export const processUploadsInBackground = async (
           const eventData = {
             recordIds,
             orgId,
-            kbId,
-            folderId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
             totalRecords: processedFiles.length,
             timestamp: Date.now(),
           };
@@ -445,8 +453,8 @@ export const processUploadsInBackground = async (
             userId,
             recordIds: recordIds.slice(0, 3),
             totalRecords: processedFiles.length,
-            kbId,
-            folderId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
             sentImmediately,
             totalDurationMs: totalDuration,
             uploadDurationMs: uploadDuration,
@@ -457,8 +465,8 @@ export const processUploadsInBackground = async (
             error: error.message,
             stack: error.stack,
             userId,
-            kbId,
-            folderId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
             totalRecords: processedFiles.length,
           });
           // Don't fail the upload if notification fails - this is a non-critical notification
@@ -466,8 +474,8 @@ export const processUploadsInBackground = async (
       } else {
         logger.warn('NotificationService not available - socket events will not be sent', {
           userId,
-          kbId,
-          folderId,
+          kbId: finalKbId,
+          folderId: finalFolderId,
           totalRecords: processedFiles.length,
         });
       }
@@ -494,8 +502,8 @@ export const processUploadsInBackground = async (
           const eventData = {
             failedFiles,
             orgId,
-            kbId,
-            folderId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
             totalFailed: processedFiles.length,
             timestamp: Date.now(),
           };
@@ -505,8 +513,8 @@ export const processUploadsInBackground = async (
 
           logger.info('Notification sent for Python API failures', {
             userId,
-            kbId,
-            folderId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
             totalFailed: processedFiles.length,
             sentImmediately,
           });
@@ -516,8 +524,8 @@ export const processUploadsInBackground = async (
             error: error.message,
             stack: error.stack,
             userId,
-            kbId,
-            folderId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
           });
         }
       }
@@ -536,11 +544,17 @@ export const processUploadsInBackground = async (
       // Event-driven: Send immediately when catastrophic error occurs
     if (notificationService && placeholderResults.length > 0) {
       try {
-        const urlParts = pythonServiceUrl.split('/');
-        const kbIdIndex = urlParts.findIndex((part) => part === 'kb') + 1;
-        const kbId = kbIdIndex > 0 && kbIdIndex < urlParts.length ? urlParts[kbIdIndex] : undefined;
-        const folderIdIndex = urlParts.findIndex((part) => part === 'folder');
-        const folderId = folderIdIndex > 0 && folderIdIndex + 1 < urlParts.length ? urlParts[folderIdIndex + 1] : undefined;
+        // Use provided kbId and folderId, or extract from URL as fallback
+        const errorKbId = kbId || (() => {
+          const urlParts = pythonServiceUrl.split('/');
+          const kbIdIndex = urlParts.findIndex((part) => part === 'kb') + 1;
+          return kbIdIndex > 0 && kbIdIndex < urlParts.length ? urlParts[kbIdIndex] : undefined;
+        })();
+        const errorFolderId = folderId || (() => {
+          const urlParts = pythonServiceUrl.split('/');
+          const folderIdIndex = urlParts.findIndex((part) => part === 'folder');
+          return folderIdIndex > 0 && folderIdIndex + 1 < urlParts.length ? urlParts[folderIdIndex + 1] : undefined;
+        })();
 
         const failedFiles = placeholderResults.map((result) => ({
           recordId: result.metadata.key,
@@ -552,8 +566,8 @@ export const processUploadsInBackground = async (
         const eventData = {
           failedFiles,
           orgId,
-          kbId,
-          folderId,
+          kbId: errorKbId,
+          folderId: errorFolderId,
           totalFailed: placeholderResults.length,
           timestamp: Date.now(),
         };
@@ -563,8 +577,8 @@ export const processUploadsInBackground = async (
 
         logger.info('Notification sent for catastrophic failure', {
           userId,
-          kbId,
-          folderId,
+          kbId: errorKbId,
+          folderId: errorFolderId,
           totalFailed: placeholderResults.length,
           sentImmediately,
         });
@@ -574,8 +588,8 @@ export const processUploadsInBackground = async (
           error: error.message,
           stack: error.stack,
           userId,
-          kbId: undefined,
-          folderId: undefined,
+          kbId: kbId || undefined,
+          folderId: folderId || undefined,
         });
       }
     }

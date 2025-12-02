@@ -837,6 +837,8 @@ export const uploadRecordsToKB =
         req.headers as Record<string, string>,
         logger,
         notificationService,
+        kbId,
+        undefined, // folderId is undefined for KB root uploads
       ).catch((error) => {
         logger.error('Background processing error (non-fatal)', {
           error: error.message,
@@ -1162,6 +1164,8 @@ export const uploadRecordsToFolder =
         req.headers as Record<string, string>,
         logger,
         notificationService,
+        kbId,
+        folderId,
       ).catch((error) => {
         logger.error('Background processing error (non-fatal)', {
           error: error.message,

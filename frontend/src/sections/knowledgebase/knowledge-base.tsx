@@ -675,34 +675,10 @@ export default function KnowledgeBaseComponent() {
                   if (!upload.hasFailures) {
                     setSuccess(`Successfully processed ${data.totalRecords} file${data.totalRecords > 1 ? 's' : ''}`);
                   }
-                  
-                  // Also update in storage
-                  try {
-                    const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
-                    if (stored) {
-                      const parsed = JSON.parse(stored);
-                      parsed[uploadKey] = updatedUpload;
-                      sessionStorage.setItem(ACTIVE_UPLOADS_STORAGE_KEY, JSON.stringify(parsed));
-                    }
-                  } catch (e) {
-                    // Ignore errors
-                  }
                 } else if (upload.status !== 'completed') {
                   // Partial match - update status but don't remove yet
                   const partialUpdate = { ...upload, status: 'processing' as const };
                   newMap.set(uploadKey, partialUpdate);
-                  
-                  // Also update in storage
-                  try {
-                    const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
-                    if (stored) {
-                      const parsed = JSON.parse(stored);
-                      parsed[uploadKey] = partialUpdate;
-                      sessionStorage.setItem(ACTIVE_UPLOADS_STORAGE_KEY, JSON.stringify(parsed));
-                    }
-                  } catch (e) {
-                    // Ignore errors
-                  }
                 }
               }
               return newMap;
@@ -796,18 +772,6 @@ export default function KnowledgeBaseComponent() {
                 
                 // Show error snackbar for failed files
                 setError(`Failed to process ${mergedFailedFiles.length} file${mergedFailedFiles.length > 1 ? 's' : ''}`);
-                
-                // Also update in storage
-                try {
-                  const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
-                  if (stored) {
-                    const parsed = JSON.parse(stored);
-                    parsed[uploadKey] = updatedUpload;
-                    sessionStorage.setItem(ACTIVE_UPLOADS_STORAGE_KEY, JSON.stringify(parsed));
-                  }
-                } catch (e) {
-                  // Ignore errors
-                }
               }
               return newMap;
             });
@@ -916,18 +880,6 @@ export default function KnowledgeBaseComponent() {
                 hasFailures: true,
               };
               newMap.set(uploadKey, updatedUpload);
-              
-              // Update in storage
-              try {
-                const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
-                if (stored) {
-                  const parsed = JSON.parse(stored);
-                  parsed[uploadKey] = updatedUpload;
-                  sessionStorage.setItem(ACTIVE_UPLOADS_STORAGE_KEY, JSON.stringify(parsed));
-                }
-              } catch (e) {
-                // Ignore errors
-              }
             }
             
             return newMap;
@@ -999,16 +951,6 @@ export default function KnowledgeBaseComponent() {
                 hasFailures: failedFiles && failedFiles.length > 0,
               };
               newMap.set(uploadKey, newUpload);
-              
-              // Save to storage
-              try {
-                const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
-                const parsed = stored ? JSON.parse(stored) : {};
-                parsed[uploadKey] = newUpload;
-                sessionStorage.setItem(ACTIVE_UPLOADS_STORAGE_KEY, JSON.stringify(parsed));
-              } catch (e) {
-                // Ignore errors
-              }
             }
             
             return newMap;
@@ -1071,18 +1013,6 @@ export default function KnowledgeBaseComponent() {
                   status: 'completed' as const,
                 };
                 newMap.set(uploadKey, updatedUpload);
-                
-                // Update in storage
-                try {
-                  const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
-                  if (stored) {
-                    const parsed = JSON.parse(stored);
-                    parsed[uploadKey] = updatedUpload;
-                    sessionStorage.setItem(ACTIVE_UPLOADS_STORAGE_KEY, JSON.stringify(parsed));
-                  }
-                } catch (e) {
-                  // Ignore errors
-                }
                 
                 // Refresh to get actual status from server
                 loadKBContents(currentKB.id, stableRoute.folderId, true, true).catch(() => {
@@ -1658,17 +1588,6 @@ export default function KnowledgeBaseComponent() {
           setActiveUploads((prev) => {
             const newMap = new Map(prev);
             newMap.delete(uploadKey);
-            // Also remove from storage
-            try {
-              const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
-              if (stored) {
-                const parsed = JSON.parse(stored);
-                delete parsed[uploadKey];
-                sessionStorage.setItem(ACTIVE_UPLOADS_STORAGE_KEY, JSON.stringify(parsed));
-              }
-            } catch (e) {
-              // Ignore errors
-            }
             return newMap;
           });
         }}
