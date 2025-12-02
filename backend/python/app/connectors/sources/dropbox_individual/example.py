@@ -104,22 +104,22 @@ async def test_run() -> None:
         Returns:
             bool: True if credentials are configured successfully
         """
-        access_token = _get_env(logger, "DROPBOX_INDIVIDUAL_TOKEN", "DROPBOX_TOKEN")
-        app_key = _get_env(logger, "DROPBOX_INDIVIDUAL_APP_KEY", "DROPBOX_APP_KEY")
-        app_secret = _get_env(logger, "DROPBOX_INDIVIDUAL_APP_SECRET", "DROPBOX_APP_SECRET")
+        access_token = _get_env(logger, "DROPBOX_PERSONAL_TOKEN", "DROPBOX_TOKEN")
+        app_key = _get_env(logger, "DROPBOX_PERSONAL_APP_KEY", "DROPBOX_APP_KEY")
+        app_secret = _get_env(logger, "DROPBOX_PERSONAL_APP_SECRET", "DROPBOX_APP_SECRET")
         refresh_token = _get_env(
             logger,
-            "DROPBOX_INDIVIDUAL_REFRESH_TOKEN",
+            "DROPBOX_PERSONAL_REFRESH_TOKEN",
             allow_fallback=False
         )
 
         missing_values = []
         if not access_token:
-            missing_values.append("DROPBOX_INDIVIDUAL_TOKEN")
+            missing_values.append("DROPBOX_PERSONAL_TOKEN")
         if not app_key:
-            missing_values.append("DROPBOX_INDIVIDUAL_APP_KEY")
+            missing_values.append("DROPBOX_PERSONAL_APP_KEY")
         if not app_secret:
-            missing_values.append("DROPBOX_INDIVIDUAL_APP_SECRET")
+            missing_values.append("DROPBOX_PERSONAL_APP_SECRET")
 
         if missing_values:
             logger.error(
@@ -204,14 +204,14 @@ async def test_run() -> None:
 
 if __name__ == "__main__":
     # Environment variables required:
-    # DROPBOX_INDIVIDUAL_TOKEN - OAuth token for individual Dropbox account
-    # DROPBOX_INDIVIDUAL_REFRESH_TOKEN - Refresh token (optional)
-    # DROPBOX_INDIVIDUAL_APP_KEY - App key from Dropbox App Console
-    # DROPBOX_INDIVIDUAL_APP_SECRET - App secret from Dropbox App Console
+    # DROPBOX_PERSONAL_TOKEN - OAuth token for individual Dropbox account
+    # DROPBOX_PERSONAL_REFRESH_TOKEN - Refresh token (optional)
+    # DROPBOX_PERSONAL_APP_KEY - App key from Dropbox App Console
+    # DROPBOX_PERSONAL_APP_SECRET - App secret from Dropbox App Console
 
     # Example:
-    # export DROPBOX_INDIVIDUAL_TOKEN='your-individual-token-here'
-    # export DROPBOX_INDIVIDUAL_REFRESH_TOKEN='your-refresh-token'
-    # export DROPBOX_INDIVIDUAL_APP_KEY='your-app-key'
-    # export DROPBOX_INDIVIDUAL_APP_SECRET='your-app-secret'
+    # export DROPBOX_PERSONAL_TOKEN='your-individual-token-here'
+    # export DROPBOX_PERSONAL_REFRESH_TOKEN='your-refresh-token'
+    # export DROPBOX_PERSONAL_APP_KEY='your-app-key'
+    # export DROPBOX_PERSONAL_APP_SECRET='your-app-secret'
     asyncio.run(test_run())

@@ -137,7 +137,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
 @ConnectorBuilder("Dropbox Personal")\
     .in_group("Cloud Storage")\
     .with_auth_type("OAUTH")\
-    .with_description("Sync files and folders from Dropbox Individual account")\
+    .with_description("Sync files and folders from Dropbox Personal account")\
     .with_categories(["Storage"])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/dropbox.svg")
@@ -201,7 +201,7 @@ class DropboxIndividualConnector(BaseConnector):
             config_service
         )
 
-        self.connector_name = Connectors.DROPBOX_INDIVIDUAL
+        self.connector_name = Connectors.DROPBOX_PERSONAL
 
         # Sync point (Only RECORDS needed for individual)
         # We inline the logic here because we only create one.
