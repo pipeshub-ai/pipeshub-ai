@@ -156,7 +156,7 @@ function getDocumentType(extension: string, recordType?: string) {
   if (extension === 'md') return 'md';
   if (extension === 'mdx') return 'mdx';
   if (['ppt', 'pptx'].includes(extension)) return 'pdf'; // have to convert to pdf
-  if (['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(extension)) return 'image';
+  if (['jpg', 'jpeg', 'png', 'webp', 'svg', 'gif'].includes(extension)) return 'image';
   return 'other';
 }
 
@@ -776,6 +776,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             url={fileUrl}
             buffer={fileBuffer}
             citations={recordCitations?.documents || []}
+            fileExtension={extension}
           />
         );
       default:
