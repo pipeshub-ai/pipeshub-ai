@@ -59,6 +59,7 @@ class LLMProvider(Enum):
     VERTEX_AI = "vertexAI"
     XAI = "xai"
 
+MAX_OUTPUT_TOKENS = 16000
 
 def get_default_embedding_model() -> Embeddings:
     from langchain_huggingface import HuggingFaceEmbeddings
@@ -271,11 +272,18 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 max_retries=2,
                 api_key=configuration["apiKey"],
-                max_tokens=16000,
+                max_tokens=MAX_OUTPUT_TOKENS,
             )
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
         from langchain_aws import ChatBedrock
+        provider_in_bedrock = configuration.get("provider", LLMProvider.ANTHROPIC.value)
+        if provider_in_bedrock == LLMProvider.ANTHROPIC.value:
+            model_kwargs = {
+                "max_tokens": MAX_OUTPUT_TOKENS,
+            }
+        else:
+            model_kwargs = {}
 
         return ChatBedrock(
                 model_id=model_name,
@@ -283,7 +291,8 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 aws_access_key_id=configuration["awsAccessKeyId"],
                 aws_secret_access_key=configuration["awsAccessSecretKey"],
                 region_name=configuration["region"],
-                provider=configuration.get("provider", "anthropic"),
+                provider=provider_in_bedrock,
+                model_kwargs=model_kwargs
             )
     elif provider == LLMProvider.AZURE_AI.value:
         from langchain_anthropic import ChatAnthropic
