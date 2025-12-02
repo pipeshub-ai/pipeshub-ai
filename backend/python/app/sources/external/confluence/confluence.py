@@ -1,8 +1,7 @@
 from datetime import datetime, timedelta
-from typing import Any, AsyncGenerator, Dict, Optional, Union
+from typing import Any, AsyncGenerator, Dict, Literal, Optional, Union
 
 import httpx
-import pytz
 
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.http_request import HTTPRequest
@@ -1995,11 +1994,12 @@ class ConfluenceDataSource:
         modified_after: Optional[str] = None,
         created_after: Optional[str] = None,
         space_key: Optional[str] = None,
-        order_by: str = "lastModified",
-        sort_order: str = "asc",
-        expand: str = "version,space,metadata.properties",
+        order_by: Optional[Literal["lastModified", "created", "title"]] = None,
+        sort_order: Optional[Literal["asc", "desc"]] = None,
+        expand: Optional[str] = None,
         cursor: Optional[str] = None,
-        limit: int = 25,
+        limit: Optional[int] = None,
+        time_offset_hours: int = 0,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Fetch pages using v1 content API with time-based filtering.
@@ -2008,47 +2008,36 @@ class ConfluenceDataSource:
             modified_after: Filter pages modified after this datetime (ISO 8601)
             created_after: Filter pages created after this datetime (ISO 8601)
             space_key: Filter pages by specific space key
-            order_by: Sort field (default: lastModified)
-            sort_order: Sort direction - asc or desc (default: asc)
-            expand: Comma-separated list of properties to expand
+            order_by: CQL sort field - lastModified, created, or title (default: None, API default).
+                      Must be specified together with sort_order, or neither.
+            sort_order: Sort direction - asc or desc (default: None, API default).
+                        Must be specified together with order_by, or neither.
+            expand: Comma-separated list of properties to expand (default: None, no expansion)
             cursor: Pagination cursor from previous response's _links.next
-            limit: Number of results per page
+            limit: Number of results per page (default: Confluence API default, typically 25)
+            time_offset_hours: Hours to offset date filters (default: 0, no offset).
+                               Positive values: subtract from date (go back in time).
+                               Negative values: add to date (go forward in time).
 
         Returns:
             HTTPResponse containing pages array with pagination links
+
+        Raises:
+            ValueError: If only one of order_by/sort_order is specified
         """
         if self._client is None:
             raise ValueError("HTTP client is not initialized")
         _headers: Dict[str, Any] = dict(headers or {})
 
-        _query: Dict[str, Any] = {
-            "limit": limit,
-        }
+        _query: Dict[str, Any] = {}
+
+        # Only add limit if specified, otherwise use API default
+        if limit is not None:
+            _query["limit"] = limit
 
         # Add expand parameter
         if expand:
             _query["expand"] = expand
-
-        def format_cql_date(iso_date: str, confluence_timezone: str = "Asia/Kolkata") -> str:
-            """Convert ISO 8601 UTC to CQL format in Confluence's timezone: yyyy-MM-dd HH:mm"""
-            # Parse the ISO date string (UTC)
-            if iso_date.endswith('Z'):
-                dt_utc = datetime.fromisoformat(iso_date.replace('Z', '+00:00'))
-            else:
-                dt_utc = datetime.fromisoformat(iso_date)
-
-            # Convert to Confluence's timezone
-            confluence_tz = pytz.timezone(confluence_timezone)
-            dt_local = dt_utc.astimezone(confluence_tz)
-
-            # Round up to the next minute if there are any seconds or microseconds
-            if dt_local.second > 0 or dt_local.microsecond > 0:
-                dt_local = dt_local.replace(second=0, microsecond=0) + timedelta(minutes=1)
-            else:
-                dt_local = dt_local.replace(second=0, microsecond=0)
-
-            # Format to CQL date format: yyyy-MM-dd HH:mm
-            return dt_local.strftime("%Y-%m-%d %H:%M")
 
         # Build CQL query for time filtering and ordering
         cql_parts = ["type=page"]
@@ -2058,15 +2047,20 @@ class ConfluenceDataSource:
             cql_parts.append(f"space='{space_key}'")
 
         if modified_after:
-            formatted_date = format_cql_date(modified_after)
+            formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
             cql_parts.append(f'lastModified > "{formatted_date}"')
         if created_after:
-            formatted_date = format_cql_date(created_after)
+            formatted_date = _format_cql_date_with_offset(created_after, time_offset_hours)
             cql_parts.append(f'created > "{formatted_date}"')
 
-        # Combine filters with ordering
+        # Combine filters
         cql_query = " AND ".join(cql_parts)
-        cql_query += f" order by {order_by} {sort_order}"
+
+        # Add ordering only if both order_by and sort_order are specified
+        if order_by is not None or sort_order is not None:
+            if order_by is None or sort_order is None:
+                raise ValueError("Both order_by and sort_order must be specified together, or neither")
+            cql_query += f" order by {order_by} {sort_order}"
 
         _query["cql"] = cql_query
 
@@ -2096,11 +2090,12 @@ class ConfluenceDataSource:
         modified_after: Optional[str] = None,
         created_after: Optional[str] = None,
         space_key: Optional[str] = None,
-        order_by: str = "lastModified",
-        sort_order: str = "asc",
-        expand: str = "version,space,history.lastUpdated,children.attachment,children.attachment.history.lastUpdated,children.attachment.version",
+        order_by: Optional[Literal["lastModified", "created", "title"]] = None,
+        sort_order: Optional[Literal["asc", "desc"]] = None,
+        expand: Optional[str] = None,
         cursor: Optional[str] = None,
-        limit: int = 25,
+        limit: Optional[int] = None,
+        time_offset_hours: int = 0,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Fetch blogposts using v1 content API with time-based filtering.
@@ -2109,47 +2104,36 @@ class ConfluenceDataSource:
             modified_after: Filter blogposts modified after this datetime (ISO 8601)
             created_after: Filter blogposts created after this datetime (ISO 8601)
             space_key: Filter blogposts by specific space key
-            order_by: Sort field (default: lastModified)
-            sort_order: Sort direction - asc or desc (default: asc)
-            expand: Comma-separated list of properties to expand
+            order_by: CQL sort field - lastModified, created, or title (default: None, API default).
+                      Must be specified together with sort_order, or neither.
+            sort_order: Sort direction - asc or desc (default: None, API default).
+                        Must be specified together with order_by, or neither.
+            expand: Comma-separated list of properties to expand (default: None, no expansion)
             cursor: Pagination cursor from previous response's _links.next
-            limit: Number of results per page
+            limit: Number of results per page (default: Confluence API default, typically 25)
+            time_offset_hours: Hours to offset date filters (default: 0, no offset).
+                               Positive values: subtract from date (go back in time).
+                               Negative values: add to date (go forward in time).
 
         Returns:
             HTTPResponse containing blogposts array with pagination links
+
+        Raises:
+            ValueError: If only one of order_by/sort_order is specified
         """
         if self._client is None:
             raise ValueError("HTTP client is not initialized")
         _headers: Dict[str, Any] = dict(headers or {})
 
-        _query: Dict[str, Any] = {
-            "limit": limit,
-        }
+        _query: Dict[str, Any] = {}
+
+        # Only add limit if specified, otherwise use API default
+        if limit is not None:
+            _query["limit"] = limit
 
         # Add expand parameter
         if expand:
             _query["expand"] = expand
-
-        def format_cql_date(iso_date: str, confluence_timezone: str = "Asia/Kolkata") -> str:
-            """Convert ISO 8601 UTC to CQL format in Confluence's timezone: yyyy-MM-dd HH:mm"""
-            # Parse the ISO date string (UTC)
-            if iso_date.endswith('Z'):
-                dt_utc = datetime.fromisoformat(iso_date.replace('Z', '+00:00'))
-            else:
-                dt_utc = datetime.fromisoformat(iso_date)
-
-            # Convert to Confluence's timezone
-            confluence_tz = pytz.timezone(confluence_timezone)
-            dt_local = dt_utc.astimezone(confluence_tz)
-
-            # Round up to the next minute if there are any seconds or microseconds
-            if dt_local.second > 0 or dt_local.microsecond > 0:
-                dt_local = dt_local.replace(second=0, microsecond=0) + timedelta(minutes=1)
-            else:
-                dt_local = dt_local.replace(second=0, microsecond=0)
-
-            # Format to CQL date format: yyyy-MM-dd HH:mm
-            return dt_local.strftime("%Y-%m-%d %H:%M")
 
         # Build CQL query for time filtering and ordering
         cql_parts = ["type=blogpost"]
@@ -2159,15 +2143,20 @@ class ConfluenceDataSource:
             cql_parts.append(f"space='{space_key}'")
 
         if modified_after:
-            formatted_date = format_cql_date(modified_after)
+            formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
             cql_parts.append(f'lastModified > "{formatted_date}"')
         if created_after:
-            formatted_date = format_cql_date(created_after)
+            formatted_date = _format_cql_date_with_offset(created_after, time_offset_hours)
             cql_parts.append(f'created > "{formatted_date}"')
 
-        # Combine filters with ordering
+        # Combine filters
         cql_query = " AND ".join(cql_parts)
-        cql_query += f" order by {order_by} {sort_order}"
+
+        # Add ordering only if both order_by and sort_order are specified
+        if order_by is not None or sort_order is not None:
+            if order_by is None or sort_order is None:
+                raise ValueError("Both order_by and sort_order must be specified together, or neither")
+            cql_query += f" order by {order_by} {sort_order}"
 
         _query["cql"] = cql_query
 
@@ -7793,48 +7782,49 @@ class ConfluenceDataSource:
         resp = await self._client.execute(req)
         return resp
 
-    @staticmethod
-    def iso_to_millis(iso_date: str) -> int:
-        """Convert ISO 8601 datetime string to milliseconds timestamp.
-
-        Handles various ISO formats including:
-        - 2025-11-13T07:51:50.526Z
-        - 2025-11-13T07:51:50Z
-        - 2025-11-13T07:51:50+00:00
-
-        Args:
-            iso_date: ISO 8601 formatted datetime string
-
-        Returns:
-            Unix timestamp in milliseconds
-
-        Example:
-            millis = ConfluenceDataSource.iso_to_millis("2025-11-13T07:51:50.526Z")
-            # Returns: 1731484310526
-        """
-        # Replace 'Z' with '+00:00' for proper ISO format parsing
-        normalized = iso_date.replace('Z', '+00:00')
-        dt = datetime.fromisoformat(normalized)
-        return int(dt.timestamp() * 1000)
-
-    @staticmethod
-    def millis_to_iso(millis: int) -> str:
-        """Convert milliseconds timestamp to ISO 8601 datetime string.
-
-        Args:
-            millis: Unix timestamp in milliseconds
-
-        Returns:
-            ISO 8601 formatted datetime string with Z suffix
-
-        Example:
-            iso = ConfluenceDataSource.millis_to_iso(1731484310526)
-            # Returns: "2025-11-13T07:51:50.526Z"
-        """
-        dt = datetime.fromtimestamp(millis / 1000, tz=pytz.UTC)
-        return dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
-
 # ---- Helpers used by generated methods ----
+
+def _format_cql_date_with_offset(iso_date: str, offset_hours: int = 0) -> str:
+    """Convert ISO 8601 datetime to CQL format with an optional time offset.
+
+    This helper converts ISO dates to CQL format and optionally applies an offset,
+    useful for handling timezone differences between app and Confluence server.
+
+    Args:
+        iso_date: ISO 8601 formatted datetime string (e.g., "2025-01-15T10:30:00Z")
+        offset_hours: Hours to subtract from the date (default: 0, no offset).
+                      Positive values: go back in time (for 'after' filters).
+                      Negative values: go forward in time (for 'before' filters).
+
+    Returns:
+        CQL-formatted date string: "yyyy-MM-dd HH:mm"
+
+    Example:
+        # No offset - use date as-is
+        date = _format_cql_date_with_offset("2025-01-15T10:30:00Z")
+        # Returns: "2025-01-15 10:30"
+
+        # For 'modified_after' filter, subtract 24 hours to ensure no data is missed
+        date = _format_cql_date_with_offset("2025-01-15T10:30:00Z", 24)
+        # Returns: "2025-01-14 10:30"
+
+        # For 'modified_before' filter, add 24 hours
+        date = _format_cql_date_with_offset("2025-01-15T10:30:00Z", -24)
+        # Returns: "2025-01-16 10:30"
+    """
+    # Parse the ISO date string
+    if iso_date.endswith('Z'):
+        dt = datetime.fromisoformat(iso_date.replace('Z', '+00:00'))
+    else:
+        dt = datetime.fromisoformat(iso_date)
+
+    # Apply offset (positive = go back, negative = go forward)
+    dt_adjusted = dt - timedelta(hours=offset_hours)
+
+    # Format to CQL date format: yyyy-MM-dd HH:mm
+    return dt_adjusted.strftime("%Y-%m-%d %H:%M")
+
+
 def _safe_format_url(template: str, params: Dict[str, object]) -> str:
     class _SafeDict(dict):
         def __missing__(self, key: str) -> str:

@@ -59,6 +59,22 @@ AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 HTTP_STATUS_200 = 200
 
+# Time offset (in hours) applied to date filters to handle timezone differences
+# between the application and Confluence server, ensuring no data is missed during sync
+TIME_OFFSET_HOURS = 24
+
+# Expand parameters for fetching pages and blogposts with required metadata
+# Includes: ancestors, history, space, attachments, and comments
+CONTENT_EXPAND_PARAMS = (
+    "ancestors,"
+    "history.lastUpdated,"
+    "space,"
+    "children.attachment,"
+    "children.attachment.history.lastUpdated,"
+    "children.attachment.version,"
+    "childTypes.comment"
+)
+
 
 @ConnectorBuilder("Confluence")\
     .in_group("Atlassian")\
@@ -570,8 +586,6 @@ class ConfluenceConnector(BaseConnector):
             total_permissions_synced = 0
             latest_update_time = None
 
-            expand_params = "ancestors,history.lastUpdated,space,children.attachment,children.attachment.history.lastUpdated,children.attachment.version,childTypes.comment"
-
             # Paginate through all content items
             while True:
                 datasource = await self._get_fresh_datasource()
@@ -584,7 +598,8 @@ class ConfluenceConnector(BaseConnector):
                         space_key=space_key,
                         order_by="lastModified",
                         sort_order="asc",
-                        expand=expand_params
+                        expand=CONTENT_EXPAND_PARAMS,
+                        time_offset_hours=TIME_OFFSET_HOURS
                     )
                 else:
                     response = await datasource.get_blogposts_v1(
@@ -594,7 +609,8 @@ class ConfluenceConnector(BaseConnector):
                         space_key=space_key,
                         order_by="lastModified",
                         sort_order="asc",
-                        expand=expand_params
+                        expand=CONTENT_EXPAND_PARAMS,
+                        time_offset_hours=TIME_OFFSET_HOURS
                     )
 
                 # Check response
