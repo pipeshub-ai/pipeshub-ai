@@ -5260,7 +5260,7 @@ class BaseArangoService:
         self,
         keys: List[str],
         collection: str,
-        graph_name: str,
+        graph_name: str = GraphNames.KNOWLEDGE_GRAPH.value,
         transaction: Optional[TransactionDatabase] = None
     ) -> bool:
         """
@@ -5340,6 +5340,98 @@ class BaseArangoService:
             self.logger.error(f"❌ Failed to delete nodes and edges for keys {keys}: {e}", exc_info=True)
             return False
 
+    async def delete_record_generic(
+        self,
+        record_id: str,
+        graph_name: str = GraphNames.KNOWLEDGE_GRAPH.value,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> bool:
+        """
+        Deletes a record node, all its connected edges, and the node
+        connected via the 'isOfType' edge.
+
+        This method:
+        1. Finds the node connected to the record via 'isOfType' edge (record -> type node)
+        2. Deletes all edges connected to the record node
+        3. Deletes the record node itself
+        4. Deletes the connected type node (and its edges)
+
+        Args:
+            record_id: The record node key to delete
+            graph_name: The name of the graph
+            transaction: Optional transaction database connection
+
+        Returns:
+            bool: True if deletion was successful, False otherwise
+        """
+        if not record_id:
+            self.logger.info("No record_id provided for deletion. Skipping.")
+            return True
+
+        db = transaction if transaction else self.db
+        if not db:
+            self.logger.error("❌ Database connection is not available.")
+            return False
+
+        try:
+            self.logger.info(f"🚀 Starting deletion of record '{record_id}' and its isOfType connected node.")
+
+            record_full_id = f"records/{record_id}"
+
+            # --- Step 1: Find the node connected via isOfType edge (record -> type node) ---
+            find_type_node_query = """
+            FOR edge IN isOfType
+                FILTER edge._from == @record_id
+                RETURN edge._to
+            """
+
+            cursor = db.aql.execute(
+                find_type_node_query,
+                bind_vars={"record_id": record_full_id}
+            )
+
+            # Get the single connected type node (if exists)
+            connected_type_node_id = None
+            for doc in cursor:
+                connected_type_node_id = doc
+                break
+
+            if connected_type_node_id:
+                self.logger.info(f"🔎 Found connected type node via isOfType: {connected_type_node_id}")
+            else:
+                self.logger.info("ℹ️ No node connected via isOfType edge found.")
+
+            # --- Step 2: Delete the record node and all its edges ---
+            record_deleted = await self.delete_nodes_and_edges(
+                keys=[record_id],
+                collection="records",
+                graph_name=graph_name,
+                transaction=transaction
+            )
+
+            if not record_deleted:
+                self.logger.warning(f"⚠️ Failed to delete record node: {record_id}")
+
+            # --- Step 3: Delete the connected type node and its edges ---
+            if connected_type_node_id:
+                # connected_type_node_id format: "CollectionName/key"
+                parts = connected_type_node_id.split("/", 1)
+                if len(parts) == 2:
+                    type_collection, type_node_key = parts
+                    self.logger.info(f"🗑️ Deleting connected type node from '{type_collection}': {type_node_key}")
+                    await self.delete_nodes_and_edges(
+                        keys=[type_node_key],
+                        collection=type_collection,
+                        graph_name=graph_name,
+                        transaction=transaction
+                    )
+
+            self.logger.info(f"✅ Successfully deleted record '{record_id}' and its connected type node.")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete record '{record_id}': {str(e)}")
+            return False
 
     async def delete_edge(self, from_key: str, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """
