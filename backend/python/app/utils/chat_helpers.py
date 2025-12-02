@@ -443,7 +443,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
             "languages": languages,
             "departments": departments,
         }
-        
+
         extension = get_extension_from_mimetype(metadata.get("mimeType",""))
 
         record = {
@@ -526,7 +526,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
 def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Dict[str, Any]:
     try:
         page_num = metadata.get("pageNum")
-        if isinstance(page_num, list):
+        if isinstance(page_num, (list,tuple)):
             page_num = page_num[0] if page_num else None
 
         citation_metadata = {
