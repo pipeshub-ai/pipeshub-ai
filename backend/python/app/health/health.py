@@ -76,10 +76,10 @@ class Health:
                 last_error_msg = (
                     f"Connection error during connector service health check: {str(e)}"
                 )
-                logger.warning(f"❌ {last_error_msg}")
+                logger.warning(f"⚠️ {last_error_msg}")
             except Exception as e:
                 last_error_msg = f"Connector service health check failed: {str(e)}"
-                logger.warning(f"❌ {last_error_msg}")
+                logger.error(f"❌ {last_error_msg}")
 
             # If not the last attempt, wait before retrying
             if attempt < max_retries:
