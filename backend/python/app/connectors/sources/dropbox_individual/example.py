@@ -16,6 +16,24 @@ from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
 
 
+def _get_env(logger, primary: str, *fallbacks: str, allow_fallback: bool = True) -> Optional[str]:
+    """Fetch env var from primary name, otherwise try fallbacks."""
+    possible_names = (primary, *(fallbacks if allow_fallback else []))
+    for name in possible_names:
+        value = os.getenv(name)
+        if value:
+            value = value.strip()
+        if value:
+            if name != primary:
+                logger.warning(
+                    "Using fallback env var %s for %s. "
+                    "Consider defining %s to keep environments explicit.",
+                    name, primary, primary
+                )
+            return value
+    return None
+
+
 async def test_run() -> None:
     """
     Initializes and runs the Dropbox Individual connector sync process for testing.
@@ -86,27 +104,11 @@ async def test_run() -> None:
         Returns:
             bool: True if credentials are configured successfully
         """
-        def _get_env(primary: str, *fallbacks: str, allow_fallback: bool = True) -> Optional[str]:
-            """Fetch env var from primary name, otherwise try fallbacks."""
-            possible_names = (primary, *(fallbacks if allow_fallback else []))
-            for name in possible_names:
-                value = os.getenv(name)
-                if value:
-                    value = value.strip()
-                if value:
-                    if name != primary:
-                        logger.warning(
-                            "Using fallback env var %s for %s. "
-                            "Consider defining %s to keep environments explicit.",
-                            name, primary, primary
-                        )
-                    return value
-            return None
-
-        access_token = _get_env("DROPBOX_INDIVIDUAL_TOKEN", "DROPBOX_TOKEN")
-        app_key = _get_env("DROPBOX_INDIVIDUAL_APP_KEY", "DROPBOX_APP_KEY")
-        app_secret = _get_env("DROPBOX_INDIVIDUAL_APP_SECRET", "DROPBOX_APP_SECRET")
+        access_token = _get_env(logger, "DROPBOX_INDIVIDUAL_TOKEN", "DROPBOX_TOKEN")
+        app_key = _get_env(logger, "DROPBOX_INDIVIDUAL_APP_KEY", "DROPBOX_APP_KEY")
+        app_secret = _get_env(logger, "DROPBOX_INDIVIDUAL_APP_SECRET", "DROPBOX_APP_SECRET")
         refresh_token = _get_env(
+            logger,
             "DROPBOX_INDIVIDUAL_REFRESH_TOKEN",
             allow_fallback=False
         )
@@ -144,7 +146,8 @@ async def test_run() -> None:
         logger.info("Stored Dropbox Individual credentials at %s", config_key)
 
         stored_config = await key_value_store.get_key(config_key)
-        logger.debug("Verified stored config: %s", stored_config)
+        if stored_config:
+            logger.debug("Verified stored config keys: %s", list(stored_config.keys()))
 
         return True
 

@@ -484,45 +484,14 @@ class DropboxIndividualConnector(BaseConnector):
             new_permissions = []
 
             try:
-                # Determine if this is a shared file/folder
-                shared_folder_id = None
-                if hasattr(entry, 'shared_folder_id') and entry.shared_folder_id:
-                    shared_folder_id = entry.shared_folder_id
-
-                # Fetch permissions from Dropbox
-                new_permissions = await self._convert_dropbox_permissions_to_permissions(
-                    file_or_folder_id=entry.id,
-                    is_file=is_file,
-                    shared_folder_id=shared_folder_id
-                )
-
-                # Fallback Logic:
-                # If no explicit permissions were found (common for private personal files),
-                # we MUST explicitly add the owner so the user can see their own file in the UI.
-                if not new_permissions:
-                    new_permissions = [
-                        Permission(
-                            external_id=user_id,
-                            email=user_email,
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER
-                        )
-                    ]
-                else:
-                    # Sanity Check: Ensure the current user is in the list
-                    user_already_has_permission = any(
-                        perm.email == user_email
-                        for perm in new_permissions
+                new_permissions.append(
+                    Permission(
+                        external_id=user_id,
+                        email=user_email,
+                        type=PermissionType.WRITE,
+                        entity_type=EntityType.USER
                     )
-                    if not user_already_has_permission:
-                        new_permissions.append(
-                            Permission(
-                                external_id=user_id,
-                                email=user_email,
-                                type=PermissionType.WRITE,
-                                entity_type=EntityType.USER
-                            )
-                        )
+                )
 
             except Exception as perm_ex:
                 self.logger.warning(f"Could not fetch permissions for {entry.name}: {perm_ex}")
@@ -538,14 +507,6 @@ class DropboxIndividualConnector(BaseConnector):
 
             # 9. Compare permissions
             old_permissions = []
-            if existing_record:
-                # Logic matched from Teams:
-                # If there is an existing record and we detected new permissions,
-                # we mark it as updated.
-                # (Optimizing this to strictly compare lists is a future improvement)
-                if new_permissions:
-                    permissions_changed = True
-                    is_updated = True
 
             return RecordUpdate(
                 record=file_record,
@@ -589,103 +550,6 @@ class DropboxIndividualConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
                 continue
-
-    async def _convert_dropbox_permissions_to_permissions(
-        self,
-        file_or_folder_id: str,
-        is_file: bool,
-        shared_folder_id: Optional[str] = None
-    ) -> List[Permission]:
-        """
-        Convert Dropbox sharing permissions to Permission model.
-        Individual accounts have simpler permission structure.
-        """
-        permissions = []
-
-        try:
-            # Fetch members based on type
-            if is_file:
-                members_result = await self.data_source.sharing_list_file_members(
-                    file=file_or_folder_id,
-                    include_inherited=True
-                )
-            else:
-                # For folders, only fetch if it's a shared folder
-                if not shared_folder_id:
-                    # Not a shared folder, no permissions to fetch
-                    return []
-                members_result = await self.data_source.sharing_list_folder_members(
-                    shared_folder_id=shared_folder_id
-                )
-
-            if not members_result.success:
-                self.logger.debug(f"Could not fetch permissions for {file_or_folder_id}: {members_result.error}")
-                return []
-
-            # Map Dropbox AccessLevel to PermissionType
-            access_level_map = {
-                'owner': PermissionType.OWNER,
-                'editor': PermissionType.WRITE,
-                'viewer': PermissionType.READ,
-            }
-
-            if hasattr(members_result.data, 'users') and members_result.data.users:
-                for user_membership in members_result.data.users:
-                    access_type_tag = user_membership.access_type._tag
-                    permission_type = access_level_map.get(access_type_tag, PermissionType.READ)
-
-                    user_info = user_membership.user
-
-                    # Get email and check validity
-                    email = user_info.email if hasattr(user_info, 'email') else None
-
-                    # Skip users without email or with email ending in '#'
-                    if not email or email.endswith('#'):
-                        self.logger.debug(f"Skipping user {user_info.account_id} with invalid email: {email}")
-                        continue
-
-                    permissions.append(Permission(
-                        external_id=user_info.account_id,
-                        email=email,
-                        type=permission_type,
-                        entity_type=EntityType.USER
-                    ))
-
-            # Process group permissions
-            if hasattr(members_result.data, 'groups') and members_result.data.groups:
-                for group_membership in members_result.data.groups:
-                    access_type_tag = group_membership.access_type._tag
-                    permission_type = access_level_map.get(access_type_tag, PermissionType.READ)
-
-                    group_info = group_membership.group
-                    permissions.append(Permission(
-                        external_id=group_info.group_id,
-                        email=None, # Groups don't have emails
-                        type=permission_type,
-                        entity_type=EntityType.GROUP
-                    ))
-
-        except Exception as e:
-            self.logger.debug(f"Error converting Dropbox permissions for {file_or_folder_id}: {e}")
-
-        return permissions
-
-
-    def _permissions_equal(self, old_perms: List[Permission], new_perms: List[Permission]) -> bool:
-        """Compare two lists of permissions to detect changes."""
-        if not old_perms and not new_perms:
-            return True
-        if not old_perms or not new_perms:  # One is empty, the other is not
-            return False
-        if len(old_perms) != len(new_perms):
-            return False
-
-        # Create sets of permission tuples for comparison
-        # Include all relevant fields that would indicate a permission change
-        old_set = {(p.external_id, p.type.value, p.entity_type.value) for p in old_perms}
-        new_set = {(p.external_id, p.type.value, p.entity_type.value) for p in new_perms}
-
-        return old_set == new_set
 
     async def _run_sync_with_cursor(self, user_id: str, user_email: str) -> None:
         """
