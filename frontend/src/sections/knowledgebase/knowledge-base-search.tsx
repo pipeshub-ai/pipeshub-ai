@@ -680,8 +680,7 @@ export default function KnowledgeBaseSearch() {
     if (isImage && (fileUrl || fileBuffer)) {
       // Get extension from record if available
       const recordId = recordCitations?.recordId;
-      const record = recordId ? recordsMap[recordId] : null;
-      const extension = record?.extension;
+      const extension = recordId ? recordsMap[recordId]?.extension : undefined;
       
       return (
         <ImageHighlighter

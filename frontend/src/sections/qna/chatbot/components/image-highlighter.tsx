@@ -193,21 +193,20 @@ const normalizeText = (text: string | null | undefined): string => {
   return text.trim().replace(/\s+/g, ' ');
 };
 
+const MIME_TYPES: Record<string, string> = {
+  svg: 'image/svg+xml',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+};
+
 // Get MIME type from file extension
 const getMimeType = (extension: string | undefined): string => {
   if (!extension) return 'image/png';
-  
   const ext = extension.toLowerCase().replace(/^\./, '');
-  const mimeTypes: Record<string, string> = {
-    svg: 'image/svg+xml',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    png: 'image/png',
-    webp: 'image/webp',
-    gif: 'image/gif',
-  };
-  
-  return mimeTypes[ext] || 'image/png';
+  return MIME_TYPES[ext] || 'image/png';
 };
 
 // Check if extension is SVG
