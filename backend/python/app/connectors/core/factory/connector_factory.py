@@ -35,6 +35,7 @@ from app.connectors.sources.servicenow.servicenow.connector import (
     ServiceNowConnector,
 )
 from app.connectors.sources.web.connector import WebConnector
+from app.connectors.sources.dropbox_individual.connector import DropboxIndividualConnector
 
 
 class ConnectorFactory:
@@ -48,6 +49,7 @@ class ConnectorFactory:
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
         "dropbox": DropboxConnector,
+        "dropboxpersonal": DropboxIndividualConnector,
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
         "bookstack": BookStackConnector,

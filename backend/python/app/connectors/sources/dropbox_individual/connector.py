@@ -134,7 +134,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
 #     new_permissions: Optional[List[Permission]] = None
 #     external_record_id: Optional[str] = None
 
-@ConnectorBuilder("Dropbox Individual")\
+@ConnectorBuilder("Dropbox Personal")\
     .in_group("Cloud Storage")\
     .with_auth_type("OAUTH")\
     .with_description("Sync files and folders from Dropbox Individual account")\
@@ -152,7 +152,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
             'https://docs.pipeshub.com/connectors/dropbox/dropbox',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Dropbox%20Individual", True)
+        .with_redirect_uri("connectors/oauth/callback/Dropbox%20Personal", True)
         .with_oauth_urls(
             "https://www.dropbox.com/oauth2/authorize",
             "https://api.dropboxapi.com/oauth2/token",
@@ -226,7 +226,7 @@ class DropboxIndividualConnector(BaseConnector):
         Sets up client for individual account (is_team=False).
         """
         config = await self.config_service.get_config(
-            "/services/connectors/dropboxindividual/config"
+            "/services/connectors/dropboxpersonal/config"
         )
         if not config:
             self.logger.error("Dropbox Individual access token not found in configuration.")

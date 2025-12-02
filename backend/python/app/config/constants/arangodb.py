@@ -48,6 +48,7 @@ class Connectors(Enum):
     JIRA = "JIRA"
 
     DROPBOX = "DROPBOX"
+    DROPBOX_INDIVIDUAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
 
