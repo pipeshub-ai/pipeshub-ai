@@ -141,7 +141,7 @@ async def test_run() -> None:
         if refresh_token:
             config["credentials"]["refresh_token"] = refresh_token
 
-        config_key = "/services/connectors/dropbox_individual/config"
+        config_key = "/services/connectors/dropboxpersonal/config"
         await key_value_store.create_key(config_key, config)
         logger.info("Stored Dropbox Individual credentials at %s", config_key)
 
@@ -164,7 +164,7 @@ async def test_run() -> None:
 
         # Temporary workaround: connector expects url_identifier for config path
         if not hasattr(dropbox_connector.app, "url_identifier"):
-            dropbox_connector.app.url_identifier = "dropbox_individual"
+            dropbox_connector.app.url_identifier = "dropboxpersonal"
 
         try:
             if await dropbox_connector.init():
