@@ -5382,6 +5382,7 @@ class BaseArangoService:
             find_type_node_query = """
             FOR edge IN isOfType
                 FILTER edge._from == @record_id
+                LIMIT 1
                 RETURN edge._to
             """
 
@@ -5391,10 +5392,7 @@ class BaseArangoService:
             )
 
             # Get the single connected type node (if exists)
-            connected_type_node_id = None
-            for doc in cursor:
-                connected_type_node_id = doc
-                break
+            connected_type_node_id = next(cursor, None)
 
             if connected_type_node_id:
                 self.logger.info(f"🔎 Found connected type node via isOfType: {connected_type_node_id}")
@@ -5411,20 +5409,25 @@ class BaseArangoService:
 
             if not record_deleted:
                 self.logger.warning(f"⚠️ Failed to delete record node: {record_id}")
+                return False
 
             # --- Step 3: Delete the connected type node and its edges ---
             if connected_type_node_id:
                 # connected_type_node_id format: "CollectionName/key"
                 parts = connected_type_node_id.split("/", 1)
-                if len(parts) == 2:
+                parts_length = 2
+                if len(parts) == parts_length:
                     type_collection, type_node_key = parts
                     self.logger.info(f"🗑️ Deleting connected type node from '{type_collection}': {type_node_key}")
-                    await self.delete_nodes_and_edges(
+                    type_node_deleted = await self.delete_nodes_and_edges(
                         keys=[type_node_key],
                         collection=type_collection,
                         graph_name=graph_name,
                         transaction=transaction
                     )
+                    if not type_node_deleted:
+                        self.logger.error(f"❌ Failed to delete connected type node {connected_type_node_id}. The main record {record_id} was deleted, but this node may be orphaned.")
+                        return False
 
             self.logger.info(f"✅ Successfully deleted record '{record_id}' and its connected type node.")
             return True

@@ -131,8 +131,8 @@ class ArangoTransactionStore(TransactionStore):
 
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.arango_service.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
-    
-    async def delete_record_generic(self, record_id: str) -> None:
+
+    async def delete_record_generic(self, record_id: str) -> bool:
         return await self.arango_service.delete_record_generic(record_id, transaction=self.txn)
 
     async def get_user_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppUserGroup]:
