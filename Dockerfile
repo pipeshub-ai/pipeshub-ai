@@ -89,7 +89,7 @@ COPY <<'EOF' /app/process_monitor.sh
 set -e
 
 LOG_FILE="/app/process_monitor.log"
-CHECK_INTERVAL=30
+CHECK_INTERVAL=${CHECK_INTERVAL:-20}
 
 # PIDs of child processes
 NODEJS_PID=""
