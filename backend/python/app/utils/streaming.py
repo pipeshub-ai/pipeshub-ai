@@ -12,7 +12,7 @@ from langchain.output_parsers import PydanticOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.modules.qna.prompt_templates import AnswerWithMetadata
+from app.modules.qna.prompt_templates import AnswerWithMetadataJSON
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
@@ -28,7 +28,8 @@ from app.utils.citations import (
 from app.utils.logger import create_logger
 
 logger = create_logger("streaming")
-
+parser = PydanticOutputParser(pydantic_object=AnswerWithMetadataJSON)
+format_instructions = parser.get_format_instructions()
 
 # Conditionally import and initialize Langfuse only if required keys are present
 langfuse_handler = None
@@ -590,12 +591,6 @@ async def stream_llm_response(
             # If detection fails, fall back to normal path
             pass
 
-        # Try to bind structured output
-        try:
-            llm.with_structured_output(AnswerWithMetadata)
-            logger.info("LLM bound with structured output successfully")
-        except Exception as e:
-            print(f"LLM provider or api does not support structured output: {e}")
 
         try:
             async for token in aiter_llm_stream(llm, messages):
@@ -899,12 +894,6 @@ async def handle_json_mode(
         # If fast-path detection fails, fall back to normal path
         logger.debug("stream_llm_response_with_tools: fast-path failed, falling back to LLM call: %s", str(e))
 
-    # Try to bind structured output
-    try:
-        llm.with_structured_output(AnswerWithMetadata)
-        logger.info("LLM bound with structured output successfully")
-    except Exception as e:
-        logger.warning(f"LLM provider or api does not support structured output: {e}")
 
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
@@ -1294,32 +1283,35 @@ async def call_aiter_llm_stream(
         }
         return
 
+    # Try to parse the full JSON buffer
+    try:
 
-    if not (state.answer_buf):
-        # No answer field found in the response - use reflection to guide the LLM
-        if reflection_retry_count < max_reflection_retries:
-            logger.warning(
-                "call_aiter_llm_stream: No answer field found in LLM response. Using reflection to guide LLM to proper format. Retry count: %d",
-                reflection_retry_count
-            )
+        response_text = state.full_json_buf.strip()
+        if '</think>' in response_text:
+                response_text = response_text.split('</think>')[-1]
+        if response_text.startswith("```json"):
+            response_text = response_text.replace("```json", "", 1)
+        if response_text.endswith("```"):
+            response_text = response_text.rsplit("```", 1)[0]
+        response_text = response_text.strip()
+        try:
+            parsed = parser.parse(response_text)
+        except Exception as e:
 
-            response_text = state.full_json_buf.strip()
-            if response_text.startswith("```json"):
-                response_text = response_text.replace("```json", "", 1)
-            if response_text.endswith("```"):
-                response_text = response_text.rsplit("```", 1)[0]
-            response_text = response_text.strip()
-            try:
-                parser = PydanticOutputParser(pydantic_object=AnswerWithMetadata)
-                parsed = parser.parse(response_text)
-            except Exception as e:
+            # JSON parsing failed - use reflection to guide the LLM
+            if reflection_retry_count < max_reflection_retries:
+                yield {"event": "restreaming","data": {}}
+                yield {"event": "status", "data": {"status": "processing", "message": "Rethinking..."}}
+                logger.warning(
+                    "call_aiter_llm_stream: JSON parsing failed for LLM response. Using reflection to guide LLM to proper format. Retry count: %d.",
+                    reflection_retry_count,
+                )
+
                 parse_error = str(e)
                 # Create reflection message to guide the LLM
                 reflection_message = HumanMessage(
-                    content=(f"""The previous response failed validation with the following error: {parse_error}
-
-                    Please correct your response to match the expected schema. Ensure all fields are properly formatted and all required fields are present. Respond only with valid JSON that matches the AnswerWithMetadata schema.""")
-                )
+                    content=(f"""The previous response failed validation with the following error: {parse_error}. {format_instructions}"""
+                ))
                 # Add the reflection message to the messages list
                 updated_messages = messages.copy()
                 if ai is not None:
@@ -1341,46 +1333,47 @@ async def call_aiter_llm_stream(
                     max_reflection_retries,
                 ):
                     yield event
+                return
+            else:
+                logger.error(
+                    "call_aiter_llm_stream: JSON parsing failed after %d reflection attempts. Falling back to answer_buf.",
+                    max_reflection_retries
+                )
+                # After max retries, fallback to using answer_buf if available
+                if state.answer_buf:
+                    normalized, c = normalize_citations_and_chunks(state.answer_buf, final_results, records)
+                    yield {
+                        "event": "complete",
+                        "data": {
+                            "answer": normalized,
+                            "citations": c,
+                            "reason": None,
+                            "confidence": None,
+                        },
+                    }
+                else:
+                    # No answer at all, return error
+                    yield {
+                        "event": "error",
+                        "data": {
+                            "error": "LLM did not provide any appropriate answer"
+                        },
+                    }
+                return
 
-            return
-        else:
-            logger.error(
-                "call_aiter_llm_stream: No answer field found after %d reflection attempts. Returning error.",
-                max_reflection_retries
-            )
-            # After max retries, return an error event
-            yield {
-                "event": "error",
-                "data": {
-                    "error": "LLM did not provide any appropriate answer"
-                },
-            }
-            return
-
-    try:
-        parsed = json.loads(escape_ctl(state.full_json_buf))
-        final_answer = parsed.get("answer", state.answer_buf)
+        final_answer = parsed.answer if parsed.answer else state.answer_buf
         normalized, c = normalize_citations_and_chunks(final_answer, final_results, records)
         yield {
             "event": "complete",
             "data": {
                 "answer": normalized,
                 "citations": c,
-                "reason": parsed.get("reason"),
-                "confidence": parsed.get("confidence"),
-
+                "reason": parsed.reason,
+                "confidence": parsed.confidence,
             },
         }
-    except Exception:
-        # Fallback if JSON parsing fails
+    except Exception as e:
+        yield {"event": "error","data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
+        return
 
-        normalized, c = normalize_citations_and_chunks(state.answer_buf, final_results, records)
-        yield {
-            "event": "complete",
-            "data": {
-                "answer": normalized,
-                "citations": c,
-                "reason": None,
-                "confidence": None,
-            },
-        }
+

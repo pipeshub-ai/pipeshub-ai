@@ -2236,14 +2236,21 @@ export const getRecordBuffer =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
-
+      const { convertTo } = req.query as { convertTo: string };
       if (!userId || !orgId) {
         throw new BadRequestError('User authentication is required');
       }
 
+
+      const queryParams = new URLSearchParams();
+      if (convertTo) {
+        logger.info('Converting file to ', { convertTo });
+        queryParams.append('convertTo', convertTo);
+      }
+
       // Make request to FastAPI backend
       const response = await axios.get(
-        `${connectorUrl}/api/v1/stream/record/${recordId}`,
+        `${connectorUrl}/api/v1/stream/record/${recordId}?${queryParams.toString()}`,
         {
           responseType: 'stream',
           headers: {
