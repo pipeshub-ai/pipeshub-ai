@@ -369,8 +369,8 @@ const MainContainer = styled(Box)(({ theme }) => ({
   display: 'flex',
   flexDirection: 'column',
   backgroundColor: theme.palette.mode === 'dark' ? '#1e2125' : '#ffffff',
+  overflow: 'hidden',
   '& .MuiTableContainer-root': {
-    overflow: 'auto',
     border: 'none',
   },
   '& table': {
@@ -1220,7 +1220,13 @@ const ExcelViewer = ({
             </HighlightIndicator>
           )}
           {state.workbookData && Object.keys(state.workbookData).length > 1 && (
-            <Box sx={{ borderBottom: isDarkMode ? '1px solid #404448' : '1px solid #e1e5e9' }}>
+            <Box 
+              sx={{ 
+                borderBottom: isDarkMode ? '1px solid #404448' : '1px solid #e1e5e9',
+                backgroundColor: isDarkMode ? '#1e2125' : '#ffffff',
+                flexShrink: 0,
+              }}
+            >
               <Tabs
                 value={state.selectedSheet || ''}
                 onChange={handleSheetChange}
@@ -1245,10 +1251,10 @@ const ExcelViewer = ({
           )}
 
           <Fade in={!state.sheetTransition && !state.loading} timeout={300}>
-            <Box sx={{ height: '100%', width: '100%' }}>
+            <Box sx={{ flex: 1, width: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               <TableContainer
                 ref={tableRef}
-                sx={{ overflow: 'auto', height: '100%', width: '100%', ...scrollableStyles }}
+                sx={{ flex: 1, overflow: 'auto', width: '100%', ...scrollableStyles }}
               >
                 <Table
                   stickyHeader
