@@ -337,11 +337,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
       (key) => {
         const filterValue = formData[key];
         // Include if filter exists and has an operator (valid filter)
-        return filterValue !== undefined && 
-               filterValue !== null && 
-               filterValue.operator !== undefined && 
-               filterValue.operator !== null &&
-               filterValue.operator !== '';
+        return !!filterValue?.operator;
       }
     );
     

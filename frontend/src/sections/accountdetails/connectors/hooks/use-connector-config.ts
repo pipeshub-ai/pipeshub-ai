@@ -17,6 +17,8 @@ import {
   normalizeDatetimeValueForDisplay,
   normalizeDatetimeValueForSave,
   convertRelativeDateToAbsolute,
+  convertDurationToMilliseconds,
+  isDurationField,
   EpochDatetimeRange
 } from '../utils/time-utils';
 
@@ -1038,93 +1040,7 @@ export const useConnectorConfig = ({
         delete syncToSave.scheduledConfig;
       }
 
-      // Note: convertRelativeDateToAbsolute and normalizeDatetimeValueForSave are imported from time-utils.ts
 
-      // Helper function to convert duration string to milliseconds
-      // Supports formats like: "5m", "1h", "30s", "2d", "1w", "500ms", "1.5h", etc.
-      const convertDurationToMilliseconds = (durationStr: string | number): number | string => {
-        // If it's already a number, assume it's already in milliseconds
-        if (typeof durationStr === 'number') {
-          return durationStr;
-        }
-        
-        // If it's not a string or empty, return as is
-        if (typeof durationStr !== 'string' || !durationStr.trim()) {
-          return durationStr;
-        }
-        
-        const str = durationStr.trim().toLowerCase();
-        
-        // Try to parse as a number first (might already be in milliseconds as string)
-        const numericValue = parseFloat(str);
-        if (!Number.isNaN(numericValue) && str === String(numericValue)) {
-          // Pure number without unit - assume milliseconds
-          return numericValue;
-        }
-        
-        // Parse duration string with units
-        const durationRegex = /^(\d+(?:\.\d+)?)\s*([a-z]+)$/;
-        const match = str.match(durationRegex);
-        
-        if (!match) {
-          // If it doesn't match the pattern, return as is (might be invalid)
-          return durationStr;
-        }
-        
-        const value = parseFloat(match[1]);
-        const unit = match[2];
-        
-        // Convert to milliseconds based on unit
-        const unitMultipliers: Record<string, number> = {
-          'ms': 1,
-          'millisecond': 1,
-          'milliseconds': 1,
-          's': 1000,
-          'sec': 1000,
-          'second': 1000,
-          'seconds': 1000,
-          'm': 60 * 1000,
-          'min': 60 * 1000,
-          'minute': 60 * 1000,
-          'minutes': 60 * 1000,
-          'h': 60 * 60 * 1000,
-          'hr': 60 * 60 * 1000,
-          'hour': 60 * 60 * 1000,
-          'hours': 60 * 60 * 1000,
-          'd': 24 * 60 * 60 * 1000,
-          'day': 24 * 60 * 60 * 1000,
-          'days': 24 * 60 * 60 * 1000,
-          'w': 7 * 24 * 60 * 60 * 1000,
-          'week': 7 * 24 * 60 * 60 * 1000,
-          'weeks': 7 * 24 * 60 * 60 * 1000,
-        };
-        
-        const multiplier = unitMultipliers[unit];
-        if (multiplier) {
-          return Math.round(value * multiplier);
-        }
-        
-        // Unknown unit, return as is
-        return durationStr;
-      };
-
-      // Helper function to check if a field is a duration field
-      const isDurationField = (field: any): boolean => {
-        const fieldName = (field.name || '').toLowerCase();
-        const fieldType = (field.fieldType || '').toLowerCase();
-        const filterType = (field.filterType || '').toLowerCase();
-        
-        // Check if field name contains duration-related keywords
-        const durationKeywords = ['duration', 'timeout', 'interval', 'delay', 'period', 'ttl'];
-        const hasDurationKeyword = durationKeywords.some(keyword => fieldName.includes(keyword));
-        
-        // Check if field type or filter type indicates duration
-        const isDurationType = fieldType === 'duration' || filterType === 'duration';
-        
-        return hasDurationKeyword || isDurationType;
-      };
-
-      // Note: normalizeDatetimeValueForSave is imported from time-utils.ts
 
       /**
        * Process filter fields for saving - converts values to proper format
