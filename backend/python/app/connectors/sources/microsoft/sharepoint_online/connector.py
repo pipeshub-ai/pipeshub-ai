@@ -1385,6 +1385,7 @@ class SharePointConnector(BaseConnector):
 
             async with self.rate_limiter:
                 try:
+                    # Expand createdBy to ensure we get the author details
                     pages_response = await self._safe_api_call(
                         self.client.sites.by_site_id(encoded_site_id).pages.get()
                     )
@@ -1405,9 +1406,34 @@ class SharePointConnector(BaseConnector):
             for page in pages:
                 try:
                     page_id = getattr(page, 'id', None)
+                    page_name = getattr(page, 'title', getattr(page, 'name', 'unknown'))
+
                     if not page_id:
                         self.logger.debug(f"Skipping page with missing ID in site {site_id}")
                         continue
+
+                    # --- 1. FILTER: SYSTEM ACCOUNT / TEMPLATES ---
+                    # Check the 'created_by' field to skip System Account pages
+                    is_system_page = False
+                    created_by = getattr(page, 'created_by', None)
+                    
+                    if created_by:
+                        # Check User Display Name
+                        user_identity = getattr(created_by, 'user', None)
+                        display_name = getattr(user_identity, 'display_name', '').lower() if user_identity else ''
+                        
+                        # "System Account" is the standard display name for internal SharePoint operations
+                        if display_name == 'system account':
+                            is_system_page = True
+                    
+                    # Optional: Check for specific Page Layouts that imply templates
+                    # page_layout = getattr(page, 'page_layout', None)
+                    # if page_layout == 'Home' and display_name == 'system account': ...
+
+                    if is_system_page:
+                        self.logger.info(f"⏭️ Skipping System Account/Template page: '{page_name}'")
+                        continue
+                    # ---------------------------------------------
                         
                     existing_record = None
                     # Get existing record for change detection
@@ -2730,7 +2756,9 @@ class SharePointConnector(BaseConnector):
             
             params = { "$select": "CanvasContent1,Title" }
 
-            async with httpx.AsyncClient() as http_client:
+            timeout_config = httpx.Timeout(30.0, connect=10.0)
+
+            async with httpx.AsyncClient(timeout=timeout_config) as http_client:
                 resp = await http_client.get(api_url, headers=headers, params=params)
                 
                 if resp.status_code == 404:
