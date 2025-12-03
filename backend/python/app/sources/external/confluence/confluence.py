@@ -1992,7 +1992,9 @@ class ConfluenceDataSource:
     async def get_pages_v1(
         self,
         modified_after: Optional[str] = None,
+        modified_before: Optional[str] = None,
         created_after: Optional[str] = None,
+        created_before: Optional[str] = None,
         space_key: Optional[str] = None,
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
@@ -2006,7 +2008,9 @@ class ConfluenceDataSource:
 
         Args:
             modified_after: Filter pages modified after this datetime (ISO 8601)
+            modified_before: Filter pages modified before this datetime (ISO 8601)
             created_after: Filter pages created after this datetime (ISO 8601)
+            created_before: Filter pages created before this datetime (ISO 8601)
             space_key: Filter pages by specific space key
             order_by: CQL sort field - lastModified, created, or title (default: None, API default).
                       Must be specified together with sort_order, or neither.
@@ -2049,9 +2053,15 @@ class ConfluenceDataSource:
         if modified_after:
             formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
             cql_parts.append(f'lastModified > "{formatted_date}"')
+        if modified_before:
+            formatted_date = _format_cql_date_with_offset(modified_before, time_offset_hours)
+            cql_parts.append(f'lastModified < "{formatted_date}"')
         if created_after:
             formatted_date = _format_cql_date_with_offset(created_after, time_offset_hours)
             cql_parts.append(f'created > "{formatted_date}"')
+        if created_before:
+            formatted_date = _format_cql_date_with_offset(created_before, time_offset_hours)
+            cql_parts.append(f'created < "{formatted_date}"')
 
         # Combine filters
         cql_query = " AND ".join(cql_parts)
@@ -2088,7 +2098,9 @@ class ConfluenceDataSource:
     async def get_blogposts_v1(
         self,
         modified_after: Optional[str] = None,
+        modified_before: Optional[str] = None,
         created_after: Optional[str] = None,
+        created_before: Optional[str] = None,
         space_key: Optional[str] = None,
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
@@ -2102,7 +2114,9 @@ class ConfluenceDataSource:
 
         Args:
             modified_after: Filter blogposts modified after this datetime (ISO 8601)
+            modified_before: Filter blogposts modified before this datetime (ISO 8601)
             created_after: Filter blogposts created after this datetime (ISO 8601)
+            created_before: Filter blogposts created before this datetime (ISO 8601)
             space_key: Filter blogposts by specific space key
             order_by: CQL sort field - lastModified, created, or title (default: None, API default).
                       Must be specified together with sort_order, or neither.
@@ -2145,9 +2159,15 @@ class ConfluenceDataSource:
         if modified_after:
             formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
             cql_parts.append(f'lastModified > "{formatted_date}"')
+        if modified_before:
+            formatted_date = _format_cql_date_with_offset(modified_before, time_offset_hours)
+            cql_parts.append(f'lastModified < "{formatted_date}"')
         if created_after:
             formatted_date = _format_cql_date_with_offset(created_after, time_offset_hours)
             cql_parts.append(f'created > "{formatted_date}"')
+        if created_before:
+            formatted_date = _format_cql_date_with_offset(created_before, time_offset_hours)
+            cql_parts.append(f'created < "{formatted_date}"')
 
         # Combine filters
         cql_query = " AND ".join(cql_parts)

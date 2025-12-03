@@ -47,6 +47,14 @@ class RecordType(str, Enum):
     OTHERS = "OTHERS"
 
 
+class IndexingStatus(str, Enum):
+    """Status of record indexing for search and AI features"""
+    NOT_STARTED = "NOT_STARTED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"  # Record saved but not indexed (filtered out)
+
 class Record(BaseModel):
     # Core record properties
     id: str = Field(description="Unique identifier for the record", default_factory=lambda: str(uuid4()))
@@ -68,6 +76,7 @@ class Record(BaseModel):
     md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
+    indexing_status: str = Field(default=IndexingStatus.NOT_STARTED.value, description="Indexing status for the record")
     # Epoch Timestamps
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
@@ -106,8 +115,8 @@ class Record(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
-            "indexingStatus": "NOT_STARTED",
-            "extractionStatus": "NOT_STARTED",
+            "indexingStatus": self.indexing_status,
+            "extractionStatus": IndexingStatus.NOT_STARTED.value,
             "isDeleted": False,
             "isArchived": False,
             "deletedByUserId": None,
