@@ -570,7 +570,7 @@ async def perform_embedding_health_check(
         )
         except Exception as e:
             raise e
-    
+
     except HTTPException as he:
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
