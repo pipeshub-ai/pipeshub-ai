@@ -504,6 +504,7 @@ async def stream_llm_response(
     logger,
     target_words_per_chunk: int = 1,
     mode: Optional[str] = "json",
+    virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Incrementally stream the answer portion of an LLM response.
@@ -548,7 +549,7 @@ async def stream_llm_response(
                     reason = None
                     confidence = None
 
-                    normalized, cites = normalize_citations_and_chunks_for_agent(final_answer, final_results)
+                    normalized, cites = normalize_citations_and_chunks_for_agent(final_answer, final_results, virtual_record_id_to_result)
 
                 words = re.findall(r'\S+', normalized)
                 for i in range(0, len(words), target_words_per_chunk):
@@ -620,7 +621,7 @@ async def stream_llm_response(
                                 continue
 
                             normalized, cites = normalize_citations_and_chunks_for_agent(
-                                current_raw, final_results
+                                current_raw, final_results, virtual_record_id_to_result
                             )
 
                             chunk_text = normalized[prev_norm_len:]
@@ -640,7 +641,7 @@ async def stream_llm_response(
                 parsed = json.loads(escape_ctl(full_json_buf))
                 final_answer = parsed.get("answer", answer_buf)
 
-                normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results)
+                normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results, virtual_record_id_to_result)
                 yield {
                     "event": "complete",
                     "data": {
@@ -652,7 +653,7 @@ async def stream_llm_response(
                 }
             except Exception:
                 # Fallback if JSON parsing fails
-                normalized, c = normalize_citations_and_chunks_for_agent(answer_buf, final_results)
+                normalized, c = normalize_citations_and_chunks_for_agent(answer_buf, final_results, virtual_record_id_to_result)
                 yield {
                     "event": "complete",
                     "data": {
@@ -745,7 +746,7 @@ async def stream_llm_response(
                             continue
 
                         normalized, cites = normalize_citations_and_chunks_for_agent(
-                            current_raw, final_results
+                            current_raw, final_results, None  # virtual_record_id_to_result not available in simple mode
                         )
 
                         chunk_text = normalized[prev_norm_len:]
@@ -761,7 +762,7 @@ async def stream_llm_response(
                         }
 
             # Final normalization and emit complete
-            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results)
+            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, None)  # virtual_record_id_to_result not available in simple mode
             yield {
                 "event": "complete",
                 "data": {
@@ -994,7 +995,7 @@ async def handle_simple_mode(
                         }
 
             # Final normalization and emit complete
-            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results)
+            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, None)  # virtual_record_id_to_result not available in simple mode
             yield {
                 "event": "complete",
                 "data": {

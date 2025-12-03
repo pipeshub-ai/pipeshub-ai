@@ -1,7 +1,7 @@
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import get_enhanced_metadata
@@ -303,73 +303,307 @@ def process_citations(llm_response, documents: List[Dict[str, Any]],records: Lis
         }
 
 
-def normalize_citations_and_chunks_for_agent(answer_text: str, final_results: List[Dict[str, Any]]) -> tuple[str, List[Dict[str, Any]]]:
+def normalize_citations_and_chunks_for_agent(
+    answer_text: str,
+    final_results: List[Dict[str, Any]],
+    virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]] = None
+) -> tuple[str, List[Dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
-    and create corresponding citation chunks with correct mapping
+    and create corresponding citation chunks with correct mapping.
+
+    Handles both:
+    - Block number citations: [R1-1], [R2-3] (from knowledge retrieval)
+    - Numeric citations: [1], [2] (backward compatibility)
+    Args:
+        answer_text: The answer text with citations
+        final_results: List of result documents with metadata
+        virtual_record_id_to_result: Optional mapping of virtual_record_id to full record data
     """
-    # Extract all citation numbers from the answer text
-    # Match both regular square brackets [1] and Chinese brackets 【1】
-    # Use alternation to ensure proper bracket pairing
-    citation_pattern = r'\[(\d+)\]|【(\d+)】'
-    matches = re.finditer(citation_pattern, answer_text)
+    # First, try to match block number citations like [R1-1], [R2-3]
+    block_citation_pattern = r'\[R(\d+)-(\d+)\]|【R(\d+)-(\d+)】'
+    block_matches = list(re.finditer(block_citation_pattern, answer_text))
 
-    # Get unique citation numbers in order of appearance
-    unique_citations = []
-    seen = set()
-    bracket_styles = {}  # Map citation number to its bracket style
+    # Also match numeric citations like [1], [2] for backward compatibility
+    numeric_citation_pattern = r'\[(\d+)\]|【(\d+)】'
+    numeric_matches = list(re.finditer(numeric_citation_pattern, answer_text))
 
-    for match in matches:
-        # Check which group matched (group 1 for [...], group 2 for 【...】)
-        if match.group(1):  # Regular brackets [...]
-            citation_num = int(match.group(1))
-            bracket_style = 'regular'
-        else:  # Chinese brackets 【...】
-            citation_num = int(match.group(2))
-            bracket_style = 'chinese'
+    # Determine which pattern to use based on what's found
+    use_block_numbers = len(block_matches) > 0
 
-        if citation_num not in seen:
-            unique_citations.append(citation_num)
-            bracket_styles[citation_num] = bracket_style
-            seen.add(citation_num)
+    if use_block_numbers:
+        # Process block number citations [R1-1], [R2-3]
+        unique_citations = []
+        seen = set()
 
-    if not unique_citations:
-        return answer_text, []
+        for match in block_matches:
+            # Check which group matched (groups 1,2 for [...], groups 3,4 for 【...】)
+            if match.group(1):  # Regular brackets [R1-2]
+                citation_key = f"R{match.group(1)}-{match.group(2)}"
+            else:  # Chinese brackets 【R1-2】
+                citation_key = f"R{match.group(3)}-{match.group(4)}"
 
-    # Create mapping from old citation numbers to new sequential numbers
-    citation_mapping = {}
-    new_citations = []
+            if citation_key not in seen:
+                unique_citations.append(citation_key)
+                seen.add(citation_key)
 
-    for i, old_citation_num in enumerate(unique_citations):
-        new_citation_num = i + 1
+        if not unique_citations:
+            # No citation markers found, but if final_results exist, create citations from all results
+            # This ensures citations are populated when internal knowledge is retrieved
+            if final_results:
+                # Create citations from all final_results (like chatbot.py does)
+                all_citations = []
+                for idx, doc in enumerate(final_results):
+                    content = doc.get("content", "")
+                    # Handle table blocks
+                    if isinstance(content, tuple):
+                        content = content[0] if content else ""
 
-        # Get the corresponding chunk from final_results
-        chunk_index = old_citation_num - 1  # Convert to 0-based index
-        if 0 <= chunk_index < len(final_results):
-            citation_mapping[old_citation_num] = new_citation_num
+                    # Get metadata and ensure all required fields are present
+                    metadata = doc.get("metadata", {}) or {}
 
-            doc = final_results[chunk_index]
-            new_citations.append({
-                "content": doc.get("content", ""),
-                "chunkIndex": new_citation_num,  # Use new sequential number
-                "metadata": doc.get("metadata", {}),
-                "citationType": "vectordb|document",
-            })
+                    # If metadata is missing required fields, try to get them from virtual_record_id_to_result
+                    if virtual_record_id_to_result:
+                        virtual_record_id = doc.get("virtual_record_id") or metadata.get("virtualRecordId")
+                        if virtual_record_id and virtual_record_id in virtual_record_id_to_result:
+                            record = virtual_record_id_to_result[virtual_record_id]
+                            # Fill in missing required fields from record
+                            if not metadata.get("origin"):
+                                metadata["origin"] = record.get("origin", "")
+                            if not metadata.get("recordName"):
+                                metadata["recordName"] = record.get("record_name", "")
+                            if not metadata.get("recordId"):
+                                metadata["recordId"] = record.get("id", "")
+                            if not metadata.get("mimeType"):
+                                metadata["mimeType"] = record.get("mime_type", "")
 
-    # Replace citation numbers in answer text - always use regular brackets for output
-    def replace_with_bracket_style(match: re.Match) -> str:
-        # Determine which group matched to get the citation number
-        if match.group(1):  # Regular brackets [1]
-            citation_num = int(match.group(1))
-        else:  # Chinese brackets 【1】
-            citation_num = int(match.group(2))
+                    # Ensure required fields have at least empty string defaults (validation requirement)
+                    # Use get() with default to handle None values properly
+                    metadata["origin"] = metadata.get("origin") or ""
+                    metadata["recordName"] = metadata.get("recordName") or ""
+                    metadata["recordId"] = metadata.get("recordId") or ""
+                    metadata["mimeType"] = metadata.get("mimeType") or ""
 
-        if citation_num in citation_mapping:
-            new_num = citation_mapping[citation_num]
-            # Always output regular brackets for consistency
-            return f"[{new_num}]"
-        return ""
+                    # Ensure content is not None
+                    citation_content = content or ""
+                    if isinstance(citation_content, str) and citation_content.startswith("data:image/"):
+                        citation_content = "Image"
 
-    normalized_answer = re.sub(citation_pattern, replace_with_bracket_style, answer_text)
+                    all_citations.append({
+                        "content": citation_content,
+                        "chunkIndex": idx + 1,
+                        "metadata": metadata,
+                        "citationType": "vectordb|document",
+                    })
+                return answer_text, all_citations
+            return answer_text, []
+
+        # Create mapping from block numbers to sequential numbers
+        citation_mapping = {}
+        new_citations = []
+
+        # Build a map of block_number -> index in final_results
+        block_number_to_index = {}
+        for idx, doc in enumerate(final_results):
+            block_number = doc.get("block_number")
+            if block_number:
+                block_number_to_index[block_number] = idx
+
+        for i, block_number_key in enumerate(unique_citations):
+            new_citation_num = i + 1
+
+            # Find the corresponding chunk using block_number
+            if block_number_key in block_number_to_index:
+                chunk_index = block_number_to_index[block_number_key]
+                if 0 <= chunk_index < len(final_results):
+                    citation_mapping[block_number_key] = new_citation_num
+
+                    doc = final_results[chunk_index]
+                    content = doc.get("content", "")
+                    # Handle table blocks
+                    if isinstance(content, tuple):
+                        content = content[0] if content else ""
+
+                    # Get metadata and ensure all required fields are present
+                    metadata = doc.get("metadata", {}) or {}
+
+                    # If metadata is missing required fields, try to get them from virtual_record_id_to_result
+                    if virtual_record_id_to_result:
+                        virtual_record_id = doc.get("virtual_record_id") or metadata.get("virtualRecordId")
+                        if virtual_record_id and virtual_record_id in virtual_record_id_to_result:
+                            record = virtual_record_id_to_result[virtual_record_id]
+                            # Fill in missing required fields from record
+                            if not metadata.get("origin"):
+                                metadata["origin"] = record.get("origin", "")
+                            if not metadata.get("recordName"):
+                                metadata["recordName"] = record.get("record_name", "")
+                            if not metadata.get("recordId"):
+                                metadata["recordId"] = record.get("id", "")
+                            if not metadata.get("mimeType"):
+                                metadata["mimeType"] = record.get("mime_type", "")
+
+                    # Ensure required fields have at least empty string defaults (validation requirement)
+                    if not metadata.get("origin"):
+                        metadata["origin"] = ""
+                    if not metadata.get("recordName"):
+                        metadata["recordName"] = ""
+                    if not metadata.get("recordId"):
+                        metadata["recordId"] = ""
+                    if not metadata.get("mimeType"):
+                        metadata["mimeType"] = ""
+
+                    new_citations.append({
+                        "content": "Image" if isinstance(content, str) and content.startswith("data:image/") else (content or ""),
+                        "chunkIndex": new_citation_num,
+                        "metadata": metadata,
+                        "citationType": "vectordb|document",
+                    })
+
+        # Replace block number citations in answer text
+        def replace_block_citation(match: re.Match) -> str:
+            if match.group(1):  # Regular brackets [R1-2]
+                citation_key = f"R{match.group(1)}-{match.group(2)}"
+            else:  # Chinese brackets 【R1-2】
+                citation_key = f"R{match.group(3)}-{match.group(4)}"
+
+            if citation_key in citation_mapping:
+                new_num = citation_mapping[citation_key]
+                return f"[{new_num}]"
+            return ""
+
+        normalized_answer = re.sub(block_citation_pattern, replace_block_citation, answer_text)
+
+    else:
+        # Process numeric citations [1], [2] (backward compatibility)
+        unique_citations = []
+        seen = set()
+
+        for match in numeric_matches:
+            if match.group(1):  # Regular brackets [1]
+                citation_num = int(match.group(1))
+            else:  # Chinese brackets 【1】
+                citation_num = int(match.group(2))
+
+            if citation_num not in seen:
+                unique_citations.append(citation_num)
+                seen.add(citation_num)
+
+        if not unique_citations:
+            # No citation markers found, but if final_results exist, create citations from all results
+            # This ensures citations are populated when internal knowledge is retrieved
+            if final_results:
+                # Create citations from all final_results (like chatbot.py does)
+                all_citations = []
+                for idx, doc in enumerate(final_results):
+                    content = doc.get("content", "")
+                    # Handle table blocks
+                    if isinstance(content, tuple):
+                        content = content[0] if content else ""
+
+                    # Get metadata and ensure all required fields are present
+                    metadata = doc.get("metadata", {}) or {}
+
+                    # If metadata is missing required fields, try to get them from virtual_record_id_to_result
+                    if virtual_record_id_to_result:
+                        virtual_record_id = doc.get("virtual_record_id") or metadata.get("virtualRecordId")
+                        if virtual_record_id and virtual_record_id in virtual_record_id_to_result:
+                            record = virtual_record_id_to_result[virtual_record_id]
+                            # Fill in missing required fields from record
+                            if not metadata.get("origin"):
+                                metadata["origin"] = record.get("origin", "")
+                            if not metadata.get("recordName"):
+                                metadata["recordName"] = record.get("record_name", "")
+                            if not metadata.get("recordId"):
+                                metadata["recordId"] = record.get("id", "")
+                            if not metadata.get("mimeType"):
+                                metadata["mimeType"] = record.get("mime_type", "")
+
+                    # Ensure required fields have at least empty string defaults (validation requirement)
+                    # Use get() with default to handle None values properly
+                    metadata["origin"] = metadata.get("origin") or ""
+                    metadata["recordName"] = metadata.get("recordName") or ""
+                    metadata["recordId"] = metadata.get("recordId") or ""
+                    metadata["mimeType"] = metadata.get("mimeType") or ""
+
+                    # Ensure content is not None
+                    citation_content = content or ""
+                    if isinstance(citation_content, str) and citation_content.startswith("data:image/"):
+                        citation_content = "Image"
+
+                    all_citations.append({
+                        "content": citation_content,
+                        "chunkIndex": idx + 1,
+                        "metadata": metadata,
+                        "citationType": "vectordb|document",
+                    })
+                return answer_text, all_citations
+            return answer_text, []
+
+        # Create mapping from old citation numbers to new sequential numbers
+        citation_mapping = {}
+        new_citations = []
+
+        for i, old_citation_num in enumerate(unique_citations):
+            new_citation_num = i + 1
+
+            # Get the corresponding chunk from final_results
+            chunk_index = old_citation_num - 1  # Convert to 0-based index
+            if 0 <= chunk_index < len(final_results):
+                citation_mapping[old_citation_num] = new_citation_num
+
+                doc = final_results[chunk_index]
+                content = doc.get("content", "")
+                # Handle table blocks
+                if isinstance(content, tuple):
+                    content = content[0] if content else ""
+
+                # Get metadata and ensure all required fields are present
+                metadata = doc.get("metadata", {}) or {}
+
+                # If metadata is missing required fields, try to get them from virtual_record_id_to_result
+                if virtual_record_id_to_result:
+                    virtual_record_id = doc.get("virtual_record_id") or metadata.get("virtualRecordId")
+                    if virtual_record_id and virtual_record_id in virtual_record_id_to_result:
+                        record = virtual_record_id_to_result[virtual_record_id]
+                        # Fill in missing required fields from record
+                        if not metadata.get("origin"):
+                            metadata["origin"] = record.get("origin", "")
+                        if not metadata.get("recordName"):
+                            metadata["recordName"] = record.get("record_name", "")
+                        if not metadata.get("recordId"):
+                            metadata["recordId"] = record.get("id", "")
+                        if not metadata.get("mimeType"):
+                            metadata["mimeType"] = record.get("mime_type", "")
+
+                # Ensure required fields have at least empty string defaults (validation requirement)
+                if not metadata.get("origin"):
+                    metadata["origin"] = ""
+                if not metadata.get("recordName"):
+                    metadata["recordName"] = ""
+                if not metadata.get("recordId"):
+                    metadata["recordId"] = ""
+                if not metadata.get("mimeType"):
+                    metadata["mimeType"] = ""
+
+                new_citations.append({
+                    "content": "Image" if isinstance(content, str) and content.startswith("data:image/") else (content or ""),
+                    "chunkIndex": new_citation_num,
+                    "metadata": metadata,
+                    "citationType": "vectordb|document",
+                })
+
+        # Replace citation numbers in answer text
+        def replace_numeric_citation(match: re.Match) -> str:
+            if match.group(1):  # Regular brackets [1]
+                citation_num = int(match.group(1))
+            else:  # Chinese brackets 【1】
+                citation_num = int(match.group(2))
+
+            if citation_num in citation_mapping:
+                new_num = citation_mapping[citation_num]
+                return f"[{new_num}]"
+            return ""
+
+        normalized_answer = re.sub(numeric_citation_pattern, replace_numeric_citation, answer_text)
 
     return normalized_answer, new_citations

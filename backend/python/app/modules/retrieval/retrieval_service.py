@@ -549,7 +549,7 @@ class RetrievalService:
             self.logger.error("VectorDBEmptyError")
             return self._create_empty_response(
                     "No records indexed yet. Please upload documents or enable connectors to index content",
-                    Status.VECTOR_DB_EMPTY,
+                    Status.EMPTY_RESPONSE,
                 )
         except ValueError as e:
             self.logger.error(f"ValueError: {e}")
