@@ -697,19 +697,19 @@ class FilterCollection(BaseModel):
             try:
                 # Validate filter structure
                 if not isinstance(val, dict):
-                    log.warning(f"Skipping filter: expected dict, got {type(val).__name__}")
+                    log.warning("Skipping filter: expected dict, got {type(val).__name__}")
                     continue
 
                 if "operator" not in val or "type" not in val:
-                    log.warning(f"Skipping filter: missing required 'operator' or 'type'")
+                    log.warning("Skipping filter: missing required 'operator' or 'type'")
                     continue
 
                 # Model validator handles key, operator, and value validation
                 filter_data = {"key": key, **val}
                 filters.append(Filter.model_validate(filter_data))
 
-            except ValueError as e:
-                log.warning(f"Invalid filter: {e}")
+            except ValueError:
+                log.warning("Invalid filter: {e}")
                 continue
 
         return cls(filters=filters)
