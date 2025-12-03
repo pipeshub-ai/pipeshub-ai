@@ -157,20 +157,19 @@ class EventService:
                 self.logger.error(f"Unknown connector name: {connector_name}")
                 return False
 
-            # If recordGroupId is provided, query by record group
             if record_group_id is not None:
-                self.logger.info(
-                    f"Starting reindex for {connector_name} connector record group {record_group_id} "
-                    f"with depth {depth}"
-                )
+                self.logger.info(f"Starting reindex for {connector_name} connector record group {record_group_id} with depth {depth}")
+            else:
+                self.logger.info(f"Starting reindex for {connector_name} connector with status filters: {status_filters}")
 
-                # Fetch and process records in batches of 100
-                batch_size = 100
-                offset = 0
-                total_processed = 0
+            # Fetch and process records in batches of 100
+            batch_size = 100
+            offset = 0
+            total_processed = 0
 
-                while True:
-                    # Fetch batch of typed Record instances from record group
+            while True:
+                # Fetch batch of typed Record instances
+                if record_group_id is not None:
                     records = await self.arango_service.get_records_by_record_group(
                         record_group_id=record_group_id,
                         connector_name=connector_enum,
@@ -179,41 +178,7 @@ class EventService:
                         limit=batch_size,
                         offset=offset
                     )
-
-                    if not records:
-                        break
-
-                    self.logger.info(
-                        f"Processing batch of {len(records)} records from record group "
-                        f"(offset: {offset})"
-                    )
-
-                    # Process this batch with typed records
-                    await connector.reindex_records(records)
-
-                    total_processed += len(records)
-                    offset += batch_size
-
-                    # If we got fewer records than batch_size, we've reached the end
-                    if len(records) < batch_size:
-                        break
-
-                self.logger.info(
-                    f"✅ Completed reindex for {connector_name} connector record group {record_group_id}. "
-                    f"Total records processed: {total_processed}"
-                )
-                return True
-            else:
-                # query by status
-                self.logger.info(f"Starting reindex for {connector_name} connector with status filters: {status_filters}")
-
-                # Fetch and process records in batches of 100
-                batch_size = 100
-                offset = 0
-                total_processed = 0
-
-                while True:
-                    # Fetch batch of typed Record instances
+                else:
                     records = await self.arango_service.get_records_by_status(
                         org_id=org_id,
                         connector_name=connector_enum,
@@ -222,26 +187,26 @@ class EventService:
                         offset=offset
                     )
 
-                    if not records:
-                        break
+                if not records:
+                    break
 
-                    self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
+                self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
 
-                    # Process this batch with typed records
-                    await connector.reindex_records(records)
+                # Process this batch with typed records
+                await connector.reindex_records(records)
 
-                    total_processed += len(records)
-                    offset += batch_size
+                total_processed += len(records)
+                offset += batch_size
 
-                    # If we got fewer records than batch_size, we've reached the end
-                    if len(records) < batch_size:
-                        break
+                # If we got fewer records than batch_size, we've reached the end
+                if len(records) < batch_size:
+                    break
 
-                self.logger.info(
-                    f"✅ Completed reindex for {connector_name} connector. "
-                    f"Total records processed: {total_processed}"
-                )
-                return True
+            self.logger.info(
+                f"✅ Completed reindex for {connector_name} connector. "
+                f"Total records processed: {total_processed}"
+            )
+            return True
 
         except Exception as e:
             self.logger.error(f"Failed to handle reindex for {connector_name.capitalize()}: {str(e)}", exc_info=True)
