@@ -227,7 +227,6 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
-            check_embedding_ctx_length=False
         )
 
     elif provider == EmbeddingProvider.TOGETHER.value:
