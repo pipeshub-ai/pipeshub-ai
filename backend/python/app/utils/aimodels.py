@@ -60,6 +60,7 @@ class LLMProvider(Enum):
     XAI = "xai"
 
 MAX_OUTPUT_TOKENS = 16000
+MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
 
 def get_default_embedding_model() -> Embeddings:
     from langchain_huggingface import HuggingFaceEmbeddings
@@ -248,6 +249,12 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
 
     raise ValueError(f"Unsupported embedding config type: {provider}")
 
+def _get_anthropic_max_tokens(model_name: str) -> int:
+    """Gets the max output tokens for an Anthropic model based on its name."""
+    if '4.5' in model_name:
+        return MAX_OUTPUT_TOKENS_CLAUDE_4_5
+    return MAX_OUTPUT_TOKENS
+
 def get_generator_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> BaseChatModel:
     configuration = config['configuration']
     is_default = config.get("isDefault")
@@ -266,21 +273,23 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
     if provider == LLMProvider.ANTHROPIC.value:
         from langchain_anthropic import ChatAnthropic
 
+        max_tokens = _get_anthropic_max_tokens(model_name)
         return ChatAnthropic(
                 model=model_name,
                 temperature=0.2,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 max_retries=2,
                 api_key=configuration["apiKey"],
-                max_tokens=MAX_OUTPUT_TOKENS,
+                max_tokens=max_tokens,
             )
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
         from langchain_aws import ChatBedrock
         provider_in_bedrock = configuration.get("provider", LLMProvider.ANTHROPIC.value)
         if provider_in_bedrock == LLMProvider.ANTHROPIC.value:
+            max_tokens = _get_anthropic_max_tokens(model_name)
             model_kwargs = {
-                "max_tokens": MAX_OUTPUT_TOKENS,
+                "max_tokens": max_tokens,
             }
         else:
             model_kwargs = {}
@@ -303,13 +312,14 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
 
         is_claude_model = "claude" in model_name
         if is_claude_model:
+            max_tokens = _get_anthropic_max_tokens(model_name)
             return ChatAnthropic(
                 model=model_name,
                 base_url=configuration.get("endpoint"),
                 temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration.get("apiKey"),
-                max_tokens=configuration.get("maxTokens", 16000),
+                max_tokens=configuration.get("maxTokens", max_tokens),
             )
         else:
             return ChatOpenAI(
