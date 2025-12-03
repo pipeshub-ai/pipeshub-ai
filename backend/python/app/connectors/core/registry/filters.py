@@ -697,11 +697,11 @@ class FilterCollection(BaseModel):
             try:
                 # Validate filter structure
                 if not isinstance(val, dict):
-                    log.warning(f"Skipping filter '{key}': expected dict, got {type(val).__name__}") # lgtm [py/clear-text-logging-sensitive-data]
+                    log.warning(f"Skipping filter '{key}': expected dict, got {type(val).__name__}") # codeql[py/clear-text-logging-sensitive-data]
                     continue
 
                 if "operator" not in val or "type" not in val:
-                    log.warning(f"Skipping filter '{key}': missing required 'operator' or 'type'") # lgtm [py/clear-text-logging-sensitive-data]
+                    log.warning(f"Skipping filter '{key}': missing required 'operator' or 'type'") # codeql[py/clear-text-logging-sensitive-data]
                     continue
 
                 # Model validator handles key, operator, and value validation
@@ -709,7 +709,7 @@ class FilterCollection(BaseModel):
                 filters.append(Filter.model_validate(filter_data))
 
             except ValueError as e:
-                log.warning(f"Invalid filter '{key}': {e}") # lgtm [py/clear-text-logging-sensitive-data]
+                log.warning(f"Invalid filter '{key}': {e}") # codeql[py/clear-text-logging-sensitive-data]
                 continue
 
         return cls(filters=filters)
