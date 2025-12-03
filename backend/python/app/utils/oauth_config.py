@@ -16,4 +16,7 @@ def get_oauth_config(app_name: str, auth_config: dict) -> OAuthConfig:
     if app_name.lower() == Connectors.DROPBOX.value.lower():
         oauth_config.token_access_type = "offline"
 
+    elif app_name.lower() == Connectors.DROPBOX_PERSONAL.value.lower():
+        oauth_config.token_access_type = "offline"
+
     return oauth_config
