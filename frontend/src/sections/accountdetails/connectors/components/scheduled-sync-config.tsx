@@ -15,9 +15,6 @@ import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
 import { ScheduledConfig } from '../types/types';
 
-// Extend dayjs with timezone support
-// Note: Date/time features are currently not used; keeping LocalizationProvider for future use
-
 interface ScheduledSyncConfigProps {
   value: ScheduledConfig;
   onChange: (value: ScheduledConfig) => void;
@@ -58,13 +55,14 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
   disabled = false,
 }) => {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
   const [localValue, setLocalValue] = useState<ScheduledConfig>({
     intervalMinutes: 60,
     timezone: 'UTC',
     ...value,
   });
 
-  // Initialize from existing data when value changes (only interval and timezone supported)
+  // Initialize from existing data when value changes
   useEffect(() => {
     if (value) {
       setLocalValue({
@@ -76,7 +74,6 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
 
   // Propagate interval and timezone to parent when changed
   useEffect(() => {
-    // Debounce calculation
     const timeoutId = setTimeout(() => {
       onChange({
         intervalMinutes: localValue.intervalMinutes,
@@ -96,123 +93,137 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
 
   return (
     <LocalizationProvider dateAdapter={AdapterDayjs}>
-      <Stack spacing={2}>
-        <Grid container spacing={2}>
-          {/* Timezone */}
-          <Grid item xs={12} md={6}>
-            <Typography
-              variant="body2"
+      <Stack spacing={1.5}>
+        {/* Sync Interval - Full Width */}
+        <Box>
+          <Typography
+            variant="body2"
+            sx={{
+              mb: 1,
+              fontWeight: 600,
+              fontSize: '0.875rem',
+              color: theme.palette.text.primary,
+            }}
+          >
+            Sync Interval
+          </Typography>
+          <FormControl fullWidth size="small">
+            <Select
+              value={localValue.intervalMinutes}
+              onChange={(e) => handleFieldChange('intervalMinutes', e.target.value)}
+              disabled={disabled}
+              displayEmpty
               sx={{
-                mb: 1,
+                borderRadius: 1.25,
+                fontSize: '0.875rem',
                 fontWeight: 500,
-                fontSize: '0.8125rem',
-                color: theme.palette.text.primary,
+                backgroundColor: alpha(theme.palette.background.paper, 0.8),
+                transition: 'all 0.2s',
+                '&:hover .MuiOutlinedInput-notchedOutline': {
+                  borderColor: alpha(theme.palette.primary.main, 0.3),
+                },
+                '&.Mui-focused': {
+                  backgroundColor: theme.palette.background.paper,
+                },
+                '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                  borderColor: theme.palette.primary.main,
+                  borderWidth: '1px',
+                },
               }}
             >
-              Timezone
-            </Typography>
-            <FormControl fullWidth size="small">
-              <Select
-                value={localValue.timezone}
-                onChange={(e) => handleFieldChange('timezone', e.target.value)}
-                disabled={disabled}
-                displayEmpty
-                sx={{
-                  borderRadius: 1.25,
-                  fontSize: '0.8125rem',
-                  '&:hover .MuiOutlinedInput-notchedOutline': {
-                    borderColor: alpha(theme.palette.primary.main, 0.25),
-                  },
-                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                    borderColor: theme.palette.primary.main,
-                    borderWidth: '1px',
-                  },
-                }}
-              >
-                <MenuItem disabled value="">
-                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
-                    Select timezone
+              <MenuItem disabled value="">
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.875rem' }}>
+                  Select interval
+                </Typography>
+              </MenuItem>
+              {INTERVAL_OPTIONS.map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
+                    {option.label}
                   </Typography>
                 </MenuItem>
-                {TIMEZONES.map((tz) => (
-                  <MenuItem key={tz.name} value={tz.name}>
-                    <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>
-                      {tz.displayName}
-                    </Typography>
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Grid>
+              ))}
+            </Select>
+          </FormControl>
+        </Box>
 
-          {/* Sync Interval */}
-          <Grid item xs={12} md={6}>
-            <Typography
-              variant="body2"
+        {/* Timezone - Hidden for now */}
+        {/* <Grid item xs={12} md={6}>
+          <Typography
+            variant="body2"
+            sx={{
+              mb: 1,
+              fontWeight: 600,
+              fontSize: '0.875rem',
+              color: theme.palette.text.primary,
+            }}
+          >
+            Timezone
+          </Typography>
+          <FormControl fullWidth size="small">
+            <Select
+              value={localValue.timezone}
+              onChange={(e) => handleFieldChange('timezone', e.target.value)}
+              disabled={disabled}
+              displayEmpty
               sx={{
-                mb: 1,
+                borderRadius: 1.25,
+                fontSize: '0.875rem',
                 fontWeight: 500,
-                fontSize: '0.8125rem',
-                color: theme.palette.text.primary,
+                backgroundColor: alpha(theme.palette.background.paper, 0.8),
+                transition: 'all 0.2s',
+                '&:hover .MuiOutlinedInput-notchedOutline': {
+                  borderColor: alpha(theme.palette.primary.main, 0.3),
+                },
+                '&.Mui-focused': {
+                  backgroundColor: theme.palette.background.paper,
+                },
+                '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                  borderColor: theme.palette.primary.main,
+                  borderWidth: '1px',
+                },
               }}
             >
-              Sync Interval
-            </Typography>
-            <FormControl fullWidth size="small">
-              <Select
-                value={localValue.intervalMinutes}
-                onChange={(e) => handleFieldChange('intervalMinutes', e.target.value)}
-                disabled={disabled}
-                displayEmpty
-                sx={{
-                  borderRadius: 1.25,
-                  fontSize: '0.8125rem',
-                  '&:hover .MuiOutlinedInput-notchedOutline': {
-                    borderColor: alpha(theme.palette.primary.main, 0.25),
-                  },
-                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                    borderColor: theme.palette.primary.main,
-                    borderWidth: '1px',
-                  },
-                }}
-              >
-                <MenuItem disabled value="">
-                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
-                    Select interval
+              <MenuItem disabled value="">
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.875rem' }}>
+                  Select timezone
+                </Typography>
+              </MenuItem>
+              {TIMEZONES.map((tz) => (
+                <MenuItem key={tz.name} value={tz.name}>
+                  <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
+                    {tz.displayName}
                   </Typography>
                 </MenuItem>
-                {INTERVAL_OPTIONS.map((option) => (
-                  <MenuItem key={option.value} value={option.value}>
-                    <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>
-                      {option.label}
-                    </Typography>
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Grid>
-
-          {/* Max Repetitions is currently not supported */}
-        </Grid>
+              ))}
+            </Select>
+          </FormControl>
+        </Grid> */}
 
         {/* Summary */}
         <Box
           sx={{
-            p: 1.5,
+            p: 1.25,
             borderRadius: 1.25,
-            border: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
-            bgcolor: alpha(theme.palette.grey[50], 0.3),
+            border: `1px solid ${alpha(theme.palette.divider, isDark ? 0.12 : 0.12)}`,
+            bgcolor: isDark
+              ? alpha(theme.palette.primary.main, 0.08)
+              : alpha(theme.palette.primary.main, 0.02),
+            transition: 'all 0.2s',
           }}
         >
           <Typography
             variant="body2"
             color="text.secondary"
             sx={{
-              fontSize: '0.75rem',
-              lineHeight: 1.4,
+              fontSize: '0.8125rem',
+              lineHeight: 1.5,
+              fontWeight: 500,
             }}
           >
-            {`Sync every ${INTERVAL_OPTIONS.find((opt) => opt.value === localValue.intervalMinutes)?.label || '1 hour'} in ${TIMEZONES.find((tz) => tz.name === localValue.timezone)?.displayName || 'UTC'}`}
+            Syncs every{' '}
+            {INTERVAL_OPTIONS.find((opt) => opt.value === localValue.intervalMinutes)?.label ||
+              '1 hour'}
           </Typography>
         </Box>
 
@@ -221,13 +232,16 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
           severity="info"
           variant="outlined"
           sx={{
-            borderRadius: 1.5,
-            py: 1.25,
+            borderRadius: 1.25,
+            py: 0.875,
+            px: 1.5,
+            '& .MuiAlert-icon': { fontSize: '1.125rem', py: 0.375 },
+            '& .MuiAlert-message': { py: 0.125 },
+            alignItems: 'center',
           }}
         >
-          <Typography variant="body2" sx={{ fontSize: '0.8125rem', lineHeight: 1.4 }}>
-            Scheduled syncs will run automatically at the specified intervals. All times are
-            calculated based on the selected timezone.
+          <Typography variant="body2" sx={{ fontSize: '0.8125rem', lineHeight: 1.5 }}>
+            Scheduled syncs will run automatically at the specified intervals.
           </Typography>
         </Alert>
       </Stack>

@@ -678,14 +678,19 @@ export default function KnowledgeBaseSearch() {
     }
 
     if (isImage && (fileUrl || fileBuffer)) {
+      // Get extension from record if available
+      const recordId = recordCitations?.recordId;
+      const extension = recordId ? recordsMap[recordId]?.extension : undefined;
+      
       return (
         <ImageHighlighter
-          key={`image-viewer-${recordCitations?.recordId || 'new'}`}
+          key={`image-viewer-${recordId || 'new'}`}
           url={fileUrl}
           buffer={fileBuffer}
           citations={recordCitations?.documents || []}
           highlightCitation={highlightedCitation}
           onClosePdf={handleCloseViewer}
+          fileExtension={extension}
         />
       );
     }

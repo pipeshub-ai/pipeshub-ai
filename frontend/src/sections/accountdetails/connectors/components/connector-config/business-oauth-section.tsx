@@ -10,8 +10,9 @@ import {
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import keyIcon from '@iconify-icons/mdi/key';
-import checkIcon from '@iconify-icons/mdi/check';
-import codeIcon from '@iconify-icons/mdi/code';
+import checkCircleIcon from '@iconify-icons/mdi/check-circle';
+import uploadIcon from '@iconify-icons/mdi/upload';
+import fileDocumentIcon from '@iconify-icons/mdi/file-document-outline';
 
 interface BusinessOAuthSectionProps {
   adminEmail: string;
@@ -44,19 +45,20 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
     <Paper
       variant="outlined"
       sx={{
-        p: 3,
-        borderRadius: 1.5,
-        bgcolor: alpha(theme.palette.primary.main, 0.02),
-        borderColor: alpha(theme.palette.primary.main, 0.12),
-        mb: 3,
+        p: 2,
+        borderRadius: 1.25,
+        bgcolor: alpha(theme.palette.info.main, 0.02),
+        borderColor: alpha(theme.palette.divider, 0.1),
+        mb: 2,
       }}
     >
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2.5 }}>
+      {/* Section Header */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
         <Box
           sx={{
-            p: 1,
+            p: 0.625,
             borderRadius: 1,
-            bgcolor: alpha(theme.palette.primary.main, 0.1),
+            bgcolor: alpha(theme.palette.info.main, 0.1),
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -64,91 +66,182 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
         >
           <Iconify
             icon={keyIcon}
-            width={20}
-            height={20}
-            color={theme.palette.primary.main}
+            width={16}
+            sx={{ color: theme.palette.info.main }}
           />
         </Box>
-        <Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 600 }}>
-          Business OAuth Configuration
-        </Typography>
+        <Box sx={{ flex: 1 }}>
+          <Typography 
+            variant="subtitle2" 
+            sx={{ 
+              fontSize: '0.875rem', 
+              fontWeight: 600,
+              color: theme.palette.text.primary,
+            }}
+          >
+            Business OAuth Configuration
+          </Typography>
+          <Typography 
+            variant="caption" 
+            sx={{ 
+              fontSize: '0.75rem',
+              color: theme.palette.text.secondary,
+              mt: 0.25,
+              display: 'block',
+            }}
+          >
+            Required for Google Workspace business accounts
+          </Typography>
+        </Box>
       </Box>
 
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3, fontSize: '0.8125rem' }}>
-        For business accounts, upload your Google Cloud Service Account JSON credentials file
-        and provide the admin email address.
-      </Typography>
-
       {/* Admin Email Field */}
-      <Box sx={{ mb: 3 }}>
+      <Box sx={{ mb: 2 }}>
+        <Typography 
+          variant="subtitle2" 
+          sx={{ 
+            fontSize: '0.875rem', 
+            fontWeight: 500,
+            mb: 1,
+            color: theme.palette.text.primary,
+          }}
+        >
+          Admin Email Address
+        </Typography>
         <TextField
           fullWidth
-          label="Admin Email"
+          size="small"
           value={adminEmail}
           onChange={(e) => onAdminEmailChange(e.target.value)}
           error={!!adminEmailError}
-          helperText={adminEmailError || 'Enter the Google Workspace admin email address'}
+          helperText={adminEmailError || 'Google Workspace administrator email'}
           placeholder="admin@yourdomain.com"
-          sx={{ mb: 1 }}
+          sx={{
+            '& .MuiOutlinedInput-root': {
+              borderRadius: 1.25,
+              fontSize: '0.875rem',
+              backgroundColor: alpha(theme.palette.background.paper, 0.8),
+              transition: 'all 0.2s',
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.background.paper, 1),
+              },
+              '&:hover .MuiOutlinedInput-notchedOutline': {
+                borderColor: alpha(theme.palette.primary.main, 0.3),
+              },
+              '&.Mui-focused': {
+                backgroundColor: theme.palette.background.paper,
+              },
+              '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                borderWidth: 1.5,
+              },
+            },
+            '& .MuiOutlinedInput-input': {
+              fontSize: '0.875rem',
+              padding: '10.5px 14px',
+              fontWeight: 400,
+            },
+            '& .MuiInputLabel-root': {
+              fontSize: '0.875rem',
+              fontWeight: 500,
+            },
+            '& .MuiFormHelperText-root': {
+              fontSize: '0.75rem',
+              mt: 0.75,
+              ml: 1,
+            },
+          }}
         />
       </Box>
 
       {/* JSON File Upload */}
-      <Box sx={{ mb: 2 }}>
-        <Typography variant="subtitle2" sx={{ mb: 1.5, fontSize: '0.875rem' }}>
-          Google Cloud Service Account JSON
+      <Box>
+        <Typography 
+          variant="subtitle2" 
+          sx={{ 
+            fontSize: '0.875rem', 
+            fontWeight: 500,
+            mb: 1,
+            color: theme.palette.text.primary,
+          }}
+        >
+          Service Account Credentials
         </Typography>
         
         <Paper
           variant="outlined"
+          onClick={onFileUpload}
           sx={{
             p: 2,
-            borderRadius: 1,
+            borderRadius: 1.25,
+            borderWidth: '1.5px',
             borderStyle: (selectedFile || jsonData) ? 'solid' : 'dashed',
             borderColor: (selectedFile || jsonData)
               ? alpha(theme.palette.success.main, 0.3)
-              : alpha(theme.palette.primary.main, 0.3),
+              : alpha(theme.palette.divider, 0.3),
             bgcolor: (selectedFile || jsonData)
-              ? alpha(theme.palette.success.main, 0.02)
-              : alpha(theme.palette.primary.main, 0.02),
+              ? alpha(theme.palette.success.main, 0.04)
+              : 'transparent',
             cursor: 'pointer',
-            transition: 'all 0.2s ease-in-out',
+            transition: 'all 0.2s',
             '&:hover': {
-              borderColor: alpha(theme.palette.primary.main, 0.5),
-              bgcolor: alpha(theme.palette.primary.main, 0.04),
+              borderColor: (selectedFile || jsonData)
+                ? alpha(theme.palette.success.main, 0.5)
+                : alpha(theme.palette.primary.main, 0.4),
+              bgcolor: (selectedFile || jsonData)
+                ? alpha(theme.palette.success.main, 0.06)
+                : alpha(theme.palette.primary.main, 0.04),
             },
           }}
-          onClick={onFileUpload}
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <Box
               sx={{
                 p: 1,
                 borderRadius: 1,
                 bgcolor: (selectedFile || jsonData)
-                  ? alpha(theme.palette.success.main, 0.1)
-                  : alpha(theme.palette.primary.main, 0.1),
+                  ? alpha(theme.palette.success.main, 0.12)
+                  : alpha(theme.palette.primary.main, 0.08),
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
               }}
             >
               <Iconify
-                icon={(selectedFile || jsonData) ? checkIcon : codeIcon}
-                width={24}
-                height={24}
-                color={(selectedFile || jsonData) ? theme.palette.success.main : theme.palette.primary.main}
+                icon={(selectedFile || jsonData) ? checkCircleIcon : fileDocumentIcon}
+                width={18}
+                sx={{
+                  color: (selectedFile || jsonData) 
+                    ? theme.palette.success.main 
+                    : theme.palette.primary.main
+                }}
               />
             </Box>
             
-            <Box sx={{ flex: 1 }}>
-              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                {fileName || 'Click to upload JSON file'}
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography 
+                variant="body2" 
+                sx={{ 
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                  mb: 0.25,
+                  color: theme.palette.text.primary,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {fileName || 'No file selected'}
               </Typography>
-              <Typography variant="caption" color="text.secondary">
+              <Typography 
+                variant="caption" 
+                sx={{ 
+                  fontSize: '0.75rem',
+                  color: theme.palette.text.secondary,
+                }}
+              >
                 {(selectedFile || jsonData)
-                  ? 'Google Cloud Service Account credentials loaded'
-                  : 'Upload your Google Cloud Service Account JSON file'
+                  ? 'Credentials file loaded successfully'
+                  : 'Click to upload JSON credentials file'
                 }
               </Typography>
             </Box>
@@ -156,11 +249,25 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
             <Button
               variant="outlined"
               size="small"
+              startIcon={<Iconify icon={uploadIcon} width={14} />}
               onClick={(e) => {
                 e.stopPropagation();
                 onFileUpload();
               }}
-              sx={{ minWidth: 100 }}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 500,
+                px: 2,
+                py: 0.625,
+                borderRadius: 1,
+                fontSize: '0.8125rem',
+                flexShrink: 0,
+                borderColor: alpha(theme.palette.divider, 0.3),
+                '&:hover': {
+                  borderColor: theme.palette.primary.main,
+                  backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                },
+              }}
             >
               {selectedFile ? 'Replace' : 'Upload'}
             </Button>
@@ -168,7 +275,16 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
         </Paper>
 
         {fileError && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+          <Typography 
+            variant="caption" 
+            sx={{ 
+              color: theme.palette.error.main,
+              mt: 0.75,
+              ml: 1,
+              display: 'block',
+              fontSize: '0.75rem',
+            }}
+          >
             {fileError}
           </Typography>
         )}
@@ -185,24 +301,48 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
       {/* JSON Data Preview */}
       {jsonData && (
         <Box sx={{ mt: 2 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1, fontSize: '0.875rem' }}>
-            Loaded Credentials Preview
+          <Typography 
+            variant="subtitle2" 
+            sx={{ 
+              fontSize: '0.875rem', 
+              fontWeight: 500,
+              mb: 1,
+              color: theme.palette.text.primary,
+            }}
+          >
+            Credentials Preview
           </Typography>
           <Paper
             variant="outlined"
             sx={{
-              p: 2,
-              borderRadius: 1,
+              p: 1.5,
+              borderRadius: 1.25,
               bgcolor: alpha(theme.palette.grey[500], 0.04),
-              borderColor: alpha(theme.palette.grey[500], 0.12),
+              borderColor: alpha(theme.palette.divider, 0.1),
             }}
           >
-            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
-              Project ID: {jsonData.project_id}<br/>
-              Client ID: {jsonData.client_id}<br/>
-              Type: {jsonData.type}<br/>
-              {jsonData.client_email && `Service Account: ${jsonData.client_email}`}
-            </Typography>
+            <Box 
+              component="pre"
+              sx={{
+                m: 0,
+                fontFamily: '"Roboto Mono", "Courier New", monospace',
+                fontSize: '0.75rem',
+                lineHeight: 1.6,
+                color: theme.palette.text.secondary,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              <Box component="span" sx={{ color: theme.palette.text.disabled }}>Project ID:</Box> {jsonData.project_id}{'\n'}
+              <Box component="span" sx={{ color: theme.palette.text.disabled }}>Client ID:</Box> {jsonData.client_id}{'\n'}
+              <Box component="span" sx={{ color: theme.palette.text.disabled }}>Type:</Box> {jsonData.type}
+              {jsonData.client_email && (
+                <>
+                  {'\n'}
+                  <Box component="span" sx={{ color: theme.palette.text.disabled }}>Service Account:</Box> {jsonData.client_email}
+                </>
+              )}
+            </Box>
           </Paper>
         </Box>
       )}

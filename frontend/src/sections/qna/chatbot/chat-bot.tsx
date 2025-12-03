@@ -2244,6 +2244,7 @@ const ChatInterface = () => {
                     citations={aggregatedCitations}
                     highlightCitation={highlightedCitation}
                     onClosePdf={onClosePdf}
+                    fileExtension={highlightedCitation?.metadata?.extension}
                   />
                 ) : (
                   <PdfHighlighterComp

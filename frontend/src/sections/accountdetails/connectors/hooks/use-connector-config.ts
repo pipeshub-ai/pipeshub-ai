@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import dayjs from 'dayjs';
 import { useAccountType } from 'src/hooks/use-account-type';
 import { Connector, ConnectorConfig } from '../types/types';
 import { ConnectorApiService } from '../services/api';
@@ -195,8 +196,14 @@ export const useConnectorConfig = ({
         },
         filters: {
           ...schemaResponse.filters,
-          values: configResponse.config.filters?.values || configResponse.config.filters || {},
-          customValues: configResponse.config.filters?.customValues || {},
+          sync: {
+            ...schemaResponse.filters?.sync,
+            values: configResponse.config.filters?.sync?.values || {},
+          },
+          indexing: {
+            ...schemaResponse.filters?.indexing,
+            values: configResponse.config.filters?.indexing?.values || {},
+          },
         },
       },
     }),
@@ -215,6 +222,113 @@ export const useConnectorConfig = ({
       });
     }
 
+    // Initialize filters (both sync and indexing)
+    const filtersData: Record<string, any> = {};
+    
+      // Helper function to normalize datetime values to {start, end} format
+      const normalizeDatetimeValueForInit = (value: any, operator: string): { start: string; end: string } => {
+        // If already in {start, end} format, return as is
+        if (value && typeof value === 'object' && 'start' in value && 'end' in value) {
+          return { start: value.start || '', end: value.end || '' };
+        }
+        
+        // Convert single string value to {start, end} format based on operator
+        if (typeof value === 'string' && value !== '') {
+          if (operator === 'is_before') {
+            return { start: '', end: value };
+          }
+          if (operator === 'is_after') {
+            return { start: value, end: '' };
+          }
+          // Default: put in start (for is_after)
+          return { start: value, end: '' };
+        }
+        
+        // Default empty format
+        return { start: '', end: '' };
+      };
+
+    // Helper function to initialize filter fields
+    const initializeFilterFields = (filterSchema: any, filterValues: Record<string, any> | undefined) => {
+      if (!filterSchema?.fields) return;
+      
+      filterSchema.fields.forEach((field: any) => {
+        const existingValue = filterValues?.[field.name];
+        
+        if (existingValue !== undefined && existingValue !== null) {
+          // If value exists, use it (could be { operator, value } or just value)
+          if (typeof existingValue === 'object' && !Array.isArray(existingValue) && existingValue.operator !== undefined) {
+            // Already in the correct format: { operator: '...', value: '...' }
+            // Handle relative date operators that don't need values
+            const operator = existingValue.operator || field.defaultOperator || '';
+            const needsValue = !operator.startsWith('last_');
+            
+            let value = needsValue 
+              ? (existingValue.value !== undefined 
+                  ? existingValue.value 
+                  : (field.defaultValue !== undefined 
+                      ? field.defaultValue 
+                      : (field.filterType === 'list' 
+                          ? [] 
+                          : (field.filterType === 'boolean' 
+                              ? (field.defaultValue !== undefined ? field.defaultValue : true)
+                              : (field.filterType === 'datetime' ? { start: '', end: '' } : '')))))
+              : null;
+            
+            // Normalize datetime values to {start, end} format
+            if (field.filterType === 'datetime' && value !== null && !operator.startsWith('last_')) {
+              value = normalizeDatetimeValueForInit(value, operator);
+            }
+            
+            filtersData[field.name] = {
+              operator,
+              value,
+            };
+          } else {
+            // Value exists but not in the right format, wrap it
+            let value = existingValue;
+            
+            // Normalize datetime values to {start, end} format
+            if (field.filterType === 'datetime') {
+              const operator = field.defaultOperator || '';
+              value = normalizeDatetimeValueForInit(existingValue, operator);
+            }
+            
+            filtersData[field.name] = {
+              operator: field.defaultOperator || '',
+              value,
+            };
+          }
+        } else {
+          // Initialize with default operator and value
+          const defaultValue = field.defaultValue !== undefined 
+            ? field.defaultValue 
+            : (field.filterType === 'list' 
+                ? [] 
+                : (field.filterType === 'boolean' 
+                    ? true 
+                    : (field.filterType === 'datetime' ? { start: '', end: '' } : '')));
+          
+          filtersData[field.name] = {
+            operator: field.defaultOperator || '',
+            value: defaultValue,
+          };
+        }
+      });
+    };
+    
+    // Initialize sync filters
+    const syncFilters = config.config.filters?.sync;
+    if (syncFilters?.schema) {
+      initializeFilterFields(syncFilters.schema, config.config.filters?.sync?.values);
+    }
+    
+    // Initialize indexing filters
+    const indexingFilters = config.config.filters?.indexing;
+    if (indexingFilters?.schema) {
+      initializeFilterFields(indexingFilters.schema, config.config.filters?.indexing?.values);
+    }
+
     return {
       auth: authData,
       sync: {
@@ -225,7 +339,7 @@ export const useConnectorConfig = ({
         scheduledConfig: config.config.sync?.scheduledConfig || {},
         ...(config.config.sync?.values || config.config.sync || {}),
       },
-      filters: config.config.filters?.values || config.config.filters || {},
+      filters: filtersData,
     };
   }, []);
 
@@ -753,47 +867,69 @@ export const useConnectorConfig = ({
     // Clear any previous save error when user tries again
     setSaveError(null);
 
+    const isNoAuthType = isNoneAuthType(connector.authType);
+    const hasFilters = (connectorConfig.config.filters?.sync?.schema?.fields?.length ?? 0) > 0;
+    
+    // Determine which step we're on
+    let currentSection = '';
+    let maxStep = 0;
+    
+    if (isNoAuthType) {
+      maxStep = hasFilters ? 1 : 0; // Filters (0) -> Sync (1) or just Sync (0)
+      if (hasFilters) {
+        currentSection = activeStep === 0 ? 'filters' : 'sync';
+      } else {
+        currentSection = 'sync';
+      }
+    } else {
+      maxStep = hasFilters ? 2 : 1; // Auth (0) -> Filters (1) -> Sync (2) or Auth (0) -> Sync (1)
+      if (hasFilters) {
+        currentSection = activeStep === 0 ? 'auth' : activeStep === 1 ? 'filters' : 'sync';
+      } else {
+        currentSection = activeStep === 0 ? 'auth' : 'sync';
+      }
+    }
+
     let errors: Record<string, string> = {};
 
     // Validate current step
-    switch (activeStep) {
-      case 0: // Auth
-        if (isCustomGoogleBusinessOAuth) {
-          if (!isBusinessGoogleOAuthValid()) {
-            errors = { adminEmail: adminEmailError || 'Invalid business credentials' };
-          }
-        } else if (isSharePointCertificateAuth) {
-          // Validate SharePoint certificate authentication
-          if (!isSharePointCertificateAuthValid()) {
-            setSaveError('Please complete all required SharePoint authentication fields and upload valid certificate and private key files.');
-            return;
-          }
-        } else {
-          errors = validateSection(
-            'auth',
-            connectorConfig.config.auth.schema.fields,
-            formData.auth
-          );
+    if (currentSection === 'auth') {
+      if (isCustomGoogleBusinessOAuth) {
+        if (!isBusinessGoogleOAuthValid()) {
+          errors = { adminEmail: adminEmailError || 'Invalid business credentials' };
         }
-        break;
-      case 1: // Sync
-        errors = validateSection('sync', connectorConfig.config.sync.customFields, formData.sync);
-        break;
-      default:
-        break;
+      } else if (isSharePointCertificateAuth) {
+        // Validate SharePoint certificate authentication
+        if (!isSharePointCertificateAuthValid()) {
+          setSaveError('Please complete all required SharePoint authentication fields and upload valid certificate and private key files.');
+          return;
+        }
+      } else {
+        errors = validateSection(
+          'auth',
+          connectorConfig.config.auth.schema.fields,
+          formData.auth
+        );
+      }
+    } else if (currentSection === 'filters') {
+      // Filters are optional, so no validation needed
+      errors = {};
+    } else if (currentSection === 'sync') {
+      errors = validateSection('sync', connectorConfig.config.sync.customFields, formData.sync);
     }
 
     setFormErrors((prev) => ({
       ...prev,
-      [activeStep === 0 ? 'auth' : 'sync']: errors,
+      [currentSection]: errors,
     }));
 
-    if (Object.keys(errors).length === 0 && activeStep < 1) {
+    if (Object.keys(errors).length === 0 && activeStep < maxStep) {
       setActiveStep((prev) => prev + 1);
     }
   }, [
     activeStep,
     connectorConfig,
+    connector,
     formData,
     validateSection,
     isCustomGoogleBusinessOAuth,
@@ -878,10 +1014,119 @@ export const useConnectorConfig = ({
         delete syncToSave.scheduledConfig;
       }
 
+      // Helper to convert relative date operators to actual dates
+      const convertRelativeDateToAbsolute = (operator: string): { operator: string; value: string } | null => {
+        const relativeDays: Record<string, number> = {
+          last_7_days: 7,
+          last_14_days: 14,
+          last_30_days: 30,
+          last_90_days: 90,
+          last_180_days: 180,
+          last_365_days: 365,
+        };
+
+        const days = relativeDays[operator];
+        if (days !== undefined) {
+          // Use dayjs to subtract days and format as YYYY-MM-DDTHH:mm
+          const date = dayjs().subtract(days, 'day').startOf('day');
+          
+          return {
+            operator: 'is_after',
+            value: date.format('YYYY-MM-DDTHH:mm'),
+          };
+        }
+        return null;
+      };
+
+      // Helper function to normalize datetime values to {start, end} format
+      const normalizeDatetimeValueForSave = (value: any, operator: string): { start: string; end: string } => {
+        // If already in {start, end} format, return as is
+        if (value && typeof value === 'object' && 'start' in value && 'end' in value) {
+          return { start: value.start || '', end: value.end || '' };
+        }
+        
+        // Convert single string value to {start, end} format based on operator
+        if (typeof value === 'string' && value !== '') {
+          if (operator === 'is_before') {
+            return { start: '', end: value };
+          }
+          if (operator === 'is_after') {
+            return { start: value, end: '' };
+          }
+          // Default: put in start (for is_after)
+          return { start: value, end: '' };
+        }
+        
+        // Default empty format
+        return { start: '', end: '' };
+      };
+
+      // Helper function to process filter fields
+      const processFilterFields = (filterSchema: any): Record<string, any> => {
+        const filtersToSave: Record<string, any> = {};
+        if (!filterSchema?.fields) return filtersToSave;
+        
+        filterSchema.fields.forEach((field: any) => {
+          const filterValue = formData.filters[field.name];
+          if (filterValue && filterValue.operator) {
+            // Only include filters that have an operator set
+            // Convert relative date operators to absolute dates
+            if (filterValue.operator.startsWith('last_')) {
+              const converted = convertRelativeDateToAbsolute(filterValue.operator);
+              if (converted) {
+                // Convert to {start, end} format for is_after operator
+                const normalizedValue = normalizeDatetimeValueForSave(converted.value, converted.operator);
+                filtersToSave[field.name] = { 
+                  operator: converted.operator, 
+                  value: normalizedValue, 
+                  type: field.filterType 
+                };
+              }
+            } else if (filterValue.value !== undefined && filterValue.value !== null && filterValue.value !== '') {
+              // For datetime fields, normalize to {start, end} format
+              if (field.filterType === 'datetime') {
+                const normalizedValue = normalizeDatetimeValueForSave(filterValue.value, filterValue.operator);
+                // Only include if at least one of start or end has a value
+                if (normalizedValue.start || normalizedValue.end) {
+                  filtersToSave[field.name] = { operator: filterValue.operator, value: normalizedValue, type: field.filterType };
+                }
+              } else if (Array.isArray(filterValue.value) && filterValue.value.length > 0) {
+                filtersToSave[field.name] = { operator: filterValue.operator, value: filterValue.value, type: field.filterType };
+              } else if (!Array.isArray(filterValue.value) && filterValue.value !== '') {
+                filtersToSave[field.name] = { operator: filterValue.operator, value: filterValue.value, type: field.filterType };
+              }
+            } else if (field.filterType === 'boolean') {
+              // For boolean filters, include even if value is false
+              filtersToSave[field.name] = { operator: filterValue.operator, value: filterValue.value, type: field.filterType };
+            }
+          }
+        });
+        
+        return filtersToSave;
+      };
+
+      // Prepare filters for API - convert to the format expected by backend
+      const syncFiltersToSave = connectorConfig.config.filters?.sync?.schema
+        ? processFilterFields(connectorConfig.config.filters.sync.schema)
+        : {};
+      
+      const indexingFiltersToSave = connectorConfig.config.filters?.indexing?.schema
+        ? processFilterFields(connectorConfig.config.filters.indexing.schema)
+        : {};
+
       const configToSave: any = {
         auth: formData.auth,
         sync: syncToSave,
-        filters: formData.filters || {},
+        filters: {
+          sync: {
+            values: syncFiltersToSave,
+          },
+          ...(Object.keys(indexingFiltersToSave).length > 0 && {
+            indexing: {
+              values: indexingFiltersToSave,
+            },
+          }),
+        },
       };
 
       // For business OAuth, merge JSON data and admin email into auth config
