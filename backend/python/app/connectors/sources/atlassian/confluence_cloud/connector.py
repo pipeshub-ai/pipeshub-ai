@@ -114,8 +114,10 @@ CONTENT_EXPAND_PARAMS = (
         .add_filter_field(FilterField(
             name="space_keys",
             display_name="Space Keys",
+            description="Filter pages and blogposts by space key",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
+            default_value=[]
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))

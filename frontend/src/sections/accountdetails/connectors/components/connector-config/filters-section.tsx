@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Paper,
   Box,
@@ -13,17 +13,36 @@ import {
   AccordionDetails,
   Checkbox,
   FormControlLabel,
+  Button,
+  IconButton,
+  Autocomplete,
+  TextField,
+  Popper,
+  Chip,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import filterIcon from '@iconify-icons/mdi/filter-outline';
-import { ConnectorConfig } from '../../types/types';
+import addIcon from '@iconify-icons/mdi/plus';
+import removeIcon from '@iconify-icons/mdi/delete-outline';
+import { 
+  ConnectorConfig, 
+  FilterSchemaField, 
+  FilterValueData,
+  FilterValue,
+  DatetimeRange 
+} from '../../types/types';
+import { 
+  convertEpochToISOString,
+  normalizeDatetimeValueForDisplay
+} from '../../utils/time-utils';
 import { FieldRenderer } from '../field-renderers';
 
 interface FiltersSectionProps {
   connectorConfig: ConnectorConfig | null;
-  formData: Record<string, any>;
+  formData: Record<string, FilterValueData>;
   formErrors: Record<string, string>;
-  onFieldChange: (section: string, fieldName: string, value: any) => void;
+  onFieldChange: (section: string, fieldName: string, value: FilterValueData | undefined) => void;
+  onRemoveFilter?: (section: string, fieldName: string) => void;
 }
 
 const FiltersSection: React.FC<FiltersSectionProps> = ({
@@ -31,9 +50,13 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
   formData,
   formErrors,
   onFieldChange,
+  onRemoveFilter,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+  const [addMenuAnchor, setAddMenuAnchor] = useState<{ [key: string]: HTMLElement | null }>({});
+  const [expandedAccordions, setExpandedAccordions] = useState<{ [key: string]: boolean }>({});
+  const [autocompleteOpen, setAutocompleteOpen] = useState<{ [key: string]: boolean }>({});
 
   if (!connectorConfig) return null;
 
@@ -64,186 +87,314 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
     );
   }
 
+  /**
+   * Format operator string to display label
+   * Example: "is_before" -> "Is Before"
+   */
   const formatOperatorLabel = (operator: string): string =>
     operator
       .split('_')
       .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
       .join(' ');
 
-  // Helper function to normalize datetime values to {start, end} format
-  const normalizeDatetimeValue = (value: any, operator: string): { start: string; end: string } => {
-    // If already in {start, end} format, handle based on operator
-    if (value && typeof value === 'object' && 'start' in value && 'end' in value) {
-      // For is_between, ensure we have a proper object structure
-      if (operator === 'is_between') {
-        return { 
-          start: typeof value.start === 'string' ? value.start : '', 
-          end: typeof value.end === 'string' ? value.end : '' 
-        };
-      }
-      // For other operators, return as is
-      return { start: value.start || '', end: value.end || '' };
-    }
-    
-    // Convert single string value to {start, end} format based on operator
-    if (typeof value === 'string' && value !== '') {
-      if (operator === 'is_before') {
-        return { start: '', end: value };
-      }
-      if (operator === 'is_after') {
-        return { start: value, end: '' };
-      }
-      if (operator === 'is_between') {
-        // For is_between, initialize with empty values
-        return { start: '', end: '' };
-      }
-      // Default: put in start (for is_after)
-      return { start: value, end: '' };
-    }
-    
-    // Default empty format
-    return { start: '', end: '' };
-  };
-
-  const getFilterValue = (fieldName: string, filterSchema?: any) => {
-    const filterData = formData[fieldName] || {};
+  /**
+   * Get filter value with proper defaults and normalization
+   */
+  const getFilterValue = (
+    fieldName: string, 
+    filterSchema?: { fields: FilterSchemaField[] }
+  ): FilterValueData => {
+    const filterData = formData[fieldName];
     const schema = filterSchema || syncFilters?.schema;
-    const field = schema?.fields?.find((f: any) => f.name === fieldName);
+    const field = schema?.fields?.find((f) => f.name === fieldName);
+    
+    if (!field) {
+      return { operator: '', value: '' };
+    }
     
     // Get operator, defaulting to field default or empty string
-    const operator = filterData.operator !== undefined && filterData.operator !== null
-      ? filterData.operator
-      : (field?.defaultOperator || '');
+    const operator = filterData?.operator ?? field.defaultOperator ?? '';
     
-    // Get value - handle null explicitly for relative date operators
-    let value;
-    if (filterData.value !== undefined) {
-      value = filterData.value;
-    } else if (field?.defaultValue !== undefined) {
-      value = field.defaultValue;
-    } else if (field?.filterType === 'list') {
-      value = [];
-    } else if (field?.filterType === 'datetime') {
-      // For datetime, initialize as {start, end} format
-      value = { start: '', end: '' };
-    } else {
-      value = '';
-    }
+    // Get value with proper defaults based on filter type
+    let value: FilterValue = filterData?.value;
     
-    // Normalize datetime values to {start, end} format
-    if (field?.filterType === 'datetime' && value !== null && !operator.startsWith('last_')) {
-      // If value is corrupted (e.g., "[object Object]" string or invalid object), reset it
-      if (typeof value === 'string' && value.includes('[object Object]')) {
+    if (value === undefined) {
+      if (field.defaultValue !== undefined) {
+        value = field.defaultValue;
+      } else if (field.filterType === 'list') {
+        value = [];
+      } else if (field.filterType === 'datetime') {
         value = { start: '', end: '' };
-      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-        // Ensure it's a valid object with start and end properties
-        if (!('start' in value) || !('end' in value)) {
-          value = { start: '', end: '' };
-        } else {
-          value = normalizeDatetimeValue(value, operator);
-        }
+      } else if (field.filterType === 'boolean') {
+        value = false;
       } else {
-        value = normalizeDatetimeValue(value, operator);
+        value = '';
       }
     }
     
-    return {
-      operator,
-      value,
-    };
+    // Normalize datetime values to {start, end} format for display
+    if (field.filterType === 'datetime' && value !== null && !operator.startsWith('last_')) {
+      // Handle corrupted values
+      if (typeof value === 'string' && value.includes('[object Object]')) {
+        value = { start: '', end: '' };
+      } else {
+        value = normalizeDatetimeValueForDisplay(value, operator);
+      }
+    }
+    
+    return { operator, value };
   };
 
-  const handleOperatorChange = (fieldName: string, operator: string, filterSchema?: any) => {
+  /**
+   * Handle operator change for a filter field
+   */
+  const handleOperatorChange = (
+    fieldName: string, 
+    operator: string, 
+    filterSchema?: { fields: FilterSchemaField[] }
+  ) => {
     const schema = filterSchema || syncFilters?.schema;
-    const field = schema?.fields?.find((f: any) => f.name === fieldName);
+    const field = schema?.fields?.find((f) => f.name === fieldName);
+    
+    if (!field) return;
     
     // Reset value when operator changes, except for relative date operators
-    let newValue: any = null;
+    let newValue: FilterValue = null;
+    
     if (operator.startsWith('last_')) {
       // For relative date operators, value is not needed
       newValue = null;
-    } else if (field?.filterType === 'datetime' && !operator.startsWith('last_')) {
+    } else if (field.filterType === 'datetime') {
       // For datetime, always use {start, end} format
       if (operator === 'is_between') {
-        // For is_between, always reset to empty {start, end} to allow fresh selection
         newValue = { start: '', end: '' };
       } else {
-        // For other operators, get current value and normalize it
-        const currentValue = getFilterValue(fieldName);
-        if (currentValue.value && typeof currentValue.value === 'object' && 'start' in currentValue.value) {
-          // Keep existing {start, end} but adjust based on operator
-          newValue = normalizeDatetimeValue(currentValue.value, operator);
-        } else {
-          // Convert string value or initialize empty
-          newValue = normalizeDatetimeValue(currentValue.value, operator);
-        }
+        const currentValue = getFilterValue(fieldName, schema);
+        newValue = normalizeDatetimeValueForDisplay(currentValue.value, operator);
       }
-    } else if (field?.filterType === 'list') {
+    } else if (field.filterType === 'list') {
       newValue = [];
     } else {
-      // For other types, get current value
-      const currentValue = getFilterValue(fieldName);
+      const currentValue = getFilterValue(fieldName, schema);
       newValue = currentValue.value;
     }
 
-    onFieldChange('filters', fieldName, { operator, value: newValue, type: field?.filterType });
+    onFieldChange('filters', fieldName, { 
+      operator, 
+      value: newValue, 
+      type: field.filterType 
+    });
   };
 
-  const handleValueChange = (fieldName: string, value: any, filterSchema?: any) => {
+  /**
+   * Handle value change for a filter field
+   */
+  const handleValueChange = (
+    fieldName: string, 
+    value: FilterValue, 
+    filterSchema?: { fields: FilterSchemaField[] }
+  ) => {
     const schema = filterSchema || syncFilters?.schema;
     const currentValue = getFilterValue(fieldName, schema);
-    const field = schema?.fields?.find((f: any) => f.name === fieldName);
+    const field = schema?.fields?.find((f) => f.name === fieldName);
+    
+    if (!field) return;
     
     // For boolean filters, use the default operator from the field definition
-    if (field?.filterType === 'boolean') {
+    if (field.filterType === 'boolean') {
       const operator = field.defaultOperator || currentValue.operator || '';
-      onFieldChange('filters', fieldName, { operator, value, type: field.filterType });
+      onFieldChange('filters', fieldName, { 
+        operator, 
+        value, 
+        type: field.filterType 
+      });
       return;
     }
     
     // For datetime fields, normalize the value to {start, end} format
-    let normalizedValue = value;
-    if (field?.filterType === 'datetime' && currentValue.operator && !currentValue.operator.startsWith('last_')) {
+    let normalizedValue: FilterValue = value;
+    if (
+      field.filterType === 'datetime' && 
+      currentValue.operator && 
+      !currentValue.operator.startsWith('last_')
+    ) {
       if (currentValue.operator === 'is_between') {
         // For is_between, value should already be {start, end}
-        normalizedValue = value && typeof value === 'object' ? value : { start: '', end: '' };
+        normalizedValue = (value && typeof value === 'object' && !Array.isArray(value) && 'start' in value)
+          ? value 
+          : { start: '', end: '' };
       } else {
         // For single date operators, convert string to {start, end} format
-        normalizedValue = normalizeDatetimeValue(value, currentValue.operator);
+        normalizedValue = normalizeDatetimeValueForDisplay(value, currentValue.operator);
       }
     }
     
-    onFieldChange('filters', fieldName, { ...currentValue, value: normalizedValue, type: field?.filterType });
+    onFieldChange('filters', fieldName, { 
+      ...currentValue, 
+      value: normalizedValue, 
+      type: field.filterType 
+    });
   };
 
-  const renderFilterField = (field: any, index: number, totalFields: number, filterSchema?: any) => {
+  /**
+   * Get default value for a filter field based on its type
+   */
+  const getDefaultFilterValue = (field: FilterSchemaField): FilterValue => {
+    if (field.defaultValue !== undefined) {
+      return field.defaultValue;
+    }
+    
+    switch (field.filterType) {
+      case 'list':
+        return [];
+      case 'datetime':
+        return { start: '', end: '' };
+      case 'boolean':
+        return true;
+      default:
+        return '';
+    }
+  };
+
+  /**
+   * Handle adding a new filter
+   */
+  const handleAddFilter = (filterType: 'sync' | 'indexing', fieldName: string) => {
+    const schema = filterType === 'sync' ? syncFilters?.schema : indexingFilters?.schema;
+    const field = schema?.fields?.find((f) => f.name === fieldName);
+    
+    if (!field) return;
+    
+    // Expand accordion first if it's closed
+    const isCurrentlyExpanded = expandedAccordions[filterType] ?? false;
+    if (!isCurrentlyExpanded) {
+      setExpandedAccordions((prev) => ({ ...prev, [filterType]: true }));
+    }
+    
+    // Initialize filter with default values
+    const defaultValue = getDefaultFilterValue(field);
+    
+    // Add the filter
+    onFieldChange('filters', fieldName, {
+      operator: field.defaultOperator || '',
+      value: defaultValue,
+      type: field.filterType,
+    });
+    
+    // Close menu after a brief delay to allow accordion expansion to be visible
+    setTimeout(() => {
+      setAddMenuAnchor((prev) => ({ ...prev, [filterType]: null }));
+    }, 150);
+  };
+
+  const handleRemoveFilter = (fieldName: string) => {
+    if (onRemoveFilter) {
+      onRemoveFilter('filters', fieldName);
+    } else {
+      // Fallback: set to undefined
+      onFieldChange('filters', fieldName, undefined);
+    }
+  };
+
+  const handleAddMenuOpen = (filterType: 'sync' | 'indexing', event: React.MouseEvent<HTMLElement> | HTMLElement) => {
+    const target = event instanceof HTMLElement ? event : event.currentTarget;
+    setAddMenuAnchor((prev) => ({ ...prev, [filterType]: target }));
+    setAutocompleteOpen((prev) => ({ ...prev, [filterType]: true }));
+  };
+
+  const handleAddMenuClose = (filterType: 'sync' | 'indexing') => {
+    setAddMenuAnchor((prev) => ({ ...prev, [filterType]: null }));
+    setAutocompleteOpen((prev) => ({ ...prev, [filterType]: false }));
+  };
+
+  const handleAutocompleteChange = (filterType: 'sync' | 'indexing', field: FilterSchemaField | null) => {
+    if (field) {
+      handleAddFilter(filterType, field.name);
+      handleAddMenuClose(filterType);
+    }
+  };
+
+  /**
+   * Get available filters (not yet added)
+   */
+  const getAvailableFilters = (filterType: 'sync' | 'indexing'): FilterSchemaField[] => {
+    const schema = filterType === 'sync' ? syncFilters?.schema : indexingFilters?.schema;
+    const availableFields = schema?.fields || [];
+    const activeFilterNames = Object.keys(formData).filter(
+      (key) => formData[key] !== undefined && formData[key] !== null
+    );
+    
+    return availableFields.filter((field) => !activeFilterNames.includes(field.name));
+  };
+
+  /**
+   * Get active filters (already added)
+   */
+  const getActiveFilters = (filterType: 'sync' | 'indexing'): Array<FilterSchemaField & { filterId: string }> => {
+    const schema = filterType === 'sync' ? syncFilters?.schema : indexingFilters?.schema;
+    const availableFields = schema?.fields || [];
+    const activeFilterNames = Object.keys(formData).filter(
+      (key) => {
+        const filterValue = formData[key];
+        // Include if filter exists and has an operator (valid filter)
+        return filterValue !== undefined && 
+               filterValue !== null && 
+               filterValue.operator !== undefined && 
+               filterValue.operator !== null &&
+               filterValue.operator !== '';
+      }
+    );
+    
+    // Use field name as stable ID (field names are unique)
+    return availableFields
+      .filter((field) => activeFilterNames.includes(field.name))
+      .map((field) => ({
+        ...field,
+        filterId: field.name, // Use field name as stable key
+      }));
+  };
+
+  /**
+   * Render a single filter field
+   */
+  const renderFilterField = (
+    field: FilterSchemaField & { filterId?: string }, 
+    index: number, 
+    totalFields: number, 
+    filterSchema?: { fields: FilterSchemaField[] }, 
+    showRemove: boolean = false
+  ) => {
     const schema = filterSchema || syncFilters?.schema;
     const filterValue = getFilterValue(field.name, schema);
     const error = formErrors[field.name];
 
     // Convert filter field to standard field format for FieldRenderer
-    const createOperatorField = () => ({
-      name: `${field.name}_operator`,
-      displayName: 'Operator',
-      fieldType: 'SELECT' as const,
-      required: false,
-      placeholder: 'Select operator',
-      options: field.operators.map((op: string) => formatOperatorLabel(op)),
-      description: '',
-      defaultValue: '',
-      validation: {},
-      isSecret: false,
-    });
+    const createOperatorField = () => {
+      const operators = field.operators || [];
+      return {
+        name: `${field.name}_operator`,
+        displayName: 'Operator',
+        fieldType: 'SELECT' as const,
+        required: false,
+        placeholder: 'Select operator',
+        options: operators.map((op) => formatOperatorLabel(op)),
+        description: '',
+        defaultValue: '',
+        validation: {},
+        isSecret: false,
+      };
+    };
 
     const getOperatorValue = () => {
       const rawOperator = filterValue.operator;
       return formatOperatorLabel(rawOperator);
     };
 
-      const handleOperatorFieldChange = (formattedValue: string) => {
+    const handleOperatorFieldChange = (formattedValue: string) => {
       // Convert formatted label back to operator key
-      const operatorEntry = field.operators.find(
-        (op: string) => formatOperatorLabel(op) === formattedValue
+      const operators = field.operators || [];
+      const operatorEntry = operators.find(
+        (op) => formatOperatorLabel(op) === formattedValue
       );
       if (operatorEntry) {
         handleOperatorChange(field.name, operatorEntry, schema);
@@ -251,41 +402,61 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
     };
 
     if (field.filterType === 'list') {
+      const hasValues = filterValue.value && Array.isArray(filterValue.value) && filterValue.value.length > 0;
       const valueField = {
         name: `${field.name}_value`,
         displayName: field.displayName,
         fieldType: 'TAGS' as const,
         required: field.required,
         placeholder: field.description || `Enter ${field.displayName.toLowerCase()}`,
-        description: '',
+        description: hasValues ? '' : 'Enter a value and press Enter to add. Values are added as tags.',
         defaultValue: [],
         validation: {},
         isSecret: false,
       };
 
       return (
-        <Box key={field.name}>
-          <Box sx={{ mb: 2.5 }}>
-            <Typography
-              variant="body2"
-              sx={{
-                fontWeight: 600,
-                fontSize: '0.875rem',
-                color: theme.palette.text.primary,
-                mb: 1.5,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 0.5,
-              }}
-            >
-              {field.displayName}
-              {field.required && (
-                <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.875rem' }}>
-                  *
-                </Typography>
+        <Box key={field.filterId || field.name}>
+          <Box sx={{ mb: 0 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 600,
+                  fontSize: '0.8125rem',
+                  color: theme.palette.text.primary,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                }}
+              >
+                {field.displayName}
+                {field.required && (
+                  <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.8125rem' }}>
+                    *
+                  </Typography>
+                )}
+              </Typography>
+              {showRemove && (
+                <IconButton
+                  size="small"
+                  onClick={() => handleRemoveFilter(field.name)}
+                  sx={{
+                    p: 0.5,
+                    color: theme.palette.error.main,
+                    bgcolor: alpha(theme.palette.error.main, 0.08),
+                    '&:hover': {
+                      bgcolor: alpha(theme.palette.error.main, 0.15),
+                      color: theme.palette.error.main,
+                    },
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  <Iconify icon={removeIcon} width={16} />
+                </IconButton>
               )}
-            </Typography>
-            <Grid container spacing={2}>
+            </Box>
+            <Grid container spacing={1.5}>
               <Grid item xs={12} sm={4}>
                 <FieldRenderer
                   field={createOperatorField()}
@@ -309,19 +480,16 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
                 color="text.secondary"
                 sx={{
                   display: 'block',
-                  mt: 1,
-                  ml: 1,
-                  fontSize: '0.8125rem',
-                  lineHeight: 1.5,
+                  mt: 0.75,
+                  ml: 0.5,
+                  fontSize: '0.75rem',
+                  lineHeight: 1.4,
                 }}
               >
                 {field.description}
               </Typography>
             )}
           </Box>
-            {index < totalFields - 1 && (
-            <Divider sx={{ my: 3, borderColor: alpha(theme.palette.divider, isDark ? 0.12 : 0.08) }} />
-          )}
         </Box>
       );
     }
@@ -346,27 +514,46 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
 
         return (
           <Box key={field.name}>
-            <Box sx={{ mb: 2.5 }}>
-              <Typography
-                variant="body2"
-                sx={{
-                  fontWeight: 600,
-                  fontSize: '0.875rem',
-                  color: theme.palette.text.primary,
-                  mb: 1.5,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 0.5,
-                }}
-              >
-                {field.displayName}
-                {field.required && (
-                  <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.875rem' }}>
-                    *
-                  </Typography>
+            <Box sx={{ mb: 0 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.8125rem',
+                    color: theme.palette.text.primary,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 0.5,
+                  }}
+                >
+                  {field.displayName}
+                  {field.required && (
+                    <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.8125rem' }}>
+                      *
+                    </Typography>
+                  )}
+                </Typography>
+                {showRemove && (
+                  <IconButton
+                    size="small"
+                    onClick={() => handleRemoveFilter(field.name)}
+                    sx={{
+                      p: 0.5,
+                      color: theme.palette.error.main,
+                      bgcolor: alpha(theme.palette.error.main, 0.08),
+                      '&:hover': {
+                        bgcolor: alpha(theme.palette.error.main, 0.15),
+                        color: theme.palette.error.main,
+                      },
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    <Iconify icon={removeIcon} width={16} />
+                  </IconButton>
                 )}
-              </Typography>
-              <Grid container spacing={2}>
+              </Box>
+              <Grid container spacing={1.5}>
                 <Grid item xs={12} sm={4}>
                   <FieldRenderer
                     field={createOperatorField()}
@@ -391,19 +578,16 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
                   color="text.secondary"
                   sx={{
                     display: 'block',
-                    mt: 1,
-                    ml: 1,
-                    fontSize: '0.8125rem',
-                    lineHeight: 1.5,
+                    mt: 0.75,
+                    ml: 0.5,
+                    fontSize: '0.75rem',
+                    lineHeight: 1.4,
                   }}
                 >
                   {field.description}
                 </Typography>
               )}
             </Box>
-            {index < totalFields - 1 && (
-            <Divider sx={{ my: 3, borderColor: alpha(theme.palette.divider, isDark ? 0.12 : 0.08) }} />
-          )}
           </Box>
         );
       }
@@ -419,12 +603,11 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
           'start' in filterValue.value &&
           'end' in filterValue.value
         ) {
-          // Validate and ensure both start and end are strings
-          const startVal = filterValue.value.start;
-          const endVal = filterValue.value.end;
+          // Convert epoch milliseconds to ISO strings if needed
+          const range = filterValue.value as DatetimeRange;
           rangeValue = {
-            start: typeof startVal === 'string' ? startVal : String(startVal || ''),
-            end: typeof endVal === 'string' ? endVal : String(endVal || ''),
+            start: range.start != null ? convertEpochToISOString(range.start) : '',
+            end: range.end != null ? convertEpochToISOString(range.end) : '',
           };
         } else {
           // If value is not in correct format, reset to empty
@@ -437,35 +620,54 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
           fieldType: 'DATETIMERANGE' as const,
           required: field.required,
           placeholder: '',
-          description: field.description || '',
+          description: '',
           defaultValue: { start: '', end: '' },
           validation: {},
           isSecret: false,
         };
 
         return (
-          <Box key={field.name}>
-            <Box sx={{ mb: 2.5 }}>
-              <Typography
-                variant="body2"
-                sx={{
-                  fontWeight: 600,
-                  fontSize: '0.875rem',
-                  color: theme.palette.text.primary,
-                  mb: 1.5,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 0.5,
-                }}
-              >
-                {field.displayName}
-                {field.required && (
-                  <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.875rem' }}>
-                    *
-                  </Typography>
+          <Box key={field.filterId || field.name}>
+            <Box sx={{ mb: 0 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.8125rem',
+                    color: theme.palette.text.primary,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 0.5,
+                  }}
+                >
+                  {field.displayName}
+                  {field.required && (
+                    <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.8125rem' }}>
+                      *
+                    </Typography>
+                  )}
+                </Typography>
+                {showRemove && (
+                  <IconButton
+                    size="small"
+                    onClick={() => handleRemoveFilter(field.name)}
+                    sx={{
+                      p: 0.5,
+                      color: theme.palette.error.main,
+                      bgcolor: alpha(theme.palette.error.main, 0.08),
+                      '&:hover': {
+                        bgcolor: alpha(theme.palette.error.main, 0.15),
+                        color: theme.palette.error.main,
+                      },
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    <Iconify icon={removeIcon} width={16} />
+                  </IconButton>
                 )}
-              </Typography>
-              <Grid container spacing={2}>
+              </Box>
+              <Grid container spacing={1.5}>
                 <Grid item xs={12} sm={4}>
                   <FieldRenderer
                     field={createOperatorField()}
@@ -489,29 +691,38 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
                   color="text.secondary"
                   sx={{
                     display: 'block',
-                    mt: 1,
-                    ml: 1,
-                    fontSize: '0.8125rem',
-                    lineHeight: 1.5,
+                    mt: 0.75,
+                    ml: 0.5,
+                    fontSize: '0.75rem',
+                    lineHeight: 1.4,
                   }}
                 >
                   {field.description}
                 </Typography>
               )}
             </Box>
-            {index < totalFields - 1 && (
-            <Divider sx={{ my: 3, borderColor: alpha(theme.palette.divider, isDark ? 0.12 : 0.08) }} />
-          )}
           </Box>
         );
       }
 
       // For single date operators - extract value from {start, end} format
-      const datetimeValue = filterValue.value && typeof filterValue.value === 'object' && 'start' in filterValue.value
-        ? (filterValue.operator === 'is_before'
-            ? filterValue.value.end
-            : filterValue.value.start)
-        : (typeof filterValue.value === 'string' ? filterValue.value : '');
+      let datetimeValue: string;
+      if (
+        filterValue.value && 
+        typeof filterValue.value === 'object' && 
+        !Array.isArray(filterValue.value) &&
+        'start' in filterValue.value
+      ) {
+        const range = filterValue.value as DatetimeRange;
+        const rawValue = filterValue.operator === 'is_before' ? range.end : range.start;
+        datetimeValue = convertEpochToISOString(rawValue);
+      } else if (typeof filterValue.value === 'string') {
+        datetimeValue = convertEpochToISOString(filterValue.value);
+      } else if (typeof filterValue.value === 'number' && filterValue.value > 0) {
+        datetimeValue = convertEpochToISOString(filterValue.value);
+      } else {
+        datetimeValue = '';
+      }
       
       const dateField = {
         name: `${field.name}_date`,
@@ -526,28 +737,47 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
       };
 
       return (
-        <Box key={field.name}>
-          <Box sx={{ mb: 2.5 }}>
-            <Typography
-              variant="body2"
-              sx={{
-                fontWeight: 600,
-                fontSize: '0.875rem',
-                color: theme.palette.text.primary,
-                mb: 1.5,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 0.5,
-              }}
-            >
-              {field.displayName}
-              {field.required && (
-                <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.875rem' }}>
-                  *
-                </Typography>
+        <Box key={field.filterId || field.name}>
+          <Box sx={{ mb: 0 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 600,
+                  fontSize: '0.8125rem',
+                  color: theme.palette.text.primary,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                }}
+              >
+                {field.displayName}
+                {field.required && (
+                  <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.8125rem' }}>
+                    *
+                  </Typography>
+                )}
+              </Typography>
+              {showRemove && (
+                <IconButton
+                  size="small"
+                  onClick={() => handleRemoveFilter(field.name)}
+                  sx={{
+                    p: 0.5,
+                    color: theme.palette.error.main,
+                    bgcolor: alpha(theme.palette.error.main, 0.08),
+                    '&:hover': {
+                      bgcolor: alpha(theme.palette.error.main, 0.15),
+                      color: theme.palette.error.main,
+                    },
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  <Iconify icon={removeIcon} width={16} />
+                </IconButton>
               )}
-            </Typography>
-            <Grid container spacing={2}>
+            </Box>
+            <Grid container spacing={1.5}>
               <Grid item xs={12} sm={4}>
                 <FieldRenderer
                   field={createOperatorField()}
@@ -571,19 +801,16 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
                 color="text.secondary"
                 sx={{
                   display: 'block',
-                  mt: 1,
-                  ml: 1,
-                  fontSize: '0.8125rem',
-                  lineHeight: 1.5,
+                  mt: 0.75,
+                  ml: 0.5,
+                  fontSize: '0.75rem',
+                  lineHeight: 1.4,
                 }}
               >
                 {field.description}
               </Typography>
             )}
           </Box>
-            {index < totalFields - 1 && (
-            <Divider sx={{ my: 3, borderColor: alpha(theme.palette.divider, isDark ? 0.12 : 0.08) }} />
-          )}
         </Box>
       );
     }
@@ -595,7 +822,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         : (field.defaultValue !== undefined ? field.defaultValue : false);
 
       return (
-        <Grid item xs={12} sm={6} md={4} key={field.name}>
+        <Grid item xs={12} sm={6} md={4} key={field.filterId || field.name}>
           <FormControlLabel
             control={
               <Checkbox
@@ -645,34 +872,58 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
     return null;
   };
 
+  /**
+   * Render a filter section (sync or indexing) with accordion
+   */
   const renderFilterSection = (
     title: string,
     description: string,
-    filterSchema: any,
+    filterSchema: { fields: FilterSchemaField[] },
     filterType: 'sync' | 'indexing'
   ) => {
     if (!filterSchema?.fields || filterSchema.fields.length === 0) {
       return null;
     }
 
-    const filterFields = filterSchema.fields;
-    const isBooleanOnly = filterFields.every((f: any) => f.filterType === 'boolean');
+    const activeFilters = getActiveFilters(filterType);
+    const availableFilters = getAvailableFilters(filterType);
+    const isBooleanOnly = filterSchema.fields.every((f) => f.filterType === 'boolean');
+
+    const isExpanded = expandedAccordions[filterType] ?? false;
 
     return (
       <Accordion
-        defaultExpanded={false}
+        expanded={isExpanded}
+        onChange={(_, expanded) => {
+          setExpandedAccordions((prev) => ({ ...prev, [filterType]: expanded }));
+        }}
+        TransitionProps={{
+          timeout: 300,
+        }}
         sx={{
           borderRadius: 1.25,
-          border: `1px solid ${isDark ? alpha(theme.palette.divider, 0.12) : alpha(theme.palette.divider, 0.1)}`,
+          border: isExpanded
+            ? `1.5px solid ${isDark ? alpha(theme.palette.primary.main, 0.3) : alpha(theme.palette.primary.main, 0.25)}`
+            : `1.5px solid ${isDark ? alpha(theme.palette.common.white, 0.2) : alpha(theme.palette.common.black, 0.25)}`,
           boxShadow: isDark
-            ? `0 1px 2px ${alpha(theme.palette.common.black, 0.2)}`
-            : `0 1px 2px ${alpha(theme.palette.common.black, 0.03)}`,
+            ? `0 1px 3px ${alpha(theme.palette.common.black, 0.2)}`
+            : `0 1px 3px ${alpha(theme.palette.common.black, 0.05)}`,
           bgcolor: isDark
             ? alpha(theme.palette.background.paper, 0.4)
             : theme.palette.background.paper,
+          transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
           '&:before': { display: 'none' },
           '&.Mui-expanded': {
             margin: 0,
+            border: `1.5px solid ${isDark ? alpha(theme.palette.primary.main, 0.3) : alpha(theme.palette.primary.main, 0.25)}`,
+            boxShadow: isDark
+              ? `0 2px 6px ${alpha(theme.palette.primary.main, 0.15)}`
+              : `0 2px 6px ${alpha(theme.palette.primary.main, 0.1)}`,
+          },
+          '&:hover': {
+            borderColor: isExpanded
+              ? (isDark ? alpha(theme.palette.primary.main, 0.4) : alpha(theme.palette.primary.main, 0.35))
+              : (isDark ? alpha(theme.palette.common.white, 0.3) : alpha(theme.palette.divider, 0.5)),
           },
         }}
       >
@@ -722,20 +973,188 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
                 {description}
               </Typography>
             </Box>
+            {filterType === 'sync' && availableFilters.length > 0 && (
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<Iconify icon={addIcon} width={16} />}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const buttonElement = e.currentTarget;
+                  
+                  // Expand accordion if closed, then open menu after expansion
+                  if (!isExpanded) {
+                    setExpandedAccordions((prev) => ({ ...prev, [filterType]: true }));
+                    // Wait for accordion to expand before opening menu
+                    setTimeout(() => {
+                      handleAddMenuOpen(filterType, buttonElement);
+                    }, 100);
+                  } else {
+                    // Accordion is already open, open menu immediately
+                    handleAddMenuOpen(filterType, e);
+                  }
+                }}
+                sx={{
+                  ml: 'auto',
+                  mr: 1,
+                  textTransform: 'none',
+                  fontSize: '0.75rem',
+                  fontWeight: 500,
+                  px: 1.5,
+                  py: 0.5,
+                  borderRadius: 0.75,
+                }}
+              >
+                Add Filter
+              </Button>
+            )}
           </Box>
         </AccordionSummary>
         <AccordionDetails sx={{ px: 2, pb: 2 }}>
           {isBooleanOnly ? (
             <Grid container spacing={2}>
-              {filterFields.map((field: any) => renderFilterField(field, 0, 1, filterSchema))}
+              {filterSchema.fields.map((field) => renderFilterField(field, 0, 1, filterSchema, false))}
             </Grid>
           ) : (
             <Box>
-              {filterFields.map((field: any, index: number) => 
-                renderFilterField(field, index, filterFields.length, filterSchema)
+              {activeFilters.length === 0 ? (
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    py: 2,
+                    px: 2,
+                    borderRadius: 1.25,
+                    border: `1.5px dashed ${alpha(theme.palette.divider, isDark ? 0.2 : 0.15)}`,
+                    bgcolor: isDark
+                      ? alpha(theme.palette.background.paper, 0.3)
+                      : alpha(theme.palette.grey[50], 0.5),
+                    mb: 2,
+                    minHeight: 120,
+                  }}
+                >
+                  <Box
+                    sx={{
+                      display: 'inline-flex',
+                      p: 0.875,
+                      borderRadius: '50%',
+                      bgcolor: alpha(theme.palette.primary.main, 0.1),
+                      mb: 1.25,
+                    }}
+                  >
+                    <Iconify icon={filterIcon} width={18} color={theme.palette.primary.main} />
+                  </Box>
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontSize: '0.8125rem',
+                      fontWeight: 500,
+                      color: theme.palette.text.primary,
+                      mb: 0.25,
+                    }}
+                  >
+                    No filters configured
+                  </Typography>
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    sx={{ fontSize: '0.75rem', mb: 1.75, lineHeight: 1.4 }}
+                  >
+                    Add filters to control what data is synchronized
+                  </Typography>
+                  {filterType === 'sync' && availableFilters.length > 0 && (
+                    <Button
+                      variant="contained"
+                      startIcon={<Iconify icon={addIcon} width={16} />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const buttonElement = e.currentTarget;
+                        
+                        // Accordion should already be expanded when this is visible, but ensure it is
+                        if (!isExpanded) {
+                          setExpandedAccordions((prev) => ({ ...prev, [filterType]: true }));
+                          // Wait for accordion to expand before opening menu
+                          setTimeout(() => {
+                            handleAddMenuOpen(filterType, buttonElement);
+                          }, 100);
+                        } else {
+                          // Accordion is already open, open menu immediately
+                          handleAddMenuOpen(filterType, e);
+                        }
+                      }}
+                      sx={{
+                        textTransform: 'none',
+                        fontSize: '0.8125rem',
+                        fontWeight: 600,
+                        px: 2,
+                        py: 0.5,
+                        borderRadius: 1,
+                        boxShadow: isDark
+                          ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.3)}`
+                          : 'none',
+                        '&:hover': {
+                          boxShadow: isDark
+                            ? `0 4px 12px ${alpha(theme.palette.primary.main, 0.4)}`
+                            : `0 2px 8px ${alpha(theme.palette.primary.main, 0.2)}`,
+                        },
+                      }}
+                    >
+                      Add Filter
+                    </Button>
+                  )}
+                </Box>
+              ) : (
+                <>
+                  {activeFilters.map((field: any, index: number) => (
+                    <React.Fragment key={field.filterId || field.name}>
+                      {index > 0 && (
+                        <Box sx={{ display: 'flex', alignItems: 'center', my: 2 }}>
+                          <Divider sx={{ flex: 1, borderColor: alpha(theme.palette.divider, isDark ? 0.12 : 0.08) }} />
+                          <Chip
+                            label="AND"
+                            size="small"
+                            sx={{
+                              mx: 2,
+                              height: 24,
+                              fontSize: '0.75rem',
+                              fontWeight: 600,
+                              bgcolor: isDark
+                                ? alpha(theme.palette.common.white, 0.95)
+                                : alpha(theme.palette.primary.main, 0.1),
+                              color: theme.palette.primary.main,
+                              border: `1px solid ${alpha(theme.palette.primary.main, 0.3)}`,
+                            }}
+                          />
+                          <Divider sx={{ flex: 1, borderColor: alpha(theme.palette.divider, isDark ? 0.12 : 0.08) }} />
+                        </Box>
+                      )}
+                      <Paper
+                        variant="outlined"
+                        sx={{
+                          p: 1.5,
+                          borderRadius: 1.25,
+                          bgcolor: isDark
+                            ? alpha(theme.palette.background.paper, 0.5)
+                            : theme.palette.background.paper,
+                          borderColor: isDark
+                            ? alpha(theme.palette.divider, 0.15)
+                            : alpha(theme.palette.divider, 0.12),
+                          boxShadow: isDark
+                            ? `0 1px 2px ${alpha(theme.palette.common.black, 0.15)}`
+                            : `0 1px 2px ${alpha(theme.palette.common.black, 0.03)}`,
+                        }}
+                      >
+                        {renderFilterField(field, index, activeFilters.length, filterSchema, filterType === 'sync')}
+                      </Paper>
+                    </React.Fragment>
+                  ))}
+                </>
               )}
             </Box>
           )}
+          
         </AccordionDetails>
       </Accordion>
     );
@@ -750,19 +1169,225 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         height: '100%',
       }}
     >
-      {hasSyncFilters && renderFilterSection(
+      {hasSyncFilters && syncFilters?.schema && renderFilterSection(
         'Sync Filters',
         'Configure filters to control what data is synchronized',
         syncFilters.schema,
         'sync'
       )}
 
-      {hasIndexingFilters && renderFilterSection(
+      {hasIndexingFilters && indexingFilters?.schema && renderFilterSection(
         'Indexing Filters',
         'Configure filters to control what data is indexed',
         indexingFilters.schema,
         'indexing'
       )}
+
+      {/* Autocomplete for adding sync filters - rendered at component level */}
+      {hasSyncFilters && (() => {
+        const syncAvailableFilters = getAvailableFilters('sync');
+        const syncMenuAnchor = addMenuAnchor.sync;
+        const isOpen = Boolean(syncMenuAnchor) && autocompleteOpen.sync;
+        
+        if (syncAvailableFilters.length === 0) return null;
+        
+        return (
+          <Popper
+            open={isOpen}
+            anchorEl={syncMenuAnchor}
+            placement="bottom-start"
+            style={{ 
+              zIndex: 1300, 
+              width: syncMenuAnchor?.getBoundingClientRect().width || 320,
+              maxWidth: 400,
+            }}
+            modifiers={[
+              {
+                name: 'offset',
+                options: {
+                  offset: [0, 8],
+                },
+              },
+            ]}
+          >
+            <Paper
+              sx={{
+                width: '100%',
+                minWidth: 320,
+                maxWidth: 400,
+                bgcolor: isDark
+                  ? theme.palette.background.paper
+                  : theme.palette.background.paper,
+                border: `1px solid ${alpha(theme.palette.divider, isDark ? 0.2 : 0.15)}`,
+                boxShadow: isDark
+                  ? `0 8px 32px ${alpha(theme.palette.common.black, 0.5)}, 0 0 0 1px ${alpha(theme.palette.common.white, 0.08)}`
+                  : `0 8px 32px ${alpha(theme.palette.common.black, 0.15)}, 0 0 0 1px ${alpha(theme.palette.common.black, 0.08)}`,
+                borderRadius: 1.5,
+                overflow: 'hidden',
+              }}
+            >
+              <Autocomplete
+                open={isOpen}
+                onOpen={() => setAutocompleteOpen((prev) => ({ ...prev, sync: true }))}
+                onClose={() => handleAddMenuClose('sync')}
+                options={syncAvailableFilters}
+                getOptionLabel={(option) => option.displayName}
+                onChange={(_, value) => handleAutocompleteChange('sync', value)}
+                filterOptions={(options, { inputValue }) => {
+                  const searchTerm = inputValue.toLowerCase().trim();
+                  if (!searchTerm) return options;
+                  return options.filter(
+                    (option) =>
+                      option.displayName.toLowerCase().includes(searchTerm) ||
+                      (option.description?.toLowerCase().includes(searchTerm) ?? false) ||
+                      option.name.toLowerCase().includes(searchTerm)
+                  );
+                }}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    placeholder="Search filters..."
+                    variant="outlined"
+                    size="small"
+                    autoFocus
+                    sx={{
+                      '& .MuiOutlinedInput-root': {
+                        bgcolor: isDark
+                          ? alpha(theme.palette.background.paper, 0.6)
+                          : alpha(theme.palette.grey[50], 0.8),
+                        fontSize: '0.875rem',
+                        '& fieldset': {
+                          border: 'none',
+                        },
+                        '&:hover fieldset': {
+                          border: 'none',
+                        },
+                        '&.Mui-focused': {
+                          bgcolor: isDark
+                            ? alpha(theme.palette.background.paper, 0.8)
+                            : theme.palette.background.paper,
+                        },
+                        '&.Mui-focused fieldset': {
+                          border: 'none',
+                        },
+                      },
+                      '& .MuiInputBase-input': {
+                        py: 1.25,
+                        px: 2,
+                        fontSize: '0.875rem',
+                        color: theme.palette.text.primary,
+                      },
+                    }}
+                  />
+                )}
+                renderOption={(props, option) => (
+                  <Box
+                    component="li"
+                    {...props}
+                    sx={{
+                      py: 1.25,
+                      px: 2,
+                      cursor: 'pointer',
+                      transition: 'background-color 0.15s ease',
+                      '&:hover': {
+                        bgcolor: isDark
+                          ? alpha(theme.palette.primary.main, 0.12)
+                          : alpha(theme.palette.primary.main, 0.06),
+                      },
+                      '&[aria-selected="true"]': {
+                        bgcolor: isDark
+                          ? alpha(theme.palette.primary.main, 0.18)
+                          : alpha(theme.palette.primary.main, 0.1),
+                        '&:hover': {
+                          bgcolor: isDark
+                            ? alpha(theme.palette.primary.main, 0.22)
+                            : alpha(theme.palette.primary.main, 0.14),
+                        },
+                      },
+                    }}
+                  >
+                    <Box sx={{ width: '100%' }}>
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          fontWeight: 500,
+                          fontSize: '0.875rem',
+                          color: theme.palette.text.primary,
+                          lineHeight: 1.5,
+                          mb: option.description ? 0.25 : 0,
+                        }}
+                      >
+                        {option.displayName}
+                      </Typography>
+                      {option.description && (
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{
+                            display: 'block',
+                            fontSize: '0.75rem',
+                            lineHeight: 1.4,
+                            mt: 0.25,
+                          }}
+                        >
+                          {option.description}
+                        </Typography>
+                      )}
+                    </Box>
+                  </Box>
+                )}
+                ListboxProps={{
+                  sx: {
+                    maxHeight: 320,
+                    bgcolor: 'transparent',
+                    '&::-webkit-scrollbar': {
+                      width: '8px',
+                    },
+                    '&::-webkit-scrollbar-track': {
+                      backgroundColor: 'transparent',
+                    },
+                    '&::-webkit-scrollbar-thumb': {
+                      backgroundColor: isDark
+                        ? alpha(theme.palette.text.secondary, 0.3)
+                        : alpha(theme.palette.text.secondary, 0.2),
+                      borderRadius: '4px',
+                      '&:hover': {
+                        backgroundColor: isDark
+                          ? alpha(theme.palette.text.secondary, 0.45)
+                          : alpha(theme.palette.text.secondary, 0.3),
+                      },
+                    },
+                  },
+                }}
+                PaperComponent={({ children, ...other }) => (
+                  <Box
+                    {...other}
+                    sx={{
+                      bgcolor: isDark
+                        ? theme.palette.background.paper
+                        : theme.palette.background.paper,
+                      borderTop: `1px solid ${alpha(theme.palette.divider, isDark ? 0.15 : 0.1)}`,
+                      mt: 0.5,
+                    }}
+                  >
+                    {children}
+                  </Box>
+                )}
+                componentsProps={{
+                  popper: {
+                    sx: {
+                      '& .MuiAutocomplete-listbox': {
+                        p: 0,
+                        bgcolor: 'transparent',
+                      },
+                    },
+                  },
+                }}
+              />
+            </Paper>
+          </Popper>
+        );
+      })()}
 
       <Alert 
         severity="info" 

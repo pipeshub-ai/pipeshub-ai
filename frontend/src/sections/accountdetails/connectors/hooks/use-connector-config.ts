@@ -1,12 +1,24 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import dayjs from 'dayjs';
 import { useAccountType } from 'src/hooks/use-account-type';
-import { Connector, ConnectorConfig } from '../types/types';
+import { 
+  Connector, 
+  ConnectorConfig, 
+  FilterSchemaField,
+  FilterValueData,
+  FilterValue
+} from '../types/types';
 import { ConnectorApiService } from '../services/api';
 import { CrawlingManagerApi } from '../services/crawling-manager';
 import { buildCronFromSchedule } from '../utils/cron';
 import { evaluateConditionalDisplay } from '../utils/conditional-display';
 import { isNoneAuthType } from '../utils/auth';
+import {
+  normalizeDatetimeValueForDisplay,
+  normalizeDatetimeValueForSave,
+  convertRelativeDateToAbsolute,
+  EpochDatetimeRange
+} from '../utils/time-utils';
 
 interface FormData {
   auth: Record<string, any>;
@@ -98,9 +110,9 @@ export const useConnectorConfig = ({
   const [saving, setSaving] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
   const [formData, setFormData] = useState<FormData>({
-    auth: {},
-    sync: {},
-    filters: {},
+    auth: {} as Record<string, unknown>,
+    sync: {} as Record<string, unknown>,
+    filters: {} as Record<string, FilterValueData>,
   });
   const [formErrors, setFormErrors] = useState<FormErrors>({
     auth: {},
@@ -223,95 +235,85 @@ export const useConnectorConfig = ({
     }
 
     // Initialize filters (both sync and indexing)
-    const filtersData: Record<string, any> = {};
-    
-      // Helper function to normalize datetime values to {start, end} format
-      const normalizeDatetimeValueForInit = (value: any, operator: string): { start: string; end: string } => {
-        // If already in {start, end} format, return as is
-        if (value && typeof value === 'object' && 'start' in value && 'end' in value) {
-          return { start: value.start || '', end: value.end || '' };
-        }
-        
-        // Convert single string value to {start, end} format based on operator
-        if (typeof value === 'string' && value !== '') {
-          if (operator === 'is_before') {
-            return { start: '', end: value };
-          }
-          if (operator === 'is_after') {
-            return { start: value, end: '' };
-          }
-          // Default: put in start (for is_after)
-          return { start: value, end: '' };
-        }
-        
-        // Default empty format
-        return { start: '', end: '' };
-      };
+    const filtersData: Record<string, FilterValueData> = {};
 
-    // Helper function to initialize filter fields
-    const initializeFilterFields = (filterSchema: any, filterValues: Record<string, any> | undefined) => {
+    /**
+     * Get default value for a filter field based on its type
+     */
+    const getDefaultFilterValue = (field: FilterSchemaField): FilterValue => {
+      if (field.defaultValue !== undefined) {
+        return field.defaultValue;
+      }
+      
+      switch (field.filterType) {
+        case 'list':
+          return [];
+        case 'datetime':
+          return { start: '', end: '' };
+        case 'boolean':
+          return true;
+        default:
+          return '';
+      }
+    };
+
+    /**
+     * Initialize filter fields - only initialize filters that have existing values
+     */
+    const initializeFilterFields = (
+      filterSchema: { fields: FilterSchemaField[] }, 
+      filterValues: Record<string, FilterValueData> | undefined
+    ) => {
       if (!filterSchema?.fields) return;
       
-      filterSchema.fields.forEach((field: any) => {
+      filterSchema.fields.forEach((field) => {
         const existingValue = filterValues?.[field.name];
         
-        if (existingValue !== undefined && existingValue !== null) {
-          // If value exists, use it (could be { operator, value } or just value)
-          if (typeof existingValue === 'object' && !Array.isArray(existingValue) && existingValue.operator !== undefined) {
-            // Already in the correct format: { operator: '...', value: '...' }
-            // Handle relative date operators that don't need values
-            const operator = existingValue.operator || field.defaultOperator || '';
-            const needsValue = !operator.startsWith('last_');
-            
-            let value = needsValue 
-              ? (existingValue.value !== undefined 
-                  ? existingValue.value 
-                  : (field.defaultValue !== undefined 
-                      ? field.defaultValue 
-                      : (field.filterType === 'list' 
-                          ? [] 
-                          : (field.filterType === 'boolean' 
-                              ? (field.defaultValue !== undefined ? field.defaultValue : true)
-                              : (field.filterType === 'datetime' ? { start: '', end: '' } : '')))))
-              : null;
-            
-            // Normalize datetime values to {start, end} format
-            if (field.filterType === 'datetime' && value !== null && !operator.startsWith('last_')) {
-              value = normalizeDatetimeValueForInit(value, operator);
-            }
-            
-            filtersData[field.name] = {
-              operator,
-              value,
-            };
-          } else {
-            // Value exists but not in the right format, wrap it
-            let value = existingValue;
-            
-            // Normalize datetime values to {start, end} format
-            if (field.filterType === 'datetime') {
-              const operator = field.defaultOperator || '';
-              value = normalizeDatetimeValueForInit(existingValue, operator);
-            }
-            
-            filtersData[field.name] = {
-              operator: field.defaultOperator || '',
-              value,
-            };
+        // Only initialize if there's an existing value from saved config
+        if (existingValue === undefined || existingValue === null) {
+          return; // Don't initialize filters without existing values - start blank
+        }
+        
+        // If value exists, use it (could be { operator, value } or just value)
+        if (
+          typeof existingValue === 'object' && 
+          !Array.isArray(existingValue) && 
+          'operator' in existingValue
+        ) {
+          // Already in the correct format: { operator: '...', value: '...' }
+          const operator = existingValue.operator || field.defaultOperator || '';
+          const needsValue = !operator.startsWith('last_');
+          
+          let value: FilterValue = needsValue 
+            ? (existingValue.value !== undefined 
+                ? existingValue.value 
+                : getDefaultFilterValue(field))
+            : null;
+          
+          // Normalize datetime values to {start, end} format for display
+          if (field.filterType === 'datetime' && value !== null && !operator.startsWith('last_')) {
+            value = normalizeDatetimeValueForDisplay(value, operator);
           }
+          
+          filtersData[field.name] = {
+            operator,
+            value,
+            type: field.filterType,
+          };
         } else {
-          // Initialize with default operator and value
-          const defaultValue = field.defaultValue !== undefined 
-            ? field.defaultValue 
-            : (field.filterType === 'list' 
-                ? [] 
-                : (field.filterType === 'boolean' 
-                    ? true 
-                    : (field.filterType === 'datetime' ? { start: '', end: '' } : '')));
+          // Value exists but not in the right format, wrap it
+          let value: FilterValue = existingValue as FilterValue;
+          
+          // Normalize datetime values to {start, end} format
+          if (field.filterType === 'datetime') {
+            const operator = field.defaultOperator || '';
+            value = normalizeDatetimeValueForDisplay(value, operator);
+          }
           
           filtersData[field.name] = {
             operator: field.defaultOperator || '',
-            value: defaultValue,
+            value,
+            type: field.filterType,
           };
         }
       });
@@ -830,9 +832,17 @@ export const useConnectorConfig = ({
           ...prev,
           [section]: {
             ...prev[section as keyof FormData],
-            [fieldName]: value,
           },
         };
+
+        // Handle filter removal (when value is undefined)
+        if (section === 'filters' && value === undefined) {
+          const { [fieldName]: removed, ...rest } = newFormData[section] as Record<string, any>;
+          newFormData[section] = rest;
+        } else {
+          // Normal field update
+          (newFormData[section] as Record<string, any>)[fieldName] = value;
+        }
 
         // Re-evaluate conditional display rules for auth section
         if (section === 'auth' && connectorConfig?.config.auth.conditionalDisplay) {
@@ -1002,11 +1012,25 @@ export const useConnectorConfig = ({
         return;
       }
 
+
       // Prepare config for API
       const syncToSave: any = {
         selectedStrategy: formData.sync.selectedStrategy,
         ...formData.sync,
       };
+      
+      // Process sync custom fields to convert duration values
+      if (connectorConfig?.config?.sync?.customFields) {
+        connectorConfig.config.sync.customFields.forEach((field: any) => {
+          if (syncToSave[field.name] !== undefined && isDurationField(field)) {
+            const value = syncToSave[field.name];
+            if (typeof value === 'string') {
+              syncToSave[field.name] = convertDurationToMilliseconds(value);
+            }
+          }
+        });
+      }
+      
       const normalizedStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
       if (normalizedStrategy === 'SCHEDULED') {
         syncToSave.scheduledConfig = formData.sync.scheduledConfig || {};
@@ -1014,91 +1038,193 @@ export const useConnectorConfig = ({
         delete syncToSave.scheduledConfig;
       }
 
-      // Helper to convert relative date operators to actual dates
-      const convertRelativeDateToAbsolute = (operator: string): { operator: string; value: string } | null => {
-        const relativeDays: Record<string, number> = {
-          last_7_days: 7,
-          last_14_days: 14,
-          last_30_days: 30,
-          last_90_days: 90,
-          last_180_days: 180,
-          last_365_days: 365,
+      // Note: convertRelativeDateToAbsolute and normalizeDatetimeValueForSave are imported from time-utils.ts
+
+      // Helper function to convert duration string to milliseconds
+      // Supports formats like: "5m", "1h", "30s", "2d", "1w", "500ms", "1.5h", etc.
+      const convertDurationToMilliseconds = (durationStr: string | number): number | string => {
+        // If it's already a number, assume it's already in milliseconds
+        if (typeof durationStr === 'number') {
+          return durationStr;
+        }
+        
+        // If it's not a string or empty, return as is
+        if (typeof durationStr !== 'string' || !durationStr.trim()) {
+          return durationStr;
+        }
+        
+        const str = durationStr.trim().toLowerCase();
+        
+        // Try to parse as a number first (might already be in milliseconds as string)
+        const numericValue = parseFloat(str);
+        if (!Number.isNaN(numericValue) && str === String(numericValue)) {
+          // Pure number without unit - assume milliseconds
+          return numericValue;
+        }
+        
+        // Parse duration string with units
+        const durationRegex = /^(\d+(?:\.\d+)?)\s*([a-z]+)$/;
+        const match = str.match(durationRegex);
+        
+        if (!match) {
+          // If it doesn't match the pattern, return as is (might be invalid)
+          return durationStr;
+        }
+        
+        const value = parseFloat(match[1]);
+        const unit = match[2];
+        
+        // Convert to milliseconds based on unit
+        const unitMultipliers: Record<string, number> = {
+          'ms': 1,
+          'millisecond': 1,
+          'milliseconds': 1,
+          's': 1000,
+          'sec': 1000,
+          'second': 1000,
+          'seconds': 1000,
+          'm': 60 * 1000,
+          'min': 60 * 1000,
+          'minute': 60 * 1000,
+          'minutes': 60 * 1000,
+          'h': 60 * 60 * 1000,
+          'hr': 60 * 60 * 1000,
+          'hour': 60 * 60 * 1000,
+          'hours': 60 * 60 * 1000,
+          'd': 24 * 60 * 60 * 1000,
+          'day': 24 * 60 * 60 * 1000,
+          'days': 24 * 60 * 60 * 1000,
+          'w': 7 * 24 * 60 * 60 * 1000,
+          'week': 7 * 24 * 60 * 60 * 1000,
+          'weeks': 7 * 24 * 60 * 60 * 1000,
         };
-
-        const days = relativeDays[operator];
-        if (days !== undefined) {
-          // Use dayjs to subtract days and format as YYYY-MM-DDTHH:mm
-          const date = dayjs().subtract(days, 'day').startOf('day');
-          
-          return {
-            operator: 'is_after',
-            value: date.format('YYYY-MM-DDTHH:mm'),
-          };
-        }
-        return null;
-      };
-
-      // Helper function to normalize datetime values to {start, end} format
-      const normalizeDatetimeValueForSave = (value: any, operator: string): { start: string; end: string } => {
-        // If already in {start, end} format, return as is
-        if (value && typeof value === 'object' && 'start' in value && 'end' in value) {
-          return { start: value.start || '', end: value.end || '' };
+        
+        const multiplier = unitMultipliers[unit];
+        if (multiplier) {
+          return Math.round(value * multiplier);
         }
         
-        // Convert single string value to {start, end} format based on operator
-        if (typeof value === 'string' && value !== '') {
-          if (operator === 'is_before') {
-            return { start: '', end: value };
-          }
-          if (operator === 'is_after') {
-            return { start: value, end: '' };
-          }
-          // Default: put in start (for is_after)
-          return { start: value, end: '' };
-        }
-        
-        // Default empty format
-        return { start: '', end: '' };
+        // Unknown unit, return as is
+        return durationStr;
       };
 
-      // Helper function to process filter fields
-      const processFilterFields = (filterSchema: any): Record<string, any> => {
-        const filtersToSave: Record<string, any> = {};
+      // Helper function to check if a field is a duration field
+      const isDurationField = (field: any): boolean => {
+        const fieldName = (field.name || '').toLowerCase();
+        const fieldType = (field.fieldType || '').toLowerCase();
+        const filterType = (field.filterType || '').toLowerCase();
+        
+        // Check if field name contains duration-related keywords
+        const durationKeywords = ['duration', 'timeout', 'interval', 'delay', 'period', 'ttl'];
+        const hasDurationKeyword = durationKeywords.some(keyword => fieldName.includes(keyword));
+        
+        // Check if field type or filter type indicates duration
+        const isDurationType = fieldType === 'duration' || filterType === 'duration';
+        
+        return hasDurationKeyword || isDurationType;
+      };
+
+      // Note: normalizeDatetimeValueForSave is imported from time-utils.ts
+
+      /**
+       * Process filter fields for saving - converts values to proper format
+       */
+      const processFilterFields = (
+        filterSchema: { fields: FilterSchemaField[] }
+      ): Record<string, FilterValueData> => {
+        const filtersToSave: Record<string, FilterValueData> = {};
         if (!filterSchema?.fields) return filtersToSave;
         
-        filterSchema.fields.forEach((field: any) => {
+        filterSchema.fields.forEach((field) => {
           const filterValue = formData.filters[field.name];
-          if (filterValue && filterValue.operator) {
-            // Only include filters that have an operator set
-            // Convert relative date operators to absolute dates
-            if (filterValue.operator.startsWith('last_')) {
-              const converted = convertRelativeDateToAbsolute(filterValue.operator);
-              if (converted) {
-                // Convert to {start, end} format for is_after operator
-                const normalizedValue = normalizeDatetimeValueForSave(converted.value, converted.operator);
+          if (!filterValue?.operator) {
+            return; // Skip filters without operator
+          }
+          
+          // Convert relative date operators to absolute dates
+          if (filterValue.operator.startsWith('last_')) {
+            const converted = convertRelativeDateToAbsolute(filterValue.operator);
+            if (converted) {
+              try {
+                const normalizedValue = normalizeDatetimeValueForSave(
+                  converted.value, 
+                  converted.operator
+                );
+                // Only include if at least one of start or end has a value
+                if (normalizedValue.start !== null || normalizedValue.end !== null) {
+                  filtersToSave[field.name] = { 
+                    operator: converted.operator, 
+                    value: normalizedValue, 
+                    type: field.filterType 
+                  };
+                }
+              } catch (error) {
+                console.warn(`Failed to convert relative date operator for ${field.name}:`, error);
+              }
+            }
+            return;
+          }
+          
+          // Handle filters with values
+          if (filterValue.value === undefined || filterValue.value === null || filterValue.value === '') {
+            // For boolean filters, include even if value is false
+            if (field.filterType === 'boolean') {
+              filtersToSave[field.name] = { 
+                operator: filterValue.operator, 
+                value: filterValue.value, 
+                type: field.filterType 
+              };
+            }
+            return;
+          }
+          
+          // Process datetime fields
+          if (field.filterType === 'datetime') {
+            try {
+              const normalizedValue = normalizeDatetimeValueForSave(
+                filterValue.value, 
+                filterValue.operator
+              );
+              if (normalizedValue.start !== null || normalizedValue.end !== null) {
                 filtersToSave[field.name] = { 
-                  operator: converted.operator, 
+                  operator: filterValue.operator, 
                   value: normalizedValue, 
                   type: field.filterType 
                 };
               }
-            } else if (filterValue.value !== undefined && filterValue.value !== null && filterValue.value !== '') {
-              // For datetime fields, normalize to {start, end} format
-              if (field.filterType === 'datetime') {
-                const normalizedValue = normalizeDatetimeValueForSave(filterValue.value, filterValue.operator);
-                // Only include if at least one of start or end has a value
-                if (normalizedValue.start || normalizedValue.end) {
-                  filtersToSave[field.name] = { operator: filterValue.operator, value: normalizedValue, type: field.filterType };
-                }
-              } else if (Array.isArray(filterValue.value) && filterValue.value.length > 0) {
-                filtersToSave[field.name] = { operator: filterValue.operator, value: filterValue.value, type: field.filterType };
-              } else if (!Array.isArray(filterValue.value) && filterValue.value !== '') {
-                filtersToSave[field.name] = { operator: filterValue.operator, value: filterValue.value, type: field.filterType };
-              }
-            } else if (field.filterType === 'boolean') {
-              // For boolean filters, include even if value is false
-              filtersToSave[field.name] = { operator: filterValue.operator, value: filterValue.value, type: field.filterType };
+            } catch (error) {
+              console.warn(`Failed to normalize datetime value for ${field.name}:`, error);
             }
+            return;
+          }
+          
+          // Process list values
+          if (Array.isArray(filterValue.value) && filterValue.value.length > 0) {
+            let processedValue: FilterValue = filterValue.value;
+            if (isDurationField(field)) {
+              processedValue = filterValue.value.map((item: unknown) => 
+                typeof item === 'string' ? convertDurationToMilliseconds(item) : item
+              );
+            }
+            filtersToSave[field.name] = { 
+              operator: filterValue.operator, 
+              value: processedValue, 
+              type: field.filterType 
+            };
+            return;
+          }
+          
+          // Process non-array values
+          if (!Array.isArray(filterValue.value) && filterValue.value !== '') {
+            let processedValue: FilterValue = filterValue.value;
+            if (isDurationField(field) && typeof filterValue.value === 'string') {
+              processedValue = convertDurationToMilliseconds(filterValue.value);
+            }
+            filtersToSave[field.name] = { 
+              operator: filterValue.operator, 
+              value: processedValue, 
+              type: field.filterType 
+            };
           }
         });
         

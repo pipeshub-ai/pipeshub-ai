@@ -393,6 +393,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
                   ? alpha(theme.palette.info.main, 0.2)
                   : alpha(theme.palette.info.main, 0.2),
                 backgroundColor: alpha(theme.palette.info.main, 0.04),
+                alignItems: 'center',
               }}
             >
               <Typography variant="body2" sx={{ fontWeight: 500, fontSize: '0.8125rem' }}>
