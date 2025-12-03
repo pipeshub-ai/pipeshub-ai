@@ -695,22 +695,22 @@ class SharePointConnector(BaseConnector):
                         batch_records = []
                         await asyncio.sleep(0.1)  # Brief pause
 
-            # Process lists
-            self.logger.info(f"Processing lists for site: {site_name}")
-            async for record, permissions, record_update in self._process_site_lists(site_id):
-                if record_update.is_deleted:
-                    await self._handle_record_updates(record_update)
-                elif record_update.is_updated:
-                    await self._handle_record_updates(record_update)
-                    continue
-                elif record:
-                    batch_records.append((record, permissions))
-                    total_processed += 1
+            # # Process lists
+            # self.logger.info(f"Processing lists for site: {site_name}")
+            # async for record, permissions, record_update in self._process_site_lists(site_id):
+            #     if record_update.is_deleted:
+            #         await self._handle_record_updates(record_update)
+            #     elif record_update.is_updated:
+            #         await self._handle_record_updates(record_update)
+            #         continue
+            #     elif record:
+            #         batch_records.append((record, permissions))
+            #         total_processed += 1
 
-                    if len(batch_records) >= self.batch_size:
-                        await self.data_entities_processor.on_new_records(batch_records)
-                        batch_records = []
-                        await asyncio.sleep(0.1)
+            #         if len(batch_records) >= self.batch_size:
+            #             await self.data_entities_processor.on_new_records(batch_records)
+            #             batch_records = []
+            #             await asyncio.sleep(0.1)
 
             # Process pages
             self.logger.info(f"\n\n\n\n\nProcessing pages for site: {site_name}\n\n\n\n\n")
@@ -2687,6 +2687,7 @@ class SharePointConnector(BaseConnector):
     async def _get_page_content(self, site_id: str, page_id: str) -> str:
         """
         Fetches SharePoint page content via REST API using the page's UniqueId (GUID).
+        Parses dynamic content (Web Parts) and downloads images.
         """
         try:
             # 1. Resolve Site URL via Graph
@@ -2744,9 +2745,11 @@ class SharePointConnector(BaseConnector):
                 item = data.get('d', {})
                 raw_html = item.get('CanvasContent1', '')
                 
+                # --- GRACEFUL EMPTY HANDLE ---
                 if not raw_html:
-                    self.logger.warning(f"⚠️ Page found but CanvasContent1 is empty: {page_id}")
-                    return ""
+                    self.logger.warning(f"⚠️ Page found but CanvasContent1 is empty: {page_id}. Returning empty content.")
+                    # Return an empty HTML structure or just an empty string depending on your UI needs
+                    return "<div></div>"
 
                 # 4. Clean HTML & Embed Images
                 soup = BeautifulSoup(raw_html, "html.parser")
@@ -2759,26 +2762,17 @@ class SharePointConnector(BaseConnector):
                 for c in soup.find_all(string=lambda text: isinstance(text, Comment)):
                     c.extract()
 
+                # --- 4a. PROCESS IMAGES ---
                 images = soup.find_all('img')
 
                 for img in images:
                     src = img.get('src')
-                    
-                    # LOGIC CHANGE: Skip external links (http), skip data URIs. 
-                    # Only process relative paths (starting with /)
                     if not src or "data:image" in src or src.lower().startswith(('http:', 'https:')):
                         continue
 
                     try:
-                        # Clean path (decode first)
                         clean_path = unquote(src.split('?')[0])
-                        
-                        # Use GetFileByServerRelativeUrl for relative paths
-                        # SharePoint REST format: 
-                        # https://<site_url>/_api/web/GetFileByServerRelativeUrl('<path>')/$value
                         image_api_url = f"{site_url}/_api/web/GetFileByServerRelativeUrl('{quote(clean_path)}')/$value"
-
-                        self.logger.info(f"Downloading relative image: {clean_path}")
 
                         img_resp = await http_client.get(image_api_url, headers=headers)
 
@@ -2787,15 +2781,74 @@ class SharePointConnector(BaseConnector):
                             b64_str = base64.b64encode(img_resp.content).decode('utf-8')
                             img['src'] = f"data:{content_type};base64,{b64_str}"
                             
-                            # Cleanup bloat attributes
                             attrs_to_remove = ['data-sp-prop-name', 'data-sp-original-src', 'aria-label']
                             for attr in attrs_to_remove:
                                 if attr in img.attrs: del img[attr]
-                        else:
-                            self.logger.warning(f"⚠️ Failed to download image {clean_path}: {img_resp.status_code}")
-
                     except Exception as img_error:
                         self.logger.warning(f"Failed to process image {src}: {img_error}")
+
+                # --- 4b. PROCESS DYNAMIC WEB PARTS (Lists, Docs, Events) ---
+                webparts = soup.find_all("div", attrs={"data-sp-webpartdata": True})
+
+                for wp in webparts:
+                    try:
+                        wp_data = json.loads(wp["data-sp-webpartdata"])
+                        props = wp_data.get("properties", {})
+                        
+                        # Look for list ID (Universal Detector)
+                        list_id = props.get("selectedListId")
+                        
+                        if list_id:
+                            # 1. Determine Title
+                            searchable = wp_data.get("serverProcessedContent", {}).get("searchablePlainTexts", {})
+                            list_title = (
+                                searchable.get("listTitle") or 
+                                searchable.get("title") or 
+                                searchable.get("displayTitle") or
+                                props.get("webPartTitle") or 
+                                wp_data.get("title") or 
+                                "Embedded List"
+                            )
+
+                            self.logger.info(f"Found WebPart: '{list_title}' (ID: {list_id})")
+
+                            # 2. Async Fetch Items
+                            # Construct list API URL using the same site_url resolved earlier
+                            list_api_url = f"{site_url}/_api/web/lists(guid'{list_id}')/items"
+                            
+                            # Fetch items (awaiting the async call)
+                            list_resp = await http_client.get(list_api_url, headers=headers, timeout=10)
+                            
+                            if list_resp.status_code == 200:
+                                items = list_resp.json().get('d', {}).get('results', [])
+                                
+                                if items:
+                                    # 3. Generate HTML Table
+                                    table_html = f"<h3>{list_title}</h3><table border='1' style='border-collapse: collapse; width: 100%;'><thead><tr><th style='padding: 8px;'>Title</th><th style='padding: 8px;'>Info</th></tr></thead><tbody>"
+                                    
+                                    for row_item in items:
+                                        # Heuristics for display text
+                                        text_main = row_item.get('Title') or row_item.get('FileLeafRef') or "Untitled"
+                                        text_sub = row_item.get('Description') or row_item.get('EventDate') or row_item.get('Created') or ""
+                                        
+                                        table_html += f"<tr><td style='padding: 8px;'>{text_main}</td><td style='padding: 8px;'>{text_sub}</td></tr>"
+                                    
+                                    table_html += "</tbody></table><hr/>"
+                                    
+                                    # 4. Inject into DOM
+                                    new_tag = soup.new_tag("div")
+                                    new_tag.attrs['class'] = 'extracted-dynamic-data'
+                                    new_tag.append(BeautifulSoup(table_html, 'html.parser'))
+                                    
+                                    # Clear the original webpart div and replace with table
+                                    wp.clear()
+                                    wp.append(new_tag)
+                            else:
+                                self.logger.warning(f"⚠️ Failed to fetch list items for {list_title}: {list_resp.status_code}")
+
+                    except Exception as wp_error:
+                        # Log but continue - don't fail the whole page render for one bad web part
+                        self.logger.warning(f"Failed to process web part: {wp_error}")
 
                 return str(soup)
 
