@@ -137,12 +137,13 @@ class EventService:
         """Handle reindex event for a connector with pagination support"""
         try:
             org_id = payload.get("orgId")
+            record_group_id = payload.get("recordGroupId")
+            depth = payload.get("depth", 0)
             status_filters = payload.get("statusFilters", ["FAILED"])
 
             if not org_id:
                 raise ValueError("orgId is required")
 
-            self.logger.info(f"Starting reindex for {connector_name} connector with status filters: {status_filters}")
             connector_name_normalized = connector_name.replace(" ", "").lower()
 
             connector = self._get_connector(connector_name_normalized)
@@ -156,38 +157,91 @@ class EventService:
                 self.logger.error(f"Unknown connector name: {connector_name}")
                 return False
 
-            # Fetch and process records in batches of 100
-            batch_size = 100
-            offset = 0
-            total_processed = 0
-
-            while True:
-                # Fetch batch of typed Record instances
-                records = await self.arango_service.get_records_by_status(
-                    org_id=org_id,
-                    connector_name=connector_enum,
-                    status_filters=status_filters,
-                    limit=batch_size,
-                    offset=offset
+            # If recordGroupId is provided, query by record group
+            if record_group_id is not None:
+                self.logger.info(
+                    f"Starting reindex for {connector_name} connector record group {record_group_id} "
+                    f"with depth {depth}"
                 )
 
-                if not records:
-                    break
+                # Fetch and process records in batches of 100
+                batch_size = 100
+                offset = 0
+                total_processed = 0
 
-                self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
+                while True:
+                    # Fetch batch of typed Record instances from record group
+                    records = await self.arango_service.get_records_by_record_group(
+                        record_group_id=record_group_id,
+                        connector_name=connector_enum,
+                        org_id=org_id,
+                        depth=depth,
+                        limit=batch_size,
+                        offset=offset
+                    )
 
-                # Process this batch with typed records
-                await connector.reindex_records(records)
+                    if not records:
+                        break
 
-                total_processed += len(records)
-                offset += batch_size
+                    self.logger.info(
+                        f"Processing batch of {len(records)} records from record group "
+                        f"(offset: {offset})"
+                    )
 
-                # If we got fewer records than batch_size, we've reached the end
-                if len(records) < batch_size:
-                    break
+                    # Process this batch with typed records
+                    await connector.reindex_records(records)
 
-            self.logger.info(f"✅ Completed reindex for {connector_name} connector. Total records processed: {total_processed}")
-            return True
+                    total_processed += len(records)
+                    offset += batch_size
+
+                    # If we got fewer records than batch_size, we've reached the end
+                    if len(records) < batch_size:
+                        break
+
+                self.logger.info(
+                    f"✅ Completed reindex for {connector_name} connector record group {record_group_id}. "
+                    f"Total records processed: {total_processed}"
+                )
+                return True
+            else:
+                # query by status
+                self.logger.info(f"Starting reindex for {connector_name} connector with status filters: {status_filters}")
+
+                # Fetch and process records in batches of 100
+                batch_size = 100
+                offset = 0
+                total_processed = 0
+
+                while True:
+                    # Fetch batch of typed Record instances
+                    records = await self.arango_service.get_records_by_status(
+                        org_id=org_id,
+                        connector_name=connector_enum,
+                        status_filters=status_filters,
+                        limit=batch_size,
+                        offset=offset
+                    )
+
+                    if not records:
+                        break
+
+                    self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
+
+                    # Process this batch with typed records
+                    await connector.reindex_records(records)
+
+                    total_processed += len(records)
+                    offset += batch_size
+
+                    # If we got fewer records than batch_size, we've reached the end
+                    if len(records) < batch_size:
+                        break
+
+                self.logger.info(
+                    f"✅ Completed reindex for {connector_name} connector. "
+                    f"Total records processed: {total_processed}"
+                )
+                return True
 
         except Exception as e:
             self.logger.error(f"Failed to handle reindex for {connector_name.capitalize()}: {str(e)}", exc_info=True)

@@ -2197,6 +2197,60 @@ async def reindex_failed_records(
             detail=f"Internal server error while reindexing failed records: {str(e)}"
         )
 
+@router.post("/api/v1/record-groups/{record_group_id}/reindex")
+@inject
+async def reindex_record_group(
+    record_group_id: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict:
+    """
+    Reindex all records in a record group up to a specified depth
+    """
+    try:
+        container = request.app.container
+        logger = container.logger()
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+
+        request_body = await request.json()
+        depth = request_body.get("depth", 0)  # Default to 0 (only direct records)
+
+        logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
+
+        result = await arango_service.reindex_record_group_records(
+            record_group_id=record_group_id,
+            depth=depth,
+            user_id=user_id,
+            org_id=org_id
+        )
+
+        if result["success"]:
+            logger.info(f"✅ Successfully initiated reindex for record group {record_group_id}")
+            return {
+                "success": True,
+                "message": f"Reindex initiated for record group {record_group_id} with depth {depth}",
+                "recordGroupId": record_group_id,
+                "depth": depth,
+                "connector": result.get("connector"),
+                "eventPublished": result.get("eventPublished")
+            }
+        else:
+            logger.error(f"❌ Failed to reindex record group {record_group_id}: {result.get('reason')}")
+            raise HTTPException(
+                status_code=result.get("code", 500),
+                detail=result.get("reason", "Failed to reindex record group")
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error reindexing record group {record_group_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error while reindexing record group: {str(e)}"
+        )
+
 @router.get("/api/v1/stats")
 async def get_connector_stats_endpoint(
     org_id: str,

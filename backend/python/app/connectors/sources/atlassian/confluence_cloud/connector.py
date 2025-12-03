@@ -832,7 +832,8 @@ class ConfluenceConnector(BaseConnector):
                                     item_title,
                                     comment_type,
                                     permissions,
-                                    space_id
+                                    space_id,
+                                    content_type
                                 )
                                 # Set indexing status for comments if disabled
                                 for comment_record, comment_permissions in comments:

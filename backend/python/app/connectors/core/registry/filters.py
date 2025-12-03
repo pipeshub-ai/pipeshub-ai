@@ -495,7 +495,7 @@ class Filter(BaseModel):
             return self.value
         return [self.value] if self.value is not None else []
 
-    def get_value(self, default: FilterValue) -> FilterValue:
+    def get_value(self, default: Optional[FilterValue] = None) -> FilterValue:
         """
         Get filter value.
 
@@ -602,7 +602,7 @@ class FilterCollection(BaseModel):
         return None
 
     def get_value(
-        self, key: Union[str, Enum], default: FilterValue = None
+        self, key: Union[str, Enum], default: Optional[FilterValue] = None
     ) -> FilterValue:
         """
         Get filter value.
@@ -623,7 +623,7 @@ class FilterCollection(BaseModel):
             return default
         return f.value
 
-    def is_enabled(self, key: Union[str, Enum], default: bool = True) -> bool:
+    def is_enabled(self, key: Union[str, Enum], default: Optional[bool] = True) -> bool:
         """
         Check if boolean filter is enabled.
 
@@ -697,7 +697,7 @@ class FilterCollection(BaseModel):
             try:
                 # Validate filter structure
                 if not isinstance(val, dict):
-                    log.warning("Skipping filter: expected dict, got {type(val).__name__}")
+                    log.warning(f"Skipping filter: expected dict, got {type(val).__name__}")
                     continue
 
                 if "operator" not in val or "type" not in val:
@@ -708,8 +708,8 @@ class FilterCollection(BaseModel):
                 filter_data = {"key": key, **val}
                 filters.append(Filter.model_validate(filter_data))
 
-            except ValueError:
-                log.warning("Invalid filter: {e}")
+            except ValueError as e:
+                log.warning(f"Invalid filter: {e}")
                 continue
 
         return cls(filters=filters)
