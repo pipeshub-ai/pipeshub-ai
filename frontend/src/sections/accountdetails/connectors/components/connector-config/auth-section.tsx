@@ -9,6 +9,9 @@ import {
   CircularProgress,
   alpha,
   useTheme,
+  Collapse,
+  IconButton,
+  Tooltip,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import infoIcon from '@iconify-icons/eva/info-outline';
@@ -20,10 +23,13 @@ import shieldIcon from '@iconify-icons/mdi/shield-outline';
 import codeIcon from '@iconify-icons/mdi/code';
 import descriptionIcon from '@iconify-icons/mdi/file-document-outline';
 import openInNewIcon from '@iconify-icons/mdi/open-in-new';
+import copyIcon from '@iconify-icons/mdi/content-copy';
+import checkIcon from '@iconify-icons/mdi/check';
+import chevronDownIcon from '@iconify-icons/mdi/chevron-down';
 import { FieldRenderer } from '../field-renderers';
 import { shouldShowElement } from '../../utils/conditional-display';
 import BusinessOAuthSection from './business-oauth-section';
-import SharePointOAuthSection from './sharepoint-oauth-section'; // NEW IMPORT
+import SharePointOAuthSection from './sharepoint-oauth-section';
 import { Connector, ConnectorConfig } from '../../types/types';
 
 interface AuthSectionProps {
@@ -34,8 +40,6 @@ interface AuthSectionProps {
   conditionalDisplay: Record<string, boolean>;
   accountTypeLoading: boolean;
   isBusiness: boolean;
-  
-  // Business OAuth props (Google Workspace)
   adminEmail: string;
   adminEmailError: string | null;
   selectedFile: File | null;
@@ -46,8 +50,6 @@ interface AuthSectionProps {
   onFileUpload: () => void;
   onFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   fileInputRef: React.RefObject<HTMLInputElement>;
-  
-  // NEW: SharePoint Certificate OAuth props
   certificateFile: File | null;
   certificateFileName: string | null;
   certificateError: string | null;
@@ -62,7 +64,6 @@ interface AuthSectionProps {
   onPrivateKeyChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   certificateInputRef: React.RefObject<HTMLInputElement>;
   privateKeyInputRef: React.RefObject<HTMLInputElement>;
-  
   onFieldChange: (section: string, fieldName: string, value: any) => void;
 }
 
@@ -84,7 +85,6 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   onFileUpload,
   onFileChange,
   fileInputRef,
-  // NEW: SharePoint props
   certificateFile,
   certificateFileName,
   certificateError,
@@ -102,107 +102,149 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   onFieldChange,
 }) => {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+  const [copied, setCopied] = React.useState(false);
+  const [showDocs, setShowDocs] = React.useState(false);
+  const [showRedirectUri, setShowRedirectUri] = React.useState(true);
 
   if (!connectorConfig) return null;
   const { auth } = connectorConfig.config;
   let { documentationLinks } = connectorConfig.config;
-  
-  // Simplified helper function for business OAuth support (Google Workspace)
-  const customGoogleBusinessOAuth = (connectorParam: Connector, accountType: string): boolean => 
-    accountType === 'business' && 
-    (connectorParam.appGroup === 'Google Workspace') && 
+
+  const customGoogleBusinessOAuth = (connectorParam: Connector, accountType: string): boolean =>
+    accountType === 'business' &&
+    connectorParam.appGroup === 'Google Workspace' &&
     connectorParam.authType === 'OAUTH';
-  
-  // NEW: Helper function for SharePoint certificate authentication
-  const isSharePointCertificateAuth = (connectorParam: Connector): boolean => 
-    connectorParam.name === 'SharePoint Online' && 
-    (connectorParam.authType === 'OAUTH_CERTIFICATE' || connectorParam.authType === 'OAUTH_ADMIN_CONSENT');
-  
-  const pipeshubDocumentationUrl = documentationLinks?.find((link) => link.type === 'pipeshub')?.url || `https://docs.pipeshub.com/connectors/overview`;
+
+  const isSharePointCertificateAuth = (connectorParam: Connector): boolean =>
+    connectorParam.name === 'SharePoint Online' &&
+    (connectorParam.authType === 'OAUTH_CERTIFICATE' ||
+      connectorParam.authType === 'OAUTH_ADMIN_CONSENT');
+
+  const pipeshubDocumentationUrl =
+    documentationLinks?.find((link) => link.type === 'pipeshub')?.url ||
+    `https://docs.pipeshub.com/connectors/overview`;
 
   documentationLinks = documentationLinks?.filter((link) => link.type !== 'pipeshub');
-  
+
+  const redirectUri = `${window.location.origin}/${auth.redirectUri}`;
+  const shouldShowRedirectUri =
+    (auth.displayRedirectUri && auth.redirectUri !== '') ||
+    (auth.conditionalDisplay &&
+      Object.keys(auth.conditionalDisplay).length > 0 &&
+      shouldShowElement(auth.conditionalDisplay, 'redirectUri', formData));
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(redirectUri);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-      {/* Documentation Alert */}
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      {/* Compact Documentation Alert */}
       <Alert
         variant="outlined"
         severity="info"
         sx={{
-          borderRadius: 1.5,
-          py: 1.25,
+          borderRadius: 1.25,
+          py: 1,
+          px: 1.75,
+          fontSize: '0.875rem',
+          '& .MuiAlert-icon': { fontSize: '1.25rem', py: 0.5 },
+          '& .MuiAlert-message': { py: 0.25 },
+          alignItems: 'center',
         }}
       >
-        <Typography variant="body2" sx={{ fontSize: '0.8125rem', lineHeight: 1.4 }}>
-          Refer to{' '}
-          <Link
-            href={pipeshubDocumentationUrl}
-            target="_blank"
-            rel="noopener"
-            sx={{
-              fontWeight: 600,
-              textDecoration: 'none',
-              '&:hover': { textDecoration: 'underline' },
-            }}
-          >
-            our documentation
-          </Link>{' '}
-          for setup instructions.
-        </Typography>
+        Refer to{' '}
+        <Link
+          href={pipeshubDocumentationUrl}
+          target="_blank"
+          rel="noopener"
+          sx={{
+            fontWeight: 600,
+            textDecoration: 'none',
+            '&:hover': { textDecoration: 'underline' },
+          }}
+        >
+          our documentation
+        </Link>{' '}
+        for more information.
       </Alert>
 
-      {/* Redirect URI Info - Conditionally displayed */}
-      {((auth.displayRedirectUri && auth.redirectUri!=="") ||
-        (auth.conditionalDisplay && Object.keys(auth.conditionalDisplay).length>0 &&
-          shouldShowElement(auth.conditionalDisplay, 'redirectUri', formData))) && (
+      {/* Collapsible Redirect URI */}
+      {shouldShowRedirectUri && (
         <Paper
           variant="outlined"
           sx={{
-            p: 2.25,
-            borderRadius: 1.5,
-            bgcolor: alpha(theme.palette.primary.main, 0.02),
-            borderColor: alpha(theme.palette.primary.main, 0.12),
+            borderRadius: 1.25,
+            overflow: 'hidden',
+            bgcolor: isDark 
+              ? alpha(theme.palette.primary.main, 0.08)
+              : alpha(theme.palette.primary.main, 0.03),
+            borderColor: isDark
+              ? alpha(theme.palette.primary.main, 0.25)
+              : alpha(theme.palette.primary.main, 0.15),
+            boxShadow: isDark
+              ? `0 1px 3px ${alpha(theme.palette.primary.main, 0.15)}`
+              : `0 1px 3px ${alpha(theme.palette.primary.main, 0.05)}`,
           }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
-            <Box
-              sx={{
-                p: 0.5,
-                borderRadius: 1,
-                bgcolor: alpha(theme.palette.primary.main, 0.1),
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                mt: 0.25,
-              }}
-            >
-              <Iconify
-                icon={infoIcon}
-                width={14}
-                height={14}
-                color={theme.palette.primary.main}
-              />
-            </Box>
-            <Box sx={{ flex: 1 }}>
+          <Box
+            onClick={() => setShowRedirectUri(!showRedirectUri)}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              p: 1.5,
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+              '&:hover': {
+                bgcolor: alpha(theme.palette.primary.main, 0.05),
+              },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
+              <Box
+                sx={{
+                  p: 0.625,
+                  borderRadius: 1,
+                  bgcolor: alpha(theme.palette.primary.main, 0.12),
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Iconify icon={infoIcon} width={16} color={theme.palette.primary.main} />
+              </Box>
               <Typography
                 variant="subtitle2"
-                color="primary.main"
                 sx={{
-                  mb: 0.75,
-                  fontSize: '0.8125rem',
+                  fontSize: '0.875rem',
                   fontWeight: 600,
+                  color: theme.palette.primary.main,
                 }}
               >
                 Redirect URI
               </Typography>
+            </Box>
+            <Iconify
+              icon={chevronDownIcon}
+              width={20}
+              color={theme.palette.text.secondary}
+              sx={{
+                transform: showRedirectUri ? 'rotate(180deg)' : 'rotate(0deg)',
+                transition: 'transform 0.2s',
+              }}
+            />
+          </Box>
+
+          <Collapse in={showRedirectUri}>
+            <Box sx={{ px: 1.5, pb: 1.5 }}>
               <Typography
                 variant="body2"
                 color="text.secondary"
-                sx={{
-                  mb: 1.5,
-                  fontSize: '0.8125rem',
-                  lineHeight: 1.4,
-                }}
+                sx={{ fontSize: '0.8125rem', mb: 1.25, lineHeight: 1.5 }}
               >
                 {connector.name === 'OneDrive'
                   ? 'Use this URL when configuring your Azure AD App registration.'
@@ -210,226 +252,248 @@ const AuthSection: React.FC<AuthSectionProps> = ({
               </Typography>
               <Box
                 sx={{
-                  p: 1.5,
-                  borderRadius: 1.25,
-                  bgcolor:
-                    theme.palette.mode === 'dark'
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  p: 1.25,
+                  borderRadius: 1,
+                  bgcolor: isDark
+                    ? alpha(theme.palette.grey[900], 0.4)
+                    : alpha(theme.palette.grey[100], 0.8),
+                  border: `1.5px solid ${alpha(theme.palette.primary.main, isDark ? 0.25 : 0.15)}`,
+                  transition: 'all 0.2s',
+                  '&:hover': {
+                    borderColor: alpha(theme.palette.primary.main, isDark ? 0.4 : 0.3),
+                    bgcolor: isDark
                       ? alpha(theme.palette.grey[900], 0.6)
-                      : alpha(theme.palette.grey[50], 0.8),
-                  border: `1px solid ${alpha(theme.palette.divider, 0.15)}`,
-                  position: 'relative',
-                  overflow: 'hidden',
-                  '&::before': {
-                    content: '""',
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    height: '2px',
-                    background: `linear-gradient(90deg, ${theme.palette.primary.main}, ${alpha(theme.palette.primary.main, 0.3)})`,
+                      : alpha(theme.palette.grey[100], 1),
                   },
                 }}
               >
                 <Typography
                   variant="body2"
                   sx={{
-                    fontFamily: 'Monaco, Consolas, "SF Mono", "Roboto Mono", monospace',
-                    fontSize: '0.75rem',
+                    flex: 1,
+                    fontFamily: '"SF Mono", "Roboto Mono", Monaco, Consolas, monospace',
+                    fontSize: '0.8125rem',
                     wordBreak: 'break-all',
                     color:
                       theme.palette.mode === 'dark'
                         ? theme.palette.primary.light
                         : theme.palette.primary.dark,
                     fontWeight: 500,
-                    lineHeight: 1.5,
                     userSelect: 'all',
-                    cursor: 'text',
+                    lineHeight: 1.6,
                   }}
                 >
-                  {`${window.location.origin}/${auth.redirectUri}`}
+                  {redirectUri}
                 </Typography>
+                <Tooltip title={copied ? 'Copied!' : 'Copy to clipboard'} arrow>
+                  <IconButton
+                    size="small"
+                    onClick={handleCopy}
+                    sx={{
+                      p: 0.75,
+                      bgcolor: alpha(theme.palette.primary.main, 0.1),
+                      transition: 'all 0.2s',
+                      '&:hover': {
+                        bgcolor: alpha(theme.palette.primary.main, 0.2),
+                        transform: 'scale(1.05)',
+                      },
+                    }}
+                  >
+                    <Iconify
+                      icon={copied ? checkIcon : copyIcon}
+                      width={16}
+                      color={theme.palette.primary.main}
+                    />
+                  </IconButton>
+                </Tooltip>
               </Box>
             </Box>
-          </Box>
+          </Collapse>
         </Paper>
       )}
 
-      {/* Documentation Links - Compact Visual Guide */}
+      {/* Collapsible Documentation Links */}
       {documentationLinks && documentationLinks.length > 0 && (
         <Paper
           variant="outlined"
           sx={{
-            p: 1.5,
-            borderRadius: 1.5,
-            bgcolor: alpha(theme.palette.info.main, 0.02),
-            borderColor: alpha(theme.palette.info.main, 0.08),
+            borderRadius: 1.25,
+            overflow: 'hidden',
+            bgcolor: isDark
+              ? alpha(theme.palette.info.main, 0.08)
+              : alpha(theme.palette.info.main, 0.025),
+            borderColor: isDark
+              ? alpha(theme.palette.info.main, 0.25)
+              : alpha(theme.palette.info.main, 0.12),
           }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.25 }}>
-            <Box
-              sx={{
-                p: 0.375,
-                borderRadius: 0.75,
-                bgcolor: alpha(theme.palette.info.main, 0.1),
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                mt: 0.125,
-              }}
-            >
-              <Iconify
-                icon={bookIcon}
-                width={12}
-                height={12}
-                color={theme.palette.info.main}
-              />
-            </Box>
-
-            <Box sx={{ flex: 1 }}>
+          <Box
+            onClick={() => setShowDocs(!showDocs)}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              p: 1.5,
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+              '&:hover': { bgcolor: alpha(theme.palette.info.main, 0.04) },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
+              <Box
+                sx={{
+                  p: 0.625,
+                  borderRadius: 1,
+                  bgcolor: alpha(theme.palette.info.main, 0.12),
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Iconify icon={bookIcon} width={16} color={theme.palette.info.main} />
+              </Box>
               <Typography
                 variant="subtitle2"
-                color="info.main"
                 sx={{
-                  mb: 0.5,
-                  fontSize: '0.8125rem',
+                  fontSize: '0.875rem',
                   fontWeight: 600,
+                  color: theme.palette.info.main,
                 }}
               >
                 Setup Documentation
               </Typography>
               <Typography
-                variant="body2"
-                color="text.secondary"
+                variant="caption"
                 sx={{
-                  mb: 1.25,
+                  px: 1,
+                  py: 0.375,
+                  borderRadius: 0.75,
+                  bgcolor: alpha(theme.palette.info.main, 0.12),
+                  color: theme.palette.info.main,
                   fontSize: '0.75rem',
-                  lineHeight: 1.3,
+                  fontWeight: 600,
                 }}
               >
-                Follow these guides to complete your {connector.name} integration setup.
+                {documentationLinks.length}
               </Typography>
-
-              <Box
-                sx={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 0.5,
-                }}
-              >
-                {documentationLinks.map((link, index) => (
-                  <Box
-                    key={index}
-                    onClick={() => window.open(link.url, '_blank')}
-                    sx={{
-                      p: 1,
-                      borderRadius: 1,
-                      border: `1px solid ${alpha(theme.palette.divider, 0.08)}`,
-                      bgcolor: theme.palette.background.paper,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      transition: 'all 0.15s ease',
-                      '&:hover': {
-                        borderColor: alpha(theme.palette.info.main, 0.15),
-                        bgcolor: alpha(theme.palette.info.main, 0.015),
-                      },
-                    }}
-                  >
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Box
-                        sx={{
-                          p: 0.375,
-                          borderRadius: 0.75,
-                          bgcolor: alpha(theme.palette.info.main, 0.06),
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0,
-                        }}
-                      >
-                        <Iconify
-                          icon={
-                            link.type === 'setup'
-                              ? settingsIcon
-                              : link.type === 'api'
-                                ? codeIcon
-                                : descriptionIcon
-                          }
-                          width={10}
-                          height={10}
-                          color={theme.palette.info.main}
-                        />
-                      </Box>
-
-                      <Box>
-                        <Typography
-                          variant="body2"
-                          sx={{
-                            fontWeight: 500,
-                            fontSize: '0.75rem',
-                            color: theme.palette.text.primary,
-                            lineHeight: 1.2,
-                          }}
-                        >
-                          {link.title}
-                        </Typography>
-                        <Typography
-                          variant="caption"
-                          sx={{
-                            fontSize: '0.6875rem',
-                            color: theme.palette.text.secondary,
-                            lineHeight: 1.2,
-                          }}
-                        >
-                          {link.type === 'setup'
-                            ? 'Setup guide'
-                            : link.type === 'api'
-                              ? 'API reference'
-                              : 'Documentation'}
-                        </Typography>
-                      </Box>
-                    </Box>
-
-                    <Iconify
-                      icon={openInNewIcon}
-                      width={12}
-                      height={12}
-                      color={theme.palette.text.secondary}
-                      sx={{ opacity: 0.5, flexShrink: 0 }}
-                    />
-                  </Box>
-                ))}
-              </Box>
             </Box>
+            <Iconify
+              icon={chevronDownIcon}
+              width={20}
+              color={theme.palette.text.secondary}
+              sx={{
+                transform: showDocs ? 'rotate(180deg)' : 'rotate(0deg)',
+                transition: 'transform 0.2s',
+              }}
+            />
           </Box>
+
+          <Collapse in={showDocs}>
+            <Box sx={{ px: 1.5, pb: 1.5, display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+              {documentationLinks.map((link, index) => (
+                <Box
+                  key={index}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    window.open(link.url, '_blank');
+                  }}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    p: 1,
+                    borderRadius: 1,
+                    border: `1px solid ${alpha(theme.palette.divider, isDark ? 0.12 : 0.1)}`,
+                    bgcolor: isDark
+                      ? alpha(theme.palette.background.paper, 0.5)
+                      : theme.palette.background.paper,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    '&:hover': {
+                      borderColor: alpha(theme.palette.info.main, isDark ? 0.4 : 0.25),
+                      bgcolor: isDark
+                        ? alpha(theme.palette.info.main, 0.12)
+                        : alpha(theme.palette.info.main, 0.03),
+                      transform: 'translateX(4px)',
+                      boxShadow: `0 2px 8px ${alpha(theme.palette.info.main, isDark ? 0.2 : 0.08)}`,
+                    },
+                  }}
+                >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Box
+                      sx={{
+                        p: 0.5,
+                        borderRadius: 0.75,
+                        bgcolor: alpha(theme.palette.info.main, 0.08),
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <Iconify
+                        icon={
+                          link.type === 'setup'
+                            ? settingsIcon
+                            : link.type === 'api'
+                              ? codeIcon
+                              : descriptionIcon
+                        }
+                        width={14}
+                        color={theme.palette.info.main}
+                      />
+                    </Box>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontSize: '0.8125rem',
+                        fontWeight: 500,
+                        color: theme.palette.text.primary,
+                      }}
+                    >
+                      {link.title}
+                    </Typography>
+                  </Box>
+                  <Iconify
+                    icon={openInNewIcon}
+                    width={14}
+                    color={theme.palette.text.secondary}
+                    sx={{ opacity: 0.6 }}
+                  />
+                </Box>
+              ))}
+            </Box>
+          </Collapse>
         </Paper>
       )}
 
       {/* Account Type Loading */}
       {accountTypeLoading && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
-          <CircularProgress size={24} />
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+          <CircularProgress size={20} />
         </Box>
       )}
 
       {/* Business OAuth Section (Google Workspace) */}
-      {!accountTypeLoading && customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') && (
-        <BusinessOAuthSection
-          adminEmail={adminEmail}
-          adminEmailError={adminEmailError}
-          selectedFile={selectedFile}
-          fileName={fileName}
-          fileError={fileError}
-          jsonData={jsonData}
-          onAdminEmailChange={onAdminEmailChange}
-          onFileUpload={onFileUpload}
-          onFileChange={onFileChange}
-          fileInputRef={fileInputRef}
-        />
-      )}
+      {!accountTypeLoading &&
+        customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') && (
+          <BusinessOAuthSection
+            adminEmail={adminEmail}
+            adminEmailError={adminEmailError}
+            selectedFile={selectedFile}
+            fileName={fileName}
+            fileError={fileError}
+            jsonData={jsonData}
+            onAdminEmailChange={onAdminEmailChange}
+            onFileUpload={onFileUpload}
+            onFileChange={onFileChange}
+            fileInputRef={fileInputRef}
+          />
+        )}
 
-      {/* NEW: SharePoint Certificate OAuth Section */}
+      {/* SharePoint Certificate OAuth Section */}
       {!accountTypeLoading && isSharePointCertificateAuth(connector) && (
         <SharePointOAuthSection
           clientId={formData.clientId || ''}
@@ -460,22 +524,29 @@ const AuthSection: React.FC<AuthSectionProps> = ({
         />
       )}
 
-      {/* Form Fields */}
+      {/* Form Fields - More Compact */}
       <Paper
         variant="outlined"
         sx={{
           p: 2,
-          borderRadius: 1.5,
-          bgcolor: theme.palette.background.paper,
-          borderColor: alpha(theme.palette.divider, 0.12),
+          borderRadius: 1.25,
+          bgcolor: isDark
+            ? alpha(theme.palette.background.paper, 0.4)
+            : theme.palette.background.paper,
+          borderColor: isDark
+            ? alpha(theme.palette.divider, 0.12)
+            : alpha(theme.palette.divider, 0.1),
+          boxShadow: isDark
+            ? `0 1px 2px ${alpha(theme.palette.common.black, 0.2)}`
+            : `0 1px 2px ${alpha(theme.palette.common.black, 0.03)}`,
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 2 }}>
           <Box
             sx={{
-              p: 0.375,
-              borderRadius: 0.75,
-              bgcolor: alpha(theme.palette.text.primary, 0.04),
+              p: 0.625,
+              borderRadius: 1,
+              bgcolor: alpha(theme.palette.text.primary, 0.05),
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -491,19 +562,18 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                       ? personIcon
                       : settingsIcon
               }
-              width={14}
-              height={14}
+              width={16}
               color={theme.palette.text.secondary}
             />
           </Box>
-          <Box>
+          <Box sx={{ flex: 1 }}>
             <Typography
               variant="subtitle2"
               sx={{
                 fontWeight: 600,
-                fontSize: '0.8125rem',
+                fontSize: '0.875rem',
                 color: theme.palette.text.primary,
-                mb: 0.125,
+                lineHeight: 1.4,
               }}
             >
               {auth.type === 'OAUTH'
@@ -512,13 +582,13 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                   ? 'API Credentials'
                   : auth.type === 'USERNAME_PASSWORD'
                     ? 'Login Credentials'
-                    : 'Authentication Settings'}
+                    : 'Authentication'}
             </Typography>
             <Typography
-              variant="body2"
-              color="text.secondary"
+              variant="caption"
               sx={{
                 fontSize: '0.75rem',
+                color: theme.palette.text.secondary,
                 lineHeight: 1.3,
               }}
             >
@@ -529,26 +599,23 @@ const AuthSection: React.FC<AuthSectionProps> = ({
 
         <Grid container spacing={2}>
           {auth.schema.fields.map((field) => {
-            // Check if field should be displayed based on conditional display rules
-            let shouldShow = true; // Default to showing the field
-            
-            // If there's a conditional display rule for this field, evaluate it
+            let shouldShow = true;
             if (auth.conditionalDisplay && auth.conditionalDisplay[field.name]) {
               shouldShow = shouldShowElement(auth.conditionalDisplay, field.name, formData);
             }
 
-            // Hide client_id and client_secret fields for business OAuth (Google)
-            const isBusinessOAuthField = customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
+            const isBusinessOAuthField =
+              customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
               (field.name === 'clientId' || field.name === 'clientSecret');
 
-            // NEW: Hide SharePoint certificate fields as they're handled by SharePointOAuthSection
-            const isSharePointCertField = isSharePointCertificateAuth(connector) &&
-              (field.name === 'clientId' || 
-               field.name === 'tenantId' || 
-               field.name === 'sharepointDomain' || 
-               field.name === 'hasAdminConsent' ||
-               field.name === 'certificate' || 
-               field.name === 'privateKey');
+            const isSharePointCertField =
+              isSharePointCertificateAuth(connector) &&
+              (field.name === 'clientId' ||
+                field.name === 'tenantId' ||
+                field.name === 'sharepointDomain' ||
+                field.name === 'hasAdminConsent' ||
+                field.name === 'certificate' ||
+                field.name === 'privateKey');
 
             if (!shouldShow || isBusinessOAuthField || isSharePointCertField) return null;
 
@@ -565,24 +632,23 @@ const AuthSection: React.FC<AuthSectionProps> = ({
           })}
 
           {auth.customFields.map((field) => {
-            // Check if custom field should be displayed based on conditional display rules
             const shouldShow =
               !auth.conditionalDisplay ||
               !auth.conditionalDisplay[field.name] ||
               shouldShowElement(auth.conditionalDisplay, field.name, formData);
 
-            // Hide client_id and client_secret fields for business OAuth (Google)
-            const isBusinessOAuthField = customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
+            const isBusinessOAuthField =
+              customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
               (field.name === 'clientId' || field.name === 'clientSecret');
 
-            // NEW: Hide SharePoint certificate fields
-            const isSharePointCertField = isSharePointCertificateAuth(connector) &&
-              (field.name === 'clientId' || 
-               field.name === 'tenantId' || 
-               field.name === 'sharepointDomain' || 
-               field.name === 'hasAdminConsent' ||
-               field.name === 'certificate' || 
-               field.name === 'privateKey');
+            const isSharePointCertField =
+              isSharePointCertificateAuth(connector) &&
+              (field.name === 'clientId' ||
+                field.name === 'tenantId' ||
+                field.name === 'sharepointDomain' ||
+                field.name === 'hasAdminConsent' ||
+                field.name === 'certificate' ||
+                field.name === 'privateKey');
 
             if (!shouldShow || isBusinessOAuthField || isSharePointCertField) return null;
 
@@ -598,29 +664,20 @@ const AuthSection: React.FC<AuthSectionProps> = ({
             );
           })}
 
-          {/* Render conditionally displayed fields that might not be in schema */}
           {auth.conditionalDisplay &&
             Object.keys(auth.conditionalDisplay).map((fieldName) => {
-              // Skip if field is already rendered in schema or custom fields
               const isInSchema = auth.schema.fields.some((f) => f.name === fieldName);
               const isInCustomFields = auth.customFields.some((f) => f.name === fieldName);
 
               if (isInSchema || isInCustomFields) return null;
 
-              // Check if this conditional field should be shown
-              const shouldShow = shouldShowElement(
-                auth.conditionalDisplay,
-                fieldName,
-                formData
-              );
+              const shouldShow = shouldShowElement(auth.conditionalDisplay, fieldName, formData);
               if (!shouldShow) return null;
 
-              // Create a basic field definition for conditional fields
               const conditionalField = {
                 name: fieldName,
                 displayName:
-                  fieldName.charAt(0).toUpperCase() +
-                  fieldName.slice(1).replace(/([A-Z])/g, ' $1'),
+                  fieldName.charAt(0).toUpperCase() + fieldName.slice(1).replace(/([A-Z])/g, ' $1'),
                 fieldType: 'TEXT' as const,
                 required: false,
                 placeholder: `Enter ${fieldName}`,
