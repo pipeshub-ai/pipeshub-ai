@@ -1168,10 +1168,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         body = await request.body()
         body_dict = json.loads(body.decode('utf-8'))
 
-        logger.info(f"body_dict: {body_dict}")
         chat_query = ChatQuery(**body_dict)
-
-        logger.info(f"chat_query: {chat_query}")
 
         # Build filters object
         filters = {}
@@ -1202,9 +1199,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         else:
             tools = agent.get("tools")
             logger.info(f"Using tools from agent config: {len(tools)} tools")
-
-        logger.info(f"Filters: {filters}")
-        logger.info(f"chat query: {chat_query}")
 
         system_prompt = agent.get("systemPrompt")
 

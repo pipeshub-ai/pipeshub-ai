@@ -864,7 +864,7 @@ def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatSta
 
         if is_complex:
             logger.info(f"🔍 Complex workflow detected: {', '.join(complexity_types)}")
-            writer({"event": "status", "data": {"status": "thinking", "message": "🧠 Planning complex workflow..."}})
+            writer({"event": "status", "data": {"status": "thinking", "message": "Planning complex workflow..."}})
 
         # Determine expected output mode
         if has_internal_knowledge:
@@ -1330,7 +1330,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
         perf.start_step("tool_execution_node")
 
         iteration = len(state.get("all_tool_results", []))
-        writer({"event": "status", "data": {"status": "executing", "message": f"⚙️ Executing tools (step {iteration + 1})..."}})
+        writer({"event": "status", "data": {"status": "executing", "message": f" Executing tools (step {iteration + 1})..."}})
 
         if state.get("error"):
             perf.finish_step(error=True)
@@ -1763,11 +1763,6 @@ async def final_response_node(
             # Normalize response format (handles markdown code blocks)
             final_content = _normalize_response_format(existing_response)
 
-            logger.debug(f"Final content: {existing_response}")
-            logger.debug("***************************************************************************************************************")
-            logger.debug(f"Final content: {final_content}")
-            logger.debug("***************************************************************************************************************")
-
             # Process citations if available - use normalize_citations_and_chunks_for_agent
             final_results = state.get("final_results", [])
             # Ensure final_results is a list (might be stored as string or other format)
@@ -1813,7 +1808,11 @@ async def final_response_node(
             for i in range(0, len(words), target_words_per_chunk):
                 chunk_words = words[i:i + target_words_per_chunk]
                 chunk_text = ' '.join(chunk_words)
-                accumulated = ' '.join(words[:i + len(chunk_words)])
+                # Build accumulated string incrementally to avoid quadratic complexity
+                if accumulated:
+                    accumulated += ' ' + chunk_text
+                else:
+                    accumulated = chunk_text
 
                 writer({
                     "event": "answer_chunk",

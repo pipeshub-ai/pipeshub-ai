@@ -298,7 +298,9 @@ class RegistryToolWrapper(BaseTool):
                 logger.debug(f"No factory for {self.app_name}, using fallback creation")
             return self._fallback_creation(action_class)
 
-        except Exception as e:
+        except (ValueError, AttributeError, KeyError, TypeError) as e:
+            # Catch specific exceptions that can occur during factory/client creation
+            # These are expected errors that we can handle gracefully with fallback
             logger = self.state.get("logger")
             if logger:
                 logger.warning(
@@ -306,6 +308,7 @@ class RegistryToolWrapper(BaseTool):
                 )
             # Try fallback creation instead of raising
             return self._fallback_creation(action_class)
+        # Let other unexpected exceptions (ImportError, etc.) propagate for easier debugging
 
     def _fallback_creation(self, action_class: type) -> object:
         """Fallback instance creation for tools that don't need clients.

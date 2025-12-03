@@ -52,37 +52,6 @@ class Jira:
         future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
         return future.result()
 
-    # def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-    #     """Helper method to run async operations in sync context"""
-    #     try:
-    #         # Try to get or create an event loop for this thread
-    #         try:
-    #             loop = asyncio.get_running_loop()
-    #             # We're in an async context - cannot use run_until_complete
-    #             # This shouldn't happen since tools are sync, but handle it
-    #             import concurrent.futures
-    #             with concurrent.futures.ThreadPoolExecutor() as executor:
-    #                 future = executor.submit(asyncio.run, coro)
-    #                 return future.result()
-    #         except RuntimeError:
-    #             # No running loop - we can safely use get_event_loop or create one
-    #             try:
-    #                 loop = asyncio.get_event_loop()
-    #                 if loop.is_closed():
-    #                     # Loop is closed, create a new one
-    #                     loop = asyncio.new_event_loop()
-    #                     asyncio.set_event_loop(loop)
-    #             except RuntimeError:
-    #                 # No event loop at all - create a new one
-    #                 loop = asyncio.new_event_loop()
-    #                 asyncio.set_event_loop(loop)
-
-    #             return loop.run_until_complete(coro)
-    #     except Exception as e:
-    #         logger.error(f"Error running async operation: {e}")
-    #         raise
-
-
     def shutdown(self) -> None:
         """Gracefully stop the background event loop and thread."""
         try:
