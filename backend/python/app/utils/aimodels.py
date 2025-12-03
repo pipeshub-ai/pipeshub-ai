@@ -249,6 +249,12 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
 
     raise ValueError(f"Unsupported embedding config type: {provider}")
 
+def _get_anthropic_max_tokens(model_name: str) -> int:
+    """Gets the max output tokens for an Anthropic model based on its name."""
+    if '4.5' in model_name:
+        return MAX_OUTPUT_TOKENS_CLAUDE_4_5
+    return MAX_OUTPUT_TOKENS
+
 def get_generator_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> BaseChatModel:
     configuration = config['configuration']
     is_default = config.get("isDefault")
@@ -267,10 +273,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
     if provider == LLMProvider.ANTHROPIC.value:
         from langchain_anthropic import ChatAnthropic
 
-        if '4.5' in model_name:
-            max_tokens = MAX_OUTPUT_TOKENS_CLAUDE_4_5
-        else:
-            max_tokens = MAX_OUTPUT_TOKENS
+        max_tokens = _get_anthropic_max_tokens(model_name)
         return ChatAnthropic(
                 model=model_name,
                 temperature=0.2,
@@ -284,10 +287,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         from langchain_aws import ChatBedrock
         provider_in_bedrock = configuration.get("provider", LLMProvider.ANTHROPIC.value)
         if provider_in_bedrock == LLMProvider.ANTHROPIC.value:
-            if '4.5' in model_name:
-                max_tokens = MAX_OUTPUT_TOKENS_CLAUDE_4_5
-            else:
-                max_tokens = MAX_OUTPUT_TOKENS
+            max_tokens = _get_anthropic_max_tokens(model_name)
             model_kwargs = {
                 "max_tokens": max_tokens,
             }
@@ -312,10 +312,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
 
         is_claude_model = "claude" in model_name
         if is_claude_model:
-            if '4.5' in model_name:
-                max_tokens = MAX_OUTPUT_TOKENS_CLAUDE_4_5
-            else:
-                max_tokens = MAX_OUTPUT_TOKENS
+            max_tokens = _get_anthropic_max_tokens(model_name)
             return ChatAnthropic(
                 model=model_name,
                 base_url=configuration.get("endpoint"),
