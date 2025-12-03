@@ -48,8 +48,6 @@ mime_to_extension = {
     "text/markdown": "md",
     "text/mdx": "mdx",
     "text/gmail_content": "html",
-    "application/vnd.google-apps.document": "docx",
-    "application/x-genesis-32x-rom": "mdx",
 }
 
 
