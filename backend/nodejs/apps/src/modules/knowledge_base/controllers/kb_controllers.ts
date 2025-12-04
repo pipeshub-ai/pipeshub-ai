@@ -915,9 +915,9 @@ export const updateRecord =
               .substring(originalname.lastIndexOf('.') + 1)
               .toLowerCase()
           : null;
-        //Implementing MD5 checksum
-        const buffer = Buffer.from(req.body.fileBuffer.buffer);
-        md5Checksum = crypto.createHash('md5').update(buffer).digest('hex');
+        // Calculate SHA-256 checksum for security
+        const buffer = req.body.fileBuffer.buffer;
+        sha256Checksum = crypto.createHash('sha256').update(buffer).digest('hex');
       }
       
 
