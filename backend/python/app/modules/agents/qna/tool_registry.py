@@ -3,6 +3,7 @@ Migrated wrapper.py - Now uses the new factory system for cleaner code
 """
 
 import json
+import re
 from typing import Callable, Dict, List, Optional, Union
 
 from langchain.tools import BaseTool
@@ -37,7 +38,6 @@ def sanitize_tool_name(tool_name: str) -> str:
 
     # Ensure it matches the pattern (only alphanumeric, underscore, hyphen)
     # Remove any other invalid characters
-    import re
     sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', sanitized)
     MAX_TOOL_NAME_LENGTH = 128
 
@@ -392,7 +392,7 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     if user_enabled_tools is not None and len(user_enabled_tools) == 0:
         user_enabled_tools = []
         if logger:
-            logger.info("Empty tools list detected - loading ALL available tools")
+            logger.info("Empty tools list detected - loading essential tools")
 
     for full_tool_name, registry_tool in registry_tools.items():
         try:

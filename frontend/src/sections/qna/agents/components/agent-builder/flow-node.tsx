@@ -1,4 +1,4 @@
-  import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Handle, Position, useStore, useReactFlow } from '@xyflow/react';
 import {
   Box,
@@ -112,7 +112,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
     setPromptDialogOpen(false);
   }, [data.config?.systemPrompt, data.config?.startMessage, data.config?.description]);
 
-
   // Sync local state with node data changes
   useEffect(() => {
     setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
@@ -192,18 +191,23 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
             borderColor: selected ? colors.primary : colors.border.focus,
           },
         }}
-      onClick={(e) => {
-        // Ignore clicks on delete button or other interactive elements
-        const target = e.target as HTMLElement;
-        if (target.closest('button') || target.closest('[role="button"]') || target.tagName === 'BUTTON' || target.closest('svg')) {
-          return;
-        }
-        // Prevent rapid clicks
-        const now = Date.now();
-        if (now - lastClickTime < 300) return;
-        setLastClickTime(now);
-        e.stopPropagation();
-      }}
+        onClick={(e) => {
+          // Ignore clicks on delete button or other interactive elements
+          const target = e.target as HTMLElement;
+          if (
+            target.closest('button') ||
+            target.closest('[role="button"]') ||
+            target.tagName === 'BUTTON' ||
+            target.closest('svg')
+          ) {
+            return;
+          }
+          // Prevent rapid clicks
+          const now = Date.now();
+          if (now - lastClickTime < 300) return;
+          setLastClickTime(now);
+          e.stopPropagation();
+        }}
       >
         {/* Header with gradient */}
         <Box
@@ -250,7 +254,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 Agent
               </Typography>
             </Box>
-                      </Box>
+          </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <Typography
               variant="body2"
@@ -577,15 +581,21 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                         height: 22, // Keep comfortable size
                         fontSize: '0.7rem', // Keep comfortable size
                         fontWeight: 600,
-                        backgroundColor: isDark ? alpha('#ffffff', 0.2) : alpha(colors.text.secondary, 0.1),
+                        backgroundColor: isDark
+                          ? alpha('#ffffff', 0.2)
+                          : alpha(colors.text.secondary, 0.1),
                         color: colors.text.secondary,
                         border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
                         mt: 1, // Keep comfortable margin
                         '&:hover': {
-                          backgroundColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          backgroundColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                           transform: 'scale(1.05)',
                           color: isDark ? colors.text.secondary : colors.text.secondary,
-                          borderColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          borderColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                         },
                         transition: 'all 0.2s ease',
                       }}
@@ -711,15 +721,21 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                         height: 22, // Keep comfortable size
                         fontSize: '0.7rem', // Keep comfortable size
                         fontWeight: 600,
-                        backgroundColor: isDark ? alpha('#ffffff', 0.2) : alpha(colors.text.secondary, 0.1),
+                        backgroundColor: isDark
+                          ? alpha('#ffffff', 0.2)
+                          : alpha(colors.text.secondary, 0.1),
                         color: colors.text.secondary,
                         border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
                         mt: 1, // Keep comfortable margin
                         '&:hover': {
-                          backgroundColor: isDark ? alpha('#ffffff', 0.2) : alpha(colors.text.secondary, 0.2),
+                          backgroundColor: isDark
+                            ? alpha('#ffffff', 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                           transform: 'scale(1.05)',
                           color: isDark ? colors.text.secondary : colors.text.secondary,
-                          borderColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          borderColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                         },
                         transition: 'all 0.2s ease',
                       }}
@@ -803,7 +819,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                         color: colors.info,
                         border: `1px solid ${alpha(colors.info, 0.3)}`,
                         '&:hover': {
-                          backgroundColor: isDark ? alpha(colors.info, 0.2) : alpha(colors.info, 0.2),
+                          backgroundColor: isDark
+                            ? alpha(colors.info, 0.2)
+                            : alpha(colors.info, 0.2),
                           borderColor: colors.info,
                           transform: 'scale(1.05)',
                           boxShadow: `0 2px 8px ${alpha(colors.info, 0.3)}`,
@@ -822,14 +840,20 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                         height: 24, // Keep comfortable size
                         fontSize: '0.7rem', // Keep comfortable size
                         fontWeight: 600,
-                        backgroundColor: isDark ? alpha(colors.text.secondary, 0.1) : alpha(colors.text.secondary, 0.1),
+                        backgroundColor: isDark
+                          ? alpha(colors.text.secondary, 0.1)
+                          : alpha(colors.text.secondary, 0.1),
                         color: colors.text.secondary,
                         border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
                         '&:hover': {
-                            backgroundColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          backgroundColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                           transform: 'scale(1.05)',
                           color: isDark ? colors.text.secondary : colors.text.secondary,
-                          borderColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          borderColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                         },
                         transition: 'all 0.2s ease',
                         '& .MuiChip-label': { px: 1 }, // Keep comfortable padding
@@ -910,11 +934,15 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                         height: 24, // Keep comfortable size
                         fontSize: '0.7rem', // Keep comfortable size
                         fontWeight: 600,
-                        backgroundColor: isDark ? alpha(colors.secondary, 0.8) : alpha(colors.secondary, 0.1),
+                        backgroundColor: isDark
+                          ? alpha(colors.secondary, 0.8)
+                          : alpha(colors.secondary, 0.1),
                         color: colors.secondary,
                         border: `1px solid ${alpha(colors.secondary, 0.3)}`,
                         '&:hover': {
-                          backgroundColor: isDark ? alpha('#ffffff', 0.2) : alpha(colors.secondary, 0.2),
+                          backgroundColor: isDark
+                            ? alpha('#ffffff', 0.2)
+                            : alpha(colors.secondary, 0.2),
                           borderColor: colors.secondary,
                           transform: 'scale(1.05)',
                           boxShadow: `0 2px 8px ${alpha(colors.secondary, 0.3)}`,
@@ -933,14 +961,20 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                         height: 24, // Keep comfortable size
                         fontSize: '0.7rem', // Keep comfortable size
                         fontWeight: 600,
-                        backgroundColor: isDark ? alpha('#ffffff', 0.2) : alpha(colors.text.secondary, 0.1),
+                        backgroundColor: isDark
+                          ? alpha('#ffffff', 0.2)
+                          : alpha(colors.text.secondary, 0.1),
                         color: colors.text.secondary,
                         border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
                         '&:hover': {
-                          backgroundColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          backgroundColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                           transform: 'scale(1.05)',
                           color: isDark ? colors.text.secondary : colors.text.secondary,
-                          borderColor: isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2),
+                          borderColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
                         },
                         transition: 'all 0.2s ease',
                         '& .MuiChip-label': { px: 1 }, // Keep comfortable padding
@@ -1099,12 +1133,14 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   rows={4}
                   value={systemPromptValue}
                   onChange={(e) => setSystemPromptValue(e.target.value)}
-                  placeholder="Define the agent&apos;s role, capabilities, and behavior instructions..."
+                  placeholder="Define the agent's role, capabilities, and behavior instructions..."
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
                       '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: isDark ? theme.palette.primary.main : theme.palette.primary.main,
+                        borderColor: isDark
+                          ? theme.palette.primary.main
+                          : theme.palette.primary.main,
                       },
                       '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
                         borderWidth: 1,
@@ -1124,12 +1160,14 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   rows={2}
                   value={descriptionValue}
                   onChange={(e) => setDescriptionValue(e.target.value)}
-                  placeholder="Enter a brief description for the agent&apos;s behavior..."
+                  placeholder="Enter a brief description for the agent's behavior..."
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
                       '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: isDark ? theme.palette.primary.main : theme.palette.primary.main,
+                        borderColor: isDark
+                          ? theme.palette.primary.main
+                          : theme.palette.primary.main,
                       },
                       '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
                         borderWidth: 1,
@@ -1149,12 +1187,14 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   rows={2}
                   value={startMessageValue}
                   onChange={(e) => setStartMessageValue(e.target.value)}
-                  placeholder="Enter the agent&apos;s greeting message to users..."
+                  placeholder="Enter the agent's greeting message to users..."
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
                       '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: isDark ? theme.palette.primary.main : theme.palette.primary.main,
+                        borderColor: isDark
+                          ? theme.palette.primary.main
+                          : theme.palette.primary.main,
                       },
                       '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
                         borderWidth: 1,
@@ -1205,7 +1245,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
             </Button>
           </DialogActions>
         </Dialog>
-
       </Card>
     );
   }
@@ -1388,12 +1427,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 gap: 1,
               }}
             >
-              <Icon
-                icon={packageIcon}
-                width={12}
-                height={12}
-                style={{ color: colors.info }}
-              />
+              <Icon icon={packageIcon} width={12} height={12} style={{ color: colors.info }} />
               Tool Bundle
             </Typography>
             <Box
@@ -1519,12 +1553,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 gap: 1,
               }}
             >
-              <Icon
-                icon={cloudIcon}
-                width={12}
-                height={12}
-                style={{ color: colors.warning }}
-              />
+              <Icon icon={cloudIcon} width={12} height={12} style={{ color: colors.warning }} />
               App
             </Typography>
             <Box
@@ -1572,12 +1601,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 gap: 1,
               }}
             >
-              <Icon
-                icon={cloudIcon}
-                width={12}
-                height={12}
-                style={{ color: colors.info }}
-              />
+              <Icon icon={cloudIcon} width={12} height={12} style={{ color: colors.info }} />
               Apps
             </Typography>
             <Box
@@ -1635,12 +1659,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 gap: 1,
               }}
             >
-              <Icon
-                icon={databaseIcon}
-                width={12}
-                height={12}
-                style={{ color: colors.warning }}
-              />
+              <Icon icon={databaseIcon} width={12} height={12} style={{ color: colors.warning }} />
               Knowledge Base Group
             </Typography>
             <Box
@@ -1732,7 +1751,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
               >
                 {data.config?.kbName || data.config?.name || data.label}
               </Typography>
-
             </Box>
           </Box>
         )}
