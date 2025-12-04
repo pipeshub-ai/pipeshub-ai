@@ -462,7 +462,7 @@ export const extractAgentConfigFromFlow = (
   currentAgent?: Agent | null
 ) => {
   const tools: string[] = [];
-  const models: { provider: string; modelName: string; isReasoning: boolean }[] = [];
+  const models: { provider: string; modelName: string; isReasoning: boolean, modelKey: string }[] = [];
   const kb: string[] = [];
   const apps: string[] = [];
 
@@ -487,6 +487,7 @@ export const extractAgentConfigFromFlow = (
         provider: node.data.config.provider || 'azureOpenAI',
         modelName: node.data.config.modelName || node.data.config.model,
         isReasoning: node.data.config.isReasoning || false,
+        modelKey: node.data.config.modelKey || '',
       });
     } else if (node.data.type.startsWith('kb-') && node.data.type !== 'kb-group') {
       // Individual knowledge base nodes

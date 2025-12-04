@@ -4596,6 +4596,9 @@ export const unshareAgent =
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
         tools: req.body.tools || [],
+        chatMode: req.body.chatMode || 'quick',
+        modelKey: req.body.modelKey || null,
+        modelName: req.body.modelName || null,
       };
 
       logger.info('aiPayload', aiPayload);

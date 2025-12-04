@@ -234,7 +234,7 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
     isDark,
   };
 
-  const FlowNodeWrapper = useCallback((props: any) => <FlowNode {...props} />, []);
+  const FlowNodeWrapper = useCallback((props: any) => <FlowNode {...props} onDelete={onNodeDelete} />, [onNodeDelete]);
 
   const nodeTypes: NodeTypes = {
     flowNode: FlowNodeWrapper,

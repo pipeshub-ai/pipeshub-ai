@@ -1211,6 +1211,20 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                 tool_args = tool_call.args
                 tool_id = tool_call.id
 
+            # Handle Anthropic's nested kwargs format
+            # Anthropic sometimes wraps arguments in a 'kwargs' key when using custom tools
+            # Unwrap it if it's the only key or if it contains the actual arguments
+            if isinstance(tool_args, dict) and "kwargs" in tool_args:
+                # If kwargs is the only key, unwrap it
+                if len(tool_args) == 1:
+                    tool_args = tool_args["kwargs"]
+                    logger.debug(f"  Unwrapped kwargs: {tool_args}")
+                # If kwargs exists but there are other keys, check if kwargs contains the actual args
+                elif isinstance(tool_args.get("kwargs"), dict) and len(tool_args.get("kwargs", {})) > 0:
+                    # Prefer kwargs if it has content, otherwise keep original
+                    tool_args = tool_args["kwargs"]
+                    logger.debug(f"  Unwrapped kwargs (had other keys): {tool_args}")
+
             try:
                 result = None
 

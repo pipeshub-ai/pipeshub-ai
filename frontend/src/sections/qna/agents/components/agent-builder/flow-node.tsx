@@ -28,6 +28,7 @@ import packageIcon from '@iconify-icons/mdi/package-variant';
 import cogIcon from '@iconify-icons/mdi/cog';
 import cloudIcon from '@iconify-icons/mdi/cloud-outline';
 import tuneIcon from '@iconify-icons/mdi/tune';
+import deleteIcon from '@iconify-icons/mdi/delete-outline';
 import { formattedProvider, normalizeDisplayName } from '../../utils/agent';
 
 interface FlowNodeData extends Record<string, unknown> {
@@ -45,9 +46,10 @@ interface FlowNodeData extends Record<string, unknown> {
 interface FlowNodeProps {
   data: FlowNodeData;
   selected: boolean;
+  onDelete?: (nodeId: string) => void;
 }
 
-const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
+const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const storeNodes = useStore((s) => s.nodes);
@@ -190,13 +192,18 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
             borderColor: selected ? colors.primary : colors.border.focus,
           },
         }}
-        onClick={(e) => {
-          // Prevent rapid clicks
-          const now = Date.now();
-          if (now - lastClickTime < 300) return;
-          setLastClickTime(now);
-          e.stopPropagation();
-        }}
+      onClick={(e) => {
+        // Ignore clicks on delete button or other interactive elements
+        const target = e.target as HTMLElement;
+        if (target.closest('button') || target.closest('[role="button"]') || target.tagName === 'BUTTON' || target.closest('svg')) {
+          return;
+        }
+        // Prevent rapid clicks
+        const now = Date.now();
+        if (now - lastClickTime < 300) return;
+        setLastClickTime(now);
+        e.stopPropagation();
+      }}
       >
         {/* Header with gradient */}
         <Box
@@ -243,7 +250,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
                 Agent
               </Typography>
             </Box>
-          </Box>
+                      </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <Typography
               variant="body2"
@@ -1313,6 +1320,31 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected }) => {
               {normalizeDisplayName(data.label)}
             </Typography>
           </Box>
+          {onDelete && (
+            <IconButton
+              size="small"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                e.nativeEvent.stopImmediatePropagation();
+                onDelete(data.id);
+              }}
+              sx={{
+                width: 30,
+                height: 30,
+                backgroundColor: alpha(theme.palette.error.main, 0.1),
+                border: `1px solid ${alpha(theme.palette.error.main, 0.2)}`,
+                '&:hover': {
+                  backgroundColor: alpha(theme.palette.error.main, 0.2),
+                  transform: 'scale(1.05)',
+                  color: theme.palette.error.main,
+                },
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <Icon icon={deleteIcon} width={20} height={20} />
+            </IconButton>
+          )}
         </Box>
         {data.description && (
           <Typography

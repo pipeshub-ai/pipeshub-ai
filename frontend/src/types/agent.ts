@@ -118,6 +118,7 @@ export interface AgentFormData {
     provider: string;
     modelName: string;
     isReasoning: boolean;
+    modelKey: string;
   }[];
   apps: string[];
   kb: string[];

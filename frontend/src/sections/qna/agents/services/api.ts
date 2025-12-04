@@ -97,6 +97,7 @@ class AgentApiService {
   static async createAgent(data: AgentFormData): Promise<Agent> {
     // Transform data before sending
     const transformedData = this.transformAgentFormData(data);
+    console.log('transformedData', transformedData);
     const response = await axios.post(`${this.baseUrl}/create`, transformedData);
     return response.data.agent;
   }
@@ -375,7 +376,7 @@ class AgentApiService {
       Array.isArray(transformed.models) &&
       transformed.models.length === 0
     ) {
-      transformed.models = [] as { provider: string; modelName: string, isReasoning: boolean }[];
+      transformed.models = [] as { provider: string; modelName: string; isReasoning: boolean; modelKey: string }[];
     }
 
     if (transformed.apps && Array.isArray(transformed.apps) && transformed.apps.length === 0) {
