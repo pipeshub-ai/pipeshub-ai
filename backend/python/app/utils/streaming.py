@@ -29,15 +29,19 @@ from app.utils.logger import create_logger
 
 logger = create_logger("streaming")
 
-# Initialize the Opik tracer
-try:
-    from opik import configure
-    from opik.integrations.langchain import OpikTracer
-    configure(use_local=False,api_key=os.getenv("OPIK_API_KEY"),workspace=os.getenv("OPIK_WORKSPACE"))
-    opik_tracer = OpikTracer()
-except Exception as e:
-    logger.warning(f"Error configuring Opik: {e}")
-    opik_tracer = None
+opik_tracer = None
+api_key = os.getenv("OPIK_API_KEY")
+workspace = os.getenv("OPIK_WORKSPACE")
+if api_key and workspace:
+    try:
+        from opik.integrations.langchain import OpikTracer
+        from opik import configure
+        configure(use_local=False, api_key=api_key, workspace=workspace)
+        opik_tracer = OpikTracer()
+    except Exception as e:
+        logger.warning(f"Error configuring Opik: {e}")
+else:
+    logger.info("OPIK_API_KEY and/or OPIK_WORKSPACE not set. Skipping Opik configuration.")
 
 MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
