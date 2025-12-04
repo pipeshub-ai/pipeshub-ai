@@ -9127,8 +9127,8 @@ class BaseArangoService:
                     if "size" in file_metadata:
                         file_updates["sizeInBytes"] = file_metadata["size"]
                     
-                    if "md5Checksum" in file_metadata:
-                        file_updates["md5Checksum"] = file_metadata["md5Checksum"]
+                    if "sha256Checksum" in file_metadata:
+                        file_updates["sha256Checksum"] = file_metadata["sha256Checksum"]
 
                     if file_updates:
                         file_update_query = """
