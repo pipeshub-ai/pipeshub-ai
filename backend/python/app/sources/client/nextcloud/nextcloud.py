@@ -20,7 +20,6 @@ class NextcloudRESTClientViaUsernamePassword(HTTPClient):
         # HTTP Basic Auth requires "username:password" to be Base64 encoded
         auth_string = f"{username}:{password}"
         encoded_auth = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
-        
         super().__init__(encoded_auth, token_type="Basic")
         self.base_url = base_url
 

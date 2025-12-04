@@ -210,8 +210,8 @@ async def main():
         # Try to clean up anyway
         try:
              await ds.delete_resource(user_id=TARGET_USER, path=TEST_FOLDER)
-        except:
-            pass
+        except Exception as cleanup_error:
+            logger.warning(f"⚠️ Cleanup failed: {cleanup_error}")
     finally:
         await client.get_client().close()
 

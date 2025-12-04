@@ -1,8 +1,8 @@
+import hashlib
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Union
 from xml.sax.saxutils import escape
-
-import httpx
 
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
@@ -281,7 +281,7 @@ class NextcloudDataSource:
         else:
              # If nothing is passed, we technically shouldn't make the call,
              # but we'll let the API handle the empty body or return early.
-             return HTTPResponse(status_code=400, body={"message": "No update parameters provided"})
+            raise ValueError("No update parameters provided")
 
         return await self._ocs_request(
             'PUT',
@@ -1179,20 +1179,19 @@ class NextcloudDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """
-        Download a file (GET) using httpx directly for binary handling.
+        Download a file (GET).
         """
         url = self._build_webdav_url(user_id, path)
 
-        # Merge client Auth headers with request headers
-        req_headers = self._client.headers.copy()
-        if headers:
-            req_headers.update(headers)
-
-        # Use httpx directly to safely handle binary content
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=self._as_str_dict(req_headers))
-
-            return HTTPResponse(response)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=self._as_str_dict(headers or {}),
+            path={},
+            query={},
+            body=None
+        )
+        return await self._client.execute(req)
 
     async def upload_file(
         self,
@@ -1203,26 +1202,23 @@ class NextcloudDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """
-        Upload a file (PUT) using httpx directly for binary handling.
+        Upload a file (PUT).
         """
         url = self._build_webdav_url(user_id, path)
 
-        req_headers = self._client.headers.copy()
-        if headers:
-            req_headers.update(headers)
-
+        _headers = headers or {}
         if total_length is not None:
-            req_headers['OC-Total-Length'] = str(total_length)
+            _headers['OC-Total-Length'] = str(total_length)
 
-        # Use httpx directly to safely pass bytes in body
-        async with httpx.AsyncClient() as client:
-            response = await client.put(
-                url,
-                content=data,
-                headers=self._as_str_dict(req_headers)
-            )
-
-            return HTTPResponse(response)
+        req = HTTPRequest(
+            method='PUT',
+            url=url,
+            headers=self._as_str_dict(_headers),
+            path={},
+            query={},
+            body=data
+        )
+        return await self._client.execute(req)
 
     async def create_folder(
         self,
@@ -1787,13 +1783,6 @@ class NextcloudDataSource:
     ) -> HTTPResponse:
         """
         Upload a single chunk.
-        Args:
-            chunk_index: The number of the chunk (1, 2, 3...).
-                         Will be automatically padded to 5 digits (e.g. 00001).
-            data: Raw bytes of the chunk (Must be 5MB-5GB, except last chunk).
-            dest_path: The FINAL path (Required for validation).
-            total_length: Total size of the complete file.
-        Ref: 'Uploading chunks'
         """
         # Pad chunk index to 5 digits (e.g., 1 -> "00001") to ensure correct sort order
         chunk_name = f"{chunk_index:05d}"
@@ -1801,23 +1790,20 @@ class NextcloudDataSource:
         url = f"{self.base_url}/remote.php/dav/uploads/{user_id}/{upload_id}/{chunk_name}"
         final_dest_url = self._build_webdav_url(user_id, dest_path)
 
-        req_headers = self._client.headers.copy()
-        if headers:
-            req_headers.update(headers)
-
+        _headers = headers or {}
         # Required Headers for v2
-        req_headers['Destination'] = final_dest_url
-        req_headers['OC-Total-Length'] = str(total_length)
+        _headers['Destination'] = final_dest_url
+        _headers['OC-Total-Length'] = str(total_length)
 
-        # Use httpx directly for binary upload
-        async with httpx.AsyncClient() as client:
-            response = await client.put(
-                url,
-                content=data,
-                headers=self._as_str_dict(req_headers)
-            )
-
-            return HTTPResponse(response)
+        req = HTTPRequest(
+            method='PUT',
+            url=url,
+            headers=self._as_str_dict(_headers),
+            path={},
+            query={},
+            body=data
+        )
+        return await self._client.execute(req)
 
     async def complete_chunked_upload(
         self,
@@ -1885,18 +1871,7 @@ class NextcloudDataSource:
     ) -> HTTPResponse:
         """
         Upload multiple small files in a single request (Bulk Upload).
-        Args:
-            user_id: The user ID.
-            files: A list of dictionaries, where each dict represents a file:
-                   {
-                       'path': str,         # Remote path (e.g., '/test/file.txt')
-                       'content': bytes,    # Raw file content
-                       'mtime': int         # Modification time (Unix timestamp)
-                   }
-        Ref: 'Starting a bulk upload'
         """
-        import hashlib
-        import uuid
 
         # Endpoint: .../remote.php/dav/bulk
         url = f"{self.base_url}/remote.php/dav/bulk"
@@ -1921,8 +1896,6 @@ class NextcloudDataSource:
             body_parts.append(b"--" + boundary_bytes)
 
             # 2. Headers for this specific part
-            # Note: The docs specify X-File-Mtime, though the example script uses X-OC-Mtime.
-            # We adhere to the formal documentation list.
             headers_part = (
                 f"Content-Length: {content_length}\r\n"
                 f"Content-Type: application/octet-stream\r\n"
@@ -1945,22 +1918,18 @@ class NextcloudDataSource:
         full_body = b"\r\n".join(body_parts)
 
         # Prepare Request Headers
-        req_headers = self._client.headers.copy()
-        if headers:
-            req_headers.update(headers)
+        _headers = headers or {}
+        _headers['Content-Type'] = f"multipart/related; boundary={boundary}"
 
-        # IMPORTANT: Set the Content-Type to multipart/related with the boundary
-        req_headers['Content-Type'] = f"multipart/related; boundary={boundary}"
-
-        # Use httpx directly to send the raw binary body
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                url,
-                content=full_body,
-                headers=self._as_str_dict(req_headers)
-            )
-
-            return HTTPResponse(response)
+        req = HTTPRequest(
+            method='POST',
+            url=url,
+            headers=self._as_str_dict(_headers),
+            path={},
+            query={},
+            body=full_body
+        )
+        return await self._client.execute(req)
 
     # XML Namespaces specifically for Comments
     COMMENTS_NAMESPACES = (
