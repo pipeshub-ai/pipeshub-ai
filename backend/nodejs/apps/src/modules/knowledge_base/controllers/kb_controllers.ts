@@ -940,7 +940,7 @@ export const updateRecord =
           size,
           extension,
           lastModified,
-          md5Checksum,
+          sha256Checksum,
         };
 
         // Get filename without extension to use as record name
