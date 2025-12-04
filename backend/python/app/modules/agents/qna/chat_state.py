@@ -153,7 +153,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "query": chat_query.get("query", ""),
         "limit": chat_query.get("limit", 50),
         "messages": [],  # Will be populated in prepare_prompt_node
-        "previous_conversations": chat_query.get("previousConversations", []),
+        "previous_conversations": chat_query.get("previous_conversations") or chat_query.get("previousConversations") or [],
         "quick_mode": chat_query.get("quickMode", False),  # Renamed
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),

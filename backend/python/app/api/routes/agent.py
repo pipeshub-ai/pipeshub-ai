@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain.chat_models.base import BaseChatModel
 from pydantic import BaseModel
 
+from app.api.routes.chatbot import get_llm_for_chat
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.agents.qna.chat_state import build_initial_state
@@ -28,6 +29,10 @@ class ChatQuery(BaseModel):
     retrievalMode: Optional[str] = "HYBRID"
     systemPrompt: Optional[str] = None
     tools: Optional[List[str]] = None
+    chatMode: Optional[str] = "quick"
+    modelKey: Optional[str] = None
+    modelName: Optional[str] = None
+
 
 
 async def get_services(request: Request) -> Dict[str, Any]:
@@ -266,7 +271,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
 
         # Get user first
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -338,7 +343,7 @@ async def get_agent_templates(request: Request) -> JSONResponse:
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for getting agent templates")
         # Get all templates
@@ -380,7 +385,7 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for getting agent template")
         # Get the template access
@@ -414,7 +419,7 @@ async def share_agent_template(request: Request, template_id: str, user_ids: Lis
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for sharing agent template")
         # Get the template
@@ -474,7 +479,7 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for deleting agent template")
         # Delete the template
@@ -509,7 +514,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
         body_dict = json.loads(body.decode('utf-8'))
         # Update the template
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for updating agent template")
         result = await arango_service.update_agent_template(template_id, body_dict, user.get("_key"))
@@ -543,8 +548,11 @@ async def create_agent(request: Request) -> JSONResponse:
         time = get_epoch_timestamp_in_ms()
         body = await request.body()
         body_dict = json.loads(body.decode('utf-8'))
+        if not body_dict.get("name"):
+            raise HTTPException(status_code=400, detail="Agent name is required")
+
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for creating agent")
 
@@ -626,7 +634,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for getting agent")
 
@@ -659,7 +667,7 @@ async def get_agents(request: Request) -> JSONResponse:
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for getting agents")
         # Get all agents
@@ -695,7 +703,6 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         body_dict = json.loads(body.decode('utf-8'))
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for updating agent")
 
@@ -737,7 +744,7 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for deleting agent")
 
@@ -787,7 +794,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         }
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for sharing agent")
 
@@ -835,7 +842,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         }
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for unsharing agent")
 
@@ -881,7 +888,7 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
         }
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for viewing agent permissions")
 
@@ -925,7 +932,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
         role = body_dict.get("role")
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for updating agent permission")
 
@@ -1057,10 +1064,22 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         # Get all services
         services = await get_services(request)
         logger = services["logger"]
+        config_service = services["config_service"]
         arango_service = services["arango_service"]
         retrieval_service = services["retrieval_service"]
-        llm = services["llm"]
+        # llm = services["llm"]
         reranker_service = services["reranker_service"]
+
+        body = await request.body()
+        body_dict = json.loads(body.decode('utf-8'))
+        chat_query = ChatQuery(**body_dict)
+
+        logger.info(f"body dict : {body_dict}")
+
+        llm = (await get_llm_for_chat(config_service, chat_query.modelKey, chat_query.modelName, chat_query.chatMode))[0]
+
+        if llm is None:
+            raise HTTPException(status_code=500, detail="Failed to initialize LLM service. LLM configuration is missing.")
 
         # Extract user info from request
         user_info = {
@@ -1080,14 +1099,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         agent = await arango_service.get_agent(agent_id, user.get("_key"))
         if agent is None:
             raise HTTPException(status_code=404, detail="Agent not found")
-
-        body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
-
-        logger.info(f"body_dict: {body_dict}")
-        chat_query = ChatQuery(**body_dict)
-
-        logger.info(f"chat_query: {chat_query}")
 
         # Build filters object
         filters = {}

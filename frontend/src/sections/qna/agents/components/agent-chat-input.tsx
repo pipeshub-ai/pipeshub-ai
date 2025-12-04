@@ -510,7 +510,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
                 onChange={handleChange}
                 onKeyDown={handleKeyDown}
                 value={localValue}
-                disabled={isInputDisabled}
                 style={{
                   width: '100%',
                   border: 'none',
@@ -525,7 +524,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
                   fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
                   overflowY: 'auto',
                   cursor: 'text',
-                  opacity: isInputDisabled ? 0.6 : 1,
                 }}
               />
             </Box>

@@ -106,27 +106,53 @@ def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
     return mode_configs.get(chat_mode, mode_configs["standard"])
 
 
-async def get_model_config(config_service: ConfigurationService, model_key: str) -> Dict[str, Any]:
+async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: Optional[str] = None) -> Dict[str, Any]:
     """Get model configuration based on user selection or fallback to default"""
+
+    def _find_config_by_default(configs: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+        """Find config marked as default"""
+        return next((config for config in configs if config.get("isDefault", False)), None)
+
+    def _find_config_by_model_name(configs: List[Dict[str, Any]], name: str) -> Dict[str, Any] | None:
+        """Find config by model name in configuration.model field"""
+        for config in configs:
+            model_string = config.get("configuration", {}).get("model", "")
+            model_names = [n.strip() for n in model_string.split(",") if n.strip()]
+            if name in model_names:
+                return config
+        return None
+
+    def _find_config_by_key(configs: List[Dict[str, Any]], key: str) -> Dict[str, Any] | None:
+        """Find config by modelKey"""
+        return next((config for config in configs if config.get("modelKey") == key), None)
+
+    # Get initial config
     ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
     llm_configs = ai_models["llm"]
 
-    for config in llm_configs:
-        target_model_key = config.get("modelKey")
-        if target_model_key == model_key:
-            return config
+    # Search based on provided parameters
+    if model_key is None and model_name is None:
+        # Return default config
+        if default_config := _find_config_by_default(llm_configs):
+            return default_config
+    elif model_key is None and model_name is not None:
+        # Search by model name
+        if name_config := _find_config_by_model_name(llm_configs, model_name):
+            return name_config
+    elif model_key is not None:
+        # Search by model key
+        if key_config := _find_config_by_key(llm_configs, model_key):
+            return key_config
 
-    # Try fresh config if not found
-    new_ai_models = await config_service.get_config(
-        config_node_constants.AI_MODELS.value,
-        use_cache=False
-    )
-    llm_configs = new_ai_models["llm"]
-
-    for config in llm_configs:
-        target_model_key = config.get("modelKey")
-        if target_model_key == model_key:
-            return config
+    # Try fresh config if not found (only for model_key searches)
+    if model_key is not None:
+        new_ai_models = await config_service.get_config(
+            config_node_constants.AI_MODELS.value,
+            use_cache=False
+        )
+        llm_configs = new_ai_models["llm"]
+        if key_config := _find_config_by_key(llm_configs, model_key):
+            return key_config
 
     if not llm_configs:
         raise ValueError("No LLM configurations found")
@@ -137,7 +163,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str)
 async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> Tuple[BaseChatModel, dict]:
     """Get LLM instance based on user selection or fallback to default"""
     try:
-        llm_config = await get_model_config(config_service, model_key)
+        llm_config = await get_model_config(config_service, model_key, model_name)
         if not llm_config:
             raise ValueError("No LLM configurations found")
 
