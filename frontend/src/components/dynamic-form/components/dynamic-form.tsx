@@ -366,11 +366,19 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
       getFormData: async (): Promise<any> => {
         const formData = getValues();
         const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
-        return {
+        
+        const result = {
           ...formData,
           [isLegacyModelType ? 'modelType' : 'providerType']: currentProvider,
           _provider: currentProvider,
         };
+        
+        // Handle "other" provider case for Bedrock: use customProvider value
+        if (currentProvider === 'bedrock' && formData.provider === 'other' && formData.customProvider) {
+          result.provider = formData.customProvider;
+        }
+        
+        return result;
       },
 
       validateForm: async (): Promise<boolean> => {
