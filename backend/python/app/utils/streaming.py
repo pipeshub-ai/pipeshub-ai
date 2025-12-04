@@ -1,23 +1,10 @@
 import asyncio
 import json
 import logging
-import re
 import os
+import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
-from app.utils.logger import create_logger
 
-logger = create_logger("streaming")
-
-try:
-    from opik.integrations.langchain import OpikTracer
-    from opik import configure
-    configure(use_local=False,api_key=os.getenv("OPIK_API_KEY"),workspace=os.getenv("OPIK_WORKSPACE"))
-    opik_tracer = OpikTracer()
-except Exception as e:
-    logger.warning(f"Error configuring Opik: {e}")
-    opik_tracer = None
-
-# Initialize the tracer
 import aiohttp
 from fastapi import HTTPException
 from langchain.chat_models.base import BaseChatModel
@@ -38,6 +25,19 @@ from app.utils.citations import (
     normalize_citations_and_chunks,
     normalize_citations_and_chunks_for_agent,
 )
+from app.utils.logger import create_logger
+
+logger = create_logger("streaming")
+
+# Initialize the Opik tracer
+try:
+    from opik import configure
+    from opik.integrations.langchain import OpikTracer
+    configure(use_local=False,api_key=os.getenv("OPIK_API_KEY"),workspace=os.getenv("OPIK_WORKSPACE"))
+    opik_tracer = OpikTracer()
+except Exception as e:
+    logger.warning(f"Error configuring Opik: {e}")
+    opik_tracer = None
 
 MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
