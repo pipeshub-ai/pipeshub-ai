@@ -904,7 +904,7 @@ export const updateRecord =
 
       // Check if there's a file in the request
       const hasFileBuffer = req.body.fileBuffer && req.body.fileBuffer.buffer;
-      let originalname, mimetype, size, extension, lastModified, md5Checksum;
+      let originalname, mimetype, size, extension, lastModified, sha256Checksum;
 
       if (hasFileBuffer) {
         ({ originalname, mimetype, size, lastModified } = req.body.fileBuffer);
