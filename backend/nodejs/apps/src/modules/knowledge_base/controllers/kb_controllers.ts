@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
@@ -903,7 +904,7 @@ export const updateRecord =
 
       // Check if there's a file in the request
       const hasFileBuffer = req.body.fileBuffer && req.body.fileBuffer.buffer;
-      let originalname, mimetype, size, extension, lastModified;
+      let originalname, mimetype, size, extension, lastModified, md5Checksum;
 
       if (hasFileBuffer) {
         ({ originalname, mimetype, size, lastModified } = req.body.fileBuffer);
@@ -914,7 +915,11 @@ export const updateRecord =
               .substring(originalname.lastIndexOf('.') + 1)
               .toLowerCase()
           : null;
+        //Implementing MD5 checksum
+        const buffer = Buffer.from(req.body.fileBuffer.buffer);
+        md5Checksum = crypto.createHash('md5').update(buffer).digest('hex');
       }
+      
 
       if (!recordName) {
         recordName = originalname;
@@ -935,6 +940,7 @@ export const updateRecord =
           size,
           extension,
           lastModified,
+          md5Checksum,
         };
 
         // Get filename without extension to use as record name
