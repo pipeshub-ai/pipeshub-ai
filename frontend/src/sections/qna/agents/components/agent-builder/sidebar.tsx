@@ -191,23 +191,45 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   };
 
   // Get app-level tool nodes (tool-group-* nodes)
+  // Exclude internal tools: calculator and retrieval
   const appToolNodes = useMemo(
     () =>
-      filteredTemplates.filter((t) => t.category === 'tools' && t.type.startsWith('tool-group-')),
+      filteredTemplates.filter(
+        (t) =>
+          t.category === 'tools' &&
+          t.type.startsWith('tool-group-') &&
+          !['calculator', 'retrieval'].includes(
+            (t.defaultConfig?.appName || '').toLowerCase()
+          ) &&
+          !['calculator', 'retrieval'].includes(
+            (t.defaultConfig?.appDisplayName || '').toLowerCase()
+          )
+      ),
     [filteredTemplates]
   );
 
   // Group individual tools by app name for dropdown
+  // Exclude internal tools: calculator and retrieval
   const groupedByApp = useMemo(() => {
     const individualTools = filteredTemplates.filter(
       (t) =>
-        t.category === 'tools' && t.type.startsWith('tool-') && !t.type.startsWith('tool-group-')
+        t.category === 'tools' &&
+        t.type.startsWith('tool-') &&
+        !t.type.startsWith('tool-group-') &&
+        !['calculator', 'retrieval'].includes(
+          (t.defaultConfig?.appName || '').toLowerCase()
+        )
     );
     const grouped: Record<string, NodeTemplate[]> = {};
 
     individualTools.forEach((template) => {
       const appName = template.defaultConfig?.appName || 'Other';
       const displayName = normalizeAppName(appName);
+
+      // Skip if it's an internal tool
+      if (['calculator', 'retrieval'].includes(displayName.toLowerCase())) {
+        return;
+      }
 
       if (!grouped[displayName]) {
         grouped[displayName] = [];

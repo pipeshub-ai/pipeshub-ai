@@ -187,8 +187,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
             type: `llm-${initalModel?.provider || 'azureOpenAI'}-${initalModel?.modelName || 'default'}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase(),
             label:
               initalModel?.modelName
-                ?.replace(/[^a-zA-Z0-9]/g, ' ')
-                .replace(/\s+/g, ' ')
                 .trim() || 'AI Model',
             description: `${formattedProvider(initalModel?.provider || 'AI')} language model for text generation`,
             icon: brainIcon,
@@ -201,7 +199,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
               isDefault: initalModel?.isDefault || false,
               isReasoning: initalModel?.isReasoning || false,
             },
-            inputs: ['prompt', 'context'],
+            inputs: [],
             outputs: ['response'],
             isConfigured: true,
           },

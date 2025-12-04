@@ -24,13 +24,13 @@ export const useAgentBuilderNodeTemplates = (
 ): UseAgentBuilderNodeTemplatesReturn => {
   // Get connector data from the hook
   const { activeConnectors } = useConnectors();
-  
+
   const nodeTemplates: NodeTemplate[] = useMemo(() => {
     const groupedTools = groupToolsByApp(availableTools);
     const allConnectors = [...activeConnectors];
-    
+
     // Create dynamic app memory nodes from connector data
-    const dynamicAppKnowledgeNodes = allConnectors.map(connector => ({
+    const dynamicAppKnowledgeNodes = allConnectors.map((connector) => ({
       type: `app-${connector.name.toLowerCase().replace(/\s+/g, '-')}`,
       label: normalizeDisplayName(connector.name),
       description: `Connect to ${connector.name} data and content`,
@@ -44,7 +44,7 @@ export const useAgentBuilderNodeTemplates = (
       outputs: ['context'],
       category: 'knowledge' as const,
     }));
-    
+
     const templates: NodeTemplate[] = [
       // Agent Node (central orchestrator)
       {
@@ -76,17 +76,16 @@ export const useAgentBuilderNodeTemplates = (
       // LLM Nodes - Generated from available models
       ...availableModels.map((model: any) => {
         const modelName = model.modelName || 'Unknown Model';
-        const normalizedName = modelName
-          .replace(/[^a-zA-Z0-9]/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-        
+        const normalizedName = modelName.trim();
+
         // Create unique type identifier using provider and modelName to avoid conflicts
-        const uniqueTypeId = `${model.provider}-${modelName}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
-        
+        const uniqueTypeId = `${model.provider}-${modelName}`
+          .replace(/[^a-zA-Z0-9]/g, '-')
+          .toLowerCase();
+
         return {
           type: `llm-${uniqueTypeId}`,
-          label: normalizeDisplayName(normalizedName),
+          label: normalizedName,
           description: `${model.provider} AI model for text generation`,
           icon: brainIcon,
           defaultConfig: {
@@ -100,7 +99,7 @@ export const useAgentBuilderNodeTemplates = (
             isDefault: model.isDefault || false,
             isReasoning: model.isReasoning || false,
           },
-          inputs: ['prompt', 'context'],
+          inputs: [],
           outputs: ['response'],
           category: 'llm' as const,
         };
@@ -153,12 +152,12 @@ export const useAgentBuilderNodeTemplates = (
         description: `Connect to data from integrated applications (${allConnectors.length} apps)`,
         icon: apiIcon,
         defaultConfig: {
-          apps: allConnectors.map(connector => ({
+          apps: allConnectors.map((connector) => ({
             name: connector.name,
             type: connector.name.toUpperCase(),
             displayName: connector.name,
           })),
-          selectedApps: allConnectors.slice(0, 3).map(connector => connector.name.toUpperCase()), // Default to first 3 apps
+          selectedApps: allConnectors.slice(0, 3).map((connector) => connector.name.toUpperCase()), // Default to first 3 apps
         },
         inputs: ['query'],
         outputs: ['context'],

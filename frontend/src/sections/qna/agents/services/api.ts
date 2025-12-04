@@ -375,7 +375,7 @@ class AgentApiService {
       Array.isArray(transformed.models) &&
       transformed.models.length === 0
     ) {
-      transformed.models = [] as { provider: string; modelName: string, isReasoning: boolean }[];
+      transformed.models = [] as { provider: string; modelName: string; isReasoning: boolean; modelKey: string }[];
     }
 
     if (transformed.apps && Array.isArray(transformed.apps) && transformed.apps.length === 0) {
