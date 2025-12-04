@@ -244,6 +244,7 @@ class RetrievalService:
         virtual_record_ids_from_tool: Optional[List[str]] = None,
         arango_service: Optional[BaseArangoService] = None,
         knowledge_search:bool = False,
+        is_agent:bool = False,
     ) -> Dict[str, Any]:
         """Perform semantic search on accessible records with multiple queries."""
 
@@ -549,7 +550,7 @@ class RetrievalService:
             self.logger.error("VectorDBEmptyError")
             return self._create_empty_response(
                     "No records indexed yet. Please upload documents or enable connectors to index content",
-                    Status.VECTOR_DB_EMPTY,
+                    Status.EMPTY_RESPONSE if is_agent else Status.VECTOR_DB_EMPTY,
                 )
         except ValueError as e:
             self.logger.error(f"ValueError: {e}")

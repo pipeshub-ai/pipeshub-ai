@@ -334,7 +334,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
               )
             }
             onClick={onSave}
-            disabled={saving || !agentName}
+            disabled={saving }
             sx={{
               height: 36,
               px: isMobile ? 1.5 : 2,

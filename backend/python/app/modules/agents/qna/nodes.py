@@ -754,6 +754,7 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
             limit=adjusted_limit,
             filter_groups=state["filters"],
             arango_service=arango_service,
+            is_agent=True,
         )
 
         status_code = results.get("status_code", 200)

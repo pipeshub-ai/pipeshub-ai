@@ -548,6 +548,9 @@ async def create_agent(request: Request) -> JSONResponse:
         time = get_epoch_timestamp_in_ms()
         body = await request.body()
         body_dict = json.loads(body.decode('utf-8'))
+        if not body_dict.get("name"):
+            raise HTTPException(status_code=400, detail="Agent name is required")
+
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
 
         if user is None:
