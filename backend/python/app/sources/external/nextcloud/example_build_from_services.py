@@ -2,7 +2,6 @@
 import asyncio
 import logging
 import os
-import json
 
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.nextcloud.nextcloud import NextcloudClient

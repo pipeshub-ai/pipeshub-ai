@@ -1,3 +1,4 @@
+import base64
 import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Union
@@ -16,12 +17,11 @@ class NextcloudRESTClientViaUsernamePassword(HTTPClient):
     """
 
     def __init__(self, base_url: str, username: str, password: str) -> None:
-        # HTTPClient typically handles "Basic" type by base64 encoding "username:password"
-        # We pass the raw credentials combined if the parent expects a token string,
-        # or we rely on the parent's handling of user/pass.
-        # Assuming standard usage:
-        token = f"{username}:{password}"
-        super().__init__(token, token_type="Basic")
+        # HTTP Basic Auth requires "username:password" to be Base64 encoded
+        auth_string = f"{username}:{password}"
+        encoded_auth = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
+        
+        super().__init__(encoded_auth, token_type="Basic")
         self.base_url = base_url
 
     def get_base_url(self) -> str:
