@@ -12,6 +12,7 @@ This module provides:
 import logging
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from datetime import datetime, timezone
 from enum import Enum
 from logging import Logger
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -35,6 +36,7 @@ class FilterType(str, Enum):
     DATETIME = "datetime"
     LIST = "list"
     NUMBER = "number"
+    MULTISELECT = "multiselect"
 
 
 class FilterCategory(str, Enum):
@@ -68,11 +70,11 @@ class FilterOperator:
     NOT_IN = "not_in"
 
     # Number operators
-    GREATER_THAN_EQUAL = "gte"
-    GREATER_THAN = "gt"
-    EQUAL = "eq"
-    LESS_THAN = "lt"
-    LESS_THAN_EQUAL = "lte"
+    GREATER_THAN_OR_EQUAL = "greater_than_or_equal"
+    GREATER_THAN = "greater_than"
+    EQUAL = "equal"
+    LESS_THAN = "less_than"
+    LESS_THAN_OR_EQUAL = "less_than_or_equal"
 
 
 # Type-specific operator enums that reference FilterOperator values
@@ -111,14 +113,20 @@ class ListOperator(str, Enum):
     NOT_IN = FilterOperator.NOT_IN
 
 
+class MultiselectOperator(str, Enum):
+    """Operators for MULTISELECT type filters (select from predefined options)"""
+    IN = FilterOperator.IN
+    NOT_IN = FilterOperator.NOT_IN
+
+
 class NumberOperator(str, Enum):
     """Operators for NUMBER type filters"""
     IS_BETWEEN = FilterOperator.IS_BETWEEN
-    GREATER_THAN_EQUAL = FilterOperator.GREATER_THAN_EQUAL
+    GREATER_THAN_OR_EQUAL = FilterOperator.GREATER_THAN_OR_EQUAL
     GREATER_THAN = FilterOperator.GREATER_THAN
     EQUAL = FilterOperator.EQUAL
     LESS_THAN = FilterOperator.LESS_THAN
-    LESS_THAN_EQUAL = FilterOperator.LESS_THAN_EQUAL
+    LESS_THAN_OR_EQUAL = FilterOperator.LESS_THAN_OR_EQUAL
 
 # Combined operator type for type hints
 FilterOperatorType = Union[
@@ -126,6 +134,7 @@ FilterOperatorType = Union[
     BooleanOperator,
     DatetimeOperator,
     ListOperator,
+    MultiselectOperator,
     NumberOperator
 ]
 
@@ -196,6 +205,7 @@ TYPE_OPERATORS: Dict[FilterType, List[str]] = {
     FilterType.BOOLEAN: [op.value for op in BooleanOperator],
     FilterType.DATETIME: [op.value for op in DatetimeOperator],
     FilterType.LIST: [op.value for op in ListOperator],
+    FilterType.MULTISELECT: [op.value for op in MultiselectOperator],
     FilterType.NUMBER: [op.value for op in NumberOperator],
 }
 
@@ -212,6 +222,7 @@ def get_operator_enum_class(filter_type: FilterType) -> type:
         FilterType.BOOLEAN: BooleanOperator,
         FilterType.DATETIME: DatetimeOperator,
         FilterType.LIST: ListOperator,
+        FilterType.MULTISELECT: MultiselectOperator,
         FilterType.NUMBER: NumberOperator,
     }
     return operator_map.get(filter_type)
@@ -228,20 +239,21 @@ class FilterField:
     Args:
         name: Unique identifier for the filter
         display_name: Human-readable name shown in UI
-        filter_type: Type of filter (STRING, BOOLEAN, DATETIME, LIST, NUMBER)
+        filter_type: Type of filter (STRING, BOOLEAN, DATETIME, LIST, NUMBER, MULTISELECT)
         category: SYNC or INDEXING
         description: Help text for the field
         required: Whether the field is mandatory
         default_value: Default value for the field
         default_operator: Default operator (must be valid for filter_type)
-        options: For LIST type, predefined options to select from
+        options: For MULTISELECT type, predefined options to select from (required)
 
     Value types by filter_type:
-        STRING   → str
-        BOOLEAN  → bool
-        DATETIME → tuple[str] or tuple[str, str] (single date or (start, end) for between)
-        LIST     → List[str]
-        NUMBER   → float (supports decimals)
+        STRING      → str
+        BOOLEAN     → bool
+        DATETIME    → tuple[int] or tuple[int, int] (epoch timestamps)
+        LIST        → List[str] (free-form tags)
+        MULTISELECT → List[str] (selected from predefined options)
+        NUMBER      → float (supports decimals)
     """
     name: str
     display_name: str
@@ -267,6 +279,7 @@ class FilterField:
             FilterType.BOOLEAN: True,
             FilterType.DATETIME: None,  # Tuple will be created from dict/list when parsed
             FilterType.LIST: [],
+            FilterType.MULTISELECT: [],
             FilterType.NUMBER: None,
         }
         return defaults.get(self.filter_type)
@@ -278,6 +291,7 @@ class FilterField:
             FilterType.BOOLEAN: BooleanOperator.IS.value,
             FilterType.DATETIME: DatetimeOperator.IS_AFTER.value,
             FilterType.LIST: ListOperator.IN.value,
+            FilterType.MULTISELECT: MultiselectOperator.IN.value,
             FilterType.NUMBER: NumberOperator.EQUAL.value,
         }
         return defaults.get(self.filter_type, "")
@@ -334,7 +348,7 @@ class Filter(BaseModel):
             filter_type_str = data['type']
 
             # If operator is already an enum, skip conversion
-            if isinstance(operator_str, (StringOperator, BooleanOperator, DatetimeOperator, ListOperator, NumberOperator)):
+            if isinstance(operator_str, (StringOperator, BooleanOperator, DatetimeOperator, ListOperator, MultiselectOperator, NumberOperator)):
                 pass  # Continue to datetime value conversion
             else:
                 # Convert type string to enum if needed
@@ -359,7 +373,7 @@ class Filter(BaseModel):
                         except (ValueError, AttributeError):
                             pass
 
-            # Convert datetime value from dict/list to tuple
+            # Convert datetime value to tuple of epoch integers
             if 'value' in data and 'type' in data:
                 filter_type_str = data['type']
                 if isinstance(filter_type_str, str):
@@ -372,10 +386,13 @@ class Filter(BaseModel):
 
                 if filter_type == FilterType.DATETIME and data['value'] is not None:
                     value = data['value']
-                    # Convert dict {start:, end:} to tuple
+                    # Convert dict {start:, end:} to tuple of epochs
                     if isinstance(value, dict):
                         start = value.get('start')
                         end = value.get('end')
+                        # Ensure values are integers (epoch)
+                        start = int(start) if start is not None else None
+                        end = int(end) if end is not None else None
                         # Create tuple: (start, end) or (start,) if end is None
                         if start is not None:
                             data['value'] = (start, end) if end is not None else (start,)
@@ -383,13 +400,18 @@ class Filter(BaseModel):
                             data['value'] = None
                     elif isinstance(value, list):
                         if len(value) > 0:
-                            data['value'] = tuple(value) if len(value) > 1 else (value[0],)
+                            # Convert list elements to integers
+                            int_values = [int(v) if v is not None else None for v in value]
+                            data['value'] = tuple(int_values) if len(int_values) > 1 else (int_values[0],)
                         else:
                             data['value'] = None
                     elif isinstance(value, tuple):
-                        pass
-                    elif isinstance(value, str):
-                        data['value'] = (value,)
+                        # Ensure tuple elements are integers
+                        int_values = tuple(int(v) if v is not None else None for v in value)
+                        data['value'] = int_values
+                    elif isinstance(value, (int, float)):
+                        # Single epoch value
+                        data['value'] = (int(value),)
 
         return data
 
@@ -436,17 +458,17 @@ class Filter(BaseModel):
         # Validate value type (if value is set)
         if self.value is not None:
             if self.type == FilterType.DATETIME:
-                # Datetime values should be tuples: (start,) or (start, end)
+                # Datetime values should be tuples of epoch integers: (start,) or (start, end)
                 if not isinstance(self.value, tuple):
                     raise ValueError(
                         f"Invalid value type for '{self.type.value}': "
                         f"expected tuple, got {type(self.value).__name__}"
                     )
-                # Validate tuple elements are strings
+                # Validate tuple elements are integers (epoch) or None
                 for i, item in enumerate(self.value):
-                    if not isinstance(item, str):
+                    if item is not None and not isinstance(item, int):
                         raise ValueError(
-                            f"Invalid datetime tuple item at index {i}: expected str, got {type(item).__name__}"
+                            f"Invalid datetime tuple item at index {i}: expected int (epoch), got {type(item).__name__}"
                         )
                 # Validate tuple length (1 or 2 elements)
                 if len(self.value) > MAX_DATETIME_TUPLE_LENGTH:
@@ -458,6 +480,7 @@ class Filter(BaseModel):
                     FilterType.STRING: str,
                     FilterType.BOOLEAN: bool,
                     FilterType.LIST: list,
+                    FilterType.MULTISELECT: list,
                     FilterType.NUMBER: (int, float),
                 }
                 expected = expected_types.get(self.type)
@@ -467,8 +490,8 @@ class Filter(BaseModel):
                         f"expected {expected}, got {type(self.value).__name__}"
                     )
 
-            # For LIST type, validate all elements are strings
-            if self.type == FilterType.LIST:
+            # For LIST and MULTISELECT types, validate all elements are strings
+            if self.type in (FilterType.LIST, FilterType.MULTISELECT):
                 for i, item in enumerate(self.value):
                     if not isinstance(item, str):
                         raise ValueError(
@@ -495,21 +518,21 @@ class Filter(BaseModel):
             return self.value
         return [self.value] if self.value is not None else []
 
-    def get_value(self, default: FilterValue) -> FilterValue:
+    def get_value(self, default: Optional[FilterValue] = None) -> FilterValue:
         """
-        Get filter value.
+        Get filter value (raw).
 
-        For datetime filters, returns normalized tuple (start, end) based on operator:
-        - IS_AFTER: (start_date, None) - start has value, end is None
-        - IS_BEFORE: (None, start_date) - start is None, end has value
-        - IS_BETWEEN: (start_date, end_date) - both have values
+        For datetime filters, returns normalized tuple of epoch timestamps based on operator:
+        - IS_AFTER: (start_epoch, None) - start has value, end is None
+        - IS_BEFORE: (None, start_epoch) - start is None, end has value
+        - IS_BETWEEN: (start_epoch, end_epoch) - both have values
 
         Args:
-            default: Default value to return if value is None or empty
+            default: Default value to return if value is None or empty (default: None)
 
         Returns:
             Filter value, or default if value is empty/None
-            For datetime filters: tuple[str | None, str | None]
+            For datetime filters: tuple[int | None, int | None] (epoch timestamps)
         """
         if self.is_empty():
             return default
@@ -517,18 +540,18 @@ class Filter(BaseModel):
         # Normalize datetime values based on operator
         if self.type == FilterType.DATETIME and isinstance(self.value, tuple):
             operator = self.get_operator()
-            start_date = self.value[0] if len(self.value) > 0 else None
-            end_date = self.value[1] if len(self.value) > 1 else None
+            start_epoch = self.value[0] if len(self.value) > 0 else None
+            end_epoch = self.value[1] if len(self.value) > 1 else None
 
             if operator == DatetimeOperator.IS_AFTER:
-                # IS_AFTER: (start_date, None)
-                return (start_date, None)
+                # IS_AFTER: (start_epoch, None)
+                return (start_epoch, None)
             elif operator == DatetimeOperator.IS_BEFORE:
-                # IS_BEFORE: (None, start_date) - the start_date becomes the "before" value
-                return (None, start_date)
+                # IS_BEFORE: (None, start_epoch) - the start_epoch becomes the "before" value
+                return (None, start_epoch)
             elif operator == DatetimeOperator.IS_BETWEEN:
-                # IS_BETWEEN: (start_date, end_date)
-                return (start_date, end_date)
+                # IS_BETWEEN: (start_epoch, end_epoch)
+                return (start_epoch, end_epoch)
             else:
                 # For other operators, return as-is
                 return self.value
@@ -544,12 +567,12 @@ class Filter(BaseModel):
         """
         return self.operator
 
-    def get_datetime_start(self) -> Optional[str]:
+    def get_datetime_start(self) -> Optional[int]:
         """
-        Get start date from datetime filter value.
+        Get start epoch from datetime filter value.
 
         Returns:
-            Start date string, or None if not a datetime filter or value is empty
+            Start epoch timestamp (int), or None if not a datetime filter or value is empty
         """
         if self.type != FilterType.DATETIME or self.is_empty():
             return None
@@ -557,18 +580,56 @@ class Filter(BaseModel):
             return self.value[0]
         return None
 
-    def get_datetime_end(self) -> Optional[str]:
+    def get_datetime_end(self) -> Optional[int]:
         """
-        Get end date from datetime filter value.
+        Get end epoch from datetime filter value.
 
         Returns:
-            End date string, or None if not a datetime filter, value is empty, or no end date
+            End epoch timestamp (int), or None if not a datetime filter, value is empty, or no end date
         """
         if self.type != FilterType.DATETIME or self.is_empty():
             return None
         if isinstance(self.value, tuple) and len(self.value) > 1:
             return self.value[1]
         return None
+
+    @staticmethod
+    def _epoch_to_iso(epoch: Optional[int]) -> Optional[str]:
+        """Convert epoch timestamp to ISO format string (without seconds)."""
+        if epoch is None:
+            return None
+        dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M")
+
+    def get_datetime_iso(self) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Get datetime filter value as ISO format strings.
+
+        Returns normalized tuple based on operator:
+        - IS_AFTER: (start_iso, None)
+        - IS_BEFORE: (None, end_iso)
+        - IS_BETWEEN: (start_iso, end_iso)
+        - Other operators (LAST_X_DAYS): (start_iso, end_iso) as stored
+
+        Returns:
+            Tuple of (start_iso, end_iso) where each is an ISO format string or None.
+            Returns (None, None) if not a datetime filter or value is empty.
+        """
+        if self.type != FilterType.DATETIME or self.is_empty():
+            return (None, None)
+
+        operator = self.get_operator()
+        start_epoch = self.value[0] if len(self.value) > 0 else None
+        end_epoch = self.value[1] if len(self.value) > 1 else None
+
+        if operator == DatetimeOperator.IS_AFTER:
+            return (self._epoch_to_iso(start_epoch), None)
+        elif operator == DatetimeOperator.IS_BEFORE:
+            return (None, self._epoch_to_iso(start_epoch))
+        elif operator == DatetimeOperator.IS_BETWEEN:
+            return (self._epoch_to_iso(start_epoch), self._epoch_to_iso(end_epoch))
+        else:
+            return (self._epoch_to_iso(start_epoch), self._epoch_to_iso(end_epoch))
 
     @property
     def operator_value(self) -> str:
@@ -602,7 +663,7 @@ class FilterCollection(BaseModel):
         return None
 
     def get_value(
-        self, key: Union[str, Enum], default: FilterValue = None
+        self, key: Union[str, Enum], default: Optional[FilterValue] = None
     ) -> FilterValue:
         """
         Get filter value.
@@ -623,7 +684,7 @@ class FilterCollection(BaseModel):
             return default
         return f.value
 
-    def is_enabled(self, key: Union[str, Enum], default: bool = True) -> bool:
+    def is_enabled(self, key: Union[str, Enum], default: Optional[bool] = True) -> bool:
         """
         Check if boolean filter is enabled.
 

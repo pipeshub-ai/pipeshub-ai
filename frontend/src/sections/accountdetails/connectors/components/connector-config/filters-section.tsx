@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Paper,
   Box,
@@ -57,6 +57,46 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
   const [addMenuAnchor, setAddMenuAnchor] = useState<{ [key: string]: HTMLElement | null }>({});
   const [expandedAccordions, setExpandedAccordions] = useState<{ [key: string]: boolean }>({});
   const [autocompleteOpen, setAutocompleteOpen] = useState<{ [key: string]: boolean }>({});
+
+  // Initialize indexing filters with default values on mount
+  useEffect(() => {
+    if (!connectorConfig) return;
+
+    const indexingSchema = connectorConfig.config.filters?.indexing?.schema;
+    if (!indexingSchema?.fields) return;
+
+    // Initialize each indexing filter field with its default value if not already set
+    indexingSchema.fields.forEach((field) => {
+      const existingValue = formData[field.name];
+      
+      // Only initialize if not already set in formData
+      if (existingValue === undefined || existingValue === null) {
+        let defaultValue: FilterValue;
+        if (field.defaultValue !== undefined) {
+          defaultValue = field.defaultValue;
+        } else if (field.filterType === 'boolean') {
+          defaultValue = true;
+        } else if (field.filterType === 'list' || field.filterType === 'multiselect') {
+          defaultValue = [];
+        } else if (field.filterType === 'datetime') {
+          defaultValue = { start: '', end: '' };
+        } else {
+          defaultValue = '';
+        }
+        
+        const defaultOperator = field.defaultOperator || 
+          (field.filterType === 'boolean' ? 'equals' : '');
+
+        onFieldChange('filters', field.name, {
+          operator: defaultOperator,
+          value: defaultValue,
+          type: field.filterType,
+        });
+      }
+    });
+  // Only run once when connectorConfig is first available
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectorConfig?.name]);
 
   if (!connectorConfig) return null;
 
@@ -121,7 +161,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
     if (value === undefined) {
       if (field.defaultValue !== undefined) {
         value = field.defaultValue;
-      } else if (field.filterType === 'list') {
+      } else if (field.filterType === 'list' || field.filterType === 'multiselect') {
         value = [];
       } else if (field.filterType === 'datetime') {
         value = { start: '', end: '' };
@@ -172,7 +212,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         const currentValue = getFilterValue(fieldName, schema);
         newValue = normalizeDatetimeValueForDisplay(currentValue.value, operator);
       }
-    } else if (field.filterType === 'list') {
+    } else if (field.filterType === 'list' || field.filterType === 'multiselect') {
       newValue = [];
     } else {
       const currentValue = getFilterValue(fieldName, schema);
@@ -206,6 +246,21 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
       onFieldChange('filters', fieldName, { 
         operator, 
         value, 
+        type: field.filterType 
+      });
+      return;
+    }
+
+    // For number filters, convert string to number
+    if (field.filterType === 'number') {
+      let numericValue: number | null = null;
+      if (value !== '' && value !== null && value !== undefined) {
+        const parsed = parseFloat(String(value));
+        numericValue = Number.isNaN(parsed) ? null : parsed;
+      }
+      onFieldChange('filters', fieldName, { 
+        ...currentValue, 
+        value: numericValue, 
         type: field.filterType 
       });
       return;
@@ -246,6 +301,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
     
     switch (field.filterType) {
       case 'list':
+      case 'multiselect':
         return [];
       case 'datetime':
         return { start: '', end: '' };
@@ -407,6 +463,100 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         placeholder: field.description || `Enter ${field.displayName.toLowerCase()}`,
         description: hasValues ? '' : 'Enter a value and press Enter to add. Values are added as tags.',
         defaultValue: [],
+        validation: {},
+        isSecret: false,
+      };
+
+      return (
+        <Box key={field.filterId || field.name}>
+          <Box sx={{ mb: 0 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 600,
+                  fontSize: '0.8125rem',
+                  color: theme.palette.text.primary,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                }}
+              >
+                {field.displayName}
+                {field.required && (
+                  <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.8125rem' }}>
+                    *
+                  </Typography>
+                )}
+              </Typography>
+              {showRemove && (
+                <IconButton
+                  size="small"
+                  onClick={() => handleRemoveFilter(field.name)}
+                  sx={{
+                    p: 0.5,
+                    color: theme.palette.error.main,
+                    bgcolor: alpha(theme.palette.error.main, 0.08),
+                    '&:hover': {
+                      bgcolor: alpha(theme.palette.error.main, 0.15),
+                      color: theme.palette.error.main,
+                    },
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  <Iconify icon={removeIcon} width={16} />
+                </IconButton>
+              )}
+            </Box>
+            <Grid container spacing={1.5}>
+              <Grid item xs={12} sm={4}>
+                <FieldRenderer
+                  field={createOperatorField()}
+                  value={getOperatorValue()}
+                  onChange={handleOperatorFieldChange}
+                  error={undefined}
+                />
+              </Grid>
+              <Grid item xs={12} sm={8}>
+                <FieldRenderer
+                  field={valueField}
+                  value={Array.isArray(filterValue.value) ? filterValue.value : []}
+                  onChange={(value) => handleValueChange(field.name, value, schema)}
+                  error={error}
+                />
+              </Grid>
+            </Grid>
+            {field.description && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  display: 'block',
+                  mt: 0.75,
+                  ml: 0.5,
+                  fontSize: '0.75rem',
+                  lineHeight: 1.4,
+                }}
+              >
+                {field.description}
+              </Typography>
+            )}
+          </Box>
+        </Box>
+      );
+    }
+
+    if (field.filterType === 'multiselect') {
+      // Multiselect: dropdown with predefined options from field.options
+      const valueField = {
+        name: `${field.name}_value`,
+        displayName: field.displayName,
+        fieldType: 'MULTISELECT' as const,
+        required: field.required,
+        placeholder: field.description || `Select ${field.displayName.toLowerCase()}`,
+        description: '',
+        defaultValue: [],
+        options: field.options || [],
         validation: {},
         isSecret: false,
       };
@@ -862,6 +1012,197 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
             }
           />
         </Grid>
+      );
+    }
+
+    // Handle string (text) type filters
+    if (field.filterType === 'text' || field.filterType === 'string') {
+      const textValue = typeof filterValue.value === 'string' ? filterValue.value : '';
+      const valueField = {
+        name: `${field.name}_value`,
+        displayName: field.displayName,
+        fieldType: 'TEXT' as const,
+        required: field.required,
+        placeholder: field.description || `Enter ${field.displayName.toLowerCase()}`,
+        description: '',
+        defaultValue: '',
+        validation: {},
+        isSecret: false,
+      };
+
+      return (
+        <Box key={field.filterId || field.name}>
+          <Box sx={{ mb: 0 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 600,
+                  fontSize: '0.8125rem',
+                  color: theme.palette.text.primary,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                }}
+              >
+                {field.displayName}
+                {field.required && (
+                  <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.8125rem' }}>
+                    *
+                  </Typography>
+                )}
+              </Typography>
+              {showRemove && (
+                <IconButton
+                  size="small"
+                  onClick={() => handleRemoveFilter(field.name)}
+                  sx={{
+                    p: 0.5,
+                    color: theme.palette.error.main,
+                    bgcolor: alpha(theme.palette.error.main, 0.08),
+                    '&:hover': {
+                      bgcolor: alpha(theme.palette.error.main, 0.15),
+                      color: theme.palette.error.main,
+                    },
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  <Iconify icon={removeIcon} width={16} />
+                </IconButton>
+              )}
+            </Box>
+            <Grid container spacing={1.5}>
+              <Grid item xs={12} sm={4}>
+                <FieldRenderer
+                  field={createOperatorField()}
+                  value={getOperatorValue()}
+                  onChange={handleOperatorFieldChange}
+                  error={undefined}
+                />
+              </Grid>
+              <Grid item xs={12} sm={8}>
+                <FieldRenderer
+                  field={valueField}
+                  value={textValue}
+                  onChange={(value) => handleValueChange(field.name, value, schema)}
+                  error={error}
+                />
+              </Grid>
+            </Grid>
+            {field.description && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  display: 'block',
+                  mt: 0.75,
+                  ml: 0.5,
+                  fontSize: '0.75rem',
+                  lineHeight: 1.4,
+                }}
+              >
+                {field.description}
+              </Typography>
+            )}
+          </Box>
+        </Box>
+      );
+    }
+
+    // Handle number type filters
+    if (field.filterType === 'number') {
+      // Handle both number and string values (input fields return strings)
+      const numberValue = filterValue.value !== null && filterValue.value !== undefined && filterValue.value !== '' 
+        ? filterValue.value 
+        : '';
+      const valueField = {
+        name: `${field.name}_value`,
+        displayName: field.displayName,
+        fieldType: 'NUMBER' as const,
+        required: field.required,
+        placeholder: field.description || `Enter ${field.displayName.toLowerCase()}`,
+        description: '',
+        defaultValue: '',
+        validation: {},
+        isSecret: false,
+      };
+
+      return (
+        <Box key={field.filterId || field.name}>
+          <Box sx={{ mb: 0 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 600,
+                  fontSize: '0.8125rem',
+                  color: theme.palette.text.primary,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                }}
+              >
+                {field.displayName}
+                {field.required && (
+                  <Typography component="span" sx={{ color: theme.palette.error.main, fontSize: '0.8125rem' }}>
+                    *
+                  </Typography>
+                )}
+              </Typography>
+              {showRemove && (
+                <IconButton
+                  size="small"
+                  onClick={() => handleRemoveFilter(field.name)}
+                  sx={{
+                    p: 0.5,
+                    color: theme.palette.error.main,
+                    bgcolor: alpha(theme.palette.error.main, 0.08),
+                    '&:hover': {
+                      bgcolor: alpha(theme.palette.error.main, 0.15),
+                      color: theme.palette.error.main,
+                    },
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  <Iconify icon={removeIcon} width={16} />
+                </IconButton>
+              )}
+            </Box>
+            <Grid container spacing={1.5}>
+              <Grid item xs={12} sm={4}>
+                <FieldRenderer
+                  field={createOperatorField()}
+                  value={getOperatorValue()}
+                  onChange={handleOperatorFieldChange}
+                  error={undefined}
+                />
+              </Grid>
+              <Grid item xs={12} sm={8}>
+                <FieldRenderer
+                  field={valueField}
+                  value={numberValue}
+                  onChange={(value) => handleValueChange(field.name, value, schema)}
+                  error={error}
+                />
+              </Grid>
+            </Grid>
+            {field.description && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  display: 'block',
+                  mt: 0.75,
+                  ml: 0.5,
+                  fontSize: '0.75rem',
+                  lineHeight: 1.4,
+                }}
+              >
+                {field.description}
+              </Typography>
+            )}
+          </Box>
+        </Box>
       );
     }
 
