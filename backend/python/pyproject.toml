@@ -63,7 +63,7 @@ dependencies = [
     "langchain-together==0.3.0",
     "langchain-voyageai==0.1.6",
     "langchain-xai==0.2.4",
-    "langfuse",
+    "langfuse==3.10.5",
     "langchain==0.3.26",
     "langgraph==0.3.34",
     "linkedin-api-client>=0.3.0",
