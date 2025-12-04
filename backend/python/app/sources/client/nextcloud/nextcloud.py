@@ -6,9 +6,9 @@ from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
+
 class NextcloudRESTClientViaUsernamePassword(HTTPClient):
     """Nextcloud REST client via Username and App Password (Basic Auth).
-    
     Args:
         base_url: The URL of the Nextcloud instance
         username: The username
@@ -17,8 +17,8 @@ class NextcloudRESTClientViaUsernamePassword(HTTPClient):
 
     def __init__(self, base_url: str, username: str, password: str) -> None:
         # HTTPClient typically handles "Basic" type by base64 encoding "username:password"
-        # We pass the raw credentials combined if the parent expects a token string, 
-        # or we rely on the parent's handling of user/pass. 
+        # We pass the raw credentials combined if the parent expects a token string,
+        # or we rely on the parent's handling of user/pass.
         # Assuming standard usage:
         token = f"{username}:{password}"
         super().__init__(token, token_type="Basic")
@@ -30,7 +30,6 @@ class NextcloudRESTClientViaUsernamePassword(HTTPClient):
 
 class NextcloudRESTClientViaToken(HTTPClient):
     """Nextcloud REST client via Bearer Token (OIDC/OAuth2).
-    
     Args:
         base_url: The URL of the Nextcloud instance
         token: The Bearer token
@@ -109,7 +108,6 @@ class NextcloudClient(IClient):
         config_service: ConfigurationService,
     ) -> "NextcloudClient":
         """Build NextcloudClient using configuration service (ETCD/Env)
-        
         Args:
             logger: Logger instance
             config_service: Configuration service instance
@@ -121,13 +119,13 @@ class NextcloudClient(IClient):
             config = await cls._get_connector_config(logger, config_service)
             if not config:
                 raise ValueError("Failed to get Nextcloud connector configuration")
-            
+
             auth_config = config.get("auth", {}) or {}
             if not auth_config:
                 raise ValueError("Auth configuration not found in Nextcloud connector configuration")
 
             credentials_config = config.get("credentials", {}) or {}
-            
+
             # 2. Extract Base URL (Mandatory for Nextcloud)
             # Nextcloud is self-hosted, so URL is not dynamic/discovered like Confluence Cloud
             base_url = credentials_config.get("baseUrl") or config.get("baseUrl")
@@ -142,10 +140,10 @@ class NextcloudClient(IClient):
                 # Standard App Password / User flow
                 username = auth_config.get("username")
                 password = auth_config.get("password")
-                
+
                 if not username or not password:
                     raise ValueError("Username and Password required for BASIC_AUTH type")
-                
+
                 client = NextcloudRESTClientViaUsernamePassword(base_url, username, password)
 
             elif auth_type == "BEARER_TOKEN":
@@ -153,9 +151,9 @@ class NextcloudClient(IClient):
                 token = auth_config.get("bearerToken")
                 if not token:
                     raise ValueError("Token required for BEARER_TOKEN auth type")
-                
+
                 client = NextcloudRESTClientViaToken(base_url, token)
-            
+
             else:
                 raise ValueError(f"Invalid auth type for Nextcloud: {auth_type}")
 
