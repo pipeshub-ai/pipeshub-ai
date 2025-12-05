@@ -239,26 +239,29 @@ class BlobStorage(Transformer):
                         if not document_id:
                             self.logger.error("❌ No document ID in placeholder response")
                             raise Exception("No document ID in placeholder response")
-
+                        
                         self.logger.info("📄 Created placeholder with ID: %s", document_id)
 
-                        # Step 2: Get signed URL
+                        # Step 2: Get signed URL (only send metadata, not the full record)
                         self.logger.info("🔑 Getting signed URL for document: %s", document_id)
-                        upload_data = {
-                            "record": record,
+                        signed_url_request = {
                             "virtualRecordId": virtual_record_id
                         }
 
                         upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
-                        upload_result = await self._get_signed_url(session, upload_url, upload_data, headers)
+                        upload_result = await self._get_signed_url(session, upload_url, signed_url_request, headers)
 
                         signed_url = upload_result.get('signedUrl')
                         if not signed_url:
                             self.logger.error("❌ No signed URL in response for document: %s", document_id)
                             raise Exception("No signed URL in response for document")
 
-                        # Step 3: Upload to signed URL
+                        # Step 3: Upload to signed URL (now send the full record data)
                         self.logger.info("📤 Uploading record to storage for document: %s", document_id)
+                        upload_data = {
+                            "record": record,
+                            "virtualRecordId": virtual_record_id
+                        }
                         await self._upload_to_signed_url(session, signed_url, upload_data)
 
                         self.logger.info("✅ Successfully completed record storage process for document: %s", document_id)

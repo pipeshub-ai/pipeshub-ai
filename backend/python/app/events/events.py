@@ -54,21 +54,9 @@ class EventProcessor:
             sock_read=1200,  # 20 minutes per chunk read
         )
 
-        # Generate JWT token for authentication if config_service is available
+        # Signed URLs are self-authenticating and don't need additional headers
+        # Adding Authorization headers can cause 400 errors
         headers = {}
-        if self.config_service:
-            try:
-                org_id = doc.get("orgId")
-                if org_id:
-                    jwt_payload = {
-                        "orgId": org_id,
-                        "scopes": ["connector:signedUrl"],
-                    }
-                    jwt_token = await generate_jwt(self.config_service, jwt_payload)
-                    headers["Authorization"] = f"Bearer {jwt_token}"
-                    self.logger.debug(f"Generated JWT token for downloading signed URL for record {record_id}")
-            except Exception as e:
-                self.logger.warning(f"Failed to generate JWT token for signed URL download: {e}")
 
         for attempt in range(max_retries):
             delay = base_delay * (2**attempt)  # Exponential backoff
