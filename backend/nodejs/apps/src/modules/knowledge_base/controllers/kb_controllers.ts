@@ -904,7 +904,7 @@ export const updateRecord =
 
       // Check if there's a file in the request
       const hasFileBuffer = req.body.fileBuffer && req.body.fileBuffer.buffer;
-      let originalname, mimetype, size, extension, lastModified, sha256Checksum;
+      let originalname, mimetype, size, extension, lastModified, sha256Hash;
 
       if (hasFileBuffer) {
         ({ originalname, mimetype, size, lastModified } = req.body.fileBuffer);
@@ -917,10 +917,9 @@ export const updateRecord =
           : null;
         // Calculate SHA-256 checksum for security
         const buffer = req.body.fileBuffer.buffer;
-        sha256Checksum = crypto.createHash('sha256').update(buffer).digest('hex');
+        sha256Hash = crypto.createHash('sha256').update(buffer).digest('hex');
       }
       
-
       if (!recordName) {
         recordName = originalname;
         logger.info('No custom name provided');
@@ -940,7 +939,7 @@ export const updateRecord =
           size,
           extension,
           lastModified,
-          sha256Checksum,
+          sha256Hash,
         };
 
         // Get filename without extension to use as record name
