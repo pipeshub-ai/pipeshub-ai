@@ -161,6 +161,12 @@ export const modelService = {
     console.log("isMultimodal", isMultimodal);
     console.log("cleanConfig", cleanConfig);
     const provider = providerType || modelType || _provider;
+    
+    // Handle "other" provider case for Bedrock: use customProvider value
+    if (provider === 'bedrock' && cleanConfig.provider === 'other' && cleanConfig.customProvider) {
+      cleanConfig.provider = cleanConfig.customProvider;
+      delete cleanConfig.customProvider;
+    }
 
     // Update or create model
     const models = await this.getAllModels('llm');
@@ -189,6 +195,12 @@ export const modelService = {
   async updateEmbeddingConfig(config: any): Promise<any> {
     const { modelType, providerType, _provider, isMultimodal, ...cleanConfig } = config;
     const provider = providerType || modelType || _provider;
+    
+    // Handle "other" provider case for Bedrock: use customProvider value
+    if (provider === 'bedrock' && cleanConfig.provider === 'other' && cleanConfig.customProvider) {
+      cleanConfig.provider = cleanConfig.customProvider;
+      delete cleanConfig.customProvider;
+    }
 
     if (provider === 'default') {
       // Handle default embedding case - just return success

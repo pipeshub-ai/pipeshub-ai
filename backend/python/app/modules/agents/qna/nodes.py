@@ -13,7 +13,7 @@ from app.modules.qna.agent_prompt import (
     detect_response_mode,
 )
 from app.utils.citations import fix_json_string, process_citations
-from app.utils.streaming import stream_llm_response
+from app.utils.streaming import bind_tools_for_llm, stream_llm_response
 
 # Constants
 RESULT_PREVIEW_LENGTH = 150
@@ -1010,7 +1010,7 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         if tools:
             logger.debug(f"Agent has {len(tools)} tools available")
             try:
-                llm_with_tools = llm.bind_tools(tools)
+                llm_with_tools = bind_tools_for_llm(llm, tools)
             except (NotImplementedError, AttributeError) as e:
                 logger.warning(f"LLM does not support tool binding: {e}")
                 llm_with_tools = llm
