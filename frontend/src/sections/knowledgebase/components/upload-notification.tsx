@@ -205,10 +205,14 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                       fontSize: '0.8125rem',
                       color: isCompleted && !hasFailures
                         ? theme.palette.success.main
+                        : isCompleted && hasFailures && totalSuccessful === 0
+                        ? theme.palette.error.main
                         : 'text.primary',
                     }}
                   >
-                    {isCompleted && hasFailures
+                    {isCompleted && hasFailures && totalSuccessful === 0
+                      ? `Upload failed`
+                      : isCompleted && hasFailures
                       ? `${totalSuccessful} succeeded`
                       : isCompleted
                       ? `${totalFiles} upload${totalFiles > 1 ? 's' : ''} complete`
@@ -228,7 +232,7 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                             fontSize: '0.8125rem',
                           }}
                         >
-                          ,
+                          {totalSuccessful > 0 ? ',' : ''}
                         </Typography>
                         <Typography
                           component="span"
@@ -238,7 +242,7 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                             fontSize: '0.8125rem',
                           }}
                         >
-                          {totalFailed} failed
+                          {totalFailed} {totalSuccessful === 0 ? 'file' : ''}{totalFailed > 1 ? 's' : ''} failed
                         </Typography>
                       </>
                     )}

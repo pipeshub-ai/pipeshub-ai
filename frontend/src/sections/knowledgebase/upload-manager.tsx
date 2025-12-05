@@ -406,7 +406,21 @@ export default function UploadManager({
         }
       });
 
-      const successMessage = `Successfully uploaded ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
+      // Create success message based on how many files succeeded vs failed
+      const successfulCount = totalFiles - allFailedFiles.length;
+      let successMessage: string;
+      
+      if (allFailedFiles.length === 0) {
+        // All files succeeded
+        successMessage = `Successfully uploaded ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
+      } else if (successfulCount === 0) {
+        // All files failed
+        successMessage = `Failed to upload ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
+      } else {
+        // Some succeeded, some failed
+        successMessage = `Uploaded ${successfulCount} file${successfulCount > 1 ? 's' : ''}. ${allFailedFiles.length} file${allFailedFiles.length > 1 ? 's' : ''} failed.`;
+      }
+      
       await onUploadSuccess(successMessage, allRecords, allFailedFiles);
       handleClose();
     } catch (error: any) {

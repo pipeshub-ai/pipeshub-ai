@@ -871,11 +871,15 @@ export default function KnowledgeBaseComponent() {
             const upload = newMap.get(uploadKey);
             
             if (upload) {
+              // If ALL files failed (no successful records), mark as completed immediately
+              // If some succeeded, mark as processing (waiting for backend processing)
+              const allFilesFailed = !records || records.length === 0;
+              
               const updatedUpload = {
                 ...upload,
                 files: allFileNames,
                 recordIds: records ? records.map((r) => r._key) : [],
-                status: 'processing' as const,
+                status: allFilesFailed ? 'completed' as const : 'processing' as const,
                 failedFiles: failedFilesWithIds,
                 hasFailures: true,
               };
@@ -884,6 +888,16 @@ export default function KnowledgeBaseComponent() {
             
             return newMap;
           });
+          
+          // Show error snackbar for failed files
+          const failedCount = failedFiles.length;
+          if (!records || records.length === 0) {
+            // All files failed
+            setError(`Failed to upload ${failedCount} file${failedCount > 1 ? 's' : ''}`);
+          } else {
+            // Partial failure - some succeeded, some failed
+            setError(`${failedCount} file${failedCount > 1 ? 's' : ''} failed to upload`);
+          }
         }
 
         // Optimistic UI update: Add records immediately if provided
