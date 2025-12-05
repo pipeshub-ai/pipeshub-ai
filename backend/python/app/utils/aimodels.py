@@ -285,7 +285,45 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
         from langchain_aws import ChatBedrock
-        provider_in_bedrock = configuration.get("provider", LLMProvider.ANTHROPIC.value)
+
+        # Determine the actual provider based on model name if not explicitly set
+        provider_in_bedrock = configuration.get("provider")
+
+        # Handle custom provider (when user selects "other")
+        if provider_in_bedrock == "other":
+            custom_provider = configuration.get("customProvider")
+            if custom_provider:
+                provider_in_bedrock = custom_provider
+                logger.info(f"Using custom provider: {provider_in_bedrock}")
+            else:
+                # Fall back to auto-detection if custom provider is not provided
+                provider_in_bedrock = None
+
+        # Auto-detect provider from model name if not explicitly set
+        if not provider_in_bedrock:
+            if "mistral" in model_name.lower():
+                provider_in_bedrock = LLMProvider.MISTRAL.value
+            elif "claude" in model_name.lower() or "anthropic" in model_name.lower():
+                provider_in_bedrock = LLMProvider.ANTHROPIC.value
+            elif "llama" in model_name.lower() or "meta" in model_name.lower():
+                provider_in_bedrock = "meta"
+            elif "titan" in model_name.lower() or "amazon" in model_name.lower():
+                provider_in_bedrock = "amazon"
+            elif "cohere" in model_name.lower():
+                provider_in_bedrock = "cohere"
+            elif "ai21" in model_name.lower() or "jamba" in model_name.lower():
+                provider_in_bedrock = "ai21"
+            elif "qwen" in model_name.lower():
+                provider_in_bedrock = "qwen"
+            else:
+                # Default to anthropic for backwards compatibility
+                provider_in_bedrock = LLMProvider.ANTHROPIC.value
+
+        logger.info(f"Provider in Bedrock: {provider_in_bedrock} for model: {model_name}")
+
+        # Set model_kwargs based on the provider
+        # For Anthropic models in Bedrock, we need to pass max_tokens in model_kwargs
+        # but NOT anthropic_version (which causes the validation error)
         if provider_in_bedrock == LLMProvider.ANTHROPIC.value:
             max_tokens = _get_anthropic_max_tokens(model_name)
             model_kwargs = {
@@ -294,6 +332,9 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         else:
             model_kwargs = {}
 
+        # Create the ChatBedrock instance
+        # Note: Do NOT pass anthropic_version or any Anthropic-specific client parameters
+        # AWS Bedrock handles the underlying model interaction differently
         return ChatBedrock(
                 model_id=model_name,
                 temperature=0.2,
@@ -301,7 +342,9 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 aws_secret_access_key=configuration["awsAccessSecretKey"],
                 region_name=configuration["region"],
                 provider=provider_in_bedrock,
-                model_kwargs=model_kwargs
+                model_kwargs=model_kwargs,
+                # Explicitly disable any client-specific parameters that might be auto-added
+                beta_use_converse_api=True,  # Use the Converse API which is more standardized
             )
     elif provider == LLMProvider.AZURE_AI.value:
         from langchain_anthropic import ChatAnthropic

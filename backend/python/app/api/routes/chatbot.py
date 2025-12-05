@@ -23,7 +23,11 @@ from app.utils.citations import process_citations
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
-from app.utils.streaming import create_sse_event, stream_llm_response_with_tools
+from app.utils.streaming import (
+    bind_tools_for_llm,
+    create_sse_event,
+    stream_llm_response_with_tools,
+)
 
 DEFAULT_CONTEXT_LENGTH = 128000
 
@@ -370,7 +374,7 @@ async def process_chat_query(
 async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4) -> AIMessage:
     """Handle tool calls for non-streaming responses with reflection for invalid tool calls"""
 
-    llm_with_tools = llm.bind_tools(tools)
+    llm_with_tools = bind_tools_for_llm(llm, tools)
 
     # Initial call with provider-level error handling
     try:

@@ -158,10 +158,16 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'region', required: true },
       { name: 'model', required: true, placeholder: 'model id/arn' },
       { name: 'provider', required: true, defaultValue: 'anthropic' },
+      { name: 'customProvider', required: false },
       { name: 'contextLength', required: false, defaultValue: undefined },
       { name: 'isMultimodal', required: false, defaultValue: true },
       { name: 'isReasoning', required: false, defaultValue: false },
     ],
+    customFields: {
+      customProvider: {
+        placeholder: 'Only needed if you selected "Other" as provider',
+      },
+    },
   },
   {
     id: 'xai',
@@ -337,8 +343,14 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'region', required: true },
       { name: 'model', required: true, placeholder: 'Model ID/ARN' },
       { name: 'provider', required: true, defaultValue: 'cohere' },
+      { name: 'customProvider', required: false },
       { name: 'isMultimodal', required: false, defaultValue: false },
     ],
+    customFields: {
+      customProvider: {
+        placeholder: 'Only needed if you selected "Other" as provider',
+      },
+    },
   },
   {
     id: 'jinaAI',

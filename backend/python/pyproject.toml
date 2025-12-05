@@ -47,7 +47,7 @@ dependencies = [
     "Jinja2==3.1.6",
     "jsonschema==4.23.0",
     "langchain-anthropic==0.3.17",
-    "langchain-aws==0.2.18",
+    "langchain-aws==0.2.35",
     "langchain-cohere==0.4.5",
     "langchain-community==0.3.27",
     "langchain-experimental==0.3.4",

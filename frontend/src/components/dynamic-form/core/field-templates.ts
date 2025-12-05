@@ -419,8 +419,30 @@ export const FIELD_TEMPLATES = {
   provider: {
     name: 'provider',
     label: 'Provider',
+    type: 'select' as const,
     placeholder: 'anthropic',
     icon: serverIcon,
+    required: true,
+    validation: z.string().min(1, 'Provider is required'),
+    options: [
+      { value: 'anthropic', label: 'Anthropic (Claude)' },
+      { value: 'mistral', label: 'Mistral' },
+      { value: 'qwen', label: 'Qwen' },
+      { value: 'deepseek', label: 'DeepSeek' },
+      { value: 'cohere', label: 'Cohere' },
+      { value: 'amazon', label: 'Amazon (Titan)' },
+      { value: 'ai21', label: 'AI21 Labs' },
+      { value: 'other', label: 'Other (Custom)' },
+    ],
+  },
+
+  customProvider: {
+    name: 'customProvider',
+    label: 'Custom Provider Name',
+    placeholder: 'e.g., custom-provider-name',
+    icon: serverIcon,
+    required: false,
+    validation: z.string().optional(),
   },
 } as const;
 
