@@ -85,7 +85,7 @@
     "apexcharts": "^3.52.0",
     "autosuggest-highlight": "^3.3.4",
     "aws-amplify": "^6.5.1",
-    "axios": "^1.7.4",
+    "axios": "^1.12.0",
     "dayjs": "^1.11.18",
     "docx-preview": "^0.3.5",
     "dompurify": "^3.2.5",
@@ -166,7 +166,7 @@
     "eslint-plugin-unused-imports": "^3.2.0",
     "prettier": "^3.3.3",
     "typescript": "^5.5.4",
-    "vite": "^6.3.6",
+    "vite": "^7.2.6",
     "vite-plugin-checker": "^0.7.2"
   }
 }
