@@ -173,7 +173,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                         )
                     else:
                         processed_value = encrypted_stored_value
-                    self.logger.debug("🔒 Processed value for key %s: %s", key, processed_value)
+
                     # Parse value if it's not already a dict (for unencrypted keys, it's already deserialized)
                     stored_value = json.loads(processed_value) if isinstance(processed_value, str) else processed_value
 

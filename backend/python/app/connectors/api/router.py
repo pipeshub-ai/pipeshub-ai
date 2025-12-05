@@ -2610,7 +2610,7 @@ async def get_oauth_authorization_url(
         # Generate authorization URL using OAuth provider
         # Add provider-specific parameters to ensure refresh_token is issued where applicable
         extra_params = {}
-        if app_name.upper() in ['DRIVE', 'GMAIL']:
+        if app_name.upper() in ['DRIVE', 'GMAIL', 'CALENDAR', 'MEET', 'FORMS', 'DOCS', 'SLIDES']:
             # Google requires these for refresh_token on repeated consents
             extra_params.update({
                 'access_type': 'offline',

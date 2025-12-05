@@ -28,14 +28,28 @@ class OneNote:
     def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
         """Helper method to run async operations in sync context"""
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're already in an async context, we need to use a thread pool
+            # Try to get or create an event loop for this thread
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in an async context - cannot use run_until_complete
+                # This shouldn't happen since tools are sync, but handle it
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(asyncio.run, coro)
                     return future.result()
-            else:
+            except RuntimeError:
+                # No running loop - we can safely use get_event_loop or create one
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_closed():
+                        # Loop is closed, create a new one
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                except RuntimeError:
+                    # No event loop at all - create a new one
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
                 return loop.run_until_complete(coro)
         except Exception as e:
             logger.error(f"Error running async operation: {e}")
