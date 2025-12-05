@@ -6,6 +6,7 @@ import searchIcon from '@iconify-icons/mdi/magnify';
 import databaseIcon from '@iconify-icons/mdi/database';
 import gridViewIcon from '@iconify-icons/mdi/view-grid-outline';
 import listViewIcon from '@iconify-icons/mdi/format-list-bulleted';
+import teamIcon from '@iconify-icons/mdi/account-group';
 import React, { memo, useRef, useMemo, useState, useEffect, useCallback } from 'react';
 
 import {
@@ -35,6 +36,7 @@ import { EditKnowledgeBaseDialog } from './dialogs/edit-dialogs';
 import { DeleteConfirmDialog } from './dialogs/delete-confim-dialog';
 import { GridView } from './dashboard-grid-view';
 import { ListView } from './dashboard-list-view';
+import TeamManagementSlider from './team-management-slider';
 
 interface DashboardProps {
   theme: any;
@@ -120,6 +122,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({
   const [itemToDelete, setItemToDelete] = useState<KnowledgeBase | null>(null);
   const [deleteDialog, setDeleteDialog] = useState(false);
   const [pageLoading, setPageLoading] = useState(false);
+  const [teamManagementOpen, setTeamManagementOpen] = useState(false);
 
   // Debounced search value
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
@@ -549,6 +552,29 @@ const DashboardComponent: React.FC<DashboardProps> = ({
 
             <Button
               variant="outlined"
+              startIcon={<Icon icon={teamIcon} fontSize={14} />}
+              onClick={() => setTeamManagementOpen(true)}
+              sx={{
+                height: 32,
+                px: 1.5,
+                borderRadius: 1,
+                fontSize: '0.8125rem',
+                fontWeight: 500,
+                textTransform: 'none',
+                borderColor: 'divider',
+                color: 'text.secondary',
+                '&:hover': {
+                  borderColor: 'action.active',
+                  backgroundColor: 'action.hover',
+                  color: 'text.primary',
+                },
+              }}
+            >
+              <Box sx={{ display: { xs: 'none', sm: 'inline' } }}>Teams</Box>
+            </Button>
+
+            <Button
+              variant="outlined"
               startIcon={<Icon icon={addIcon} fontSize={14} />}
               onClick={() => setCreateKBDialog(true)}
               sx={{
@@ -724,6 +750,11 @@ const DashboardComponent: React.FC<DashboardProps> = ({
           {success}
         </Alert>
       </Snackbar>
+
+      <TeamManagementSlider
+        open={teamManagementOpen}
+        onClose={() => setTeamManagementOpen(false)}
+      />
     </Box>
   );
 };

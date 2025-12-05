@@ -8107,16 +8107,44 @@ class BaseArangoService:
         user_id: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> Optional[str]:
-        """Validate user knowledge permission"""
+        """
+        Get user's permission on a KB.
+        Optimized: Single query checks both direct and team permissions.
+        First checks for direct USER permission, then checks via team membership.
+        For team-based access, returns the highest role from all common teams.
+        Role hierarchy: OWNER > WRITER > READER > COMMENTER
+
+        Recommended indexes:
+        - permission collection: [ "_from", "_to", "type" ] (persistent index)
+        - permission collection: [ "_to", "type" ] (persistent index)
+        """
         try:
             self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
             db = transaction if transaction else self.db
 
+            # Optimized: Single query that checks both direct and team permissions
             query = """
-            FOR perm IN @@permissions_collection
-                FILTER perm._from == CONCAT('users/', @user_id)
-                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
-                RETURN perm
+            LET user_from = CONCAT('users/', @user_id)
+            LET kb_to = CONCAT('recordGroups/', @kb_id)
+            LET role_priority = {
+                "OWNER": 4,
+                "WRITER": 3,
+                "READER": 2,
+                "COMMENTER": 1
+            }
+
+            // Check for direct user permission first (fastest path)
+            LET direct_perm = FIRST(
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == user_from
+                    FILTER perm._to == kb_to
+                    FILTER perm.type == "USER"
+                    RETURN perm.role
+            )
+
+            // If direct permission exists, return it immediately
+            FILTER direct_perm != null
+            RETURN direct_perm
             """
 
             cursor = db.aql.execute(
@@ -8128,36 +8156,61 @@ class BaseArangoService:
                 },
             )
 
-            permission = next(cursor, None)
+            direct_role = next(cursor, None)
+            if direct_role:
+                self.logger.info(f"✅ Found direct permission: user {user_id} has role '{direct_role}' on KB {kb_id}")
+                return direct_role
 
-            if permission:
-                role = permission.get("role")
-                self.logger.info(f"✅ Found permission: user {user_id} has role '{role}' on KB {kb_id}")
-                return role
-            else:
-                self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id}")
+            # If no direct permission, check via teams (optimized with single query)
+            team_query = """
+            LET user_from = CONCAT('users/', @user_id)
+            LET kb_to = CONCAT('recordGroups/', @kb_id)
+            LET role_priority = {
+                "OWNER": 4,
+                "WRITER": 3,
+                "READER": 2,
+                "COMMENTER": 1
+            }
 
-                # Debug: Let's see what permissions exist for this KB
-                debug_query = """
-                FOR perm IN @@permissions_collection
-                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+            // Get KB's teams and user's role in those teams in one optimized query
+            FOR kb_team_perm IN @@permissions_collection
+                FILTER kb_team_perm._to == kb_to
+                FILTER kb_team_perm.type == "TEAM"
+                LET team_id = SPLIT(kb_team_perm._from, '/')[1]
+
+                // Check if user is a member of this team (using index on _from, _to, type)
+                FOR user_team_perm IN @@permissions_collection
+                    FILTER user_team_perm._from == user_from
+                    FILTER user_team_perm._to == CONCAT('teams/', team_id)
+                    FILTER user_team_perm.type == "USER"
+
                     RETURN {
-                        from: perm._from,
-                        role: perm.role,
-                        type: perm.type
+                        role: user_team_perm.role,
+                        priority: role_priority[user_team_perm.role] || 0
                     }
-                """
-                debug_cursor = db.aql.execute(
-                    debug_query,
-                    bind_vars={
-                        "kb_id": kb_id,
-                        "@permissions_collection": CollectionNames.PERMISSION.value,
-                    },
-                )
-                existing_perms = list(debug_cursor)
-                self.logger.info(f"🔍 Debug - All permissions for KB {kb_id}: {existing_perms}")
+            """
 
-                return None
+            team_cursor = db.aql.execute(
+                team_query,
+                bind_vars={
+                    "kb_id": kb_id,
+                    "user_id": user_id,
+                    "@permissions_collection": CollectionNames.PERMISSION.value,
+                },
+            )
+
+            # Get all team roles and find the highest priority
+            team_roles = list(team_cursor)
+            if team_roles:
+                # Sort by priority and return the highest role
+                highest_role_data = max(team_roles, key=lambda x: x.get('priority', 0))
+                team_role = highest_role_data.get('role')
+                if team_role:
+                    self.logger.info(f"✅ Found team-based permission: user {user_id} has role '{team_role}' on KB {kb_id} via teams")
+                    return team_role
+
+            self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id} (neither direct nor via teams)")
+            return None
 
         except Exception as e:
             self.logger.error(f"❌ Failed to validate knowledge base permission for user {user_id}: {str(e)}")
@@ -8174,17 +8227,13 @@ class BaseArangoService:
             db = transaction if transaction else self.db
 
             #  Get the KB and folders
+            # First check user permissions (includes team-based access)
+            user_role = await self.get_user_kb_permission(kb_id, user_id, transaction=db)
+
             query = """
             FOR kb IN @@recordGroups_collection
                 FILTER kb._key == @kb_id
-                // Get the user's role for this KB
-                LET user_perm = FIRST(
-                    FOR perm IN @@permissions_collection
-                        FILTER perm._from == @user_from
-                        FILTER perm._to == kb._id
-                        RETURN perm
-                )
-                LET user_role = user_perm ? user_perm.role : null
+                LET user_role = @user_role
 
                 // Get folders
                 LET folders = (
@@ -8217,13 +8266,16 @@ class BaseArangoService:
             """
             cursor = db.aql.execute(query, bind_vars={
                 "kb_id": kb_id,
-                "user_from": f"users/{user_id}",
+                "user_role": user_role,  # Pass the role from get_user_kb_permission
                 "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
                 "@kb_to_folder_edges": CollectionNames.BELONGS_TO.value,
-                "@permissions_collection": CollectionNames.PERMISSION.value,
             })
             result = next(cursor, None)
             if result:
+                # If user has no permission (neither direct nor via teams), return None
+                if not user_role:
+                    self.logger.warning(f"⚠️ User {user_id} has no access to KB {kb_id}")
+                    return None
                 self.logger.info("✅ Knowledge base retrieved successfully")
                 return result
             else:
@@ -8275,7 +8327,11 @@ class BaseArangoService:
         sort_order: str = "asc",
         transaction: Optional[TransactionDatabase] = None,
     ) -> Tuple[List[Dict], int, Dict]:
-        """List knowledge bases with pagination, search, and filtering"""
+        """
+        List knowledge bases with pagination, search, and filtering.
+        Includes both direct user permissions and team-based permissions.
+        For team-based access, returns the highest role from all common teams.
+        """
         try:
             db = transaction if transaction else self.db
 
@@ -8286,11 +8342,12 @@ class BaseArangoService:
             if search:
                 filter_conditions.append("LIKE(LOWER(kb.groupName), LOWER(@search_term))")
 
-            # Permission filter
+            # Permission filter (will be applied after role resolution)
+            permission_filter = ""
             if permissions:
-                filter_conditions.append("perm.role IN @permissions")
+                permission_filter = "FILTER final_role IN @permissions"
 
-            # Build WHERE clause
+            # Build WHERE clause for KB filtering
             additional_filters = ""
             if filter_conditions:
                 additional_filters = "AND " + " AND ".join(filter_conditions)
@@ -8300,35 +8357,129 @@ class BaseArangoService:
                 "name": "kb.groupName",
                 "createdAtTimestamp": "kb.createdAtTimestamp",
                 "updatedAtTimestamp": "kb.updatedAtTimestamp",
-                "userRole": "perm.role"
+                "userRole": "final_role"
             }
             sort_field = sort_field_map.get(sort_by, "kb.groupName")
             sort_direction = sort_order.upper()
 
-            # Main query with pagination
+            # Role priority for resolving highest role
+            role_priority_map = {
+                "OWNER": 4,
+                "WRITER": 3,
+                "READER": 2,
+                "COMMENTER": 1
+            }
+
+            # Optimized main query: Reduced DOCUMENT() calls and improved folder fetching
+            # Recommended indexes:
+            # - permission collection: [ "_from", "type" ] (persistent index)
+            # - permission collection: [ "_to", "type" ] (persistent index)
+            # - permission collection: [ "_from", "_to", "type" ] (persistent index)
+            # - recordGroups collection: [ "orgId", "groupType", "connectorName" ] (persistent index)
+            # - belongs_to edges: [ "_to" ] (persistent index)
             main_query = f"""
-            FOR perm IN @@permissions_collection
-                FILTER perm._from == @user_from
-                LET kb = DOCUMENT(perm._to)
-                FILTER kb != null
-                FILTER kb.orgId == @org_id
-                FILTER kb.groupType == @kb_type
-                FILTER kb.connectorName == @kb_connector
-                {additional_filters}
-                // Get all the folders for this KB
-                LET folders = (
-                    FOR edge IN @@belongs_to_kb
-                        FILTER edge._to == kb._id
-                        LET folder = DOCUMENT(edge._from)
-                        FILTER folder != null && folder.isFile == false
+            // Direct user permissions - optimized with early filtering
+            LET direct_perms = (
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == @user_from
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "recordGroups/")
+                    LET kb = DOCUMENT(perm._to)
+                    FILTER kb != null
+                    FILTER kb.orgId == @org_id
+                    FILTER kb.groupType == @kb_type
+                    FILTER kb.connectorName == @kb_connector
+                    {additional_filters}
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb,
+                        role: perm.role,
+                        priority: @role_priority[perm.role] || 0,
+                        is_direct: true
+                    }}
+            )
+
+            // Team-based permissions - optimized with better join strategy
+            LET team_perms = (
+                // First, get all teams the user is a member of (one-time lookup)
+                LET user_teams = (
+                    FOR user_team_perm IN @@permissions_collection
+                        FILTER user_team_perm._from == @user_from
+                        FILTER user_team_perm.type == "USER"
+                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
                         RETURN {{
+                            team_id: SPLIT(user_team_perm._to, '/')[1],
+                            role: user_team_perm.role,
+                            priority: @role_priority[user_team_perm.role] || 0
+                        }}
+                )
+
+                // Now find KBs that have permissions for these teams
+                FOR team_info IN user_teams
+                    FOR kb_team_perm IN @@permissions_collection
+                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
+                        FILTER kb_team_perm.type == "TEAM"
+                        FILTER STARTS_WITH(kb_team_perm._to, "recordGroups/")
+                        LET kb = DOCUMENT(kb_team_perm._to)
+                        FILTER kb != null
+                        FILTER kb.orgId == @org_id
+                        FILTER kb.groupType == @kb_type
+                        FILTER kb.connectorName == @kb_connector
+                        {additional_filters}
+                        RETURN {{
+                            kb_id: kb._key,
+                            kb_doc: kb,
+                            role: team_info.role,
+                            priority: team_info.priority,
+                            is_direct: false
+                        }}
+            )
+
+            // Combine and deduplicate: for each KB, get the highest role
+            LET all_perms = UNION(direct_perms, team_perms)
+
+            LET kb_roles = (
+                FOR perm IN all_perms
+                    COLLECT kb_id = perm.kb_id, kb_doc = perm.kb_doc INTO roles = perm
+                    // Get the highest priority role (prefer direct if same priority)
+                    LET sorted_roles = (
+                        FOR r IN roles
+                            SORT r.priority DESC, r.is_direct DESC
+                            LIMIT 1
+                            RETURN r.role
+                    )
+                    LET final_role = FIRST(sorted_roles)
+                    {permission_filter}
+                    RETURN {{
+                        kb_id: kb_id,
+                        kb_doc: kb_doc,
+                        userRole: final_role
+                    }}
+            )
+
+            // Batch fetch all folders for all KBs at once (more efficient than per-KB)
+            LET kb_ids = kb_roles[*].kb_doc._id
+            LET all_folders = (
+                FOR edge IN @@belongs_to_kb
+                    FILTER edge._to IN kb_ids
+                    LET folder = DOCUMENT(edge._from)
+                    FILTER folder != null && folder.isFile == false
+                    RETURN {{
+                        kb_id: edge._to,
+                        folder: {{
                             id: folder._key,
                             name: folder.name,
                             createdAtTimestamp: edge.createdAtTimestamp,
                             path: folder.path,
                             webUrl: folder.webUrl
                         }}
-                )
+                    }}
+            )
+
+            // Build final result with folders grouped by KB
+            FOR kb_role IN kb_roles
+                LET kb = kb_role.kb_doc
+                LET folders = all_folders[* FILTER CURRENT.kb_id == kb._id].folder
                 SORT {sort_field} {sort_direction}
                 LIMIT @skip, @limit
                 RETURN {{
@@ -8337,37 +8488,152 @@ class BaseArangoService:
                     createdAtTimestamp: kb.createdAtTimestamp,
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,
-                    userRole: perm.role,
+                    userRole: kb_role.userRole,
                     folders: folders
                 }}
             """
 
-            # Count query
+            # Optimized count query - same optimizations as main query
             count_query = f"""
-            FOR perm IN @@count_permissions_collection
-                FILTER perm._from == @count_user_from
-                LET kb = DOCUMENT(perm._to)
-                FILTER kb != null
-                FILTER kb.orgId == @count_org_id
-                FILTER kb.groupType == @count_kb_type
-                FILTER kb.connectorName == @count_kb_connector
-                {additional_filters.replace('@search_term', '@count_search_term').replace('@permissions', '@count_permissions') if additional_filters else ''}
-                COLLECT WITH COUNT INTO total
-                RETURN total
+            // Direct user permissions
+            LET direct_perms = (
+                FOR perm IN @@count_permissions_collection
+                    FILTER perm._from == @count_user_from
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "recordGroups/")
+                    LET kb = DOCUMENT(perm._to)
+                    FILTER kb != null
+                    FILTER kb.orgId == @count_org_id
+                    FILTER kb.groupType == @count_kb_type
+                    FILTER kb.connectorName == @count_kb_connector
+                    {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
+                    RETURN {{
+                        kb_id: kb._key,
+                        role: perm.role,
+                        priority: @count_role_priority[perm.role] || 0,
+                        is_direct: true
+                    }}
+            )
+
+            // Team-based permissions - optimized
+            LET team_perms = (
+                LET user_teams = (
+                    FOR user_team_perm IN @@count_permissions_collection
+                        FILTER user_team_perm._from == @count_user_from
+                        FILTER user_team_perm.type == "USER"
+                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                        RETURN {{
+                            team_id: SPLIT(user_team_perm._to, '/')[1],
+                            role: user_team_perm.role,
+                            priority: @count_role_priority[user_team_perm.role] || 0
+                        }}
+                )
+
+                FOR team_info IN user_teams
+                    FOR kb_team_perm IN @@count_permissions_collection
+                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
+                        FILTER kb_team_perm.type == "TEAM"
+                        FILTER STARTS_WITH(kb_team_perm._to, "recordGroups/")
+                        LET kb = DOCUMENT(kb_team_perm._to)
+                        FILTER kb != null
+                        FILTER kb.orgId == @count_org_id
+                        FILTER kb.groupType == @count_kb_type
+                        FILTER kb.connectorName == @count_kb_connector
+                        {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
+                        RETURN {{
+                            kb_id: kb._key,
+                            role: team_info.role,
+                            priority: team_info.priority,
+                            is_direct: false
+                        }}
+            )
+
+            LET all_perms = UNION(direct_perms, team_perms)
+
+            LET kb_roles = (
+                FOR perm IN all_perms
+                    COLLECT kb_id = perm.kb_id INTO roles = perm
+                    LET sorted_roles = (
+                        FOR r IN roles
+                            SORT r.priority DESC, r.is_direct DESC
+                            LIMIT 1
+                            RETURN r.role
+                    )
+                    LET final_role = FIRST(sorted_roles)
+                    {permission_filter.replace('@permissions', '@count_permissions') if permission_filter else ''}
+                    RETURN kb_id
+            )
+
+            COLLECT WITH COUNT INTO total
+            RETURN total
             """
 
-            # Available filters query
+            # Optimized filters query - same optimizations as main query
             filters_query = """
-            FOR perm IN @@filters_permissions_collection
-                FILTER perm._from == @filters_user_from
-                LET kb = DOCUMENT(perm._to)
-                FILTER kb != null
-                FILTER kb.orgId == @filters_org_id
-                FILTER kb.groupType == @filters_kb_type
-                FILTER kb.connectorName == @filters_kb_connector
+            LET direct_perms = (
+                FOR perm IN @@filters_permissions_collection
+                    FILTER perm._from == @filters_user_from
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "recordGroups/")
+                    LET kb = DOCUMENT(perm._to)
+                    FILTER kb != null
+                    FILTER kb.orgId == @filters_org_id
+                    FILTER kb.groupType == @filters_kb_type
+                    FILTER kb.connectorName == @filters_kb_connector
+                    RETURN {
+                        kb_id: kb._key,
+                        permission: perm.role,
+                        kb_name: kb.groupName,
+                        priority: @filters_role_priority[perm.role] || 0,
+                        is_direct: true
+                    }
+            )
+
+            LET team_perms = (
+                LET user_teams = (
+                    FOR user_team_perm IN @@filters_permissions_collection
+                        FILTER user_team_perm._from == @filters_user_from
+                        FILTER user_team_perm.type == "USER"
+                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                        RETURN {
+                            team_id: SPLIT(user_team_perm._to, '/')[1],
+                            role: user_team_perm.role,
+                            priority: @filters_role_priority[user_team_perm.role] || 0
+                        }
+                )
+
+                FOR team_info IN user_teams
+                    FOR kb_team_perm IN @@filters_permissions_collection
+                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
+                        FILTER kb_team_perm.type == "TEAM"
+                        FILTER STARTS_WITH(kb_team_perm._to, "recordGroups/")
+                        LET kb = DOCUMENT(kb_team_perm._to)
+                        FILTER kb != null
+                        FILTER kb.orgId == @filters_org_id
+                        FILTER kb.groupType == @filters_kb_type
+                        FILTER kb.connectorName == @filters_kb_connector
+                        RETURN {
+                            kb_id: kb._key,
+                            permission: team_info.role,
+                            kb_name: kb.groupName,
+                            priority: team_info.priority,
+                            is_direct: false
+                        }
+            )
+
+            LET all_perms = UNION(direct_perms, team_perms)
+
+            FOR perm IN all_perms
+                COLLECT kb_id = perm.kb_id INTO roles = perm
+                LET sorted_roles = (
+                    FOR r IN roles
+                        SORT r.priority DESC, r.is_direct DESC
+                        LIMIT 1
+                        RETURN r.permission
+                )
                 RETURN {
-                    permission: perm.role,
-                    kb_name: kb.groupName
+                    permission: FIRST(sorted_roles),
+                    kb_name: FIRST(roles).kb_name
                 }
             """
 
@@ -8379,6 +8645,7 @@ class BaseArangoService:
                 "kb_connector": Connectors.KNOWLEDGE_BASE.value,
                 "skip": skip,
                 "limit": limit,
+                "role_priority": role_priority_map,
                 "@permissions_collection": CollectionNames.PERMISSION.value,
                 "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
             }
@@ -8397,6 +8664,7 @@ class BaseArangoService:
                 "count_org_id": org_id,
                 "count_kb_type": Connectors.KNOWLEDGE_BASE.value,
                 "count_kb_connector": Connectors.KNOWLEDGE_BASE.value,
+                "count_role_priority": role_priority_map,
                 "@count_permissions_collection": CollectionNames.PERMISSION.value,
             }
 
@@ -8414,6 +8682,7 @@ class BaseArangoService:
                 "filters_org_id": org_id,
                 "filters_kb_type": Connectors.KNOWLEDGE_BASE.value,
                 "filters_kb_connector": Connectors.KNOWLEDGE_BASE.value,
+                "filters_role_priority": role_priority_map,
                 "@filters_permissions_collection": CollectionNames.PERMISSION.value,
             }
 
@@ -8428,7 +8697,7 @@ class BaseArangoService:
             filter_data = list(filters_cursor)
 
             # Build available filters
-            available_permissions = list(set(item["permission"] for item in filter_data))
+            available_permissions = list(set(item["permission"] for item in filter_data if item.get("permission")))
 
             available_filters = {
                 "permissions": available_permissions,
@@ -8436,7 +8705,7 @@ class BaseArangoService:
                 "sortOrders": ["asc", "desc"]
             }
 
-            self.logger.info(f"✅ Found {len(kbs)} knowledge bases out of {total_count} total")
+            self.logger.info(f"✅ Found {len(kbs)} knowledge bases out of {total_count} total (including team-based access)")
             return kbs, total_count, available_filters
 
         except Exception as e:
@@ -9644,6 +9913,7 @@ class BaseArangoService:
             )
 
             // Process all teams and their current permissions in one pass
+            // Teams don't have roles - they just have access, roles come from team membership
             LET team_operations = (
                 FOR team_id IN @team_ids
                     LET team = FIRST(FOR t IN @@teams_collection FILTER t._key == team_id RETURN t)
@@ -9657,15 +9927,14 @@ class BaseArangoService:
 
                     FILTER team != null  // Skip non-existent teams
 
-                    LET operation = current_perm == null ? "insert" :
-                                (current_perm.role != @role ? "update" : "skip")
+                    // Teams either exist or don't - no role comparison needed
+                    LET operation = current_perm == null ? "insert" : "skip"
 
                     RETURN {
                         team_id: team_id,
                         team_key: team._key,
                         name: team.name,
                         operation: operation,
-                        current_role: current_perm ? current_perm.role : null,
                         perm_key: current_perm ? current_perm._key : null
                     }
             )
@@ -9680,7 +9949,6 @@ class BaseArangoService:
                 users_to_update: user_operations[* FILTER CURRENT.operation == "update"],
                 users_skipped: user_operations[* FILTER CURRENT.operation == "skip"],
                 teams_to_insert: team_operations[* FILTER CURRENT.operation == "insert"],
-                teams_to_update: team_operations[* FILTER CURRENT.operation == "update"],
                 teams_skipped: team_operations[* FILTER CURRENT.operation == "skip"]
             }
             """
@@ -9736,7 +10004,7 @@ class BaseArangoService:
                         "_to": f"recordGroups/{kb_id}",
                         "externalPermissionId": "",
                         "type": "TEAM",
-                        "role": role,
+                        # Teams don't have roles - access is determined by user's role in the team
                         "createdAtTimestamp": timestamp,
                         "updatedAtTimestamp": timestamp,
                         "lastUpdatedTimestampAtSource": timestamp,
@@ -9821,9 +10089,11 @@ class BaseArangoService:
                 target_conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
                 bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
 
-            if team_ids:
-                target_conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
-                bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+            # Teams don't have roles - they just have access or not
+            # So we skip team updates in this method
+            # if team_ids:
+            #     target_conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+            #     bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
 
             # Atomic query that does everything in one go
             atomic_query = f"""
@@ -9896,9 +10166,9 @@ class BaseArangoService:
 
             updated_permissions = result["updated_permissions"]
 
-            # Count updates by type
+            # Count updates by type (only users can be updated, teams don't have roles)
             updated_users = sum(1 for perm in updated_permissions if perm["type"] == "USER")
-            updated_teams = sum(1 for perm in updated_permissions if perm["type"] == "TEAM")
+            updated_teams = 0  # Teams don't have roles to update
 
             # Build detailed response
             updates_by_type = {"users": {}, "teams": {}}
@@ -9908,11 +10178,7 @@ class BaseArangoService:
                         "old_role": perm["old_role"],
                         "new_role": perm["new_role"]
                     }
-                elif perm["type"] == "TEAM":
-                    updates_by_type["teams"][perm["id"]] = {
-                        "old_role": perm["old_role"],
-                        "new_role": perm["new_role"]
-                    }
+                # Teams don't have roles, so we don't update them
 
             self.logger.info(f"✅ Optimistically updated {len(updated_permissions)} permissions for KB {kb_id}")
 
@@ -10074,7 +10340,8 @@ class BaseArangoService:
                 if perm["type"] == "USER":
                     result["users"][perm["id"]] = perm["role"]
                 elif perm["type"] == "TEAM":
-                    result["teams"][perm["id"]] = perm["role"]
+                    # Teams don't have roles - they just have access
+                    result["teams"][perm["id"]] = None
 
             self.logger.info(f"✅ Retrieved {len(permissions)} permissions for KB {kb_id}")
             return result
@@ -10088,21 +10355,72 @@ class BaseArangoService:
         kb_id: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> List[Dict]:
-        """List all permissions for a KB with user details"""
+        """
+        List all permissions for a KB with user details.
+        Optimized: Batch fetches entities instead of individual DOCUMENT() calls.
+        Recommended indexes:
+        - permission collection: [ "_to", "type" ] (persistent index)
+        - users collection: [ "_key" ] (primary index)
+        - teams collection: [ "_key" ] (primary index)
+        """
         try:
             db = transaction if transaction else self.db
 
+            # Optimized query: Collect all entity IDs first, then batch fetch
             query = """
-            FOR perm IN @@permissions_collection
-                FILTER perm._to == @kb_to
-                LET entity = DOCUMENT(perm._from)
+            // Collect all permission edges and entity IDs
+            LET perms_with_ids = (
+                FOR perm IN @@permissions_collection
+                    FILTER perm._to == @kb_to
+                    RETURN {
+                        perm: perm,
+                        entity_id: perm._from
+                    }
+            )
+
+            // Batch fetch all users
+            LET user_ids = UNIQUE(perms_with_ids[* FILTER STARTS_WITH(CURRENT.entity_id, "users/")].entity_id)
+            LET users = (
+                FOR user_id IN user_ids
+                    LET user = DOCUMENT(user_id)
+                    FILTER user != null
+                    RETURN {
+                        _id: user._id,
+                        _key: user._key,
+                        fullName: user.fullName,
+                        name: user.name,
+                        userName: user.userName,
+                        userId: user.userId,
+                        email: user.email
+                    }
+            )
+
+            // Batch fetch all teams
+            LET team_ids = UNIQUE(perms_with_ids[* FILTER STARTS_WITH(CURRENT.entity_id, "teams/")].entity_id)
+            LET teams = (
+                FOR team_id IN team_ids
+                    LET team = DOCUMENT(team_id)
+                    FILTER team != null
+                    RETURN {
+                        _id: team._id,
+                        _key: team._key,
+                        name: team.name
+                    }
+            )
+
+            // Join permissions with entities
+            FOR perm_data IN perms_with_ids
+                LET perm = perm_data.perm
+                LET entity = STARTS_WITH(perm_data.entity_id, "users/")
+                    ? FIRST(FOR u IN users FILTER u._id == perm_data.entity_id RETURN u)
+                    : FIRST(FOR t IN teams FILTER t._id == perm_data.entity_id RETURN t)
                 FILTER entity != null
                 RETURN {
                     id: entity._key,
                     name: entity.fullName || entity.name || entity.userName,
                     userId: entity.userId,
                     email: entity.email,
-                    role: perm.role,
+                    role: perm.type == "TEAM" ? null : perm.role,  // Teams don't have roles
                     type: perm.type,
                     createdAtTimestamp: perm.createdAtTimestamp,
                     updatedAtTimestamp: perm.updatedAtTimestamp
@@ -10193,15 +10511,75 @@ class BaseArangoService:
             main_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
-            // KB Records Section - Get records DIRECTLY from belongs_to_kb edges (not through folders)
+            LET user_key = SPLIT(user_from, '/')[1]
+
+            // Direct user permissions
+            LET directKbAccess = (
+                FOR kbEdge IN @@permission
+                    FILTER kbEdge._from == user_from
+                    FILTER kbEdge.type == "USER"
+                    FILTER kbEdge.role IN @kb_permissions
+                    LET kb = DOCUMENT(kbEdge._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb,
+                        role: kbEdge.role,
+                        access_type: "direct"
+                    }}
+            )
+
+            // Team-based access: Get KBs with team permissions, find common teams, get highest role
+            LET teamKbAccess = (
+                // Get KBs with team permissions
+                FOR teamKbPerm IN @@permission
+                    FILTER teamKbPerm.type == "TEAM"
+                    FILTER STARTS_WITH(teamKbPerm._to, "recordGroups/")
+                    LET kb = DOCUMENT(teamKbPerm._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    LET team_id = SPLIT(teamKbPerm._from, '/')[1]
+
+                    // Check if user is a member of this team
+                    LET user_team_perm = FIRST(
+                        FOR userTeamPerm IN @@permission
+                            FILTER userTeamPerm._from == user_from
+                            FILTER userTeamPerm._to == CONCAT('teams/', team_id)
+                            FILTER userTeamPerm.type == "USER"
+                            RETURN userTeamPerm.role
+                    )
+
+                    FILTER user_team_perm != null
+
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb,
+                        role: user_team_perm,
+                        access_type: "team"
+                    }}
+            )
+
+            // Combine direct and team access, prioritizing direct access
+            LET allKbAccess = (
+                // First add direct access
+                FOR access IN directKbAccess
+                    RETURN access
+
+                // Then add team access that doesn't already have direct access
+                FOR teamAccess IN teamKbAccess
+                    LET hasDirect = LENGTH(
+                        FOR direct IN directKbAccess
+                            FILTER direct.kb_id == teamAccess.kb_id
+                            RETURN 1
+                    ) > 0
+                    FILTER NOT hasDirect
+                    RETURN teamAccess
+            )
+
+            // KB Records Section - Get records from all accessible KBs
             LET kbRecords = {
                 f'''(
-                    FOR kbEdge IN @@permission
-                        FILTER kbEdge._from == user_from
-                        FILTER kbEdge.type == "USER"
-                        FILTER kbEdge.role IN @kb_permissions
-                        LET kb = DOCUMENT(kbEdge._to)
-                        FILTER kb != null AND kb.orgId == org_id
+                    FOR access IN allKbAccess
+                        LET kb = access.kb_doc
                         // Get records that belong directly to the KB
                         FOR belongsEdge IN @@belongs_to_kb
                             FILTER belongsEdge._to == kb._id
@@ -10215,7 +10593,7 @@ class BaseArangoService:
                             {record_filter}
                             RETURN {{
                                 record: record,
-                                permission: {{ role: kbEdge.role, type: kbEdge.type }},
+                                permission: {{ role: access.role, type: "USER" }},
                                 kb_id: kb._key,
                                 kb_name: kb.groupName
                             }}
@@ -10289,14 +10667,66 @@ class BaseArangoService:
             count_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
+            LET user_key = SPLIT(user_from, '/')[1]
+
+            // Direct user permissions
+            LET directKbAccess = (
+                FOR kbEdge IN @@permission
+                    FILTER kbEdge._from == user_from
+                    FILTER kbEdge.type == "USER"
+                    FILTER kbEdge.role IN @kb_permissions
+                    LET kb = DOCUMENT(kbEdge._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb
+                    }}
+            )
+
+            // Team-based access
+            LET teamKbAccess = (
+                FOR teamKbPerm IN @@permission
+                    FILTER teamKbPerm.type == "TEAM"
+                    FILTER STARTS_WITH(teamKbPerm._to, "recordGroups/")
+                    LET kb = DOCUMENT(teamKbPerm._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    LET team_id = SPLIT(teamKbPerm._from, '/')[1]
+
+                    LET user_team_perm = FIRST(
+                        FOR userTeamPerm IN @@permission
+                            FILTER userTeamPerm._from == user_from
+                            FILTER userTeamPerm._to == CONCAT('teams/', team_id)
+                            FILTER userTeamPerm.type == "USER"
+                            RETURN 1
+                    )
+
+                    FILTER user_team_perm != null
+
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb
+                    }}
+            )
+
+            // Combine direct and team access
+            LET allKbAccess = (
+                FOR access IN directKbAccess
+                    RETURN access
+
+                FOR teamAccess IN teamKbAccess
+                    LET hasDirect = LENGTH(
+                        FOR direct IN directKbAccess
+                            FILTER direct.kb_id == teamAccess.kb_id
+                            RETURN 1
+                    ) > 0
+                    FILTER NOT hasDirect
+                    RETURN teamAccess
+            )
+
             LET kbCount = {
                 f'''LENGTH(
-                    FOR kbEdge IN @@permission
-                        FILTER kbEdge._from == user_from
-                        FILTER kbEdge.type == "USER"
-                        FILTER kbEdge.role IN @kb_permissions
-                        LET kb = DOCUMENT(kbEdge._to)
-                        FILTER kb != null AND kb.orgId == org_id
+                    FOR access IN allKbAccess
+                        LET kb = access.kb_doc
                         FOR belongsEdge IN @@belongs_to_kb
                             FILTER belongsEdge._to == kb._id
                             LET record = DOCUMENT(belongsEdge._from)
@@ -10331,14 +10761,68 @@ class BaseArangoService:
             filters_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
+            LET user_key = SPLIT(user_from, '/')[1]
+
+            // Direct user permissions
+            LET directKbAccess = (
+                FOR kbEdge IN @@permission
+                    FILTER kbEdge._from == user_from
+                    FILTER kbEdge.type == "USER"
+                    FILTER kbEdge.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
+                    LET kb = DOCUMENT(kbEdge._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb,
+                        role: kbEdge.role
+                    }}
+            )
+
+            // Team-based access
+            LET teamKbAccess = (
+                FOR teamKbPerm IN @@permission
+                    FILTER teamKbPerm.type == "TEAM"
+                    FILTER STARTS_WITH(teamKbPerm._to, "recordGroups/")
+                    LET kb = DOCUMENT(teamKbPerm._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    LET team_id = SPLIT(teamKbPerm._from, '/')[1]
+
+                    LET user_team_perm = FIRST(
+                        FOR userTeamPerm IN @@permission
+                            FILTER userTeamPerm._from == user_from
+                            FILTER userTeamPerm._to == CONCAT('teams/', team_id)
+                            FILTER userTeamPerm.type == "USER"
+                            RETURN userTeamPerm.role
+                    )
+
+                    FILTER user_team_perm != null
+
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb,
+                        role: user_team_perm
+                    }}
+            )
+
+            // Combine direct and team access
+            LET allKbAccess = (
+                FOR access IN directKbAccess
+                    RETURN access
+
+                FOR teamAccess IN teamKbAccess
+                    LET hasDirect = LENGTH(
+                        FOR direct IN directKbAccess
+                            FILTER direct.kb_id == teamAccess.kb_id
+                            RETURN 1
+                    ) > 0
+                    FILTER NOT hasDirect
+                    RETURN teamAccess
+            )
+
             LET allKbRecords = {
                 '''(
-                    FOR kbEdge IN @@permission
-                        FILTER kbEdge._from == user_from
-                        FILTER kbEdge.type == "USER"
-                        FILTER kbEdge.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
-                        LET kb = DOCUMENT(kbEdge._to)
-                        FILTER kb != null AND kb.orgId == org_id
+                    FOR access IN allKbAccess
+                        LET kb = access.kb_doc
                         FOR belongsEdge IN @@belongs_to_kb
                             FILTER belongsEdge._to == kb._id
                             LET record = DOCUMENT(belongsEdge._from)
@@ -10347,10 +10831,10 @@ class BaseArangoService:
                             FILTER record.orgId == org_id
                             FILTER record.origin == "UPLOAD"
                             FILTER record.isFile != false
-                            RETURN {
+                            RETURN {{
                                 record: record,
-                                permission: { role: kbEdge.role }
-                            }
+                                permission: {{ role: access.role }}
+                            }}
                 )''' if include_kb_records else '[]'
             }
             LET allConnectorRecords = {
@@ -10494,25 +10978,10 @@ class BaseArangoService:
 
             db = self.db
 
-            # Check user permissions first
-            perm_query = """
-            FOR perm IN @@permission
-                FILTER perm._from == @user_from
-                FILTER perm._to == @kb_to
-                FILTER perm.type == "USER"
-                FILTER perm.role IN ['OWNER', 'READER', 'FILEORGANIZER', 'WRITER', 'COMMENTER', 'ORGANIZER']
-                RETURN perm.role
-            """
-
-            perm_cursor = db.aql.execute(perm_query, bind_vars={
-                "user_from": f"users/{user_id}",
-                "kb_to": f"recordGroups/{kb_id}",
-                "@permission": CollectionNames.PERMISSION.value,
-            })
-
-            user_permission = next(perm_cursor, None)
+            # Check user permissions first (includes team-based access)
+            user_permission = await self.get_user_kb_permission(kb_id, user_id, transaction=db)
             if not user_permission:
-                self.logger.warning(f"⚠️ User {user_id} has no access to KB {kb_id}")
+                self.logger.warning(f"⚠️ User {user_id} has no access to KB {kb_id} (neither direct nor via teams)")
                 return [], 0, {
                     "recordTypes": [],
                     "origins": [],
@@ -10550,11 +11019,18 @@ class BaseArangoService:
             record_filter = build_record_filters(True)
             folder_filter = build_folder_filter(True)
 
+            # Optimized query using graph traversal and batch fetching
+            # Recommended indexes:
+            # - belongs_to edges: [ "_to" ] (persistent index)
+            # - record_relations edges: [ "_from", "relationshipType" ] (persistent index)
+            # - is_of_type edges: [ "_from" ] (persistent index)
+            # - records collection: [ "orgId", "isDeleted", "isFile" ] (persistent index)
             main_query = f"""
             LET kb = DOCUMENT("recordGroups", @kb_id)
             FILTER kb != null
             LET user_permission = @user_permission
-            // Get all folders in the KB
+
+            // Get all folders in the KB (optimized with early filtering)
             LET kbFolders = (
                 FOR belongsEdge IN @@belongs_to_kb
                     FILTER belongsEdge._to == kb._id
@@ -10562,38 +11038,54 @@ class BaseArangoService:
                     FILTER folder != null
                     FILTER folder.isFile == false
                     {folder_filter}
-                    RETURN folder
+                    RETURN {{
+                        folder: folder,
+                        folder_id: folder._key,
+                        folder_name: folder.name
+                    }}
             )
-            // Get records from folders via PARENT_CHILD relationships
-            LET folderRecords = (
-                FOR folder IN kbFolders
-                    FOR relEdge IN @@record_relations
-                        FILTER relEdge._from == folder._id
-                        FILTER relEdge.relationshipType == "PARENT_CHILD"
-                        LET record = DOCUMENT(relEdge._to)
-                        FILTER record != null
-                        FILTER record.isDeleted != true
-                        FILTER record.orgId == @org_id
-                        FILTER record.isFile != false  // Ensure it's a record, not a folder
-                        {record_filter}
-                        RETURN {{
-                            record: record,
-                            folder_id: folder._key,
-                            folder_name: folder.name,
-                            permission: {{ role: user_permission, type: "USER" }},
-                            kb_id: @kb_id
-                        }}
+
+            // Batch fetch all folder IDs
+            LET folder_ids = kbFolders[*].folder._id
+
+            // Get all records from folders via PARENT_CHILD relationships (optimized)
+            LET all_records_data = (
+                FOR relEdge IN @@record_relations
+                    FILTER relEdge._from IN folder_ids
+                    FILTER relEdge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(relEdge._to)
+                    FILTER record != null
+                    FILTER record.isDeleted != true
+                    FILTER record.orgId == @org_id
+                    FILTER record.isFile != false
+                    {record_filter}
+                    // Find which folder this record belongs to
+                    LET folder_info = FIRST(
+                        FOR f IN kbFolders
+                            FILTER f.folder._id == relEdge._from
+                            RETURN f
+                    )
+                    RETURN {{
+                        record: record,
+                        folder_id: folder_info.folder_id,
+                        folder_name: folder_info.folder_name,
+                        permission: {{ role: user_permission, type: "USER" }},
+                        kb_id: @kb_id
+                    }}
             )
-            FOR item IN folderRecords
-                LET record = item.record
-                SORT record.{sort_by} {sort_order.upper()}
-                LIMIT @skip, @limit
-                LET fileRecord = FIRST(
-                    FOR fileEdge IN @@is_of_type
-                        FILTER fileEdge._from == record._id
-                        LET file = DOCUMENT(fileEdge._to)
-                        FILTER file != null
-                        RETURN {{
+
+            // Batch fetch all record IDs for file lookups
+            LET record_ids = all_records_data[*].record._id
+
+            // Batch fetch all file records
+            LET all_files = (
+                FOR fileEdge IN @@is_of_type
+                    FILTER fileEdge._from IN record_ids
+                    LET file = DOCUMENT(fileEdge._to)
+                    FILTER file != null
+                    RETURN {{
+                        record_id: fileEdge._from,
+                        file: {{
                             id: file._key,
                             name: file.name,
                             extension: file.extension,
@@ -10602,7 +11094,19 @@ class BaseArangoService:
                             isFile: file.isFile,
                             webUrl: file.webUrl
                         }}
+                    }}
+            )
+
+            // Build final result with files joined
+            FOR item IN all_records_data
+                LET record = item.record
+                LET fileRecord = FIRST(
+                    FOR f IN all_files
+                        FILTER f.record_id == record._id
+                        RETURN f.file
                 )
+                SORT record.{sort_by} {sort_order.upper()}
+                LIMIT @skip, @limit
                 RETURN {{
                     id: record._key,
                     externalRecordId: record.externalRecordId,
@@ -10629,59 +11133,67 @@ class BaseArangoService:
                 }}
             """
 
-            # ===== COUNT QUERY =====
+            # ===== OPTIMIZED COUNT QUERY =====
             count_query = f"""
             LET kb = DOCUMENT("recordGroups", @kb_id)
             FILTER kb != null
-            LET kbFolders = (
+
+            // Get folder IDs only (no need to fetch full documents)
+            LET folder_ids = (
                 FOR belongsEdge IN @@belongs_to_kb
                     FILTER belongsEdge._to == kb._id
                     LET folder = DOCUMENT(belongsEdge._from)
                     FILTER folder != null
                     FILTER folder.isFile == false
                     {folder_filter}
-                    RETURN folder
+                    RETURN belongsEdge._from
             )
-            LET folderRecords = (
-                FOR folder IN kbFolders
-                    FOR relEdge IN @@record_relations
-                        FILTER relEdge._from == folder._id
-                        FILTER relEdge.relationshipType == "PARENT_CHILD"
-                        LET record = DOCUMENT(relEdge._to)
-                        FILTER record != null
-                        FILTER record.isDeleted != true
-                        FILTER record.orgId == @org_id
-                        FILTER record.isFile != false
-                        {record_filter}
-                        RETURN 1
+
+            // Count records directly without fetching documents until needed
+            LET record_count = (
+                FOR relEdge IN @@record_relations
+                    FILTER relEdge._from IN folder_ids
+                    FILTER relEdge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(relEdge._to)
+                    FILTER record != null
+                    FILTER record.isDeleted != true
+                    FILTER record.orgId == @org_id
+                    FILTER record.isFile != false
+                    {record_filter}
+                    COLLECT WITH COUNT INTO count
+                    RETURN count
             )
-            RETURN LENGTH(folderRecords)
+
+            RETURN FIRST(record_count) || 0
             """
 
-            # ===== FILTERS QUERY =====
+            # ===== OPTIMIZED FILTERS QUERY =====
             filters_query = """
             LET kb = DOCUMENT("recordGroups", @kb_id)
             FILTER kb != null
             LET user_permission = @user_permission
-            LET kbFolders = (
+
+            // Get folder IDs only
+            LET folder_ids = (
                 FOR belongsEdge IN @@belongs_to_kb
                     FILTER belongsEdge._to == kb._id
                     LET folder = DOCUMENT(belongsEdge._from)
                     FILTER folder != null
                     FILTER folder.isFile == false
-                    RETURN folder
+                    RETURN belongsEdge._from
             )
+
+            // Get all records (optimized with batch fetching)
             LET allRecords = (
-                FOR folder IN kbFolders
-                    FOR relEdge IN @@record_relations
-                        FILTER relEdge._from == folder._id
-                        FILTER relEdge.relationshipType == "PARENT_CHILD"
-                        LET record = DOCUMENT(relEdge._to)
-                        FILTER record != null
-                        FILTER record.isDeleted != true
-                        FILTER record.orgId == @org_id
-                        FILTER record.isFile != false
-                        RETURN record
+                FOR relEdge IN @@record_relations
+                    FILTER relEdge._from IN folder_ids
+                    FILTER relEdge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(relEdge._to)
+                    FILTER record != null
+                    FILTER record.isDeleted != true
+                    FILTER record.orgId == @org_id
+                    FILTER record.isFile != false
+                    RETURN record
             )
             LET connectorValues = (
                 FOR record IN allRecords
@@ -12016,11 +12528,15 @@ class BaseArangoService:
             return {"success": False, "reason": f"Upload failed: {str(e)}", "code": 500}
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
-        """Get user by user ID"""
+        """
+        Get user by user ID.
+        Recommended index: users collection: [ "userId" ] (persistent index)
+        """
         try:
             query = f"""
                 FOR user IN {CollectionNames.USERS.value}
                     FILTER user.userId == @user_id
+                    LIMIT 1
                     RETURN user
             """
             cursor = self.db.aql.execute(query, bind_vars={"user_id": user_id})

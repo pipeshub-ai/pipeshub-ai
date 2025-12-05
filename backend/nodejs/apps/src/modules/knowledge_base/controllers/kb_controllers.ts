@@ -1766,26 +1766,30 @@ export const createKBPermission =
         throw new BadRequestError('User IDs or team IDs are required');
       }
 
-      if (!role) {
-        throw new BadRequestError('Role is required');
+      // Role is required only if users are provided (teams don't need roles)
+      if (userIds.length > 0 && !role) {
+        throw new BadRequestError('Role is required when adding users');
       }
 
-      const validRoles = [
-        'OWNER',
-        'ORGANIZER',
-        'FILEORGANIZER',
-        'WRITER',
-        'COMMENTER',
-        'READER',
-      ];
-      if (!validRoles.includes(role)) {
-        throw new BadRequestError(
-          `Invalid role. Must be one of: ${validRoles.join(', ')}`,
-        );
+      // Validate role only if it's provided (for users)
+      if (role) {
+        const validRoles = [
+          'OWNER',
+          'ORGANIZER',
+          'FILEORGANIZER',
+          'WRITER',
+          'COMMENTER',
+          'READER',
+        ];
+        if (!validRoles.includes(role)) {
+          throw new BadRequestError(
+            `Invalid role. Must be one of: ${validRoles.join(', ')}`,
+          );
+        }
       }
 
       logger.info(
-        `Creating ${role} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
+        `Creating ${role || 'team'} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
         {
           userIds:
             userIds.length > 5
@@ -1795,20 +1799,25 @@ export const createKBPermission =
             teamIds.length > 5
               ? `${teamIds.slice(0, 5).join(', ')} and ${teamIds.length - 5} more`
               : teamIds.join(', '),
-          role,
+          role: role || 'N/A (team access)',
         },
       );
 
       try {
+        const payload: any = {
+          userIds: userIds,
+          teamIds: teamIds,
+        };
+        // Only include role if it's provided (for users)
+        if (role) {
+          payload.role = role;
+        }
+
         const response = await executeConnectorCommand(
           `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
           HttpMethod.POST,
           req.headers as Record<string, string>,
-          {
-            userIds: userIds,
-            teamIds: teamIds,
-            role: role,
-          },
+          payload,
         );
 
         if (response.statusCode !== 200) {
@@ -1821,7 +1830,7 @@ export const createKBPermission =
           kbId,
           grantedCount: permissionResult.grantedCount,
           updatedCount: permissionResult.updatedCount,
-          role,
+          role: role || 'N/A (team access)',
         });
 
         res.status(201).json({

@@ -444,4 +444,52 @@ export class TeamsController {
       next(error);
     }
   }
+
+  async getUserCreatedTeams(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      const userId = req.user?.userId;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      if (!userId) {
+        throw new BadRequestError('User ID is required');
+      }
+
+      const { page, limit, search } = req.query;
+      const queryParams = new URLSearchParams();
+      if (page) queryParams.append('page', String(page));
+      if (limit) queryParams.append('limit', String(limit));
+      if (search) queryParams.append('search', String(search));
+      const queryString = queryParams.toString();
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${this.config.connectorBackend}/api/v1/entity/user/teams/created?${queryString}`,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        method: HttpMethod.GET,
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
+        throw new BadRequestError('Failed to get user created teams');
+      }
+      const teams = aiResponse.data;
+      res.status(HTTP_STATUS.OK).json(teams);
+    } catch (error: any) {
+      this.logger.error('Error getting user created teams', {
+        requestId,
+        message: 'Error getting user created teams',
+        error: error.message,
+      });
+      next(error);
+    }
+  }
 }
