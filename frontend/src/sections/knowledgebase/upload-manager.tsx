@@ -40,7 +40,8 @@ interface UploadManagerProps {
   onClose: () => void;
   knowledgeBaseId: string | null | undefined;
   folderId: string | null | undefined;
-  onUploadSuccess: (message?: string) => Promise<void>;
+  onUploadSuccess: (message?: string, records?: any[], failedFiles?: Array<{fileName: string; filePath: string; error: string}>) => Promise<void>;
+  onUploadStart?: (files: string[], kbId: string, folderId?: string) => void;
 }
 
 interface ProcessedFile {
@@ -68,6 +69,7 @@ export default function UploadManager({
   knowledgeBaseId,
   folderId,
   onUploadSuccess,
+  onUploadStart,
 }: UploadManagerProps) {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -265,6 +267,19 @@ export default function UploadManager({
     try {
       // Prepare batches
       const valid = fileStats.validFiles;
+      
+      // Notify parent component that uploads have started
+      if (onUploadStart && knowledgeBaseId) {
+        const fileNames = valid.map((f) => f.file.name || f.path);
+        onUploadStart(fileNames, knowledgeBaseId, folderId || undefined);
+      }
+      
+      // Close dialog immediately after upload starts to show notification instead
+      // This prevents both dialog and notification from showing at the same time
+      // Close immediately since upload has already been initiated
+      if (!uploadError.show) {
+        onClose();
+      }
       const perRequest = Math.min(BATCH_SIZE, maxFilesPerRequest);
       const batches = chunkArray(valid, perRequest);
       const totalFiles = valid.length;
@@ -323,6 +338,7 @@ export default function UploadManager({
       // Concurrency-controlled workers
       let nextIndex = 0;
       const worker = async () => {
+        const results: any[] = [];
         // eslint-disable-next-line no-constant-condition
         while (true) {
           const idx = nextIndex;
@@ -333,7 +349,7 @@ export default function UploadManager({
 
           try {
             // eslint-disable-next-line no-await-in-loop
-            await axios.post(url, formData, {
+            const response = await axios.post(url, formData, {
               headers: { 'Content-Type': 'multipart/form-data' },
               onUploadProgress: (progressEvent) => {
                 if (progressEvent.total) {
@@ -348,15 +364,21 @@ export default function UploadManager({
             completedBatches.add(idx);
             delete batchProgress[idx];
             updateProgress();
+            
+            // Store response data for optimistic UI updates
+            results.push(response.data);
           } catch (err) {
             delete batchProgress[idx];
             throw err;
           }
         }
+        return results;
       };
 
       const workers = Array.from({ length: Math.min(CONCURRENCY, batches.length) }, () => worker());
-      await Promise.all(workers);
+      const workerResults = await Promise.all(workers);
+      // Flatten results from all workers
+      const responses = workerResults.flat();
 
       setUploadProgress(100);
       setUploadStatus({
@@ -366,8 +388,40 @@ export default function UploadManager({
         totalFiles,
       });
 
-      const successMessage = `Successfully uploaded ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
-      await onUploadSuccess(successMessage);
+      // Collect all records and failed files from responses for optimistic UI update
+      const allRecords: any[] = [];
+      const allFailedFiles: Array<{
+        fileName: string;
+        filePath: string;
+        error: string;
+      }> = [];
+      
+      responses.forEach((response) => {
+        if (response?.records && Array.isArray(response.records)) {
+          allRecords.push(...response.records);
+        }
+        // Collect failed files from response
+        if (response?.failedFilesDetails && Array.isArray(response.failedFilesDetails)) {
+          allFailedFiles.push(...response.failedFilesDetails);
+        }
+      });
+
+      // Create success message based on how many files succeeded vs failed
+      const successfulCount = totalFiles - allFailedFiles.length;
+      let successMessage: string;
+      
+      if (allFailedFiles.length === 0) {
+        // All files succeeded
+        successMessage = `Successfully uploaded ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
+      } else if (successfulCount === 0) {
+        // All files failed
+        successMessage = `Failed to upload ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
+      } else {
+        // Some succeeded, some failed
+        successMessage = `Uploaded ${successfulCount} file${successfulCount > 1 ? 's' : ''}. ${allFailedFiles.length} file${allFailedFiles.length > 1 ? 's' : ''} failed.`;
+      }
+      
+      await onUploadSuccess(successMessage, allRecords, allFailedFiles);
       handleClose();
     } catch (error: any) {
       // Use processed error message from axios interceptor if available

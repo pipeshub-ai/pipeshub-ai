@@ -44,7 +44,8 @@ import {
   ListItem,
   Typography,
   Pagination,
-  ListItemText
+  ListItemText,
+  CircularProgress,
 } from '@mui/material';
 
 interface ListViewProps {
@@ -367,6 +368,10 @@ export const ListView: React.FC<ListViewProps> = ({
         displayLabel = 'IN PROGRESS';
         color = theme.palette.info.main;
         break;
+      case 'PROCESSING':
+        displayLabel = 'PROCESSING';
+        color = theme.palette.info.main;
+        break;
       case 'FAILED':
         displayLabel = 'FAILED';
         color = theme.palette.error.main;
@@ -464,12 +469,13 @@ export const ListView: React.FC<ListViewProps> = ({
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => {
-        const item = params.row;
+        const item = params.row as any; // Type assertion for DataGrid row
         if (!item.indexingStatus || item.type === 'folder') {
           return null;
         }
 
         const { label, color } = getStatusDisplay(item.indexingStatus);
+        const isProcessing = item.indexingStatus === 'PROCESSING' || Boolean(item.isProcessing);
 
         return (
           <Box
@@ -481,6 +487,15 @@ export const ListView: React.FC<ListViewProps> = ({
               mt: 2.4,
             }}
           >
+            {isProcessing && (
+              <CircularProgress
+                size={12}
+                thickness={4}
+                sx={{
+                  color: theme.palette.info.main,
+                }}
+              />
+            )}
             <Typography variant="caption" sx={{ color, fontWeight: 500 }}>
               {label}
             </Typography>

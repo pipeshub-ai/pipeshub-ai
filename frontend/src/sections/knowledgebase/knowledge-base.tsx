@@ -24,9 +24,11 @@ import {
   Divider,
 } from '@mui/material';
 import { UnifiedPermission } from 'src/components/permissions/UnifiedPermissionsDialog';
-import UploadManager from './upload-manager';
+import { useSocket } from 'src/hooks/use-socket';
 import { useRouter } from './hooks/use-router';
 import { KnowledgeBaseAPI } from './services/api';
+import UploadManager from './upload-manager';
+import { UploadNotification } from './components/upload-notification';
 import DashboardComponent from './components/dashboard';
 import AllRecordsView from './components/all-records-view';
 import { EditFolderDialog } from './components/dialogs/edit-dialogs';
@@ -43,7 +45,9 @@ import type {
   UpdatePermissionRequest,
   RemovePermissionRequest,
 } from './types/kb';
+import type { ActiveUpload, FailedFileInfo } from './types/upload';
 import { ORIGIN } from './constants/knowledge-search';
+import { ACTIVE_UPLOADS_STORAGE_KEY, SOCKET_EVENT_TIMEOUT_MS } from './constants/upload.constants';
 
 type ViewMode = 'grid' | 'list';
 
@@ -89,6 +93,7 @@ export default function KnowledgeBaseComponent() {
   const isViewInitiallyLoading = useRef(true);
   const searchTimeoutRef = useRef<NodeJS.Timeout>();
   const lastLoadParams = useRef<string>('');
+  const fallbackTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
 
   const [currentKB, setCurrentKB] = useState<KnowledgeBase | null>(null);
   const [items, setItems] = useState<Item[]>([]);
@@ -124,6 +129,47 @@ export default function KnowledgeBaseComponent() {
     Array<{ id: string; name: string; type: 'kb' | 'folder' }>
   >([]);
 
+  // Track active uploads per KB/folder (Google Drive-like experience)
+  // Use sessionStorage to persist across refreshes
+  const loadUploadsFromStorage = (): Map<string, ActiveUpload> => {
+    try {
+      const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        return new Map(Object.entries(parsed));
+      }
+    } catch (storageError) {
+      // Silently handle storage errors - user can still use the app
+      if (process.env.NODE_ENV === 'development') {
+        // eslint-disable-next-line no-console
+        console.warn('Failed to load uploads from storage:', storageError);
+      }
+    }
+    return new Map();
+  };
+
+  const saveUploadsToStorage = (uploads: Map<string, ActiveUpload>): void => {
+    try {
+      const obj = Object.fromEntries(uploads);
+      sessionStorage.setItem(ACTIVE_UPLOADS_STORAGE_KEY, JSON.stringify(obj));
+    } catch (storageError) {
+      // Silently handle storage errors - user can still use the app
+      if (process.env.NODE_ENV === 'development') {
+        // eslint-disable-next-line no-console
+        console.warn('Failed to save uploads to storage:', storageError);
+      }
+    }
+  };
+
+  const [activeUploads, setActiveUploads] = useState<Map<string, ActiveUpload>>(
+    () => loadUploadsFromStorage()
+  );
+
+  // Save to storage whenever activeUploads changes
+  useEffect(() => {
+    saveUploadsToStorage(activeUploads);
+  }, [activeUploads]);
+
   const stableRoute = useMemo(() => route, [route]);
 
   const loadKBContents = useCallback(
@@ -156,12 +202,16 @@ export default function KnowledgeBaseComponent() {
 
         const records = (data.records || []).map((record) => ({
           ...record,
+          id: record._key || record.id,
+          _key: record._key,
           name: record.recordName || record.name,
           type: 'file' as const,
           createdAt: record.createdAtTimestamp || Date.now(),
           updatedAt: record.updatedAtTimestamp || Date.now(),
-          extension: record.fileRecord?.extension,
+          extension: record.fileRecord?.extension ?? undefined,
           sizeInBytes: record.fileRecord?.sizeInBytes,
+          // Remove processing flag if status changed
+          isProcessing: record.indexingStatus === 'PROCESSING',
         }));
 
         const newItems = [...folders, ...records];
@@ -542,20 +592,468 @@ export default function KnowledgeBaseComponent() {
     }
   };
 
-  const handleUploadSuccess = useCallback(async () => {
-    if (!currentKB) return;
-    setPageLoading(true);
-    try {
-      setSuccess('Successfully uploaded file(s)');
-      setUploadDialog(false);
+  // Socket.IO integration for real-time updates (replaces polling)
+  const { on, off, isConnected: socketConnected } = useSocket({
+    onConnect: () => {
+      // eslint-disable-next-line no-console
+    },
+    onDisconnect: () => {
+      // eslint-disable-next-line no-console
+    },
+    onError: (socketError) => {
+      // eslint-disable-next-line no-console
+      console.error('Socket.IO error', socketError);
+    },
+  });
 
-      await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
-    } catch (err: any) {
-      setError(err.message || 'Upload failed');
-    } finally {
-      setPageLoading(false);
+  // Listen for record processing completion events
+  useEffect(() => {
+    if (!currentKB) return;
+
+    const handleRecordsProcessed = async (data: {
+      recordIds: string[];
+      orgId: string;
+      kbId?: string;
+      folderId?: string;
+      totalRecords: number;
+      timestamp: number;
+    }) => {
+
+      // Clear active uploads for this KB/folder
+      if (currentKB) {
+        const eventKbId = data.kbId || currentKB.id;
+        // Handle folderId: it may be undefined/null (uploading to KB root) or a string (uploading to folder)
+        const eventFolderId = data.folderId !== undefined && data.folderId !== null ? data.folderId : undefined;
+        const currentFolderId = stableRoute.folderId || undefined;
+
+        // Only process if this event is for the current KB
+        if (eventKbId === currentKB.id) {
+          // Match folder: both undefined/null means root, or both have same value
+          const folderMatch = 
+            (eventFolderId === undefined && currentFolderId === undefined) ||
+            (eventFolderId === currentFolderId);
+
+          if (folderMatch) {
+            setActiveUploads((prev) => {
+              const newMap = new Map(prev);
+              // Use consistent key format: 'root' for undefined folderId
+              const uploadKey = `${eventKbId}-${eventFolderId || 'root'}`;
+              const upload = newMap.get(uploadKey);
+
+              if (upload) {
+                // Check if any records from this upload are in the processed list
+                // Use a more lenient matching: if we have recordIds, check if any match
+                // Otherwise, just mark as completed if the KB/folder matches
+                const hasMatchingRecords = upload.recordIds && upload.recordIds.length > 0
+                  ? upload.recordIds.some((id) => data.recordIds?.includes(id))
+                  : true; // If no recordIds stored, trust the KB/folder match
+
+                // Also check if the total count matches (additional validation)
+                const countMatches = upload.files.length === data.totalRecords;
+
+                if (hasMatchingRecords || countMatches) {
+                  // Clear fallback timeout if it exists
+                  const existingTimeout = fallbackTimeoutsRef.current.get(uploadKey);
+                  if (existingTimeout) {
+                    clearTimeout(existingTimeout);
+                    fallbackTimeoutsRef.current.delete(uploadKey);
+                  }
+                  
+                  // Mark as completed - notification will persist until user manually closes it
+                  // Preserve failed files if they exist
+                  const updatedUpload: ActiveUpload = { 
+                    ...upload, 
+                    status: 'completed',
+                    // Keep failed files from initial response or previous socket events
+                    failedFiles: upload.failedFiles,
+                    hasFailures: upload.hasFailures || false,
+                  };
+                  newMap.set(uploadKey, updatedUpload);
+                  
+                  // Show success snackbar when processing is actually complete (Socket.IO confirmed)
+                  // Only show if there are no failures
+                  if (!upload.hasFailures) {
+                    setSuccess(`Successfully processed ${data.totalRecords} file${data.totalRecords > 1 ? 's' : ''}`);
+                  }
+                } else if (upload.status !== 'completed') {
+                  // Partial match - update status but don't remove yet
+                  const partialUpdate = { ...upload, status: 'processing' as const };
+                  newMap.set(uploadKey, partialUpdate);
+                }
+              }
+              return newMap;
+            });
+          }
+        }
+      }
+
+      // Update items: remove processing flag and refresh status
+      if (data.recordIds && data.recordIds.length > 0) {
+        setItems((prev) =>
+          prev.map((item) => {
+            if (data.recordIds.includes(item.id || item._key || '')) {
+              return {
+                ...item,
+                isProcessing: false,
+                // Status will be updated when we refresh
+              };
+            }
+            return item;
+          })
+        );
+
+        // Refresh the list to get updated status from server
+        await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
+      }
+    };
+
+    // Handle failed records event
+    const handleRecordsFailed = async (data: {
+      failedFiles: Array<{
+        recordId: string;
+        fileName: string;
+        filePath: string;
+        error: string;
+      }>;
+      orgId: string;
+      kbId?: string;
+      folderId?: string;
+      totalFailed: number;
+      timestamp: number;
+    }) => {
+      // Update active uploads to show failed status
+      if (currentKB) {
+        const eventKbId = data.kbId || currentKB.id;
+        const eventFolderId = data.folderId !== undefined && data.folderId !== null ? data.folderId : undefined;
+        const currentFolderId = stableRoute.folderId || undefined;
+
+        // Only process if this event is for the current KB
+        if (eventKbId === currentKB.id) {
+          // Match folder: both undefined/null means root, or both have same value
+          const folderMatch = 
+            (eventFolderId === undefined && currentFolderId === undefined) ||
+            (eventFolderId === currentFolderId);
+
+          if (folderMatch) {
+            setActiveUploads((prev) => {
+              const newMap = new Map(prev);
+              const uploadKey = `${eventKbId}-${eventFolderId || 'root'}`;
+              const upload = newMap.get(uploadKey);
+
+              if (upload) {
+                // Clear fallback timeout if it exists
+                const existingTimeout = fallbackTimeoutsRef.current.get(uploadKey);
+                if (existingTimeout) {
+                  clearTimeout(existingTimeout);
+                  fallbackTimeoutsRef.current.delete(uploadKey);
+                }
+                
+                // Merge failed files - combine with any existing failed files from initial response
+                const existingFailedFiles: FailedFileInfo[] = upload.failedFiles || [];
+                const newFailedFiles: FailedFileInfo[] = data.failedFiles || [];
+                // Create a map to avoid duplicates
+                const failedFilesMap = new Map<string, FailedFileInfo>();
+                existingFailedFiles.forEach((ff) => {
+                  failedFilesMap.set(ff.fileName || ff.filePath, ff);
+                });
+                newFailedFiles.forEach((ff) => {
+                  failedFilesMap.set(ff.fileName || ff.filePath, ff);
+                });
+                const mergedFailedFiles = Array.from(failedFilesMap.values());
+                
+                // Update upload with failed files information
+                const updatedUpload = {
+                  ...upload,
+                  status: 'completed' as const, // Mark as completed so notification can be dismissed
+                  failedFiles: mergedFailedFiles,
+                  hasFailures: true,
+                };
+                newMap.set(uploadKey, updatedUpload);
+                
+                // Show error snackbar for failed files
+                setError(`Failed to process ${mergedFailedFiles.length} file${mergedFailedFiles.length > 1 ? 's' : ''}`);
+              }
+              return newMap;
+            });
+          }
+        }
+      }
+
+      // Remove failed files from items list (they won't appear in the UI)
+      if (data.failedFiles && data.failedFiles.length > 0) {
+        const failedRecordIds = data.failedFiles.map((f) => f.recordId);
+        setItems((prev) =>
+          prev.filter((item) => !failedRecordIds.includes(item.id || item._key || ''))
+        );
+      }
+
+      // Refresh the list to ensure consistency
+      if (currentKB) {
+        await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
+      }
+    };
+
+    // Set up event listeners when socket is connected
+    if (socketConnected) {
+      on('records:processed', handleRecordsProcessed);
+      on('records:failed', handleRecordsFailed);
     }
-  }, [stableRoute.folderId, loadKBContents, currentKB]);
+
+    // eslint-disable-next-line consistent-return
+    return () => {
+      if (socketConnected) {
+        off('records:processed', handleRecordsProcessed);
+        off('records:failed', handleRecordsFailed);
+      }
+    };
+  }, [socketConnected, currentKB, stableRoute.folderId, loadKBContents, on, off, setError]);
+
+  // Handle upload start - store upload info but don't show notification yet
+  // Notification will be shown when dialog closes to avoid UI clutter
+  const handleUploadStart = useCallback(
+    (files: string[], kbId: string, folderId?: string) => {
+      if (!currentKB || kbId !== currentKB.id) return;
+      
+      // Store upload info temporarily - notification will be shown when dialog closes
+      const uploadKey = `${kbId}-${folderId || 'root'}`;
+      const newUpload = {
+        kbId,
+        folderId,
+        files,
+        startTime: Date.now(),
+        status: 'uploading' as const,
+      };
+      
+      // Save to storage but don't show notification yet (will show when dialog closes)
+      try {
+        const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
+        const parsed = stored ? JSON.parse(stored) : {};
+        parsed[uploadKey] = newUpload;
+        sessionStorage.setItem(ACTIVE_UPLOADS_STORAGE_KEY, JSON.stringify(parsed));
+      } catch (e) {
+        console.error('handleUploadStart: Failed to save to storage:', e);
+      }
+    },
+    [currentKB]
+  );
+
+  const handleUploadSuccess = useCallback(
+    async (message?: string, records?: any[], failedFiles?: Array<{fileName: string; filePath: string; error: string}>) => {
+      if (!currentKB) {
+        console.error('handleUploadSuccess: No currentKB');
+        return;
+      }
+
+      try {
+        // Don't show success snackbar here - it will show when Socket.IO confirms processing is complete
+        // Dialog is already closed by upload manager, now show notification
+
+        const uploadKey = `${currentKB.id}-${stableRoute.folderId || 'root'}`;
+        const fileNames = records ? records.map((r) => r.recordName || r.name || 'Unknown file') : [];
+        const allFileNames = failedFiles 
+          ? [...fileNames, ...failedFiles.map((ff) => ff.fileName || ff.filePath)]
+          : fileNames;
+
+        // Handle failed files from response - send notification immediately
+        if (failedFiles && failedFiles.length > 0) {
+          // Send failed files notification via socket if available
+          // This ensures failed files are notified even if socket events from backend fail
+          const failedFilesWithIds = failedFiles.map((ff) => ({
+            recordId: `temp-${Date.now()}-${Math.random()}`, // Temporary ID for tracking
+            fileName: ff.fileName,
+            filePath: ff.filePath,
+            error: ff.error,
+          }));
+
+          // Update active uploads with failed files
+          setActiveUploads((prev) => {
+            const newMap = new Map(prev);
+            const upload = newMap.get(uploadKey);
+            
+            if (upload) {
+              // If ALL files failed (no successful records), mark as completed immediately
+              // If some succeeded, mark as processing (waiting for backend processing)
+              const allFilesFailed = !records || records.length === 0;
+              
+              const updatedUpload = {
+                ...upload,
+                files: allFileNames,
+                recordIds: records ? records.map((r) => r._key) : [],
+                status: allFilesFailed ? 'completed' as const : 'processing' as const,
+                failedFiles: failedFilesWithIds,
+                hasFailures: true,
+              };
+              newMap.set(uploadKey, updatedUpload);
+            }
+            
+            return newMap;
+          });
+          
+          // Show error snackbar for failed files
+          const failedCount = failedFiles.length;
+          if (!records || records.length === 0) {
+            // All files failed
+            setError(`Failed to upload ${failedCount} file${failedCount > 1 ? 's' : ''}`);
+          } else {
+            // Partial failure - some succeeded, some failed
+            setError(`${failedCount} file${failedCount > 1 ? 's' : ''} failed to upload`);
+          }
+        }
+
+        // Optimistic UI update: Add records immediately if provided
+        if (records && records.length > 0) {
+          // Show notification when dialog closes - load from storage or create new
+          setActiveUploads((prev) => {
+            const newMap = new Map(prev);
+            
+            // Try to load from storage first (created in handleUploadStart)
+            let existingUpload = newMap.get(uploadKey);
+            if (!existingUpload) {
+              try {
+                const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
+                if (stored) {
+                  const parsed = JSON.parse(stored);
+                  existingUpload = parsed[uploadKey];
+                }
+              } catch (e) {
+                // Ignore errors
+              }
+            }
+            
+            if (existingUpload) {
+              // Update existing notification with record IDs and processing status
+              const updatedUpload = {
+                ...existingUpload,
+                files: allFileNames, // Include all files (successful + failed)
+                recordIds: records.map((r) => r._key),
+                status: 'processing' as const,
+                failedFiles: failedFiles ? failedFiles.map((ff) => ({
+                  recordId: `temp-${Date.now()}-${Math.random()}`,
+                  fileName: ff.fileName,
+                  filePath: ff.filePath,
+                  error: ff.error,
+                })) : existingUpload.failedFiles,
+                hasFailures: failedFiles && failedFiles.length > 0,
+              };
+              
+              newMap.set(uploadKey, updatedUpload);
+              
+              // Also update in storage
+              try {
+                const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
+                const parsed = stored ? JSON.parse(stored) : {};
+                parsed[uploadKey] = updatedUpload;
+                sessionStorage.setItem(ACTIVE_UPLOADS_STORAGE_KEY, JSON.stringify(parsed));
+              } catch (e) {
+                // Ignore errors
+              }
+            } else {
+              // Create new notification if it doesn't exist
+              const newUpload = {
+                kbId: currentKB.id,
+                folderId: stableRoute.folderId,
+                files: allFileNames,
+                startTime: Date.now(),
+                recordIds: records.map((r) => r._key),
+                status: 'processing' as const,
+                failedFiles: failedFiles ? failedFiles.map((ff) => ({
+                  recordId: `temp-${Date.now()}-${Math.random()}`,
+                  fileName: ff.fileName,
+                  filePath: ff.filePath,
+                  error: ff.error,
+                })) : undefined,
+                hasFailures: failedFiles && failedFiles.length > 0,
+              };
+              newMap.set(uploadKey, newUpload);
+            }
+            
+            return newMap;
+          });
+
+          const optimisticItems: Item[] = records.map((record) => ({
+            id: record._key,
+            _key: record._key,
+            name: record.recordName || record.name,
+            type: 'file' as const,
+            recordName: record.recordName,
+            recordType: record.recordType,
+            indexingStatus: (record.indexingStatus || 'PROCESSING') as Item['indexingStatus'],
+            origin: record.origin,
+            connectorName: record.connectorName,
+            webUrl: record.webUrl || '',
+            externalRecordId: record.externalRecordId,
+            fileRecord: record.fileRecord,
+            sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+            sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+            version: record.version,
+            createdAt: record.createdAtTimestamp || Date.now(),
+            updatedAt: record.updatedAtTimestamp || Date.now(),
+            extension: record.fileRecord?.extension ?? undefined,
+            sizeInBytes: record.fileRecord?.sizeInBytes,
+            // Mark as processing for visual feedback
+            isProcessing: record.indexingStatus === 'PROCESSING',
+          }));
+
+          // Add records optimistically to the UI
+          setItems((prev) => {
+            // Avoid duplicates
+            const existingIds = new Set(prev.map((item) => item.id));
+            const newItems = optimisticItems.filter((item) => !existingIds.has(item.id));
+            return [...newItems, ...prev];
+          });
+
+          // Notification will persist until user manually closes it
+          // Real-time updates will be handled via Socket.IO events
+          // No polling needed - the 'records:processed' event will trigger a refresh
+          
+          // Fallback timeout: If socket events don't arrive within 5 seconds, mark as completed
+          // This prevents the notification from getting stuck in "processing" state
+          // Especially important for local storage where processing is very fast
+          // Clear any existing timeout for this upload key
+          const existingTimeout = fallbackTimeoutsRef.current.get(uploadKey);
+          if (existingTimeout) {
+            clearTimeout(existingTimeout);
+          }
+          
+          const fallbackTimeout = setTimeout(() => {
+            setActiveUploads((prev) => {
+              const newMap = new Map(prev);
+              const upload = newMap.get(uploadKey);
+              
+              // Only apply fallback if still in processing state
+              if (upload && upload.status === 'processing') {
+                const updatedUpload = {
+                  ...upload,
+                  status: 'completed' as const,
+                };
+                newMap.set(uploadKey, updatedUpload);
+                
+                // Refresh to get actual status from server
+                loadKBContents(currentKB.id, stableRoute.folderId, true, true).catch(() => {
+                  // Ignore errors
+                });
+              }
+              
+              // Remove timeout from ref
+              fallbackTimeoutsRef.current.delete(uploadKey);
+              
+              return newMap;
+            });
+          }, SOCKET_EVENT_TIMEOUT_MS);
+          
+          // Store timeout ID in ref
+          fallbackTimeoutsRef.current.set(uploadKey, fallbackTimeout);
+        } else {
+          // Fallback: Reload if no records provided
+          await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
+        }
+      } catch (err: unknown) {
+        const uploadError = err instanceof Error ? err : new Error(String(err));
+        setError(uploadError.message || 'Upload failed');
+      }
+    },
+    [stableRoute.folderId, loadKBContents, currentKB]
+  );
 
   const handleDelete = async () => {
     if (!itemToDelete) return;
@@ -1027,10 +1525,49 @@ export default function KnowledgeBaseComponent() {
 
       <UploadManager
         open={uploadDialog}
-        onClose={() => setUploadDialog(false)}
+        onClose={() => {
+          setUploadDialog(false);
+          // When dialog closes, load and show any pending upload notifications from storage
+          const stored = sessionStorage.getItem(ACTIVE_UPLOADS_STORAGE_KEY);
+          if (stored) {
+            try {
+              const parsed = JSON.parse(stored) as Record<string, {
+                kbId: string;
+                folderId?: string;
+                files: string[];
+                startTime: number;
+                recordIds?: string[];
+                status?: 'uploading' | 'processing' | 'completed';
+              }>;
+              const uploadsMap = new Map(Object.entries(parsed));
+              // Filter for current KB/folder
+              const filtered = Array.from(uploadsMap.entries()).filter(([_, upload]) => {
+                if (!upload) return false;
+                if (currentKB && upload.kbId !== currentKB.id) return false;
+                const uploadFolderId = upload.folderId || 'root';
+                const viewFolderId = stableRoute.folderId || 'root';
+                return uploadFolderId === viewFolderId;
+              });
+              
+              if (filtered.length > 0) {
+                // Update state to show notifications
+                setActiveUploads((prev) => {
+                  const newMap = new Map(prev);
+                  filtered.forEach(([key, upload]) => {
+                    newMap.set(key, upload);
+                  });
+                  return newMap;
+                });
+              }
+            } catch (e) {
+              // Ignore errors
+            }
+          }
+        }}
         knowledgeBaseId={currentKB?.id}
         folderId={stableRoute.folderId}
         onUploadSuccess={handleUploadSuccess}
+        onUploadStart={handleUploadStart}
       />
 
       <DeleteConfirmDialog
@@ -1054,6 +1591,21 @@ export default function KnowledgeBaseComponent() {
 
       {/* Context Menu */}
       {renderContextMenu()}
+
+      {/* Upload Notification - Bottom Right Corner (Google Drive-like) */}
+      {/* Only show notifications for the current KB/folder being viewed */}
+      <UploadNotification
+        uploads={activeUploads}
+        currentKBId={currentKB?.id}
+        currentFolderId={stableRoute.folderId}
+        onDismiss={(uploadKey) => {
+          setActiveUploads((prev) => {
+            const newMap = new Map(prev);
+            newMap.delete(uploadKey);
+            return newMap;
+          });
+        }}
+      />
 
       {/* Snackbars */}
       <Snackbar

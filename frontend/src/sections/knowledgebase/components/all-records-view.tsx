@@ -810,6 +810,10 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
             displayLabel = 'IN PROGRESS';
             color = theme.palette.info.main;
             break;
+          case 'PROCESSING':
+            displayLabel = 'PROCESSING';
+            color = theme.palette.info.main;
+            break;
           case 'FAILED':
             displayLabel = 'FAILED';
             color = theme.palette.error.main;
@@ -853,6 +857,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
           .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
           .join(' ');
 
+        const isProcessing = status === 'PROCESSING';
+
         return (
           <Box
             sx={{
@@ -863,6 +869,15 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
               mt: 2.4,
             }}
           >
+            {isProcessing && (
+              <CircularProgress
+                size={12}
+                thickness={4}
+                sx={{
+                  color: theme.palette.info.main,
+                }}
+              />
+            )}
             <Typography variant="caption" sx={{ color, fontWeight: 500 }}>
               {displayLabel}
             </Typography>
