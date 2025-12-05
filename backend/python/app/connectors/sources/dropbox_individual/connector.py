@@ -149,7 +149,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         ))
         .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/dropbox/dropbox',
+            'https://docs.pipeshub.com/connectors/dropbox/dropbox_personal',
             'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Dropbox%20Personal", True)
