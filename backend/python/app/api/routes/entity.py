@@ -442,42 +442,44 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
             if deleted_list:
                 logger.info(f"Removed {len(deleted_list)} users from team {team_id}")
 
-        # Update individual user roles if specified
+        # Update individual user roles if specified (batch update)
         update_user_roles = body_dict.get("updateUserRoles", [])  # Array of {userId, role}
         if update_user_roles:
-            for user_role in update_user_roles:
-                user_id = user_role.get("userId")
-                new_role = user_role.get("role")
-                if not user_id or not new_role:
-                    continue
-                # Prevent changing team owner's role
-                if user_id == user['_key']:
-                    logger.warning(f"Cannot change team owner's role for user {user_id}")
-                    continue
+            # Filter out invalid entries and owner
+            owner_key = user['_key']
+            valid_user_roles = [
+                user_role for user_role in update_user_roles
+                if user_role.get("userId") and user_role.get("role") and user_role.get("userId") != owner_key
+            ]
 
-                update_query = f"""
-                FOR permission IN {CollectionNames.PERMISSION.value}
-                FILTER permission._to == @teamId
-                FILTER SPLIT(permission._from, '/')[1] == @userId
-                UPDATE permission WITH {{
-                    role: @role,
-                    updatedAtTimestamp: @timestamp
-                }} IN {CollectionNames.PERMISSION.value}
-                RETURN NEW
+            if valid_user_roles:
+                # Batch update all user roles in a single query
+                batch_update_query = f"""
+                FOR user_role IN @update_user_roles
+                    LET user_id = user_role.userId
+                    LET new_role = user_role.role
+                    FOR permission IN {CollectionNames.PERMISSION.value}
+                        FILTER permission._to == @teamId
+                        FILTER SPLIT(permission._from, '/')[1] == user_id
+                        UPDATE permission WITH {{
+                            role: new_role,
+                            updatedAtTimestamp: @timestamp
+                        }} IN {CollectionNames.PERMISSION.value}
+                        RETURN NEW
                 """
                 try:
-                    arango_service.db.aql.execute(
-                        update_query,
+                    cursor = arango_service.db.aql.execute(
+                        batch_update_query,
                         bind_vars={
                             "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
-                            "userId": user_id,
-                            "role": new_role,
+                            "update_user_roles": valid_user_roles,
                             "timestamp": get_epoch_timestamp_in_ms()
                         }
                     )
-                    logger.info(f"Updated role for user {user_id} to {new_role}")
+                    updated_permissions = list(cursor)
+                    logger.info(f"Updated {len(updated_permissions)} user roles in batch")
                 except Exception as e:
-                    logger.error(f"Error updating role for user {user_id}: {str(e)}")
+                    logger.error(f"Error updating user roles in batch: {str(e)}")
 
         # Add users if specified (excluding creator to preserve OWNER role)
         if add_user_roles:
@@ -747,48 +749,47 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
         raise HTTPException(status_code=400, detail="Cannot change team owner's role")
 
     try:
-        updated_permissions = []
         timestamp = get_epoch_timestamp_in_ms()
+        owner_key = user['_key']
 
-        # Update each user's role individually
-        for user_role in user_roles:
-            user_id = user_role.get("userId")
-            role = user_role.get("role", "READER")
-            if not user_id:
-                continue
+        # Filter out invalid entries and owner
+        valid_user_roles = [
+            user_role for user_role in user_roles
+            if user_role.get("userId") and user_role.get("userId") != owner_key
+        ]
 
-            # Skip team owner
-            if user_id == user['_key']:
-                logger.warning(f"Cannot change team owner's role for user {user_id}")
-                continue
+        if not valid_user_roles:
+            raise HTTPException(status_code=404, detail="No user permissions found to update")
 
-            update_query = f"""
+        # Batch update all user roles in a single query
+        batch_update_query = f"""
+        FOR user_role IN @user_roles
+            LET user_id = user_role.userId
+            LET new_role = user_role.role
             FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @team_id
-            FILTER SPLIT(permission._from, '/')[1] == @user_id
-            UPDATE permission WITH {{
-                role: @role,
-                updatedAtTimestamp: @timestamp
-            }} IN {CollectionNames.PERMISSION.value}
-            RETURN {{
-                _key: NEW._key,
-                _from: NEW._from,
-                role: NEW.role,
-                updatedAt: NEW.updatedAtTimestamp
-            }}
-            """
+                FILTER permission._to == @team_id
+                FILTER SPLIT(permission._from, '/')[1] == user_id
+                UPDATE permission WITH {{
+                    role: new_role,
+                    updatedAtTimestamp: @timestamp
+                }} IN {CollectionNames.PERMISSION.value}
+                RETURN {{
+                    _key: NEW._key,
+                    _from: NEW._from,
+                    role: NEW.role,
+                    updatedAt: NEW.updatedAtTimestamp
+                }}
+        """
 
-            bind_vars = {
+        cursor = arango_service.db.aql.execute(
+            batch_update_query,
+            bind_vars={
                 "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
-                "user_id": user_id,
-                "role": role,
+                "user_roles": valid_user_roles,
                 "timestamp": timestamp
             }
-
-            cursor = arango_service.db.aql.execute(update_query, bind_vars=bind_vars)
-            result = list(cursor)
-            if result:
-                updated_permissions.extend(result)
+        )
+        updated_permissions = list(cursor)
 
         if not updated_permissions:
             raise HTTPException(status_code=404, detail="No user permissions found to update")

@@ -900,11 +900,18 @@ async def update_kb_permission(
                 detail="Role is required"
             )
 
+        # Teams don't have roles - reject at router level for faster feedback
+        if team_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Teams do not have roles. Only user permissions can be updated."
+            )
+
         result = await kb_service.update_kb_permission(
             kb_id=kb_id,
             requester_id=user_id,
             user_ids=user_ids,
-            team_ids=team_ids,  # Will be rejected by service if provided
+            team_ids=team_ids,
             new_role=new_role,
         )
         if not result or result.get("success") is False:

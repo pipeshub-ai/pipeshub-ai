@@ -1804,7 +1804,7 @@ export const createKBPermission =
       );
 
       try {
-        const payload: any = {
+        const payload: { userIds: string[]; teamIds: string[]; role?: string } = {
           userIds: userIds,
           teamIds: teamIds,
         };
