@@ -40,7 +40,7 @@ interface UploadManagerProps {
   onClose: () => void;
   knowledgeBaseId: string | null | undefined;
   folderId: string | null | undefined;
-  onUploadSuccess: (message?: string, records?: any[]) => Promise<void>;
+  onUploadSuccess: (message?: string, records?: any[], failedFiles?: Array<{fileName: string; filePath: string; error: string}>) => Promise<void>;
   onUploadStart?: (files: string[], kbId: string, folderId?: string) => void;
 }
 
@@ -276,12 +276,10 @@ export default function UploadManager({
       
       // Close dialog immediately after upload starts to show notification instead
       // This prevents both dialog and notification from showing at the same time
-      // Close after a brief delay to ensure upload has initiated
-      setTimeout(() => {
-        if (!uploadError.show) {
-          onClose();
-        }
-      }, 500); // Small delay to ensure upload has started
+      // Close immediately since upload has already been initiated
+      if (!uploadError.show) {
+        onClose();
+      }
       const perRequest = Math.min(BATCH_SIZE, maxFilesPerRequest);
       const batches = chunkArray(valid, perRequest);
       const totalFiles = valid.length;
@@ -390,16 +388,26 @@ export default function UploadManager({
         totalFiles,
       });
 
-      // Collect all records from responses for optimistic UI update
+      // Collect all records and failed files from responses for optimistic UI update
       const allRecords: any[] = [];
+      const allFailedFiles: Array<{
+        fileName: string;
+        filePath: string;
+        error: string;
+      }> = [];
+      
       responses.forEach((response) => {
-        if (response?.data?.records && Array.isArray(response.data.records)) {
-          allRecords.push(...response.data.records);
+        if (response?.records && Array.isArray(response.records)) {
+          allRecords.push(...response.records);
+        }
+        // Collect failed files from response
+        if (response?.failedFilesDetails && Array.isArray(response.failedFilesDetails)) {
+          allFailedFiles.push(...response.failedFilesDetails);
         }
       });
 
       const successMessage = `Successfully uploaded ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
-      await onUploadSuccess(successMessage, allRecords);
+      await onUploadSuccess(successMessage, allRecords, allFailedFiles);
       handleClose();
     } catch (error: any) {
       // Use processed error message from axios interceptor if available

@@ -18,6 +18,7 @@ import {
   ORIGIN_TYPE,
   RECORD_TYPE,
 } from '../constants/record.constants';
+import { NotificationService } from '../../notification/service/notification.service';
 
 const logger = Logger.getInstance({
   service: 'knowledge_base.utils',
@@ -208,14 +209,16 @@ export const uploadFileToSignedUrl = async (
 
 /**
  * Processes uploads sequentially in background and calls Python service after completion.
- * This function does NOT publish events - Python service handles event publishing.
+ * This function tracks successful and failed files separately and only sends successful files to Python API.
  * 
  * @param placeholderResults - Array of placeholder results with metadata
  * @param orgId - Organization ID
+ * @param userId - User ID for notifications
  * @param currentTime - Current timestamp
  * @param pythonServiceUrl - Python service endpoint URL
  * @param headers - HTTP headers to forward to Python service
  * @param logger - Logger instance
+ * @param notificationService - NotificationService for sending socket events
  * @returns Promise that resolves when background processing completes
  */
 export const processUploadsInBackground = async (
@@ -226,11 +229,18 @@ export const processUploadsInBackground = async (
   pythonServiceUrl: string,
   headers: Record<string, string>,
   logger: Logger,
-  notificationService?: any, // NotificationService - optional to avoid breaking existing code
+  notificationService?: NotificationService,
+  kbId?: string,
+  folderId?: string,
 ): Promise<void> => {
   const uploadStartTime = Date.now();
-  let successfulUploads = 0;
-  let failedUploads = 0;
+  
+  // Track successful and failed files separately
+  const successfulResults: PlaceholderResultWithMetadata[] = [];
+  const failedResults: Array<{
+    result: PlaceholderResultWithMetadata;
+    error: string;
+  }> = [];
 
   try {
     // STEP 1: Upload all files sequentially (not parallel)
@@ -240,20 +250,26 @@ export const processUploadsInBackground = async (
     });
 
     for (const result of placeholderResults) {
-      const { placeholderResult } = result;
+      const { placeholderResult, metadata } = result;
+      
       if (placeholderResult.uploadPromise) {
         try {
           await placeholderResult.uploadPromise;
-          successfulUploads++;
+          successfulResults.push(result);
           logger.debug('Background upload completed', {
             documentId: placeholderResult.documentId,
             documentName: placeholderResult.documentName,
+            fileName: metadata.fileName,
           });
         } catch (uploadError: any) {
-          failedUploads++;
+          failedResults.push({
+            result,
+            error: uploadError.message || 'Upload failed',
+          });
           logger.error('Background upload failed', {
             documentId: placeholderResult.documentId,
             documentName: placeholderResult.documentName,
+            fileName: metadata.fileName,
             error: uploadError.message,
             stack: uploadError.stack,
           });
@@ -261,20 +277,86 @@ export const processUploadsInBackground = async (
         }
       } else {
         // File was already uploaded directly (no redirect)
-        successfulUploads++;
+        successfulResults.push(result);
       }
     }
 
     const uploadDuration = Date.now() - uploadStartTime;
     logger.info('All background uploads completed', {
       totalFiles: placeholderResults.length,
-      successfulUploads,
-      failedUploads,
+      successfulUploads: successfulResults.length,
+      failedUploads: failedResults.length,
       durationMs: uploadDuration,
     });
 
-    // STEP 2: Build records with storage info using proper types
-    const processedFiles: ProcessedFile[] = placeholderResults.map((result) => {
+    // STEP 2: Use provided kbId and folderId, or extract from URL as fallback
+    // Prefer explicit parameters over URL parsing for better reliability
+    const finalKbId = kbId || (() => {
+      const urlParts = pythonServiceUrl.split('/');
+      const kbIdIndex = urlParts.findIndex((part) => part === 'kb') + 1;
+      return kbIdIndex > 0 && kbIdIndex < urlParts.length ? urlParts[kbIdIndex] : undefined;
+    })();
+    const finalFolderId = folderId || (() => {
+      const urlParts = pythonServiceUrl.split('/');
+      const folderIdIndex = urlParts.findIndex((part) => part === 'folder');
+      return folderIdIndex > 0 && folderIdIndex + 1 < urlParts.length ? urlParts[folderIdIndex + 1] : undefined;
+    })();
+
+    // STEP 3: Send failed files notification if any
+    // Event-driven: Send immediately when failures are detected, no delays
+    // NotificationService handles connection state and queuing automatically
+    if (failedResults.length > 0 && notificationService) {
+      try {
+        const failedFiles = failedResults.map((fr) => ({
+          recordId: fr.result.metadata.key,
+          fileName: fr.result.metadata.fileName,
+          filePath: fr.result.metadata.filePath,
+          error: fr.error,
+        }));
+
+        const eventData = {
+          failedFiles,
+          orgId,
+          kbId: finalKbId,
+          folderId: finalFolderId,
+          totalFailed: failedResults.length,
+          timestamp: Date.now(),
+        };
+
+        // Send immediately - service handles connection state and queuing
+        const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
+
+        logger.info('Notification sent for failed records', {
+          userId,
+          totalFailed: failedResults.length,
+          kbId: finalKbId,
+          folderId: finalFolderId,
+          sentImmediately,
+        });
+      } catch (socketError: unknown) {
+        const error = socketError instanceof Error ? socketError : new Error(String(socketError));
+        logger.error('Failed to send notification for failed files', {
+          error: error.message,
+          stack: error.stack,
+          userId,
+          kbId: finalKbId,
+          folderId: finalFolderId,
+        });
+        // Don't fail the upload if notification fails - this is a non-critical notification
+      }
+    }
+
+    // STEP 4: Process successful files - only send successful files to Python API
+    if (successfulResults.length === 0) {
+      logger.warn('No successful uploads to process', {
+        totalFiles: placeholderResults.length,
+        failedFiles: failedResults.length,
+      });
+      return;
+    }
+
+    // Build records with storage info using proper types - only for successful files
+    const processedFiles: ProcessedFile[] = successfulResults.map((result) => {
       const { placeholderResult, metadata } = result;
       const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
 
@@ -316,9 +398,10 @@ export const processUploadsInBackground = async (
       };
     });
 
-    // STEP 3: Call Python service (this will publish events)
-    logger.info('Calling Python service with processed files', {
-      totalRecords: processedFiles.length,
+    // STEP 5: Call Python service with only successful files
+    logger.info('Calling Python service with successful files', {
+      successfulRecords: processedFiles.length,
+      failedRecords: failedResults.length,
       pythonServiceUrl,
     });
 
@@ -341,52 +424,111 @@ export const processUploadsInBackground = async (
 
     if (response.statusCode === 200 || response.statusCode === 201) {
       logger.info('Python service called successfully after uploads', {
-        totalRecords: processedFiles.length,
+        successfulRecords: processedFiles.length,
+        failedRecords: failedResults.length,
         statusCode: response.statusCode,
         totalDurationMs: totalDuration,
         uploadDurationMs: uploadDuration,
       });
 
-      // Emit Socket.IO event to notify frontend that records are now processed
+      // STEP 6: Emit Socket.IO event to notify frontend that successful records are now processed
+      // Event-driven: Send immediately when processing completes, no delays
+      // NotificationService handles connection state and queuing automatically
       if (notificationService) {
         const recordIds = processedFiles.map((pf) => pf.record._key);
         try {
-          // Extract kbId and folderId from the URL
-          const urlParts = pythonServiceUrl.split('/');
-          const kbIdIndex = urlParts.findIndex((part) => part === 'kb') + 1;
-          const kbId = kbIdIndex > 0 && kbIdIndex < urlParts.length ? urlParts[kbIdIndex] : undefined;
-          const folderIdIndex = urlParts.findIndex((part) => part === 'folder');
-          const folderId = folderIdIndex > 0 && folderIdIndex + 1 < urlParts.length ? urlParts[folderIdIndex + 1] : undefined;
-
-          notificationService.sendToUser(userId, 'records:processed', {
+          const eventData = {
             recordIds,
             orgId,
-            kbId,
-            folderId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
             totalRecords: processedFiles.length,
             timestamp: Date.now(),
-          });
-          logger.info('Socket.IO event emitted for processed records', {
+          };
+
+          // Send immediately - service handles connection state and queuing
+          const sentImmediately = notificationService.sendToUser(userId, 'records:processed', eventData);
+          
+          logger.info('Notification sent for processed records', {
             userId,
-            recordIds: recordIds.slice(0, 3), // Log first 3 for debugging
+            recordIds: recordIds.slice(0, 3),
+            totalRecords: processedFiles.length,
+            kbId: finalKbId,
+            folderId: finalFolderId,
+            sentImmediately,
+            totalDurationMs: totalDuration,
+            uploadDurationMs: uploadDuration,
+          });
+        } catch (socketError: unknown) {
+          const error = socketError instanceof Error ? socketError : new Error(String(socketError));
+          logger.error('Failed to send notification for processed records', {
+            error: error.message,
+            stack: error.stack,
+            userId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
             totalRecords: processedFiles.length,
           });
-        } catch (socketError: any) {
-          logger.error('Failed to emit Socket.IO event', {
-            error: socketError.message,
-            userId,
-          });
-          // Don't fail the upload if Socket.IO fails
+          // Don't fail the upload if notification fails - this is a non-critical notification
         }
+      } else {
+        logger.warn('NotificationService not available - socket events will not be sent', {
+          userId,
+          kbId: finalKbId,
+          folderId: finalFolderId,
+          totalRecords: processedFiles.length,
+        });
       }
     } else {
       logger.error('Python service call failed after uploads', {
         statusCode: response.statusCode,
         message: response.msg,
-        totalRecords: processedFiles.length,
+        successfulRecords: processedFiles.length,
+        failedRecords: failedResults.length,
         totalDurationMs: totalDuration,
       });
-      // Don't throw - background processing should be resilient
+      
+      // If Python API fails, mark all successful uploads as failed in notification
+      // Event-driven: Send immediately when API failure is detected
+      if (notificationService && processedFiles.length > 0) {
+        try {
+          const failedFiles = processedFiles.map((pf) => ({
+            recordId: pf.record._key,
+            fileName: pf.record.recordName,
+            filePath: pf.filePath,
+            error: `Python API call failed: ${response.msg || 'Unknown error'}`,
+          }));
+
+          const eventData = {
+            failedFiles,
+            orgId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
+            totalFailed: processedFiles.length,
+            timestamp: Date.now(),
+          };
+
+          // Send immediately - service handles connection state and queuing
+          const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
+
+          logger.info('Notification sent for Python API failures', {
+            userId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
+            totalFailed: processedFiles.length,
+            sentImmediately,
+          });
+        } catch (socketError: unknown) {
+          const error = socketError instanceof Error ? socketError : new Error(String(socketError));
+          logger.error('Failed to send notification for Python API failures', {
+            error: error.message,
+            stack: error.stack,
+            userId,
+            kbId: finalKbId,
+            folderId: finalFolderId,
+          });
+        }
+      }
     }
   } catch (error: any) {
     const totalDuration = Date.now() - uploadStartTime;
@@ -394,9 +536,63 @@ export const processUploadsInBackground = async (
       error: error.message,
       stack: error.stack,
       totalDurationMs: totalDuration,
-      successfulUploads,
-      failedUploads,
+      successfulUploads: successfulResults.length,
+      failedUploads: failedResults.length,
     });
+    
+      // Send notification for all files as failed if there's a catastrophic error
+      // Event-driven: Send immediately when catastrophic error occurs
+    if (notificationService && placeholderResults.length > 0) {
+      try {
+        // Use provided kbId and folderId, or extract from URL as fallback
+        const errorKbId = kbId || (() => {
+          const urlParts = pythonServiceUrl.split('/');
+          const kbIdIndex = urlParts.findIndex((part) => part === 'kb') + 1;
+          return kbIdIndex > 0 && kbIdIndex < urlParts.length ? urlParts[kbIdIndex] : undefined;
+        })();
+        const errorFolderId = folderId || (() => {
+          const urlParts = pythonServiceUrl.split('/');
+          const folderIdIndex = urlParts.findIndex((part) => part === 'folder');
+          return folderIdIndex > 0 && folderIdIndex + 1 < urlParts.length ? urlParts[folderIdIndex + 1] : undefined;
+        })();
+
+        const failedFiles = placeholderResults.map((result) => ({
+          recordId: result.metadata.key,
+          fileName: result.metadata.fileName,
+          filePath: result.metadata.filePath,
+          error: error.message || 'Processing failed',
+        }));
+
+        const eventData = {
+          failedFiles,
+          orgId,
+          kbId: errorKbId,
+          folderId: errorFolderId,
+          totalFailed: placeholderResults.length,
+          timestamp: Date.now(),
+        };
+
+        // Send immediately - service handles connection state and queuing
+        const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
+
+        logger.info('Notification sent for catastrophic failure', {
+          userId,
+          kbId: errorKbId,
+          folderId: errorFolderId,
+          totalFailed: placeholderResults.length,
+          sentImmediately,
+        });
+      } catch (socketError: unknown) {
+        const error = socketError instanceof Error ? socketError : new Error(String(socketError));
+        logger.error('Failed to send notification for catastrophic failure', {
+          error: error.message,
+          stack: error.stack,
+          userId,
+          kbId: kbId || undefined,
+          folderId: folderId || undefined,
+        });
+      }
+    }
     // Don't throw - this is background processing, errors are logged but don't affect the response
   }
 };
