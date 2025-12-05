@@ -239,7 +239,7 @@ class BlobStorage(Transformer):
                         if not document_id:
                             self.logger.error("❌ No document ID in placeholder response")
                             raise Exception("No document ID in placeholder response")
-                        
+
                         self.logger.info("📄 Created placeholder with ID: %s", document_id)
 
                         # Step 2: Get signed URL (only send metadata, not the full record)
