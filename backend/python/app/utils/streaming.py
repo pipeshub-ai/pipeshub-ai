@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
@@ -26,11 +27,26 @@ from app.utils.citations import (
 )
 from app.utils.logger import create_logger
 
+logger = create_logger("streaming")
+
+opik_tracer = None
+api_key = os.getenv("OPIK_API_KEY")
+workspace = os.getenv("OPIK_WORKSPACE")
+if api_key and workspace:
+    try:
+        from opik import configure
+        from opik.integrations.langchain import OpikTracer
+        configure(use_local=False, api_key=api_key, workspace=workspace)
+        opik_tracer = OpikTracer()
+    except Exception as e:
+        logger.warning(f"Error configuring Opik: {e}")
+else:
+    logger.info("OPIK_API_KEY and/or OPIK_WORKSPACE not set. Skipping Opik configuration.")
+
 MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
 
 # Create a logger for this module
-logger = create_logger("streaming")
 parser = PydanticOutputParser(pydantic_object=AnswerWithMetadataJSON)
 format_instructions = parser.get_format_instructions()
 
@@ -114,9 +130,13 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
     """
     if parts is None:
         parts = []
+    if opik_tracer is not None:
+        config = {"callbacks": [opik_tracer]}
+    else:
+        config = {}
     try:
         if hasattr(llm, "astream"):
-            async for part in llm.astream(messages):
+            async for part in llm.astream(messages, config=config):
                 if not part:
                     continue
                 parts.append(part)
@@ -126,7 +146,7 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
                     yield text
         else:
             # Non-streaming – yield whole blob once
-            response = await llm.ainvoke(messages)
+            response = await llm.ainvoke(messages, config=config)
             content = getattr(response, "content", response)
             parts.append(response)
 
