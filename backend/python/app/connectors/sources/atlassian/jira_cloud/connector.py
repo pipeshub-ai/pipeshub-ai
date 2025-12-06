@@ -37,8 +37,8 @@ from app.connectors.sources.atlassian.core.oauth import (
 )
 from app.models.entities import (
     AppUser,
+    CommentRecord,
     IndexingStatus,
-    MessageRecord,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -67,11 +67,8 @@ JQL_TIME_BUFFER_MINUTES: int = 5  # Buffer time for incremental sync to catch ed
 ISSUE_SEARCH_FIELDS: List[str] = [
     "summary", "description", "status", "priority",
     "creator", "assignee", "created", "updated",
-    "issuetype", "project", "watchers"
+    "issuetype", "project"
 ]
-
-# Permission constants
-ADMIN_ROLE_NAMES: List[str] = ["Administrators", "administrators"]  # Exact role names that grant OWNER permissions
 
 # HTTP status codes
 HTTP_STATUS_OK: int = 200
@@ -360,7 +357,29 @@ class JiraConnector(BaseConnector):
             raise ValueError("Jira access token not found in configuration")
         return access_token
 
+    async def _get_fresh_datasource(self) -> JiraDataSource:
+        """
+        Get JiraDataSource with ALWAYS-FRESH access token.
 
+        This method:
+        1. Fetches current OAuth token from config
+        2. Rebuilds client with fresh token if needed
+        3. Returns datasource with current token
+
+        Returns:
+            JiraDataSource with current valid token
+        """
+        # Fetch fresh access token from config
+        fresh_token = await self._get_access_token()
+
+        # Rebuild client with fresh token
+        client = await JiraClient.build_from_services(
+            self.logger,
+            self.config_service
+        )
+
+        # Return new datasource with fresh client
+        return JiraDataSource(client)
 
     def _parse_jira_timestamp(self, timestamp_str: Optional[str]) -> int:
         """Parse Jira timestamp to epoch milliseconds"""
@@ -406,6 +425,7 @@ class JiraConnector(BaseConnector):
 
             if last_sync_time:
                 self.logger.info(f"Starting incremental Jira sync for org: {org_id} from timestamp: {last_sync_time}")
+                
             else:
                 self.logger.info(f"Starting full Jira sync for org: {org_id} (first sync)")
 
@@ -449,15 +469,10 @@ class JiraConnector(BaseConnector):
                 try:
                     self.logger.info(f"Fetching issues for project: {project.name} ({project.short_name})")
 
-                    # Fetch project roles for permission management
-                    project_roles = await self._fetch_project_roles(project.short_name, jira_users)
-                    self.logger.info(f"Found {len(project_roles)} roles for project {project.short_name}")
-
                     issues_with_permissions = await self._fetch_issues(
                         project.short_name,
                         project.external_group_id,
                         jira_users,
-                        project_roles,
                         last_sync_time,
                         org_id
                     )
@@ -487,19 +502,19 @@ class JiraConnector(BaseConnector):
                             await self.data_entities_processor.on_new_records(batch)
                             total_new_issues += len(batch)
                             new_issues_count = sum(1 for r, _ in batch if isinstance(r, TicketRecord))
-                            new_comments_count = sum(1 for r, _ in batch if isinstance(r, MessageRecord))
+                            new_comments_count = sum(1 for r, _ in batch if isinstance(r, CommentRecord))
                             self.logger.info(f"Synced batch {i//batch_size + 1}: {new_issues_count} NEW issues, {new_comments_count} NEW comments for project {project.short_name}")
 
                     if updated_records:
                         # Batch upsert updated records using transaction
                         async with self.data_store_provider.transaction() as tx_store:
                             ticket_records_to_update = [record for record in updated_records if isinstance(record, TicketRecord)]
-                            message_records_to_update = [record for record in updated_records if isinstance(record, MessageRecord)]
+                            comment_records_to_update = [record for record in updated_records if isinstance(record, CommentRecord)]
 
                             if ticket_records_to_update:
                                 await tx_store.batch_upsert_records(ticket_records_to_update)
-                            if message_records_to_update:
-                                await tx_store.batch_upsert_records(message_records_to_update)
+                            if comment_records_to_update:
+                                await tx_store.batch_upsert_records(comment_records_to_update)
 
                         # Notify about content updates
                         for record in updated_records:
@@ -507,7 +522,7 @@ class JiraConnector(BaseConnector):
 
                         total_updated_issues += len(updated_records)
                         updated_issues_count = sum(1 for r in updated_records if isinstance(r, TicketRecord))
-                        updated_comments_count = sum(1 for r in updated_records if isinstance(r, MessageRecord))
+                        updated_comments_count = sum(1 for r in updated_records if isinstance(r, CommentRecord))
                         self.logger.info(f"Updated {updated_issues_count} existing issues, {updated_comments_count} existing comments for project {project.short_name}")
 
                     total_issues_synced += len(issues_with_permissions)
@@ -545,7 +560,8 @@ class JiraConnector(BaseConnector):
 
         while True:
             # Use get_all_users which doesn't require query parameter
-            response = await self.data_source.get_all_users(
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_all_users(
                 maxResults=DEFAULT_MAX_RESULTS,
                 startAt=start_at
             )
@@ -582,17 +598,14 @@ class JiraConnector(BaseConnector):
                 inactive_users += 1
                 continue
 
+            # Skip users without email address
             email = user.get("emailAddress")
             if not email:
-                # Generate a fallback email for users without email (privacy settings, etc.)
-                # Format: jira-{accountId}@noemail.atlassian.com
-                sanitized_id = account_id.replace(":", "-")
-                email = f"jira-{sanitized_id}@noemail.atlassian.com"
                 users_without_email += 1
-                self.logger.warning(
-                    f"User {account_id} ({user.get('displayName')}) has no email address - "
-                    f"using fallback: {email}"
+                self.logger.debug(
+                    f"Skipping user {account_id} ({user.get('displayName')}) - no email address"
                 )
+                continue
 
             app_user = AppUser(
                 app_name=Connectors.JIRA,
@@ -606,7 +619,7 @@ class JiraConnector(BaseConnector):
 
         self.logger.info(
             f"Fetched {len(app_users)} users total, "
-            f"{users_without_email} users with fallback emails, "
+            f"skipped {users_without_email} users without email, "
             f"skipped {inactive_users} inactive users"
         )
         return app_users
@@ -622,7 +635,8 @@ class JiraConnector(BaseConnector):
 
         while True:
             # Use DataSource instead of manual HTTP call
-            response = await self.data_source.search_projects(
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.search_projects(
                 maxResults=DEFAULT_MAX_RESULTS,
                 startAt=start_at,
                 expand=["description", "url", "permissions", "issueTypes"]
@@ -669,77 +683,11 @@ class JiraConnector(BaseConnector):
         return record_groups
 
 
-    async def _fetch_project_roles(self, project_key: str, users: List[AppUser]) -> Dict[str, List[str]]:
-        """Fetch project roles and map to user emails using DataSource"""
-        role_users: Dict[str, List[str]] = {}
-
-        # Create accountId -> AppUser lookup
-        user_by_account_id = {user.source_user_id: user for user in users if user.source_user_id}
-
-        try:
-            if not self.data_source:
-                raise ValueError("DataSource not initialized")
-
-            # Use DataSource to get all roles for the project
-            response = await self.data_source.get_project_roles(
-                projectIdOrKey=project_key
-            )
-
-            if response.status != HTTP_STATUS_OK:
-                raise Exception(f"Failed to fetch project roles: {response.text()}")
-
-            roles_response = response.json()
-
-            for role_name, role_url in roles_response.items():
-                try:
-                    role_id = role_url.split("/")[-1]
-
-                    # Use DataSource to get role details including actors
-                    role_response = await self.data_source.get_project_role(
-                        projectIdOrKey=project_key,
-                        id=int(role_id)
-                    )
-
-                    if role_response.status != HTTP_STATUS_OK:
-                        self.logger.warning(f"Failed to fetch role {role_name}: {role_response.text()}")
-                        continue
-
-                    role_details = role_response.json()
-
-                    # Extract user emails from actors using accountId lookup
-                    emails: List[str] = []
-                    actors = role_details.get("actors", [])
-
-                    for actor in actors:
-                        actor_type = actor.get("type")
-
-                        if actor_type == "atlassian-user-role-actor":
-                            actor_user = actor.get("actorUser", {})
-                            account_id = actor_user.get("accountId")
-
-                            if account_id and account_id in user_by_account_id:
-                                email = user_by_account_id[account_id].email
-                                if email:
-                                    emails.append(email)
-
-                    if emails:
-                        role_users[role_name] = emails
-
-                except Exception as e:
-                    self.logger.warning(f"Failed to fetch role {role_name} for project {project_key}: {e}")
-                    continue
-
-        except Exception as e:
-            self.logger.error(f"Failed to fetch project roles for {project_key}: {e}")
-
-        return role_users
-
     async def _fetch_issues(
         self,
         project_key: str,
         project_id: str,
         users: List[AppUser],
-        project_roles: Optional[Dict[str, List[str]]] = None,
         last_sync_time: Optional[int] = None,
         org_id: Optional[str] = None
     ) -> List[Tuple[Record, List[Permission]]]:
@@ -753,18 +701,60 @@ class JiraConnector(BaseConnector):
 
         issues: List[Dict[str, Any]] = []
 
-        # Build JQL with updated filter if last_sync_time exists
-        # Note: Enhanced search API requires ORDER BY clause to avoid "unbounded query" error
-        if last_sync_time:
-            # Convert milliseconds to Jira date format (YYYY-MM-DD HH:mm)
+        # Build JQL query starting with project filter
+        jql_conditions = [f'project = "{project_key}"']
+
+        # Build date filter parameters from sync filters (matching Confluence pattern)
+        # Get modified filter
+        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
+        modified_after = None
+        modified_before = None
+
+        if modified_filter:
+            modified_after, modified_before = modified_filter.get_value(default=(None, None))
+
+        # Get created filter
+        created_filter = self.sync_filters.get(SyncFilterKey.CREATED) if self.sync_filters else None
+        created_after = None
+        created_before = None
+
+        if created_filter:
+            created_after, created_before = created_filter.get_value(default=(None, None))
+
+        # Merge modified_after with last_sync_time (use the latest to avoid re-syncing old data)
+        if modified_after and last_sync_time:
+            modified_after = max(modified_after, last_sync_time)
+            self.logger.info(f"Using latest modified_after: {modified_after} (filter + checkpoint merged)")
+        elif modified_after:
+            self.logger.info(f"Using filter: fetching issues modified after {modified_after}")
+        elif last_sync_time:
+            # Apply time buffer for incremental sync to catch updates that might have been missed
             buffer_minutes = JQL_TIME_BUFFER_MINUTES
-            last_sync_datetime = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
-            buffered_datetime = last_sync_datetime - timedelta(minutes=buffer_minutes)
-            jira_date_format = buffered_datetime.strftime('%Y-%m-%d %H:%M')
-            jql = f'project = "{project_key}" AND updated >= "{jira_date_format}" ORDER BY updated ASC'
-            self.logger.info(f"Fetching issues updated after {jira_date_format} for project {project_key} (with {buffer_minutes}min buffer)")
+            modified_after = last_sync_time - (buffer_minutes * 60 * 1000)
+            self.logger.info(f"Incremental sync: fetching issues modified after checkpoint with {buffer_minutes}min buffer")
         else:
-            jql = f'project = "{project_key}" ORDER BY created ASC'
+            self.logger.info("Full sync: fetching all issues (first time)")
+
+        # Build JQL conditions from date filters
+        if modified_after:
+            modified_dt = datetime.fromtimestamp(modified_after / 1000, tz=timezone.utc)
+            jql_conditions.append(f'updated >= "{modified_dt.strftime("%Y-%m-%d %H:%M")}"')
+
+        if modified_before:
+            modified_dt = datetime.fromtimestamp(modified_before / 1000, tz=timezone.utc)
+            jql_conditions.append(f'updated <= "{modified_dt.strftime("%Y-%m-%d %H:%M")}"')
+
+        if created_after:
+            created_dt = datetime.fromtimestamp(created_after / 1000, tz=timezone.utc)
+            jql_conditions.append(f'created >= "{created_dt.strftime("%Y-%m-%d %H:%M")}"')
+
+        if created_before:
+            created_dt = datetime.fromtimestamp(created_before / 1000, tz=timezone.utc)
+            jql_conditions.append(f'created <= "{created_dt.strftime("%Y-%m-%d %H:%M")}"')
+
+        # Build final JQL with ORDER BY clause (required to avoid unbounded query error)
+        jql = " AND ".join(jql_conditions) + " ORDER BY updated ASC"
+        self.logger.info(f"JQL Query: {jql}")
 
         next_page_token: Optional[str] = None
         page_count = 0
@@ -774,7 +764,8 @@ class JiraConnector(BaseConnector):
 
             try:
                 # Use POST version of enhanced search API to avoid unbounded query restrictions
-                response = await self.data_source.search_and_reconsile_issues_using_jql_post(
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.search_and_reconsile_issues_using_jql_post(
                     jql=jql,
                     maxResults=DEFAULT_MAX_RESULTS,
                     nextPageToken=next_page_token,
@@ -792,7 +783,8 @@ class JiraConnector(BaseConnector):
                     self.logger.warning(f"Got 400 with project key, trying with project ID {project_id}")
                     jql = f'project = {project_id}'
                     try:
-                        response = await self.data_source.search_and_reconsile_issues_using_jql_post(
+                        datasource = await self._get_fresh_datasource()
+                        response = await datasource.search_and_reconsile_issues_using_jql_post(
                             jql=jql,
                             maxResults=DEFAULT_MAX_RESULTS,
                             nextPageToken=next_page_token,
@@ -830,14 +822,13 @@ class JiraConnector(BaseConnector):
 
         # Use transaction for efficient database lookups
         async with self.data_store_provider.transaction() as tx_store:
-            return await self._build_issue_records(issues, project_id, users, project_roles or {}, tx_store, org_id)
+            return await self._build_issue_records(issues, project_id, users, tx_store, org_id)
 
     async def _build_issue_records(
         self,
         issues: List[Dict[str, Any]],
         project_id: str,
         users: List[AppUser],
-        project_roles: Dict[str, List[str]],
         tx_store,
         org_id: str
     ) -> List[Tuple[Record, List[Permission]]]:
@@ -899,31 +890,8 @@ class JiraConnector(BaseConnector):
             if assignee_account_id and assignee_account_id in user_by_account_id:
                 assignee_email = user_by_account_id[assignee_account_id].email
 
-            # Extract watcher emails using accountId lookup
-            watchers_obj = fields.get("watchers")
-            watcher_emails: List[str] = []
-            if watchers_obj and isinstance(watchers_obj, dict):
-                watcher_list = watchers_obj.get("watchers", [])
-                for watcher in watcher_list:
-                    watcher_account_id = watcher.get("accountId")
-                    if watcher_account_id and watcher_account_id in user_by_account_id:
-                        watcher_email = user_by_account_id[watcher_account_id].email
-                        if watcher_email:
-                            watcher_emails.append(watcher_email)
-
-            permissions = self._build_permissions(
-                creator_email,
-                assignee_email,
-                watcher_emails,
-                project_roles
-            )
-
-            if not permissions:
-                self.logger.error(
-                    f"Issue {issue_key} has NO permissions! "
-                    f"Creator: {creator_email}, Assignee: {assignee_email}, "
-                    f"Watchers: {len(watcher_emails)}, Project roles: {len(project_roles)}"
-                )
+            # Simple permissions: creator and assignee only
+            permissions = self._build_permissions(creator_email, assignee_email)
 
             created_at = self._parse_jira_timestamp(fields.get("created"))
             updated_at = self._parse_jira_timestamp(fields.get("updated"))
@@ -931,21 +899,20 @@ class JiraConnector(BaseConnector):
             # Check for existing record to handle updates properly
             existing_record = await tx_store.get_record_by_external_id(
                 connector_name=Connectors.JIRA,
-                external_id=issue_id,
-                record_type=RecordType.TICKET
+                external_id=issue_id
             )
 
             record_id = existing_record.id if existing_record else str(uuid4())
             is_new = existing_record is None
 
             # Only increment version if issue content actually changed
-            # Check if source_modified_at (issue's updated timestamp) has changed
+            # Check if source_updated_at (issue's updated timestamp) has changed
             if is_new:
                 version = 0
-            elif existing_record.source_modified_at != updated_at:
+            elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
                 version = existing_record.version + 1  # Issue content changed
             else:
-                version = existing_record.version  # Issue unchanged, only comments changed
+                version = existing_record.version if existing_record else 0  # Issue unchanged
 
             issue_record = TicketRecord(
                 id=record_id,
@@ -982,21 +949,30 @@ class JiraConnector(BaseConnector):
 
             all_records.append((issue_record, permissions))
 
-            # Fetch comments for this issue
-            try:
-                comment_records = await self._fetch_issue_comments(
-                    issue_id,
-                    issue_key,
-                    permissions,
-                    project_id,
-                    org_id,
-                    user_by_account_id,
-                    tx_store
-                )
-                if comment_records:
-                    all_records.extend(comment_records)
-            except Exception as e:
-                self.logger.error(f"Failed to fetch comments for issue {issue_key}: {e}")
+            # Fetch comments for this issue (always fetch, not just for updated issues)
+            # This ensures we capture new comments even when the parent issue hasn't changed
+            should_fetch_comments = True
+            if self.indexing_filters:
+                should_fetch_comments = self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS)
+            
+            self.logger.debug(f"Should fetch comments for {issue_key}: {should_fetch_comments}")
+
+            if should_fetch_comments:
+                try:
+                    comment_records = await self._fetch_issue_comments(
+                        issue_id,
+                        issue_key,
+                        permissions,
+                        project_id,
+                        org_id,
+                        user_by_account_id,
+                        tx_store
+                    )
+                    if comment_records:
+                        all_records.extend(comment_records)
+                        self.logger.debug(f"Added {len(comment_records)} comments for issue {issue_key}")
+                except Exception as e:
+                    self.logger.error(f"Failed to fetch comments for issue {issue_key}: {e}")
 
         return all_records
 
@@ -1009,7 +985,7 @@ class JiraConnector(BaseConnector):
         org_id: str,
         user_by_account_id: Dict[str, AppUser],
         tx_store
-    ) -> List[Tuple[MessageRecord, List[Permission]]]:
+    ) -> List[Tuple[CommentRecord, List[Permission]]]:
         """
         Fetch comments for an issue.
 
@@ -1023,9 +999,9 @@ class JiraConnector(BaseConnector):
             tx_store: Transaction store for checking existing records
 
         Returns:
-            List of tuples (MessageRecord, permissions)
+            List of tuples (CommentRecord, permissions)
         """
-        comment_records: List[Tuple[MessageRecord, List[Permission]]] = []
+        comment_records: List[Tuple[CommentRecord, List[Permission]]] = []
 
         try:
             if not self.data_source:
@@ -1052,6 +1028,7 @@ class JiraConnector(BaseConnector):
                     break
 
                 all_comments.extend(comments)
+                self.logger.debug(f"Fetched {len(comments)} comments for issue {issue_key}, total so far: {len(all_comments)}")
 
                 # Check if there are more comments
                 total = comment_data.get("total", 0)
@@ -1064,7 +1041,10 @@ class JiraConnector(BaseConnector):
                 start_at = current_start + max_results
 
             if not all_comments:
+                self.logger.debug(f"No comments found for issue {issue_key}")
                 return []
+
+            self.logger.info(f"Processing {len(all_comments)} comments for issue {issue_key}")
 
             # Process each comment
             for comment in all_comments:
@@ -1073,8 +1053,7 @@ class JiraConnector(BaseConnector):
                 # Check for existing comment record
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_name=Connectors.JIRA,
-                    external_id=f"comment_{comment_id}",
-                    record_type=RecordType.MESSAGE
+                    external_id=f"comment_{comment_id}"
                 )
 
                 # Parse timestamps first (needed for version check)
@@ -1087,9 +1066,10 @@ class JiraConnector(BaseConnector):
                 # Check if source_updated_at (comment's updated timestamp) has changed
                 if is_new:
                     version = 0
-                elif existing_record.source_updated_at != updated_at:
+                elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
                     version = existing_record.version + 1  # Comment content changed
                 else:
+                    version = existing_record.version if existing_record else 0  # Comment unchanged
                     version = existing_record.version  # Comment unchanged
 
                 # Extract comment content (ADF to text)
@@ -1107,32 +1087,33 @@ class JiraConnector(BaseConnector):
                 # Comment name format: "Comment by Author on Issue KEY"
                 comment_name = f"Comment by {author_name} on {issue_key}"
 
-                # Create MessageRecord
-                message_record = MessageRecord(
+                # Create CommentRecord
+                comment_record = CommentRecord(
                     id=record_id,
                     org_id=org_id,
                     record_name=comment_name,
-                    record_type=RecordType.MESSAGE,
+                    record_type=RecordType.COMMENT,
                     external_record_id=f"comment_{comment_id}",
                     parent_external_record_id=issue_id,
+                    parent_record_type=RecordType.TICKET,
                     external_record_group_id=project_id,
                     connector_name=Connectors.JIRA,
                     origin=OriginTypes.CONNECTOR,
                     version=version,
-                    content=content,
                     mime_type=MimeTypes.PLAIN_TEXT.value,
                     record_group_type=RecordGroupType.JIRA_PROJECT,
                     created_at=created_at,
                     updated_at=updated_at,
                     source_created_at=created_at,
                     source_updated_at=updated_at,
+                    author_source_id=author_account_id,
                 )
 
                 # Set indexing status based on filter
                 if self.indexing_filters:
                     comments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS)
                     if not comments_indexing_enabled:
-                        message_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                 # Comments inherit permissions from parent issue
                 comment_permissions = parent_permissions.copy()
@@ -1149,35 +1130,27 @@ class JiraConnector(BaseConnector):
                             type=PermissionType.READ,
                         ))
 
-                comment_records.append((message_record, comment_permissions))
+                comment_records.append((comment_record, comment_permissions))
 
+            self.logger.info(f"Returning {len(comment_records)} comment records for issue {issue_key}")
             return comment_records
 
         except Exception as e:
-            self.logger.error(f"Failed to fetch comments for issue {issue_key}: {e}")
+            self.logger.error(f"Failed to fetch comments for issue {issue_key}: {e}", exc_info=True)
             return []
 
     def _build_permissions(
         self,
         creator_email: Optional[str],
-        assignee_email: Optional[str],
-        watcher_emails: List[str],
-        project_roles: Dict[str, List[str]]
+        assignee_email: Optional[str]
     ) -> List[Permission]:
         """
-        Build permissions list for an issue.
-
-        Permission hierarchy:
-        1. Creator - Gets OWNER permission
-        2. Assignee - Gets OWNER permission
-        3. Watchers - Get READ permission
-        4. Project Roles - Administrators get OWNER, other roles get READ
+        Build simple permissions list for an issue.
+        Creator and assignee get OWNER permission.
 
         Args:
             creator_email: Issue creator email
             assignee_email: Issue assignee email
-            watcher_emails: List of watcher email addresses
-            project_roles: Dict mapping role names to user emails
 
         Returns:
             List of Permission objects
@@ -1185,29 +1158,23 @@ class JiraConnector(BaseConnector):
         permissions: List[Permission] = []
         processed_emails: set = set()
 
-        def add_user_permission(email: Optional[str], perm_type: PermissionType = PermissionType.READ) -> None:
-            """Helper to add user permission without duplicates"""
-            if email and email not in processed_emails:
-                permissions.append(Permission(
-                    entity_type=EntityType.USER,
-                    email=email,
-                    type=perm_type,
-                ))
-                processed_emails.add(email)
+        # Add creator permission
+        if creator_email and creator_email not in processed_emails:
+            permissions.append(Permission(
+                entity_type=EntityType.USER,
+                email=creator_email,
+                type=PermissionType.OWNER,
+            ))
+            processed_emails.add(creator_email)
 
-        # Creator and assignee get OWNER permission
-        add_user_permission(creator_email, PermissionType.OWNER)
-        add_user_permission(assignee_email, PermissionType.OWNER)
-
-        # Watchers get READ permission
-        for watcher_email in watcher_emails:
-            add_user_permission(watcher_email, PermissionType.READ)
-
-        # Project role-based permissions: Administrators get OWNER, others get READ
-        for role_name, role_emails in project_roles.items():
-            perm_type = PermissionType.OWNER if role_name in ADMIN_ROLE_NAMES else PermissionType.READ
-            for email in role_emails:
-                add_user_permission(email, perm_type)
+        # Add assignee permission (if different from creator)
+        if assignee_email and assignee_email not in processed_emails:
+            permissions.append(Permission(
+                entity_type=EntityType.USER,
+                email=assignee_email,
+                type=PermissionType.OWNER,
+            ))
+            processed_emails.add(assignee_email)
 
         return permissions
 
@@ -1217,7 +1184,8 @@ class JiraConnector(BaseConnector):
             raise ValueError("DataSource not initialized")
 
         # Use DataSource to get issue details
-        response = await self.data_source.get_issue(
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.get_issue(
             issueIdOrKey=issue_id,
             expand=["renderedFields"]
         )
@@ -1247,7 +1215,8 @@ class JiraConnector(BaseConnector):
                 await self.init()
 
             # Test by fetching user info (simple API call)
-            response = await self.data_source.get_current_user()
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_current_user()
             return response.status == HTTP_STATUS_OK
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}")
