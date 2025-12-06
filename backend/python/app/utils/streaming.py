@@ -209,26 +209,10 @@ async def execute_tool_calls(
     if not tools:
         raise ValueError("Tools are required")
 
-    # Check the LLM type before binding tools (binding wraps the model)
-    # is_anthropic = isinstance(llm, ChatAnthropic)
     
     llm_with_tools = bind_tools_for_llm(llm, tools)
     
-    # if is_anthropic:
-    #     try:
-    #         model_with_structure = llm_with_tools.with_structured_output(
-    #             method="json_schema",
-    #             stream=True,
-    #             schema=transform_schema(AnswerWithMetadataJSON),
-    #         )
-    #         llm_with_tools = model_with_structure
-    #         logger.info("Using structured output for Anthropic")
-    #     except Exception as e:
-    #         logger.warning("Error in using structured output for Anthropic: %s", str(e))
-    #         pass
-    # else:
-    #     logger.info(f"LLM is of type {type(llm)}")
-    #     logger.info("Using non-structured LLM")
+   
 
 
     hops = 0
@@ -932,22 +916,9 @@ async def handle_json_mode(
 
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
-        if isinstance(llm, ChatAnthropic):
-            try:
-                model_with_structure = llm.with_structured_output(
-                    method="json_schema",
-                    stream=True,
-                    schema=transform_schema(AnswerWithMetadataJSON),
-                )
-                llm = model_with_structure
-                logger.info("Using structured output for Anthropic")
-            except Exception as e:
-                logger.error("Error in using structured output for Anthropic: %s", str(e))
-                pass
-        else:
-            logger.info(f"LLM is of type {type(llm)}")
-            logger.info("Using non-structured LLM")
-        async for token in call_aiter_llm_stream(llm, messages,final_results,llm,records,target_words_per_chunk):
+        llm_with_structured_output = _apply_structured_output_if_anthropic(llm)
+
+        async for token in call_aiter_llm_stream(llm_with_structured_output, messages,final_results,llm,records,target_words_per_chunk):
             yield token
     except Exception as exc:
         yield {
@@ -1341,7 +1312,7 @@ async def call_aiter_llm_stream(
     ai = None
     tool_calls_happened = True
     for part in parts:
-        if type(part) == dict:
+        if isinstance(part, dict):
             logger.info("part is a dict, breaking from loop")
             tool_calls_happened = False
             break
@@ -1374,11 +1345,12 @@ async def call_aiter_llm_stream(
             if response_text.endswith("```"):
                 response_text = response_text.rsplit("```", 1)[0]
             response_text = response_text.strip()
-        else:
-            response_text = json.dumps(response_text)
         
         try:
-            parsed = parser.parse(response_text)
+            if isinstance(response_text, str):
+                parsed = parser.parse(response_text)
+            else:
+                parsed = AnswerWithMetadataJSON.model_validate(response_text)
         except Exception as e:
             # JSON parsing failed - use reflection to guide the LLM
             if reflection_retry_count < max_reflection_retries:
@@ -1411,24 +1383,10 @@ async def call_aiter_llm_stream(
                 is_structured_mode = "Runnable" in llm_class_name
 
                 if not is_structured_mode:
-                    if isinstance(llm_without_tools, ChatAnthropic):
-                        try:
-                            model_with_structure = llm_without_tools.with_structured_output(
-                                method="json_schema",
-                                stream=True,
-                                schema=transform_schema(AnswerWithMetadataJSON),
-                            )
-                            llm_without_tools = model_with_structure
-                            logger.info("Using structured output for Anthropic")
-                        except Exception as e:
-                            logger.error("Error in using structured output for Anthropic: %s", str(e))
-                            pass
-                    else:
-                        logger.info(f"LLM is of type {type(llm_without_tools)}")
-                        logger.info("Using non-structured LLM")
+                    llm_with_structured_output = _apply_structured_output_if_anthropic(llm_without_tools)
 
                 async for event in call_aiter_llm_stream(
-                    llm_without_tools,
+                    llm_with_structured_output,
                     updated_messages,
                     final_results,
                     llm_without_tools,
@@ -1513,3 +1471,21 @@ def bind_tools_for_llm(llm: BaseChatModel, tools: List[object]) -> BaseChatModel
         pass
 
     return llm.bind_tools(tools)
+
+
+def _apply_structured_output_if_anthropic(llm: BaseChatModel) -> BaseChatModel:
+    if isinstance(llm, ChatAnthropic):
+        try:
+            model_with_structure = llm.with_structured_output(
+                method="json_schema",
+                stream=True,
+                schema=transform_schema(AnswerWithMetadataJSON),
+            )
+            logger.info("Using structured output for Anthropic")
+            return model_with_structure
+        except Exception as e:
+            logger.warning("Failed to apply structured output for Anthropic, falling back to default. Error: %s", str(e))
+    else:
+        logger.info(f"LLM is of type {type(llm)}")
+        logger.info("Using non-structured LLM")
+    return llm
