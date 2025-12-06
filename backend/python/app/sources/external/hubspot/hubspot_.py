@@ -5,8 +5,8 @@ using the official hubspot-api-client SDK. It wraps common CRM operations includ
 contacts, companies, deals, tickets, and more.
 
 Example:
-    from app.sources.client.hubspot.hubspot import HubSpotClient, HubSpotTokenConfig
-    from app.sources.external.hubspot.hubspot import HubSpotDataSource
+    from app.sources.client.hubspot.hubspot_ import HubSpotClient, HubSpotTokenConfig
+    from app.sources.external.hubspot.hubspot_ import HubSpotDataSource
 
     client = HubSpotClient.build_with_config(
         HubSpotTokenConfig(token="your-access-token")
