@@ -28,6 +28,7 @@ import {
   createNestedFolder,
   createRootFolder,
   uploadRecordsToKB,
+  getUniqueConnectors,
 } from '../controllers/kb_controllers';
 import { ArangoService } from '../../../libs/services/arango.service';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
@@ -57,6 +58,7 @@ import {
   listKnowledgeBasesSchema,
   reindexRecordSchema,
   getConnectorStatsSchema,
+  getUniqueConnectorsSchema,
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -173,6 +175,15 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(getAllRecordsSchema),
     getAllRecords(appConfig),
+  );
+
+  // Get unique connectors from records
+  router.get(
+    '/connectors/with-records',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(getUniqueConnectorsSchema),
+    getUniqueConnectors(appConfig),
   );
 
   // Get a specific record by ID
