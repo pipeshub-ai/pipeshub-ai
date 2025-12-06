@@ -919,7 +919,7 @@ export const updateRecord =
         const buffer = req.body.fileBuffer.buffer;
         sha256Hash = crypto.createHash('sha256').update(buffer).digest('hex');
       }
-      
+
       if (!recordName) {
         recordName = originalname;
         logger.info('No custom name provided');
@@ -2167,7 +2167,7 @@ export const getConnectorStats =
       try {
         // Call the Python service to get record
 
-        let queryParams = new URLSearchParams();
+        const queryParams = new URLSearchParams();
 
         queryParams.append('org_id', orgId);
         queryParams.append('connector', req.params.connector);
@@ -2245,7 +2245,6 @@ export const getRecordBuffer =
       if (!userId || !orgId) {
         throw new BadRequestError('User authentication is required');
       }
-
 
       const queryParams = new URLSearchParams();
       if (convertTo) {

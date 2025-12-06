@@ -9060,12 +9060,12 @@ class BaseArangoService:
                 # Check SHA256 to determine if version should increment
                 increment_version = True
                 if file_metadata and current_file_record:
-                    new_md5 = file_metadata.get("md5Checksum")
-                    current_md5 = current_file_record.get("md5Checksum")
-                    
+                    new_sha256 = file_metadata.get("sha256Hash")
+                    current_sha256 = current_file_record.get("sha256Hash")
+
                     if new_sha256 and current_sha256 and new_sha256 == current_sha256:
                         increment_version = False
-                        self.logger.info(f"File content unchanged (MD5 match). Keeping version {current_record.get('version', 0)}")
+                        self.logger.info(f"File content unchanged (SHA256 match). Keeping version {current_record.get('version', 0)}")
 
                 version = (current_record.get("version", 0)) + (1 if increment_version else 0)
                 processed_updates = {
@@ -9126,7 +9126,7 @@ class BaseArangoService:
 
                     if "size" in file_metadata:
                         file_updates["sizeInBytes"] = file_metadata["size"]
-                    
+
                     if "md5Checksum" in file_metadata:
                         file_updates["md5Checksum"] = file_metadata["md5Checksum"]
 
