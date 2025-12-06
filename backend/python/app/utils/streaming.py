@@ -1,17 +1,16 @@
 import asyncio
 import json
-from anthropic import transform_schema
-
 import logging
 import os
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
-from langchain_anthropic import ChatAnthropic
 
 import aiohttp
+from anthropic import transform_schema
 from fastapi import HTTPException
 from langchain.chat_models.base import BaseChatModel
 from langchain.output_parsers import PydanticOutputParser
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
@@ -209,10 +208,10 @@ async def execute_tool_calls(
     if not tools:
         raise ValueError("Tools are required")
 
-    
+
     llm_with_tools = bind_tools_for_llm(llm, tools)
-    
-   
+
+
 
 
     hops = 0
@@ -1238,7 +1237,7 @@ async def call_aiter_llm_stream(
                         "citations": cites,
                     },
                 }
-            
+
             continue
 
 
@@ -1320,7 +1319,7 @@ async def call_aiter_llm_stream(
             ai = part
         else:
             ai += part
-    
+
     if tool_calls_happened:
         tool_calls = getattr(ai, 'tool_calls', [])
         if tool_calls:
@@ -1332,7 +1331,7 @@ async def call_aiter_llm_stream(
             }
             logger.info("tool_calls detected, returning")
             return
-    
+
     # Try to parse the full JSON buffer
     try:
         response_text = state.full_json_buf
@@ -1345,7 +1344,7 @@ async def call_aiter_llm_stream(
             if response_text.endswith("```"):
                 response_text = response_text.rsplit("```", 1)[0]
             response_text = response_text.strip()
-        
+
         try:
             if isinstance(response_text, str):
                 parsed = parser.parse(response_text)
@@ -1368,15 +1367,15 @@ async def call_aiter_llm_stream(
                 ))
                 # Add the reflection message to the messages list
                 updated_messages = messages.copy()
-                
+
                 ai_message = AIMessage(
                     content=response_text,
                 )
                 updated_messages.append(ai_message)
 
                 updated_messages.append(reflection_message)
-                
-                
+
+
                 # Recursively call the function with updated messages
                 llm_class_name = llm_without_tools.__class__.__name__
                 logger.info("llm_class_name", llm_class_name)
