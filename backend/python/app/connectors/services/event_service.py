@@ -137,12 +137,13 @@ class EventService:
         """Handle reindex event for a connector with pagination support"""
         try:
             org_id = payload.get("orgId")
+            record_group_id = payload.get("recordGroupId")
+            depth = payload.get("depth", 0)
             status_filters = payload.get("statusFilters", ["FAILED"])
 
             if not org_id:
                 raise ValueError("orgId is required")
 
-            self.logger.info(f"Starting reindex for {connector_name} connector with status filters: {status_filters}")
             connector_name_normalized = connector_name.replace(" ", "").lower()
 
             connector = self._get_connector(connector_name_normalized)
@@ -156,6 +157,11 @@ class EventService:
                 self.logger.error(f"Unknown connector name: {connector_name}")
                 return False
 
+            if record_group_id is not None:
+                self.logger.info(f"Starting reindex for {connector_name} connector record group {record_group_id} with depth {depth}")
+            else:
+                self.logger.info(f"Starting reindex for {connector_name} connector with status filters: {status_filters}")
+
             # Fetch and process records in batches of 100
             batch_size = 100
             offset = 0
@@ -163,13 +169,23 @@ class EventService:
 
             while True:
                 # Fetch batch of typed Record instances
-                records = await self.arango_service.get_records_by_status(
-                    org_id=org_id,
-                    connector_name=connector_enum,
-                    status_filters=status_filters,
-                    limit=batch_size,
-                    offset=offset
-                )
+                if record_group_id is not None:
+                    records = await self.arango_service.get_records_by_record_group(
+                        record_group_id=record_group_id,
+                        connector_name=connector_enum,
+                        org_id=org_id,
+                        depth=depth,
+                        limit=batch_size,
+                        offset=offset
+                    )
+                else:
+                    records = await self.arango_service.get_records_by_status(
+                        org_id=org_id,
+                        connector_name=connector_enum,
+                        status_filters=status_filters,
+                        limit=batch_size,
+                        offset=offset
+                    )
 
                 if not records:
                     break
@@ -186,7 +202,10 @@ class EventService:
                 if len(records) < batch_size:
                     break
 
-            self.logger.info(f"✅ Completed reindex for {connector_name} connector. Total records processed: {total_processed}")
+            self.logger.info(
+                f"✅ Completed reindex for {connector_name} connector. "
+                f"Total records processed: {total_processed}"
+            )
             return True
 
         except Exception as e:
