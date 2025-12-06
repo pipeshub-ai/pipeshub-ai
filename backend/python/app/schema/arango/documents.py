@@ -564,7 +564,7 @@ team_schema = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "minLength": 1},
-            "description": {"type": "string", "minLength": 1},
+            "description": {"type": ["string", "null"]},
             "orgId": {"type": ["string", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedByUserId": {"type": ["string", "null"]},
@@ -574,7 +574,7 @@ team_schema = {
             "deletedAtTimestamp": {"type": "number"},
             "isDeleted": {"type": "boolean", "default": False},
         },
-        "required": ["name", "description"],
+        "required": ["name"],
         "additionalProperties": True,
     },
     "level": "strict",

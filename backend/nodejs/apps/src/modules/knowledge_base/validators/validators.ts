@@ -661,13 +661,22 @@ export const kbPermissionSchema = z.object({
   body: z.object({
     userIds: z.array(z.string()).optional(),
     teamIds: z.array(z.string()).optional(),
-    role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']),
+    role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']).optional(), // Optional for teams
   }).refine((data) => (data.userIds && data.userIds.length > 0) || (data.teamIds && data.teamIds.length > 0),
     {
       message: 'At least one user or team ID is required',
       path: ['userIds'],
     },
-  ),
+  ).refine((data) => {
+    // Role is required if users are provided
+    if (data.userIds && data.userIds.length > 0) {
+      return data.role !== undefined && data.role !== null;
+    }
+    return true;
+  }, {
+    message: 'Role is required when adding users',
+    path: ['role'],
+  }),
   params: z.object({
     kbId: z.string().uuid(),
   }),
@@ -696,7 +705,16 @@ export const updatePermissionsSchema = z.object({
   body: z.object({
     role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']),
     userIds: z.array(z.string()).optional(),
-    teamIds: z.array(z.string()).optional(),
+    teamIds: z.array(z.string()).optional(), // Teams don't have roles, so this will be ignored
+  }).refine((data) => {
+    // Only users can be updated (teams don't have roles)
+    if (data.teamIds && data.teamIds.length > 0) {
+      return false;
+    }
+    return true;
+  }, {
+    message: 'Teams do not have roles. Only user permissions can be updated.',
+    path: ['teamIds'],
   }),
   params: z.object({
     kbId: z.string().uuid(),
