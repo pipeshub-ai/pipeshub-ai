@@ -1,7 +1,7 @@
 """Jira Cloud Connector Implementation"""
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -50,7 +50,6 @@ from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-
 # API URLs
 RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 BASE_URL = "https://api.atlassian.com/ex/jira"
@@ -58,11 +57,24 @@ AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 
 # Pagination constants
-DEFAULT_MAX_RESULTS: int = 100 
+DEFAULT_MAX_RESULTS: int = 100
 THRESHOLD_PAGINATION_LIMIT: int = 100
-MAX_PAGES_PER_PROJECT: int = 50 
+MAX_PAGES_PER_PROJECT: int = 50
+BATCH_PROCESSING_SIZE: int = 200
+
+# JQL query constants
+JQL_TIME_BUFFER_MINUTES: int = 5  # Buffer time for incremental sync to catch edge cases
+ISSUE_SEARCH_FIELDS: List[str] = [
+    "summary", "description", "status", "priority",
+    "creator", "assignee", "created", "updated",
+    "issuetype", "project", "watchers"
+]
+
+# Permission constants
+ADMIN_ROLE_NAMES: List[str] = ["Administrators", "administrators"]  # Exact role names that grant OWNER permissions
 
 # HTTP status codes
+HTTP_STATUS_OK: int = 200
 HTTP_STATUS_BAD_REQUEST: int = 400
 HTTP_STATUS_UNAUTHORIZED: int = 401
 HTTP_STATUS_GONE: int = 410
@@ -79,12 +91,6 @@ class AtlassianCloudResource:
 def adf_to_text(adf_content: Dict[str, Any]) -> str:
     """
     Convert Atlassian Document Format (ADF) to plain text.
-
-    Args:
-        adf_content: ADF content dictionary or None
-
-    Returns:
-        Plain text representation of the ADF content
     """
     if not adf_content or not isinstance(adf_content, dict):
         return ""
@@ -293,18 +299,19 @@ class JiraConnector(BaseConnector):
         )
         self.data_source: Optional[JiraDataSource] = None
         self.cloud_id: Optional[str] = None
+        self.site_url: Optional[str] = None
         self._sync_in_progress: bool = False
 
         # Initialize sync points
         org_id = self.data_entities_processor.org_id
-        
+
         self.issues_sync_point = SyncPoint(
             connector_name=Connectors.JIRA,
             org_id=org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=data_store_provider
         )
-        
+
         # Filters will be loaded in init()
         self.sync_filters = None
         self.indexing_filters = None
@@ -318,10 +325,10 @@ class JiraConnector(BaseConnector):
                 "jira",
                 self.logger
             )
-            
+
             self.logger.info(f"Sync filters: {self.sync_filters}")
             self.logger.info(f"Indexing filters: {self.indexing_filters}")
-            
+
             # Use JiraClient.build_from_services() to create client with proper auth
             client = await JiraClient.build_from_services(
                 self.logger,
@@ -331,9 +338,14 @@ class JiraConnector(BaseConnector):
             # Create DataSource from client
             self.data_source = JiraDataSource(client)
 
-            # Get cloud ID for API calls
+            # Get cloud ID and site URL from accessible resources
             access_token = await self._get_access_token()
-            self.cloud_id = await JiraClient.get_cloud_id(access_token)
+            resources = await JiraClient.get_accessible_resources(access_token)
+            if not resources:
+                raise Exception("No accessible Jira resources found")
+
+            self.cloud_id = resources[0].id
+            self.site_url = resources[0].url
 
             self.logger.info("Jira client initialized successfully using Client + DataSource architecture")
         except Exception as e:
@@ -343,20 +355,12 @@ class JiraConnector(BaseConnector):
     async def _get_access_token(self) -> str:
         """Get access token from config"""
         config = await self.config_service.get_config(f"{OAUTH_JIRA_CONFIG_PATH}")
-        if not config:
-            raise ValueError("Jira credentials not found")
-
-        credentials_config = config.get("credentials", {})
-        if not credentials_config:
-            raise ValueError("Jira credentials not found")
-
-        access_token = credentials_config.get("access_token")
+        access_token = config.get("credentials", {}).get("access_token") if config else None
         if not access_token:
-            raise ValueError("Access token not found")
-
+            raise ValueError("Jira access token not found in configuration")
         return access_token
 
-    
+
 
     def _parse_jira_timestamp(self, timestamp_str: Optional[str]) -> int:
         """Parse Jira timestamp to epoch milliseconds"""
@@ -371,7 +375,7 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}")
             return 0
-    
+
 
     async def run_sync(self) -> None:
         """Run sync of Jira projects and issues - only new/updated tickets"""
@@ -399,7 +403,7 @@ class JiraConnector(BaseConnector):
                 last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
             except Exception:
                 last_sync_time = None
-  
+
             if last_sync_time:
                 self.logger.info(f"Starting incremental Jira sync for org: {org_id} from timestamp: {last_sync_time}")
             else:
@@ -415,7 +419,7 @@ class JiraConnector(BaseConnector):
             # Fetch projects
             self.logger.info("Fetching Jira projects...")
             projects = await self._fetch_projects()
-            
+
             # Apply project_keys filter if configured
             if self.sync_filters:
                 project_keys_filter = self.sync_filters.get(SyncFilterKey.PROJECT_KEYS)
@@ -423,11 +427,11 @@ class JiraConnector(BaseConnector):
                     allowed_keys = project_keys_filter.get_value(default=[])
                     if allowed_keys:
                         projects = [
-                            (proj, perms) for proj, perms in projects 
+                            (proj, perms) for proj, perms in projects
                             if proj.short_name in allowed_keys
                         ]
                         self.logger.info(f"Filtered to {len(projects)} projects based on project_keys filter: {allowed_keys}")
-            
+
             self.logger.info(f"Found {len(projects)} projects")
 
             # Sync projects as RecordGroups
@@ -439,7 +443,7 @@ class JiraConnector(BaseConnector):
             total_issues_fetched = 0
             total_new_issues = 0
             total_updated_issues = 0
-            batch_size = 200
+            batch_size = BATCH_PROCESSING_SIZE
 
             for project, project_permissions in projects:
                 try:
@@ -468,12 +472,12 @@ class JiraConnector(BaseConnector):
                     # Separate new records from updated records (including both issues and comments)
                     new_records_with_permissions = [
                         (record, perms) for record, perms in issues_with_permissions
-                        if record.version == 0 
+                        if record.version == 0
                     ]
 
                     updated_records = [
                         record for record, perms in issues_with_permissions
-                        if record.version > 0 
+                        if record.version > 0
                     ]
 
                     # Process new records
@@ -529,7 +533,7 @@ class JiraConnector(BaseConnector):
         finally:
             self._sync_in_progress = False
             # Session cleanup now handled by Client layer
-    
+
 
     async def _fetch_users(self, org_id: str) -> List[AppUser]:
         """Fetch all active Jira users using DataSource"""
@@ -546,7 +550,7 @@ class JiraConnector(BaseConnector):
                 startAt=start_at
             )
 
-            if response.status != 200:
+            if response.status != HTTP_STATUS_OK:
                 raise Exception(f"Failed to fetch users: {response.text()}")
 
             users_batch = response.json()
@@ -569,10 +573,10 @@ class JiraConnector(BaseConnector):
         app_users: List[AppUser] = []
         users_without_email = 0
         inactive_users = 0
-        
+
         for user in users:
             account_id = user.get("accountId")
-            
+
             # Only include active users
             if not user.get("active", True):
                 inactive_users += 1
@@ -607,7 +611,7 @@ class JiraConnector(BaseConnector):
         )
         return app_users
 
-    
+
     async def _fetch_projects(self) -> List[Tuple[RecordGroup, List[Permission]]]:
         """Fetch all projects with pagination using DataSource"""
         if not self.data_source:
@@ -624,7 +628,7 @@ class JiraConnector(BaseConnector):
                 expand=["description", "url", "permissions", "issueTypes"]
             )
 
-            if response.status != 200:
+            if response.status != HTTP_STATUS_OK:
                 raise Exception(f"Failed to fetch projects: {response.text()}")
 
             projects_batch = response.json()
@@ -663,12 +667,12 @@ class JiraConnector(BaseConnector):
             record_groups.append((record_group, []))
 
         return record_groups
-    
+
 
     async def _fetch_project_roles(self, project_key: str, users: List[AppUser]) -> Dict[str, List[str]]:
         """Fetch project roles and map to user emails using DataSource"""
         role_users: Dict[str, List[str]] = {}
-        
+
         # Create accountId -> AppUser lookup
         user_by_account_id = {user.source_user_id: user for user in users if user.source_user_id}
 
@@ -681,7 +685,7 @@ class JiraConnector(BaseConnector):
                 projectIdOrKey=project_key
             )
 
-            if response.status != 200:
+            if response.status != HTTP_STATUS_OK:
                 raise Exception(f"Failed to fetch project roles: {response.text()}")
 
             roles_response = response.json()
@@ -696,7 +700,7 @@ class JiraConnector(BaseConnector):
                         id=int(role_id)
                     )
 
-                    if role_response.status != 200:
+                    if role_response.status != HTTP_STATUS_OK:
                         self.logger.warning(f"Failed to fetch role {role_name}: {role_response.text()}")
                         continue
 
@@ -712,7 +716,7 @@ class JiraConnector(BaseConnector):
                         if actor_type == "atlassian-user-role-actor":
                             actor_user = actor.get("actorUser", {})
                             account_id = actor_user.get("accountId")
-                            
+
                             if account_id and account_id in user_by_account_id:
                                 email = user_by_account_id[account_id].email
                                 if email:
@@ -753,8 +757,7 @@ class JiraConnector(BaseConnector):
         # Note: Enhanced search API requires ORDER BY clause to avoid "unbounded query" error
         if last_sync_time:
             # Convert milliseconds to Jira date format (YYYY-MM-DD HH:mm)
-            from datetime import datetime, timezone, timedelta
-            buffer_minutes = 5
+            buffer_minutes = JQL_TIME_BUFFER_MINUTES
             last_sync_datetime = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
             buffered_datetime = last_sync_datetime - timedelta(minutes=buffer_minutes)
             jira_date_format = buffered_datetime.strftime('%Y-%m-%d %H:%M')
@@ -775,11 +778,11 @@ class JiraConnector(BaseConnector):
                     jql=jql,
                     maxResults=DEFAULT_MAX_RESULTS,
                     nextPageToken=next_page_token,
-                    fields=["summary", "description", "status", "priority", "creator", "assignee", "created", "updated", "issuetype", "project", "watchers"],
+                    fields=ISSUE_SEARCH_FIELDS,
                     expand="renderedFields"
                 )
 
-                if response.status != 200:
+                if response.status != HTTP_STATUS_OK:
                     raise Exception(f"Failed to fetch issues: {response.text()}")
 
                 issues_batch = response.json()
@@ -793,9 +796,9 @@ class JiraConnector(BaseConnector):
                             jql=jql,
                             maxResults=DEFAULT_MAX_RESULTS,
                             nextPageToken=next_page_token,
-                            fields=["summary", "description", "status", "priority", "creator", "reporter", "assignee", "created", "updated", "issuetype", "project", "watchers", "security"]
+                            fields=ISSUE_SEARCH_FIELDS
                         )
-                        if response.status == 200:
+                        if response.status == HTTP_STATUS_OK:
                             issues_batch = response.json()
                             self.logger.info("Successfully fetched issues using project ID")
                         else:
@@ -840,9 +843,9 @@ class JiraConnector(BaseConnector):
     ) -> List[Tuple[Record, List[Permission]]]:
         """Build issue records with permissions from raw issue data"""
         all_records: List[Tuple[Record, List[Permission]]] = []
-        # Get domain from cloud_id
-        atlassian_domain = f"https://api.atlassian.com/ex/jira/{self.cloud_id}" if self.cloud_id else ""
-        
+        # Use the user-facing site URL for weburl construction
+        atlassian_domain = self.site_url if self.site_url else ""
+
         # Create accountId -> AppUser lookup for matching issue creators/assignees
         user_by_account_id = {user.source_user_id: user for user in users if user.source_user_id}
 
@@ -970,13 +973,13 @@ class JiraConnector(BaseConnector):
                 created_at=created_at,
                 updated_at=updated_at
             )
-            
+
             # Set indexing status based on filter
             if self.indexing_filters:
                 issues_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
                 if not issues_indexing_enabled:
                     issue_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-            
+
             all_records.append((issue_record, permissions))
 
             # Fetch comments for this issue
@@ -1035,11 +1038,11 @@ class JiraConnector(BaseConnector):
             while True:
                 response = await self.data_source.get_comments(
                     issueIdOrKey=issue_id,
-                    maxResults=100,
+                    maxResults=DEFAULT_MAX_RESULTS,
                     startAt=start_at
                 )
 
-                if response.status != 200:
+                if response.status != HTTP_STATUS_OK:
                     raise Exception(f"Failed to fetch comments: {response.text()}")
 
                 comment_data = response.json()
@@ -1053,7 +1056,7 @@ class JiraConnector(BaseConnector):
                 # Check if there are more comments
                 total = comment_data.get("total", 0)
                 current_start = comment_data.get("startAt", 0)
-                max_results = comment_data.get("maxResults", 100)
+                max_results = comment_data.get("maxResults", DEFAULT_MAX_RESULTS)
 
                 if current_start + max_results >= total:
                     break
@@ -1202,7 +1205,7 @@ class JiraConnector(BaseConnector):
 
         # Project role-based permissions: Administrators get OWNER, others get READ
         for role_name, role_emails in project_roles.items():
-            perm_type = PermissionType.OWNER if "admin" in role_name.lower() else PermissionType.READ
+            perm_type = PermissionType.OWNER if role_name in ADMIN_ROLE_NAMES else PermissionType.READ
             for email in role_emails:
                 add_user_permission(email, perm_type)
 
@@ -1219,7 +1222,7 @@ class JiraConnector(BaseConnector):
             expand=["renderedFields"]
         )
 
-        if response.status != 200:
+        if response.status != HTTP_STATUS_OK:
             raise Exception(f"Failed to fetch issue content: {response.text()}")
 
         issue_details = response.json()
@@ -1245,7 +1248,7 @@ class JiraConnector(BaseConnector):
 
             # Test by fetching user info (simple API call)
             response = await self.data_source.get_current_user()
-            return response.status == 200
+            return response.status == HTTP_STATUS_OK
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}")
             return False
