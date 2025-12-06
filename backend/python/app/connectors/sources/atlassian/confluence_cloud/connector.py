@@ -114,8 +114,10 @@ CONTENT_EXPAND_PARAMS = (
         .add_filter_field(FilterField(
             name="space_keys",
             display_name="Space Keys",
+            description="Filter pages and blogposts by space key",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
+            default_value=[]
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
@@ -694,7 +696,7 @@ class ConfluenceConnector(BaseConnector):
             modified_before = None
 
             if modified_filter:
-                modified_after, modified_before = modified_filter.get_value(default=(None, None))
+                modified_after, modified_before = modified_filter.get_datetime_iso(default=(None, None))
 
             # Get created filter
             created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
@@ -702,7 +704,7 @@ class ConfluenceConnector(BaseConnector):
             created_before = None
 
             if created_filter:
-                created_after, created_before = created_filter.get_value(default=(None, None))
+                created_after, created_before = created_filter.get_datetime_iso(default=(None, None))
 
             # Merge modified_after with checkpoint (use the latest)
             if modified_after and last_sync_time:

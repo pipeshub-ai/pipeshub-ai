@@ -66,6 +66,26 @@ interface SyncCustomField extends BaseField {
     | 'JSON';
 }
 
+// Filter value types
+export type FilterOperator = string;
+export type FilterValue = string | number | boolean | string[] | DatetimeRange | EpochDatetimeRange | null;
+
+export interface DatetimeRange {
+  start: string | number;
+  end: string | number;
+}
+
+export interface EpochDatetimeRange {
+  start: number | null;
+  end: number | null;
+}
+
+export interface FilterValueData {
+  operator: FilterOperator;
+  value: FilterValue;
+  type?: 'list' | 'datetime' | 'text' | 'string' | 'number' | 'boolean' | 'multiselect' | 'tags' | 'daterange' | 'datetimerange';
+}
+
 // Filter schema field
 interface FilterSchemaField extends BaseField {
   fieldType?:
@@ -77,7 +97,7 @@ interface FilterSchemaField extends BaseField {
     | 'NUMBER'
     | 'BOOLEAN'
     | 'TAGS';
-  filterType?: 'list' | 'datetime' | 'text' | 'number' | 'boolean';
+  filterType?: 'list' | 'datetime' | 'text' | 'string' | 'number' | 'boolean' | 'multiselect';
   category?: 'sync' | 'indexing';
   defaultOperator?: string;
   operators?: string[];

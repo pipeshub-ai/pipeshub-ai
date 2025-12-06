@@ -2,7 +2,8 @@
 import { Container, injectable, inject } from 'inversify';
 import { Application, Request, Response } from 'express';
 import * as swaggerUi from 'swagger-ui-express';
-import * as YAML from 'yamljs';
+import * as yaml from 'js-yaml';
+import * as fs from 'fs';
 import { Logger } from '../../libs/services/logger.service';
 
 /**
@@ -154,7 +155,7 @@ export class SwaggerService {
 
     try {
       // Load the module's YAML file
-      const moduleSwagger = YAML.load(moduleInfo.yamlFilePath);
+      const moduleSwagger = yaml.load(fs.readFileSync(moduleInfo.yamlFilePath, 'utf8')) as any;
 
       // Add module tag
       const serverExists = this.combinedSwaggerDoc.servers.some(
@@ -222,7 +223,7 @@ export class SwaggerService {
           `${this.basePath}/${moduleInfo.moduleId}`,
           (_req: Request, res: Response) => {
             try {
-              const moduleSwagger = YAML.load(moduleInfo.yamlFilePath);
+              const moduleSwagger = yaml.load(fs.readFileSync(moduleInfo.yamlFilePath, 'utf8')) as any;
               res.setHeader('Content-Type', 'application/json');
               res.send(moduleSwagger);
             } catch (error) {
