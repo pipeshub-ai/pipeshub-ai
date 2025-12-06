@@ -1,6 +1,7 @@
 /**
  * Utility functions for time calculations and conversions
  */
+import dayjs from 'dayjs';
 
 export interface TimeZoneInfo {
   name: string;
@@ -292,6 +293,101 @@ export const getRelativeTime = (epochTime: number, currentTime?: number): string
 };
 
 /**
+ * ============================================================================
+ * DURATION CONVERSION UTILITIES
+ * ============================================================================
+ * Utilities for converting duration strings to milliseconds
+ */
+
+/**
+ * Convert duration string to milliseconds
+ * Supports formats like: "5m", "1h", "30s", "2d", "1w", "500ms", "1.5h", etc.
+ */
+export const convertDurationToMilliseconds = (durationStr: string | number): number | string => {
+  // If it's already a number, assume it's already in milliseconds
+  if (typeof durationStr === 'number') {
+    return durationStr;
+  }
+  
+  // If it's not a string or empty, return as is
+  if (typeof durationStr !== 'string' || !durationStr.trim()) {
+    return durationStr;
+  }
+  
+  const str = durationStr.trim().toLowerCase();
+  
+  // Try to parse as a number first (might already be in milliseconds as string)
+  const numericValue = parseFloat(str);
+  if (!Number.isNaN(numericValue) && str === String(numericValue)) {
+    // Pure number without unit - assume milliseconds
+    return numericValue;
+  }
+  
+  // Parse duration string with units
+  const durationRegex = /^(\d+(?:\.\d+)?)\s*([a-z]+)$/;
+  const match = str.match(durationRegex);
+  
+  if (!match) {
+    // If it doesn't match the pattern, return as is (might be invalid)
+    return durationStr;
+  }
+  
+  const value = parseFloat(match[1]);
+  const unit = match[2];
+  
+  // Convert to milliseconds based on unit
+  const unitMultipliers: Record<string, number> = {
+    'ms': 1,
+    'millisecond': 1,
+    'milliseconds': 1,
+    's': 1000,
+    'sec': 1000,
+    'second': 1000,
+    'seconds': 1000,
+    'm': 60 * 1000,
+    'min': 60 * 1000,
+    'minute': 60 * 1000,
+    'minutes': 60 * 1000,
+    'h': 60 * 60 * 1000,
+    'hr': 60 * 60 * 1000,
+    'hour': 60 * 60 * 1000,
+    'hours': 60 * 60 * 1000,
+    'd': 24 * 60 * 60 * 1000,
+    'day': 24 * 60 * 60 * 1000,
+    'days': 24 * 60 * 60 * 1000,
+    'w': 7 * 24 * 60 * 60 * 1000,
+    'week': 7 * 24 * 60 * 60 * 1000,
+    'weeks': 7 * 24 * 60 * 60 * 1000,
+  };
+  
+  const multiplier = unitMultipliers[unit];
+  if (multiplier) {
+    return Math.round(value * multiplier);
+  }
+  
+  // Unknown unit, return as is
+  return durationStr;
+};
+
+/**
+ * Check if a field is a duration field based on name, fieldType, or filterType
+ */
+export const isDurationField = (field: { name?: string; fieldType?: string; filterType?: string }): boolean => {
+  const fieldName = (field.name || '').toLowerCase();
+  const fieldType = (field.fieldType || '').toLowerCase();
+  const filterType = (field.filterType || '').toLowerCase();
+  
+  // Check if field name contains duration-related keywords
+  const durationKeywords = ['duration', 'timeout', 'interval', 'delay', 'period', 'ttl'];
+  const hasDurationKeyword = durationKeywords.some(keyword => fieldName.includes(keyword));
+  
+  // Check if field type or filter type indicates duration
+  const isDurationType = fieldType === 'duration' || filterType === 'duration';
+  
+  return hasDurationKeyword || isDurationType;
+};
+
+/**
  * Check if a given epoch time is in the future
  */
 export const isFuture = (epochTime: number, currentTime?: number): boolean => {
@@ -305,4 +401,220 @@ export const isFuture = (epochTime: number, currentTime?: number): boolean => {
 export const isPast = (epochTime: number, currentTime?: number): boolean => {
   const now = currentTime || Math.floor(Date.now() / 1000);
   return epochTime < now;
+};
+
+/**
+ * ============================================================================
+ * DATETIME FILTER CONVERSION UTILITIES
+ * ============================================================================
+ * Utilities for converting between epoch milliseconds and ISO datetime strings
+ * for filter datetime fields. These handle bidirectional conversion for display
+ * and API submission.
+ */
+
+export interface DatetimeRange {
+  start: string | number;
+  end: string | number;
+}
+
+export interface EpochDatetimeRange {
+  start: number | null;
+  end: number | null;
+}
+
+/**
+ * Convert epoch milliseconds (number or numeric string) to ISO datetime string
+ * Used when loading data from backend to display in datetime pickers
+ */
+export const convertEpochToISOString = (epochValue: number | string): string => {
+  if (typeof epochValue === 'number' && epochValue > 0) {
+    return new Date(epochValue).toISOString();
+  }
+  
+  if (typeof epochValue === 'string') {
+    const numValue = Number(epochValue);
+    if (!Number.isNaN(numValue) && numValue > 0) {
+      return new Date(numValue).toISOString();
+    }
+    // If it's already an ISO string or empty, return as is
+    return epochValue;
+  }
+  
+  return '';
+};
+
+/**
+ * Convert datetime string or number to epoch time (milliseconds)
+ * Handles ISO strings, epoch numbers, and epoch strings
+ * Used when saving data to backend
+ */
+export const convertDatetimeToEpoch = (datetimeValue: string | number): number | null => {
+  // If it's already a number (epoch), return as is
+  if (typeof datetimeValue === 'number') {
+    return datetimeValue > 0 ? datetimeValue : null;
+  }
+  
+  // If it's empty or not a string, return null
+  if (!datetimeValue || typeof datetimeValue !== 'string' || datetimeValue.trim() === '') {
+    return null;
+  }
+  
+  // Check if it's a numeric string (epoch milliseconds as string)
+  const numValue = Number(datetimeValue);
+  if (!Number.isNaN(numValue) && numValue > 0 && String(numValue) === datetimeValue.trim()) {
+    return numValue;
+  }
+  
+        // Try to parse as ISO datetime string using dayjs
+        const date = dayjs(datetimeValue);
+        if (date.isValid()) {
+          return date.valueOf(); // Returns milliseconds since epoch
+        }
+  
+  return null;
+};
+
+/**
+ * Normalize datetime value to {start, end} format with ISO strings
+ * Used when loading/displaying datetime filter values
+ */
+export const normalizeDatetimeValueForDisplay = (
+  value: unknown,
+  operator: string
+): DatetimeRange => {
+  // If already in {start, end} format, convert epoch to ISO if needed
+  if (value && typeof value === 'object' && !Array.isArray(value) && 'start' in value && 'end' in value) {
+    const range = value as DatetimeRange;
+    return {
+      start: convertEpochToISOString(range.start),
+      end: convertEpochToISOString(range.end),
+    };
+  }
+  
+  // Handle single numeric value (epoch milliseconds)
+  if (typeof value === 'number' && value > 0) {
+    const isoString = convertEpochToISOString(value);
+    if (operator === 'is_before') {
+      return { start: '', end: isoString };
+    }
+    if (operator === 'is_after') {
+      return { start: isoString, end: '' };
+    }
+    return { start: isoString, end: '' };
+  }
+  
+  // Convert single string value to {start, end} format based on operator
+  if (typeof value === 'string' && value !== '') {
+    const numValue = Number(value);
+    const isoString = !Number.isNaN(numValue) && numValue > 0
+      ? convertEpochToISOString(numValue)
+      : value;
+      
+    if (operator === 'is_before') {
+      return { start: '', end: isoString };
+    }
+    if (operator === 'is_after') {
+      return { start: isoString, end: '' };
+    }
+    return { start: isoString, end: '' };
+  }
+  
+  // Default empty format
+  return { start: '', end: '' };
+};
+
+/**
+ * Normalize datetime value to {start, end} format and convert to epoch milliseconds
+ * Used when saving datetime filter values to backend
+ */
+export const normalizeDatetimeValueForSave = (
+  value: unknown,
+  operator: string
+): EpochDatetimeRange => {
+  // If already in {start, end} format, convert to epoch
+  if (value && typeof value === 'object' && !Array.isArray(value) && 'start' in value && 'end' in value) {
+    const range = value as DatetimeRange;
+    const startVal = range.start;
+    const endVal = range.end;
+    
+    // If values are already epoch (numbers), return as is
+    if (typeof startVal === 'number' && typeof endVal === 'number') {
+      return { start: startVal > 0 ? startVal : null, end: endVal > 0 ? endVal : null };
+    }
+    
+    // Convert ISO strings or epoch strings to epoch numbers
+    return {
+      start: convertDatetimeToEpoch(startVal),
+      end: convertDatetimeToEpoch(endVal),
+    };
+  }
+  
+  // Handle single numeric value (already epoch)
+  if (typeof value === 'number' && value > 0) {
+    if (operator === 'is_before') {
+      return { start: null, end: value };
+    }
+    if (operator === 'is_after') {
+      return { start: value, end: null };
+    }
+    return { start: value, end: null };
+  }
+  
+  // Convert single string value to {start, end} format based on operator, then to epoch
+  if (typeof value === 'string' && value !== '') {
+    // Check if it's a numeric string (epoch milliseconds)
+    const numValue = Number(value);
+    if (!Number.isNaN(numValue) && numValue > 0) {
+      // It's an epoch value as string
+      if (operator === 'is_before') {
+        return { start: null, end: numValue };
+      }
+      if (operator === 'is_after') {
+        return { start: numValue, end: null };
+      }
+      return { start: numValue, end: null };
+    }
+    
+    // It's an ISO string, convert to epoch
+    if (operator === 'is_before') {
+      return { start: null, end: convertDatetimeToEpoch(value) };
+    }
+    if (operator === 'is_after') {
+      return { start: convertDatetimeToEpoch(value), end: null };
+    }
+    return { start: convertDatetimeToEpoch(value), end: null };
+  }
+  
+  // Default empty format
+  return { start: null, end: null };
+};
+
+/**
+ * Convert relative date operator (e.g., "last_7_days") to absolute date
+ * Returns the converted operator and ISO datetime string value
+ */
+export const convertRelativeDateToAbsolute = (
+  operator: string
+): { operator: string; value: string } | null => {
+  const relativeDays: Record<string, number> = {
+    last_7_days: 7,
+    last_14_days: 14,
+    last_30_days: 30,
+    last_90_days: 90,
+    last_180_days: 180,
+    last_365_days: 365,
+  };
+
+  const days = relativeDays[operator];
+  if (days === undefined) {
+    return null;
+  }
+
+  // Use dayjs to subtract days and format as YYYY-MM-DDTHH:mm
+  const date = dayjs().subtract(days, 'day').startOf('day');
+  
+  return {
+    operator: 'is_after',
+    value: date.format('YYYY-MM-DDTHH:mm'),
+  };
 };

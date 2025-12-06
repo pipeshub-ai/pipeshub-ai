@@ -44,6 +44,9 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showTopFade, setShowTopFade] = useState(false);
   const [showBottomFade, setShowBottomFade] = useState(false);
+  
+  // Check if connector is active - prevents saving while active
+  const isConnectorActive = connector.isActive;
   const {
     // State
     connectorConfig,
@@ -94,6 +97,14 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     certificateInputRef,
     privateKeyInputRef,
   } = useConnectorConfig({ connector, onClose, onSuccess });
+
+  // Handler for removing filters
+  const handleRemoveFilter = useCallback(
+    (section: string, fieldName: string) => {
+      handleFieldChange(section, fieldName, undefined);
+    },
+    [handleFieldChange]
+  );
 
   // Skip auth step if authType is 'NONE'
   const isNoAuthType = useMemo(() => isNoneAuthType(connector.authType), [connector.authType]);
@@ -187,6 +198,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                 formData={formData.filters}
                 formErrors={formErrors.filters}
                 onFieldChange={handleFieldChange}
+                onRemoveFilter={handleRemoveFilter}
               />
             );
           case 1:
@@ -267,6 +279,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               formData={formData.filters}
               formErrors={formErrors.filters}
               onFieldChange={handleFieldChange}
+              onRemoveFilter={handleRemoveFilter}
             />
           );
         case 2:
@@ -349,6 +362,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     formData,
     formErrors,
     handleFieldChange,
+    handleRemoveFilter,
     saving,
     connector,
     conditionalDisplay,
@@ -588,6 +602,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               border: isDark
                 ? `1px solid ${alpha(theme.palette.error.main, 0.3)}`
                 : 'none',
+              alignItems: 'center',
             }}
           >
             <AlertTitle sx={{ fontWeight: 600, fontSize: '0.8125rem', mb: 0.25 }}>
@@ -682,8 +697,46 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             ? `1px solid ${alpha(theme.palette.divider, 0.12)}`
             : `1px solid ${alpha(theme.palette.divider, 0.08)}`,
           flexShrink: 0,
+          flexDirection: 'column',
+          gap: 1.5,
+          alignItems: 'stretch',
         }}
       >
+        {/* Active Connector Notice - Subtle placement in footer */}
+        {isConnectorActive && (
+          <Box
+            sx={{
+              p: 1.25,
+              borderRadius: 1,
+              bgcolor: isDark 
+                ? alpha(theme.palette.info.main, 0.06)
+                : alpha(theme.palette.info.main, 0.03),
+              border: `1px solid ${alpha(theme.palette.info.main, isDark ? 0.15 : 0.1)}`,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.25,
+            }}
+          >
+            <Iconify 
+              icon="mdi:lock-outline" 
+              width={16} 
+              color={theme.palette.info.main}
+              sx={{ flexShrink: 0 }}
+            />
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                fontSize: '0.75rem',
+                color: theme.palette.text.secondary,
+                lineHeight: 1.4,
+                fontWeight: 500,
+              }}
+            >
+              Configuration is locked while connector is active. Disable the connector to make changes.
+            </Typography>
+          </Box>
+        )}
+
         <Box sx={{ display: 'flex', gap: 1.5, width: '100%', justifyContent: 'flex-end' }}>
           <Button
             onClick={onClose}
@@ -777,7 +830,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             <Button
               variant="contained"
               onClick={handleSave}
-              disabled={saving}
+              disabled={saving || isConnectorActive}
               startIcon={
                 saving ? (
                   <CircularProgress size={14} color="inherit" />
@@ -805,6 +858,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                 },
                 '&:disabled': {
                   boxShadow: 'none',
+                  opacity: isConnectorActive ? 0.5 : 0.38,
                 },
                 transition: 'all 0.2s ease',
               }}
