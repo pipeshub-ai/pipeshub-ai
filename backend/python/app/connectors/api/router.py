@@ -2101,7 +2101,13 @@ async def reindex_single_record(
     arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
-    Reindex a single record with permission validation
+    Reindex a single record with permission validation.
+    If the record is a folder (is_file=False), optionally reindex children up to specified depth.
+
+    Request Body (optional):
+        depth: int - Depth of children to reindex.
+               -1 = unlimited, 0 = only this record (default),
+               1 = direct children, 2 = children + grandchildren, etc.
     """
     try:
         container = request.app.container
@@ -2109,25 +2115,36 @@ async def reindex_single_record(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        logger.info(f"🔄 Attempting to reindex record {record_id}")
+        # Parse optional depth from request body
+        depth = 0  # Default: only this record
+        try:
+            request_body = await request.json()
+            depth = request_body.get("depth", 0)
+        except Exception:
+            # No body or invalid JSON - use default depth
+            pass
+
+        logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
 
         result = await arango_service.reindex_single_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
+            depth=depth,
             request=request
         )
 
         if result["success"]:
-            logger.info(f"✅ Successfully initiated reindex for record {record_id}")
+            logger.info(f"✅ Successfully initiated reindex for record {record_id} with depth {depth}")
             return {
                 "success": True,
-                "message": f"Reindex initiated for record {record_id}",
+                "message": f"Reindex initiated for record {record_id}" + (f" with depth {depth}" if depth != 0 else ""),
                 "recordId": result.get("recordId"),
                 "recordName": result.get("recordName"),
                 "connector": result.get("connector"),
                 "eventPublished": result.get("eventPublished"),
-                "userRole": result.get("userRole")
+                "userRole": result.get("userRole"),
+                "depth": depth
             }
         else:
             logger.error(f"❌ Failed to reindex record {record_id}: {result.get('reason')}")

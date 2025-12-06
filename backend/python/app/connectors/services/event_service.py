@@ -134,9 +134,16 @@ class EventService:
             return False
 
     async def _handle_reindex(self, connector_name: str, payload: Dict[str, Any]) -> bool:
-        """Handle reindex event for a connector with pagination support"""
+        """Handle reindex event for a connector with pagination support.
+
+        Supports three modes:
+        1. Record with depth: recordId + depth - reindex a folder and its children
+        2. Record group with depth: recordGroupId + depth - reindex all records in a record group
+        3. Status-based: statusFilters - reindex records by indexing status (e.g., FAILED)
+        """
         try:
             org_id = payload.get("orgId")
+            record_id = payload.get("recordId")
             record_group_id = payload.get("recordGroupId")
             depth = payload.get("depth", 0)
             status_filters = payload.get("statusFilters", ["FAILED"])
@@ -157,7 +164,10 @@ class EventService:
                 self.logger.error(f"Unknown connector name: {connector_name}")
                 return False
 
-            if record_group_id is not None:
+            # Log which mode we're using
+            if record_id is not None:
+                self.logger.info(f"Starting reindex for {connector_name} connector record {record_id} with depth {depth}")
+            elif record_group_id is not None:
                 self.logger.info(f"Starting reindex for {connector_name} connector record group {record_group_id} with depth {depth}")
             else:
                 self.logger.info(f"Starting reindex for {connector_name} connector with status filters: {status_filters}")
@@ -168,8 +178,20 @@ class EventService:
             total_processed = 0
 
             while True:
-                # Fetch batch of typed Record instances
-                if record_group_id is not None:
+                # Fetch batch of typed Record instances based on mode
+                if record_id is not None:
+                    # Mode 1: Reindex a folder and its children
+                    records = await self.arango_service.get_records_by_parent_record(
+                        parent_record_id=record_id,
+                        connector_name=connector_enum,
+                        org_id=org_id,
+                        depth=depth,
+                        include_parent=True,
+                        limit=batch_size,
+                        offset=offset
+                    )
+                elif record_group_id is not None:
+                    # Mode 2: Reindex records in a record group
                     records = await self.arango_service.get_records_by_record_group(
                         record_group_id=record_group_id,
                         connector_name=connector_enum,
@@ -179,6 +201,7 @@ class EventService:
                         offset=offset
                     )
                 else:
+                    # Mode 3: Reindex by status
                     records = await self.arango_service.get_records_by_status(
                         org_id=org_id,
                         connector_name=connector_enum,
