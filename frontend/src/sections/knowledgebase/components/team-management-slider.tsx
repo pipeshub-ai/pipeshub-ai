@@ -102,7 +102,7 @@ const TeamManagementSlider: React.FC<TeamManagementSliderProps> = ({ open, onClo
       if (debouncedSearchQuery) {
         params.search = debouncedSearchQuery;
       }
-      const { data } = await axios.get('/api/v1/teams/user/teams/created', { params });
+      const { data } = await axios.get('/api/v1/teams/user/teams', { params });
       setTeams(data?.teams || []);
       if (data?.pagination) {
         setTotalCount(data.pagination.total || 0);
@@ -740,7 +740,7 @@ const TeamManagementSlider: React.FC<TeamManagementSliderProps> = ({ open, onClo
               params.search = debouncedSearchQuery;
             }
             try {
-              const { data } = await axios.get('/api/v1/teams/user/teams/created', { params });
+              const { data } = await axios.get('/api/v1/teams/user/teams', { params });
               const updatedTeam = data?.teams?.find((t: Team) => t.id === selectedTeam.id);
               if (updatedTeam) {
                 setSelectedTeam(updatedTeam);

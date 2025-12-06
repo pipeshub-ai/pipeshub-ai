@@ -1524,7 +1524,8 @@ class KnowledgeBaseService :
                 "canUpload": user_role in ["OWNER", "WRITER"],
                 "canCreateFolders": user_role in ["OWNER", "WRITER"],
                 "canEdit": user_role in ["OWNER", "WRITER", "FILEORGANIZER"],
-                "canDelete": user_role in ["OWNER"]
+                "canDelete": user_role in ["OWNER"],
+                "canManagePermissions": user_role in ["OWNER"]
             }
 
             result["pagination"] = {
@@ -1632,7 +1633,8 @@ class KnowledgeBaseService :
                 "canUpload": user_role in ["OWNER", "WRITER"],
                 "canCreateFolders": user_role in ["OWNER", "WRITER"],
                 "canEdit": user_role in ["OWNER", "WRITER", "FILEORGANIZER"],
-                "canDelete": user_role in ["OWNER"]
+                "canDelete": user_role in ["OWNER"],
+                "canManagePermissions": user_role in ["OWNER"]
             }
 
             result["pagination"] = {

@@ -1266,13 +1266,14 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                                 </TableCell>
                                 <TableCell align="right" sx={{ py: 1.5 }}>
                                   <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                                    <Tooltip title={p.type === 'TEAM' ? 'Teams do not have roles' : 'Edit permissions'}>
-                                      <span>
-                                        {p.type !== 'TEAM' ? (
+                                    {/* Only show edit button for non-OWNER users and non-TEAM types */}
+                                    {p.type !== 'TEAM' && p.role !== 'OWNER' && (
+                                      <Tooltip title="Edit permissions">
+                                        <span>
                                           <IconButton
                                             size="small"
                                             onClick={() => startEdit(p)}
-                                            disabled={actionLoading || p.role === 'OWNER'}
+                                            disabled={actionLoading}
                                             sx={{
                                               color: theme.palette.text.secondary,
                                               '&:hover': {
@@ -1283,32 +1284,33 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                                           >
                                             <Icon icon={editIcon} width={14} height={14} />
                                           </IconButton>
-                                        ) : (
-                                          <Box />
-                                        )}
-                                      </span>
-                                    </Tooltip>
-                                    <Tooltip title="Remove access">
-                                      <span>
-                                        <IconButton
-                                          size="small"
-                                          onClick={() => {
-                                            setToDelete(p);
-                                            setDeleteOpen(true);
-                                          }}
-                                          disabled={actionLoading || p.role === 'OWNER'}
-                                          sx={{
-                                            color: theme.palette.text.secondary,
-                                            '&:hover': {
-                                              bgcolor: alpha(theme.palette.error.main, 0.08),
-                                              color: theme.palette.error.main,
-                                            },
-                                          }}
-                                        >
-                                          <Icon icon={deleteIcon} width={14} height={14} />
-                                        </IconButton>
-                                      </span>
-                                    </Tooltip>
+                                        </span>
+                                      </Tooltip>
+                                    )}
+                                    {/* Only show delete button for non-OWNER users */}
+                                    {p.role !== 'OWNER' && (
+                                      <Tooltip title="Remove access">
+                                        <span>
+                                          <IconButton
+                                            size="small"
+                                            onClick={() => {
+                                              setToDelete(p);
+                                              setDeleteOpen(true);
+                                            }}
+                                            disabled={actionLoading}
+                                            sx={{
+                                              color: theme.palette.text.secondary,
+                                              '&:hover': {
+                                                bgcolor: alpha(theme.palette.error.main, 0.08),
+                                                color: theme.palette.error.main,
+                                              },
+                                            }}
+                                          >
+                                            <Icon icon={deleteIcon} width={14} height={14} />
+                                          </IconButton>
+                                        </span>
+                                      </Tooltip>
+                                    )}
                                   </Stack>
                                 </TableCell>
                               </TableRow>

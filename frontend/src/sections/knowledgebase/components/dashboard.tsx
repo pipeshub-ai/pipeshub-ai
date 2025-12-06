@@ -352,13 +352,14 @@ const DashboardComponent: React.FC<DashboardProps> = ({
   }
 
   return (
-    <Box sx={{ height: '90vh', display: 'flex', flexDirection: 'column' }}>
+    <Box sx={{ height: 'calc(100vh - 64px)', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <Box
         sx={{
           borderBottom: (themeVal) => `1px solid ${themeVal.palette.divider}`,
           backgroundColor: 'background.paper',
           px: { xs: 2, sm: 3 },
           py: 2,
+          flexShrink: 0,
         }}
       >
         {(loading || loadingMore) && (
@@ -622,9 +623,10 @@ const DashboardComponent: React.FC<DashboardProps> = ({
         <Container
           maxWidth="xl"
           sx={{
-            py: { xs: 2, sm: 3 },
-            px: { xs: 2, sm: 3 },
+            py: { xs: 1.5, sm: 2 },
+            px: { xs: 1.5, sm: 2 },
             flex: 1,
+            minHeight: 0,
             display: 'flex',
             flexDirection: 'column',
           }}

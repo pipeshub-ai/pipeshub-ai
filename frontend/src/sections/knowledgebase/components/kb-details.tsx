@@ -303,30 +303,40 @@ export const renderKBDetail = ({
               </ActionButton>
             )}
 
-            <Box
-              component="button"
-              onClick={openPermissionsDialog}
-              sx={{
-                width: 32,
-                height: 32,
-                borderRadius: 1,
-                border: (themeVal) => `1px solid ${themeVal.palette.divider}`,
-                backgroundColor: 'transparent',
-                color: 'text.secondary',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                transition: 'all 0.2s ease',
-                '&:hover': {
-                  borderColor: 'action.active',
-                  color: 'text.primary',
-                  backgroundColor: 'action.hover',
-                },
-              }}
-            >
-              <Icon icon={accountMultipleIcon} fontSize={16} />
-            </Box>
+            {currentUserPermission?.canManagePermissions && (
+              <ActionButton
+                variant="outlined"
+                size="small"
+                startIcon={
+                  <Box sx={{ display: { xs: 'none', sm: 'inline' } }}>
+                    <Icon icon={accountMultipleIcon} fontSize={14} />
+                  </Box>
+                }
+                onClick={openPermissionsDialog}
+                sx={{
+                  height: 32,
+                  px: { xs: 1, sm: 1.5 },
+                  borderRadius: 1,
+                  borderColor: 'divider',
+                  color: 'text.secondary',
+                  backgroundColor: 'transparent',
+                  fontSize: '0.8125rem',
+                  fontWeight: 500,
+                  textTransform: 'none',
+                  minWidth: { xs: 'auto', sm: 'auto' },
+                  '&:hover': {
+                    borderColor: 'action.active',
+                    backgroundColor: 'action.hover',
+                    color: 'text.primary',
+                  },
+                }}
+              >
+                <Box sx={{ display: { xs: 'inline', sm: 'none' } }}>
+                  <Icon icon={accountMultipleIcon} fontSize={16} />
+                </Box>
+                <Box sx={{ display: { xs: 'none', sm: 'inline' } }}>Teams</Box>
+              </ActionButton>
+            )}
 
             <Box
               component="button"

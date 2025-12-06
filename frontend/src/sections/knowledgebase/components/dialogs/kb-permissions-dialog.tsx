@@ -33,8 +33,8 @@ const makeKbApi = (kbId: string, reloadTeamsRef: React.MutableRefObject<(() => P
     return users;
   },
   loadTeams: async () => {
-    // Only load teams created by the current user
-    const { data } = await axios.get(`/api/v1/teams/user/teams/created?limit=100`);
+    // Load all teams the user is a member of
+    const { data } = await axios.get(`/api/v1/teams/user/teams?limit=100`);
     const items = data?.teams || [];
     // Normalize team objects to match expected format
     const teams: Team[] = items.map((item: any) => ({
@@ -166,7 +166,7 @@ const KbPermissionsDialog: React.FC<KbPermissionsDialogProps> = ({ open, onClose
       subjectName={kbName}
       api={api}
       title="Manage Access"
-      addPeopleLabel="Add People"
+      addPeopleLabel="Add People & Teams"
     />
   );
 };

@@ -377,8 +377,16 @@ export class TeamsController {
       if (!userId) {
         throw new BadRequestError('User ID is required');
       }
+
+      const { page, limit, search } = req.query;
+      const queryParams = new URLSearchParams();
+      if (page) queryParams.append('page', String(page));
+      if (limit) queryParams.append('limit', String(limit));
+      if (search) queryParams.append('search', String(search));
+      const queryString = queryParams.toString();
+
       const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/user/teams`,
+        uri: `${this.config.connectorBackend}/api/v1/entity/user/teams${queryString ? `?${queryString}` : ''}`,
         method: HttpMethod.GET,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -388,7 +396,7 @@ export class TeamsController {
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        res.status(HTTP_STATUS.OK).json([]);
+        res.status(HTTP_STATUS.OK).json({ teams: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } });
         return;
       }
       const teams = aiResponse.data;

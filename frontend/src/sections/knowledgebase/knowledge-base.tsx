@@ -56,6 +56,7 @@ const MainContainer = styled(Box)(({ theme }) => ({
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
+  height: '100%',
 }));
 
 const ContentArea = styled(Box)({
@@ -63,6 +64,7 @@ const ContentArea = styled(Box)({
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
+  height: '100%',
 });
 
 const CompactCard = styled(Card)(({ theme }) => ({

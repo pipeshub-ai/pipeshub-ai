@@ -233,14 +233,15 @@ const ListViewComponent = memo<{
         elevation={0}
         sx={{
           overflow: 'hidden',
-          height: 'calc(100vh - 250px)',
+          flex: 1,
+          minHeight: 0,
           display: 'flex',
           flexDirection: 'column',
           borderRadius: 2,
           border: (themeVal) => `1px solid ${themeVal.palette.divider}`,
         }}
       >
-        <Box sx={{ flexGrow: 1, height: 'calc(100% - 64px)' }}>
+        <Box sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <DataGrid
             rows={knowledgeBases}
             columns={columns}

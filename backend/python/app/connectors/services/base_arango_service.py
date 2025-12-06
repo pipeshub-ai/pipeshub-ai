@@ -862,9 +862,10 @@ class BaseArangoService:
                                 depth: LENGTH(path.edges)
                             }}
             )
-            LET kbAccess = kb ? (
+            LET kbDirectAccess = kb ? (
                 FOR permEdge IN @@permission
                     FILTER permEdge._from == userDoc._id AND permEdge._to == kb._id
+                    FILTER permEdge.type == "USER"
                     LIMIT 1
                     LET parentFolder = FIRST(
                         FOR parent, relEdge IN 1..1 INBOUND recordDoc._id @@record_relations
@@ -879,6 +880,50 @@ class BaseArangoService:
                         folder: parentFolder
                     }}
             ) : []
+            LET kbTeamAccess = kb ? (
+                // Check team-based KB access: User -> Team -> KB
+                LET role_priority = {{
+                    "OWNER": 4,
+                    "WRITER": 3,
+                    "READER": 2,
+                    "COMMENTER": 1
+                }}
+                LET team_roles = (
+                    FOR kb_team_perm IN @@permission
+                        FILTER kb_team_perm._to == kb._id
+                        FILTER kb_team_perm.type == "TEAM"
+                        LET team_id = PARSE_IDENTIFIER(kb_team_perm._from).key
+                        // Check if user is a member of this team
+                        FOR user_team_perm IN @@permission
+                            FILTER user_team_perm._from == userDoc._id
+                            FILTER user_team_perm._to == CONCAT('teams/', team_id)
+                            FILTER user_team_perm.type == "USER"
+                            RETURN {{
+                                role: user_team_perm.role,
+                                priority: role_priority[user_team_perm.role]
+                            }}
+                )
+                LET highest_role = LENGTH(team_roles) > 0 ? FIRST(
+                    FOR r IN team_roles
+                        SORT r.priority DESC
+                        LIMIT 1
+                        RETURN r.role
+                ) : null
+                FILTER highest_role != null
+                LET parentFolder = FIRST(
+                    FOR parent, relEdge IN 1..1 INBOUND recordDoc._id @@record_relations
+                        FILTER relEdge.relationshipType == 'PARENT_CHILD'
+                        FILTER PARSE_IDENTIFIER(parent._id).collection == @files
+                        RETURN parent
+                )
+                RETURN {{
+                    type: 'KNOWLEDGE_BASE_TEAM',
+                    source: kb,
+                    role: highest_role,
+                    folder: parentFolder
+                }}
+            ) : []
+            LET kbAccess = UNION_DISTINCT(kbDirectAccess, kbTeamAccess)
             LET anyoneAccess = (
                 FOR records IN @@anyone
                 FILTER records.organization == @orgId
@@ -1027,7 +1072,7 @@ class BaseArangoService:
             kb_info = None
             folder_info = None
             for access in access_result:
-                if access["type"] == "KNOWLEDGE_BASE":
+                if access["type"] in ["KNOWLEDGE_BASE", "KNOWLEDGE_BASE_TEAM"]:
                     kb = access["source"]
                     kb_info = {
                         "id": kb["_key"],
@@ -8564,8 +8609,7 @@ class BaseArangoService:
                     RETURN kb_id
             )
 
-            COLLECT WITH COUNT INTO total
-            RETURN total
+            RETURN LENGTH(kb_roles)
             """
 
             # Optimized filters query - same optimizations as main query

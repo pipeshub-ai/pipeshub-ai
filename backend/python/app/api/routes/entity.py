@@ -879,7 +879,12 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
 
 
 @router.get("/user/teams")
-async def get_user_teams(request: Request) -> JSONResponse:
+async def get_user_teams(
+    request: Request,
+    search: Optional[str] = Query(None, description="Search teams by name"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(100, ge=1, le=100, description="Number of items per page")
+) -> JSONResponse:
     """Get all teams that the current user is a member of"""
     services = await get_services(request)
     arango_service = services["arango_service"]
@@ -894,18 +899,29 @@ async def get_user_teams(request: Request) -> JSONResponse:
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Fixed query - use @@collection syntax for dynamic collection names
-    user_teams_query = """
+    # Calculate offset
+    offset = (page - 1) * limit
+
+    # Build search filter
+    search_filter = ""
+    if search:
+        search_filter = "FILTER (team.name LIKE CONCAT('%', @search, '%') OR team.description LIKE CONCAT('%', @search, '%'))"
+
+    # Query to get all teams user is a member of with pagination
+    user_teams_query = f"""
     FOR permission IN @@permission_collection
     FILTER permission._from == @userId
     LET team = DOCUMENT(permission._to)
     FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+    {search_filter}
+    SORT team.createdAtTimestamp DESC
+    LIMIT @offset, @limit
     LET team_members = (
         FOR member_permission IN @@permission_collection
         FILTER member_permission._to == team._id
         LET member_user = DOCUMENT(member_permission._from)
         FILTER member_user != null
-        RETURN {
+        RETURN {{
             "id": member_user._key,
             "userId": member_user.userId,
             "userName": member_user.fullName,
@@ -913,10 +929,10 @@ async def get_user_teams(request: Request) -> JSONResponse:
             "role": member_permission.role,
             "joinedAt": member_permission.createdAtTimestamp,
             "isOwner": member_permission.role == "OWNER"
-        }
+        }}
     )
     LET member_count = LENGTH(team_members)
-    RETURN {
+    RETURN {{
         "id": team._key,
         "name": team.name,
         "description": team.description,
@@ -930,34 +946,81 @@ async def get_user_teams(request: Request) -> JSONResponse:
         "canEdit": permission.role IN ["OWNER"],
         "canDelete": permission.role == "OWNER",
         "canManageMembers": permission.role IN ["OWNER"]
-    }
+    }}
+    """
+
+    # Count query for pagination
+    count_query = f"""
+    FOR permission IN @@permission_collection
+    FILTER permission._from == @userId
+    LET team = DOCUMENT(permission._to)
+    FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+    {search_filter}
+    COLLECT WITH COUNT INTO total_count
+    RETURN total_count
     """
 
     try:
-        result = arango_service.db.aql.execute(
-            user_teams_query,
-            bind_vars={
-                "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
-                "@permission_collection": CollectionNames.PERMISSION.value,
-                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
-            }
-        )
+        # Get total count
+        count_params = {
+            "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
+            "@permission_collection": CollectionNames.PERMISSION.value,
+            "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
+        }
+        if search:
+            count_params["search"] = search
+
+        count_result = arango_service.db.aql.execute(count_query, bind_vars=count_params)
+        count_list = list(count_result)
+        total_count = count_list[0] if count_list else 0
+
+        # Get teams with pagination
+        teams_params = {
+            "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
+            "@permission_collection": CollectionNames.PERMISSION.value,
+            "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+            "offset": offset,
+            "limit": limit
+        }
+        if search:
+            teams_params["search"] = search
+
+        result = arango_service.db.aql.execute(user_teams_query, bind_vars=teams_params)
         result_list = list(result)
+
         if not result_list:
             return JSONResponse(
                 status_code=200,
                 content={
                     "status": "success",
                     "message": "No teams found",
-                    "teams": []
+                    "teams": [],
+                    "pagination": {
+                        "page": page,
+                        "limit": limit,
+                        "total": total_count,
+                        "pages": 0
+                    }
                 }
             )
+
+        # Calculate total pages
+        total_pages = (total_count + limit - 1) // limit
+
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
                 "message": "User teams fetched successfully",
-                "teams": result_list
+                "teams": result_list,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": total_count,
+                    "pages": total_pages,
+                    "hasNext": page < total_pages,
+                    "hasPrev": page > 1
+                }
             }
         )
     except Exception as e:
