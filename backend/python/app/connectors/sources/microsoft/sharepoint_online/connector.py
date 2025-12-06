@@ -387,6 +387,21 @@ class SharePointConnector(BaseConnector):
             # Should be caught by the earlier check, but kept for robustness
             raise ValueError("No valid credential (Certificate or Client Secret) found.")
 
+        # Pre-initialize the credential to establish HTTP session
+        # This prevents "HTTP transport has already been closed" errors
+        try:
+            await self.credential.get_token("https://graph.microsoft.com/.default")
+            self.logger.info("✅ Credential initialized and HTTP session established")
+        except Exception as token_error:
+            self.logger.error(f"❌ Failed to initialize credential: {token_error}")
+            # Clean up temp certificate file if it was created
+            if self.temp_cert_file:
+                try:
+                    os.unlink(self.temp_cert_file.name)
+                except OSError:
+                    pass
+            raise ValueError(f"Failed to initialize SharePoint credential: {token_error}")
+
         # Initialize Graph Client
         self.client = GraphServiceClient(
             self.credential,
@@ -1498,57 +1513,73 @@ class SharePointConnector(BaseConnector):
         """Get access token for SharePoint REST API."""
         from azure.identity.aio import CertificateCredential, ClientSecretCredential
 
-        credential = None
         try:
             # Use the same authentication method as the main Graph API client
             if self.certificate_path:
                 # Certificate-based authentication
-                credential = CertificateCredential(
+                async with CertificateCredential(
                     tenant_id=self.tenant_id,
                     client_id=self.client_id,
                     certificate_path=self.certificate_path,
                     password=self.certificate_password  # Will be None if no password
-                )
-                self.logger.debug("Using CertificateCredential for SharePoint REST API")
+                ) as credential:
+                    self.logger.debug("Using CertificateCredential for SharePoint REST API")
+
+                    # Parse domain to ensure correct format
+                    parsed = urllib.parse.urlparse(self.sharepoint_domain)
+                    if parsed.hostname:
+                        resource_host = parsed.hostname
+                    else:
+                        resource_host = self.sharepoint_domain.replace('https://', '').replace('http://', '').strip('/')
+
+                    # Construct SharePoint resource URL
+                    resource = f"https://{resource_host}"
+
+                    self.logger.debug(f"Requesting SharePoint token for resource: {resource}/.default")
+
+                    # Request token specifically for SharePoint (NOT Graph API)
+                    token = await credential.get_token(f"{resource}/.default")
+
+                    self.logger.info("✅ Successfully obtained SharePoint access token")
+
+                    return token.token
+
             elif self.client_secret:
                 # Client secret authentication
-                credential = ClientSecretCredential(
+                async with ClientSecretCredential(
                     tenant_id=self.tenant_id,
                     client_id=self.client_id,
                     client_secret=self.client_secret
-                )
-                self.logger.debug("Using ClientSecretCredential for SharePoint REST API")
+                ) as credential:
+                    self.logger.debug("Using ClientSecretCredential for SharePoint REST API")
+
+                    # Parse domain to ensure correct format
+                    parsed = urllib.parse.urlparse(self.sharepoint_domain)
+                    if parsed.hostname:
+                        resource_host = parsed.hostname
+                    else:
+                        resource_host = self.sharepoint_domain.replace('https://', '').replace('http://', '').strip('/')
+
+                    # Construct SharePoint resource URL
+                    resource = f"https://{resource_host}"
+
+                    self.logger.debug(f"Requesting SharePoint token for resource: {resource}/.default")
+
+                    # Request token specifically for SharePoint (NOT Graph API)
+                    token = await credential.get_token(f"{resource}/.default")
+
+                    self.logger.info("✅ Successfully obtained SharePoint access token")
+
+                    return token.token
             else:
                 self.logger.error("❌ No valid authentication method available (neither certificate nor client secret)")
                 return None
-
-            # Parse domain to ensure correct format
-            parsed = urllib.parse.urlparse(self.sharepoint_domain)
-            if parsed.hostname:
-                resource_host = parsed.hostname
-            else:
-                resource_host = self.sharepoint_domain.replace('https://', '').replace('http://', '').strip('/')
-
-            # Construct SharePoint resource URL
-            resource = f"https://{resource_host}"
-
-            self.logger.debug(f"Requesting SharePoint token for resource: {resource}/.default")
-
-            # Request token specifically for SharePoint (NOT Graph API)
-            token = await credential.get_token(f"{resource}/.default")
-
-            self.logger.info("✅ Successfully obtained SharePoint access token")
-
-            return token.token
 
         except Exception as e:
             self.logger.error(f"❌ Error getting SharePoint token: {e}")
             self.logger.error("   Make sure your app has SharePoint permissions (Sites.Read.All)")
             self.logger.error(f"   Resource URL: {resource if 'resource' in locals() else 'N/A'}")
             return None
-        finally:
-            if credential:
-                await credential.close()
 
     async def _get_site_permissions(self, site_id: str) -> List[Permission]:
         permissions_dict = {} # Key: Email, Value: Permission Object
@@ -2314,199 +2345,198 @@ class SharePointConnector(BaseConnector):
             sharepoint_groups_with_members = []
             total_groups = 0
 
-            if self.certificate_path:
-                credential = CertificateCredential(
+            # Create credential context manager based on authentication method
+            credential_context = (
+                CertificateCredential(
                     tenant_id=self.tenant_id,
                     client_id=self.client_id,
                     certificate_path=self.certificate_path,
                 )
-            else:
-                credential = ClientSecretCredential(
+                if self.certificate_path
+                else ClientSecretCredential(
                     tenant_id=self.tenant_id,
                     client_id=self.client_id,
                     client_secret=self.client_secret
                 )
+            )
 
             try:
-                # Get all sites
-                sites = await self._get_all_sites()
-                SECURITY_GROUP_TYPE = 4
+                async with credential_context as credential:
+                    # Get all sites
+                    sites = await self._get_all_sites()
+                    SECURITY_GROUP_TYPE = 4
 
-                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    async with httpx.AsyncClient(timeout=30.0) as http_client:
+                        for site in sites:
+                            try:
+                                site_id = site.id
+                                site_name = site.display_name or site.name
+                                self.logger.info(f"Fetching site groups for site: {site_name}")
 
-                    for site in sites:
-                        try:
-                            site_id = site.id
-                            site_name = site.display_name or site.name
-                            self.logger.info(f"Fetching site groups for site: {site_name}")
+                                async with self.rate_limiter:
+                                    site_details = await self.client.sites.by_site_id(site_id).get()
 
-                            async with self.rate_limiter:
-                                site_details = await self.client.sites.by_site_id(site_id).get()
+                                if not site_details or not site_details.web_url:
+                                    self.logger.debug(f"No web URL available for site: {site_name}")
+                                    continue
 
-                            if not site_details or not site_details.web_url:
-                                self.logger.debug(f"No web URL available for site: {site_name}")
+                                site_web_url = site_details.web_url
+                                rest_api_url = f"{site_web_url}/_api/web/sitegroups"
+                                parsed_url = urlparse(site_web_url)
+                                sharepoint_resource = f"https://{parsed_url.netloc}"
+
+                                # Reuse credential to get a specific token for this site
+                                token_response = await credential.get_token(f"{sharepoint_resource}/.default")
+                                access_token = token_response.token
+
+                                headers = {
+                                    'Authorization': f'Bearer {access_token}',
+                                    'Accept': 'application/json;odata=verbose',
+                                    'Content-Type': 'application/json;odata=verbose'
+                                }
+
+                                # Reuse http_client
+                                response = await http_client.get(rest_api_url, headers=headers)
+
+                                if response.status_code == HTTPStatus.OK:
+                                    data = response.json()
+                                    site_groups = data.get('d', {}).get('results', [])
+
+                                    self.logger.info(f"\n{'='*180}")
+                                    self.logger.info(f"Site Groups for: {site_name} (Total: {len(site_groups)})")
+                                    self.logger.info(f"{'='*100}")
+
+                                    for idx, group in enumerate(site_groups, 1):
+                                        group_title = group.get('Title', 'N/A')
+                                        group_id = group.get('Id', 'N/A')
+                                        description = group.get('Description', 'N/A')
+
+                                        # Combine Site ID and Group ID to ensure global uniqueness across the tenant
+                                        # Format: {SiteGUID}-{GroupID}
+                                        unique_source_id = f"{site_id}-{group_id}"
+
+                                        user_group = AppUserGroup(
+                                            id=str(uuid.uuid4()),
+                                            source_user_group_id=unique_source_id,
+                                            app_name=self.connector_name,
+                                            name=group_title,
+                                            description=description if description != 'N/A' else None,
+                                        )
+
+                                        app_users = []
+                                        users_url = f"{site_web_url}/_api/web/sitegroups/GetById({group_id})/users"
+
+                                        try:
+                                            # Reuse http_client
+                                            users_response = await http_client.get(users_url, headers=headers)
+
+                                            if users_response.status_code == HTTPStatus.OK:
+                                                users_data = users_response.json()
+                                                users = users_data.get('d', {}).get('results', [])
+
+                                                if users:
+                                                    self.logger.info(f"   - Raw Entities found: {len(users)}")
+
+                                                    for user in users:
+                                                        login_name = user.get('LoginName', '')
+                                                        principal_type = user.get('PrincipalType')
+
+                                                        # CASE A: M365 Unified Group (The "True" Team)
+                                                        # Looks for 'federateddirectoryclaimprovider' in LoginName
+                                                        if 'federateddirectoryclaimprovider' in login_name:
+                                                            # Extract GUID
+                                                            match = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', login_name)
+                                                            if match:
+                                                                m365_id = match.group(1)
+                                                                self.logger.info(f"     -> Expanding M365 Group: {m365_id}")
+
+                                                                # Determine if we want Owners or Members based on the SP Group Title
+                                                                is_owner_check = 'Owner' in group_title
+
+                                                                # Call helper to get actual humans from Graph
+                                                                expanded_users = await self._fetch_graph_group_members(m365_id, is_owner=is_owner_check)
+
+                                                                for exp_u in expanded_users:
+                                                                    app_users.append(AppUser(
+                                                                        source_user_id=exp_u['id'],
+                                                                        email=exp_u['email'],
+                                                                        full_name=exp_u['name'],
+                                                                        app_name=self.connector_name
+                                                                    ))
+
+                                                        # CASE B: AD Security Group (PrincipalType == 4)
+                                                        elif principal_type == SECURITY_GROUP_TYPE:
+                                                            # Security Group LoginNames often look like: "c:0t.c|tenant|GUID"
+                                                            match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
+                                                            if match:
+                                                                group_id = match.group(1)
+
+                                                                # This ID is a virtual claim, not a real Graph Group.
+                                                                if group_id == '9908e57b-4444-4a0e-af96-e8ca83c0a0e5':
+                                                                    self.logger.info("     -> Found 'Everyone except external users' claim. Skipping.")
+                                                                    continue
+
+
+                                                                self.logger.info(f"     -> Expanding Security Group: {group_id}")
+                                                                # Security groups imply members (is_owner=False)
+                                                                expanded_users = await self._fetch_graph_group_members(group_id, is_owner=False)
+
+                                                                for exp_u in expanded_users:
+                                                                    app_users.append(AppUser(
+                                                                        source_user_id=exp_u['id'],
+                                                                        email=exp_u['email'],
+                                                                        full_name=exp_u['name'],
+                                                                        app_name=self.connector_name
+                                                                    ))
+
+                                                        # CASE C: Standard Individual User
+                                                        else:
+                                                            user_id = user.get('Id')
+                                                            user_title = user.get('Title', 'N/A')
+                                                            user_email = user.get('Email') or user.get('UserPrincipalName')
+
+                                                            if user_email or user.get('UserPrincipalName'):
+                                                                app_users.append(AppUser(
+                                                                    source_user_id=str(user_id) if user_id else None,
+                                                                    email=user_email or user.get('UserPrincipalName'),
+                                                                    full_name=user_title if user_title != 'N/A' else None,
+                                                                    app_name=self.connector_name,
+                                                                ))
+
+                                                else:
+                                                    self.logger.info("   - No entities in this group")
+                                            else:
+                                                self.logger.info(f"   - Error fetching users: {users_response.status_code}")
+
+                                        except Exception as user_error:
+                                            self.logger.info(f"   - Exception fetching users: {user_error}")
+
+                                        sharepoint_groups_with_members.append((user_group, app_users))
+                                        total_groups += 1
+                                    self.logger.info(f"\n{'='*180}\n")
+
+                                elif response.status_code == HTTPStatus.UNAUTHORIZED:
+                                    self.logger.info(" 401 Unauthorized Error")
+                                else:
+                                    self.logger.info(f" Error: {response.status_code}")
+
+
+                            except Exception:
+                                self.logger.info(f" Error processing site {site_name}: {traceback.format_exc()}")
                                 continue
 
-                            site_web_url = site_details.web_url
-                            rest_api_url = f"{site_web_url}/_api/web/sitegroups"
-                            parsed_url = urlparse(site_web_url)
-                            sharepoint_resource = f"https://{parsed_url.netloc}"
+                    # Process all SharePoint site groups
+                    if sharepoint_groups_with_members:
+                        self.logger.info(f"Processing {len(sharepoint_groups_with_members)} SharePoint site groups")
 
-                            # Reuse credential to get a specific token for this site
-                            token_response = await credential.get_token(f"{sharepoint_resource}/.default")
-                            access_token = token_response.token
+                        await self.data_entities_processor.on_new_user_groups(
+                            sharepoint_groups_with_members
+                        )
 
-                            headers = {
-                                'Authorization': f'Bearer {access_token}',
-                                'Accept': 'application/json;odata=verbose',
-                                'Content-Type': 'application/json;odata=verbose'
-                            }
-
-                            # Reuse http_client
-                            response = await http_client.get(rest_api_url, headers=headers)
-
-                            if response.status_code == HTTPStatus.OK:
-                                data = response.json()
-                                site_groups = data.get('d', {}).get('results', [])
-
-                                self.logger.info(f"\n{'='*180}")
-                                self.logger.info(f"Site Groups for: {site_name} (Total: {len(site_groups)})")
-                                self.logger.info(f"{'='*100}")
-
-                                for idx, group in enumerate(site_groups, 1):
-                                    group_title = group.get('Title', 'N/A')
-                                    group_id = group.get('Id', 'N/A')
-                                    description = group.get('Description', 'N/A')
-
-                                    # Combine Site ID and Group ID to ensure global uniqueness across the tenant
-                                    # Format: {SiteGUID}-{GroupID}
-                                    unique_source_id = f"{site_id}-{group_id}"
-
-                                    user_group = AppUserGroup(
-                                        id=str(uuid.uuid4()),
-                                        source_user_group_id=unique_source_id,
-                                        app_name=self.connector_name,
-                                        name=group_title,
-                                        description=description if description != 'N/A' else None,
-                                    )
-
-                                    app_users = []
-                                    users_url = f"{site_web_url}/_api/web/sitegroups/GetById({group_id})/users"
-
-                                    try:
-                                        # Reuse http_client
-                                        users_response = await http_client.get(users_url, headers=headers)
-
-                                        if users_response.status_code == HTTPStatus.OK:
-                                            users_data = users_response.json()
-                                            users = users_data.get('d', {}).get('results', [])
-
-                                            if users:
-                                                self.logger.info(f"   - Raw Entities found: {len(users)}")
-
-                                                for user in users:
-                                                    login_name = user.get('LoginName', '')
-                                                    principal_type = user.get('PrincipalType')
-
-                                                    # CASE A: M365 Unified Group (The "True" Team)
-                                                    # Looks for 'federateddirectoryclaimprovider' in LoginName
-                                                    if 'federateddirectoryclaimprovider' in login_name:
-                                                        # Extract GUID
-                                                        match = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', login_name)
-                                                        if match:
-                                                            m365_id = match.group(1)
-                                                            self.logger.info(f"     -> Expanding M365 Group: {m365_id}")
-
-                                                            # Determine if we want Owners or Members based on the SP Group Title
-                                                            is_owner_check = 'Owner' in group_title
-
-                                                            # Call helper to get actual humans from Graph
-                                                            expanded_users = await self._fetch_graph_group_members(m365_id, is_owner=is_owner_check)
-
-                                                            for exp_u in expanded_users:
-                                                                app_users.append(AppUser(
-                                                                    source_user_id=exp_u['id'],
-                                                                    email=exp_u['email'],
-                                                                    full_name=exp_u['name'],
-                                                                    app_name=self.connector_name
-                                                                ))
-
-                                                    # CASE B: AD Security Group (PrincipalType == 4)
-                                                    elif principal_type == SECURITY_GROUP_TYPE:
-                                                        # Security Group LoginNames often look like: "c:0t.c|tenant|GUID"
-                                                        match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
-                                                        if match:
-                                                            group_id = match.group(1)
-
-                                                            # This ID is a virtual claim, not a real Graph Group.
-                                                            if group_id == '9908e57b-4444-4a0e-af96-e8ca83c0a0e5':
-                                                                self.logger.info("     -> Found 'Everyone except external users' claim. Skipping.")
-                                                                continue
-
-
-                                                            self.logger.info(f"     -> Expanding Security Group: {group_id}")
-                                                            # Security groups imply members (is_owner=False)
-                                                            expanded_users = await self._fetch_graph_group_members(group_id, is_owner=False)
-
-                                                            for exp_u in expanded_users:
-                                                                app_users.append(AppUser(
-                                                                    source_user_id=exp_u['id'],
-                                                                    email=exp_u['email'],
-                                                                    full_name=exp_u['name'],
-                                                                    app_name=self.connector_name
-                                                                ))
-
-                                                    # CASE C: Standard Individual User
-                                                    else:
-                                                        user_id = user.get('Id')
-                                                        user_title = user.get('Title', 'N/A')
-                                                        user_email = user.get('Email') or user.get('UserPrincipalName')
-
-                                                        if user_email or user.get('UserPrincipalName'):
-                                                            app_users.append(AppUser(
-                                                                source_user_id=str(user_id) if user_id else None,
-                                                                email=user_email or user.get('UserPrincipalName'),
-                                                                full_name=user_title if user_title != 'N/A' else None,
-                                                                app_name=self.connector_name,
-                                                            ))
-
-                                            else:
-                                                self.logger.info("   - No entities in this group")
-                                        else:
-                                            self.logger.info(f"   - Error fetching users: {users_response.status_code}")
-
-                                    except Exception as user_error:
-                                        self.logger.info(f"   - Exception fetching users: {user_error}")
-
-                                    sharepoint_groups_with_members.append((user_group, app_users))
-                                    total_groups += 1
-                                self.logger.info(f"\n{'='*180}\n")
-
-                            elif response.status_code == HTTPStatus.UNAUTHORIZED:
-                                self.logger.info(" 401 Unauthorized Error")
-                            else:
-                                self.logger.info(f" Error: {response.status_code}")
-
-
-                        except Exception:
-                            self.logger.info(f" Error processing site {site_name}: {traceback.format_exc()}")
-                            continue
-
-                # Process all SharePoint site groups
-                if sharepoint_groups_with_members:
-                    self.logger.info(f"Processing {len(sharepoint_groups_with_members)} SharePoint site groups")
-
-                    await self.data_entities_processor.on_new_user_groups(
-                        sharepoint_groups_with_members
-                    )
+                self.logger.info(f"Completed SharePoint group synchronization - processed {total_groups} groups")
 
             except Exception as outer_error:
                 self.logger.debug(f"Site groups fetch wrapper error: {outer_error}")
-            finally:
-                # --- CLEANUP: Close credential once at the very end ---
-                await credential.close()
-
-            self.logger.info(f"Completed SharePoint group synchronization - processed {total_groups} groups")
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing SharePoint groups: {e}")
@@ -2704,12 +2734,70 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error handling record updates: {e}")
 
+    async def _reinitialize_credential_if_needed(self) -> None:
+        """
+        Reinitialize the credential and clients if the HTTP transport has been closed.
+        This prevents "HTTP transport has already been closed" errors when the connector
+        instance is reused across multiple scheduled runs that are days apart.
+        """
+        try:
+            # Test if the credential is still valid by attempting to get a token
+            await self.credential.get_token("https://graph.microsoft.com/.default")
+            self.logger.debug("✅ Credential is valid and active")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Credential needs reinitialization: {e}")
+
+            # Close old credential if it exists
+            if hasattr(self, 'credential') and self.credential:
+                try:
+                    await self.credential.close()
+                except Exception:
+                    pass
+
+            # Determine which authentication method to use
+            has_certificate = hasattr(self, 'certificate_path') and self.certificate_path
+
+            if has_certificate:
+                # Recreate certificate-based credential
+                self.credential = CertificateCredential(
+                    tenant_id=self.tenant_id,
+                    client_id=self.client_id,
+                    certificate_path=self.certificate_path,
+                )
+            else:
+                # Recreate client secret credential
+                if not all([self.tenant_id, self.client_id, self.client_secret]):
+                    raise ValueError("Cannot reinitialize: credentials not found")
+
+                self.credential = ClientSecretCredential(
+                    tenant_id=self.tenant_id,
+                    client_id=self.client_id,
+                    client_secret=self.client_secret,
+                )
+
+            # Pre-initialize to establish HTTP session
+            await self.credential.get_token("https://graph.microsoft.com/.default")
+
+            # Recreate Graph client with new credential
+            self.client = GraphServiceClient(
+                self.credential,
+                scopes=["https://graph.microsoft.com/.default"]
+            )
+            self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
+
+            self.logger.info("✅ Credential successfully reinitialized")
+
     async def run_sync(self) -> None:
         """Main entry point for the SharePoint connector."""
         start_time = datetime.now()
 
         try:
             self.logger.info("🚀 Starting SharePoint connector sync")
+
+            # Reinitialize credential to prevent "HTTP transport has already been closed" errors
+            # This is necessary because the connector instance may be reused across multiple
+            # scheduled runs that are days apart, causing the HTTP session to timeout
+            await self._reinitialize_credential_if_needed()
 
             # Step 1: Sync users
             self.logger.info("Syncing users...")
@@ -2809,6 +2897,9 @@ class SharePointConnector(BaseConnector):
         try:
             self.logger.info("🔄 Starting SharePoint incremental sync")
 
+            # Reinitialize credential to prevent session timeout issues
+            await self._reinitialize_credential_if_needed()
+
             sites = await self._get_all_sites()
 
             for site in sites:
@@ -2857,6 +2948,9 @@ class SharePointConnector(BaseConnector):
         try:
             self.logger.info("📬 Processing SharePoint webhook notification")
 
+            # Reinitialize credential if needed (webhooks might arrive after days of inactivity)
+            await self._reinitialize_credential_if_needed()
+
             resource = notification.get('resource', '')
             notification.get('changeType', '')
 
@@ -2883,6 +2977,9 @@ class SharePointConnector(BaseConnector):
     async def get_signed_url(self, record: Record) -> str:
         """Create a signed URL for a specific SharePoint record."""
         try:
+            # Reinitialize credential if needed (user might be accessing files after days of inactivity)
+            await self._reinitialize_credential_if_needed()
+
             if record.record_type != RecordType.FILE:
                 return None
 
@@ -2905,41 +3002,37 @@ class SharePointConnector(BaseConnector):
         try:
             self.logger.info("🧹 Starting SharePoint connector cleanup")
 
-            # 1. Clean up temporary certificate file
-            # usage matches 'self.certificate_path' from your init method
+            # 1. Clear caches first
+            if hasattr(self, 'site_cache'):
+                self.site_cache.clear()
+
+            # 2. Clear MSGraph helper client reference
+            if hasattr(self, 'msgraph_client'):
+                self.msgraph_client = None
+
+            # 3. Release Graph Client reference before closing credential
+            if hasattr(self, 'client'):
+                self.client = None
+
+            # 4. Close the credential (closes HTTP transport/sessions)
+            # This must be done after all API operations are complete
+            if hasattr(self, 'credential') and self.credential:
+                try:
+                    await self.credential.close()
+                    self.logger.info("✅ Authentication credential closed")
+                except Exception as credential_error:
+                    self.logger.warning(f"⚠️ Error closing credential (may already be closed): {credential_error}")
+                finally:
+                    self.credential = None
+
+            # 5. Clean up temporary certificate file last
             if hasattr(self, 'certificate_path') and self.certificate_path:
                 try:
                     if os.path.exists(self.certificate_path):
                         os.remove(self.certificate_path)
                         self.logger.info(f"✅ Removed temporary certificate file: {self.certificate_path}")
                 except Exception as cert_error:
-                    self.logger.warning(f"❌ Error removing temporary certificate: {cert_error}")
-
-            # 2. Close the credential (closes HTTP transport/sessions)
-            if hasattr(self, 'credential') and self.credential:
-                try:
-                    await self.credential.close()
-                    self.logger.info("✅ Authentication credential closed")
-                except Exception as credential_error:
-                    self.logger.warning(f"❌ Error closing credential: {credential_error}")
-                finally:
-                    self.credential = None
-
-            # 3. Clear caches
-            if hasattr(self, 'site_cache'):
-                self.site_cache.clear()
-
-            # 4. Release Graph Client reference
-            if hasattr(self, 'client'):
-                self.client = None
-
-            # 5. Clean up MSGraph helper client
-            if hasattr(self, 'msgraph_client') and self.msgraph_client:
-                try:
-                    if hasattr(self.msgraph_client, 'cleanup'):
-                        await self.msgraph_client.cleanup()
-                except Exception as msgraph_error:
-                    self.logger.warning(f"❌ Error cleaning up MSGraph client: {msgraph_error}")
+                    self.logger.warning(f"⚠️ Error removing temporary certificate: {cert_error}")
 
             self.logger.info("✅ SharePoint connector cleanup completed")
 

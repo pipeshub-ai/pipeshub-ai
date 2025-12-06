@@ -168,11 +168,23 @@ class OneDriveConnector(BaseConnector):
         )
          # Initialize MS Graph client
         # Store credential as instance variable to prevent it from being garbage collected
+        # Initialize the credential and ensure it's kept open by calling get_token
+        # This prevents premature closure of the HTTP transport
         self.credential = ClientSecretCredential(
             tenant_id=credentials.tenant_id,
             client_id=credentials.client_id,
             client_secret=credentials.client_secret,
         )
+
+        # Pre-initialize the credential to establish HTTP session
+        # This prevents "HTTP transport has already been closed" errors
+        try:
+            await self.credential.get_token("https://graph.microsoft.com/.default")
+            self.logger.info("✅ Credential initialized and HTTP session established")
+        except Exception as token_error:
+            self.logger.error(f"❌ Failed to initialize credential: {token_error}")
+            raise ValueError(f"Failed to initialize OneDrive credential: {token_error}")
+
         self.client = GraphServiceClient(self.credential, scopes=["https://graph.microsoft.com/.default"])
         self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
         return True
@@ -899,6 +911,9 @@ class OneDriveConnector(BaseConnector):
         try:
             self.logger.info("Processing webhook notification")
 
+            # Reinitialize credential if needed (webhooks might arrive after days of inactivity)
+            await self._reinitialize_credential_if_needed()
+
             # Extract relevant information from notification
             resource = notification.get('resource', '')
             notification.get('changeType', '')
@@ -926,6 +941,11 @@ class OneDriveConnector(BaseConnector):
         try:
             self.logger.info("Starting OneDrive connector sync")
 
+            # Reinitialize credential to prevent "HTTP transport has already been closed" errors
+            # This is necessary because the connector instance may be reused across multiple
+            # scheduled runs that are days apart, causing the HTTP session to timeout
+            await self._reinitialize_credential_if_needed()
+
             # Step 1: Sync users
             self.logger.info("Syncing users...")
             users = await self.msgraph_client.get_all_users()
@@ -949,6 +969,55 @@ class OneDriveConnector(BaseConnector):
             self.logger.error(f"❌ Error in OneDrive connector run: {e}")
             raise
 
+    async def _reinitialize_credential_if_needed(self) -> None:
+        """
+        Reinitialize the credential and clients if the HTTP transport has been closed.
+        This prevents "HTTP transport has already been closed" errors when the connector
+        instance is reused across multiple scheduled runs that are days apart.
+        """
+        try:
+            # Test if the credential is still valid by attempting to get a token
+            await self.credential.get_token("https://graph.microsoft.com/.default")
+            self.logger.debug("✅ Credential is valid and active")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Credential needs reinitialization: {e}")
+
+            # Close old credential if it exists
+            if hasattr(self, 'credential') and self.credential:
+                try:
+                    await self.credential.close()
+                except Exception:
+                    pass
+
+            # Get credentials from config
+            config = self.config.get("credentials", {})
+            auth_config = config.get("auth", {})
+            tenant_id = auth_config.get("tenantId")
+            client_id = auth_config.get("clientId")
+            client_secret = auth_config.get("clientSecret")
+
+            if not all((tenant_id, client_id, client_secret)):
+                raise ValueError("Cannot reinitialize: credentials not found in config")
+
+            # Create new credential
+            self.credential = ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+
+            # Pre-initialize to establish HTTP session
+            await self.credential.get_token("https://graph.microsoft.com/.default")
+
+            # Recreate Graph client with new credential
+            self.client = GraphServiceClient(
+                self.credential,
+                scopes=["https://graph.microsoft.com/.default"]
+            )
+            self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
+
+            self.logger.info("✅ Credential successfully reinitialized")
+
     async def run_incremental_sync(self) -> None:
         """
         Run incremental sync for a specific user or all users.
@@ -959,6 +1028,9 @@ class OneDriveConnector(BaseConnector):
         """
         try:
             self.logger.info("Starting incremental sync for all users")
+
+            # Reinitialize credential to prevent session timeout issues
+            await self._reinitialize_credential_if_needed()
 
             # Sync all active users
             users = await self.msgraph_client.get_all_users()
@@ -981,15 +1053,25 @@ class OneDriveConnector(BaseConnector):
             # self.processed_items.clear()
             # self.permission_cache.clear()
 
-            # Close the credential to properly close the HTTP transport
-            if hasattr(self, 'credential') and self.credential:
-                await self.credential.close()
-                self.credential = None
-
-            # Close any open connections
+            # Close any open connections in the GraphServiceClient first
             if hasattr(self, 'client') and self.client:
                 # GraphServiceClient doesn't have explicit close, but we can clear the reference
                 self.client = None
+
+            # Clear msgraph_client reference
+            if hasattr(self, 'msgraph_client'):
+                self.msgraph_client = None
+
+            # Close the credential last to properly close the HTTP transport
+            # This must be done after all API operations are complete
+            if hasattr(self, 'credential') and self.credential:
+                try:
+                    await self.credential.close()
+                    self.logger.info("✅ Credential HTTP transport closed successfully")
+                except Exception as cred_error:
+                    self.logger.warning(f"⚠️ Error closing credential (may already be closed): {cred_error}")
+                finally:
+                    self.credential = None
 
             self.logger.info("OneDrive connector cleanup completed")
 
@@ -1006,13 +1088,16 @@ class OneDriveConnector(BaseConnector):
         Create a signed URL for a specific record.
         """
         try:
+            # Reinitialize credential if needed (user might be accessing files after days of inactivity)
+            await self._reinitialize_credential_if_needed()
+
             return await self.msgraph_client.get_signed_url(record.external_record_group_id, record.external_record_id)
         except Exception as e:
             self.logger.error(f"❌ Error creating signed URL for record {record.id}: {e}")
             raise
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        """Stream a record from SharePoint."""
+        """Stream a record from OneDrive."""
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
