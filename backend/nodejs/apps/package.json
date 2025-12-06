@@ -35,7 +35,7 @@
     "eslint": "^9.39.1",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-prettier": "^5.2.1",
-    "mocha": "^11.1.0",
+    "mocha": "^11.7.5",
     "multer": "^2.0.0",
     "nodemon": "^3.1.11",
     "prettier": "^3.4.2",
