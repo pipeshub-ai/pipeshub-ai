@@ -6,9 +6,11 @@ import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 import aiohttp
+from anthropic import transform_schema
 from fastapi import HTTPException
 from langchain.chat_models.base import BaseChatModel
 from langchain.output_parsers import PydanticOutputParser
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from app.config.constants.http_status_code import HttpStatusCode
@@ -121,7 +123,7 @@ def _stringify_content(content: Union[str, list, dict, None]) -> str:
         # Fallback to stringification for other types
         return str(content)
 
-async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None]:
+async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dict, None]:
     """Async iterator for LLM streaming that normalizes content to text.
 
     The LLM provider may return content as a string or a list of content parts
@@ -140,12 +142,17 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
                 if not part:
                     continue
                 parts.append(part)
-                content = getattr(part, "content", None)
+
+                if isinstance(part, dict):
+                    yield part
+                    continue
+                else:
+                    content = getattr(part, "content", None)
                 text = _stringify_content(content)
                 if text:
                     yield text
         else:
-            # Non-streaming – yield whole blob once
+            logger.info("Using non-streaming mode")
             response = await llm.ainvoke(messages, config=config)
             content = getattr(response, "content", response)
             parts.append(response)
@@ -153,6 +160,8 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
             text = _stringify_content(content)
             if text:
                 yield text
+            else:
+                logger.info("No content found in response")
     except Exception as e:
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
         raise
@@ -197,7 +206,11 @@ async def execute_tool_calls(
     if not tools:
         raise ValueError("Tools are required")
 
+
     llm_with_tools = bind_tools_for_llm(llm, tools)
+
+
+
 
     hops = 0
     tools_executed = False
@@ -209,7 +222,7 @@ async def execute_tool_calls(
             # Measure LLM invocation latency
 
             ai = None
-            async for event in call_aiter_llm_stream(llm_with_tools, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk):
+            async for event in call_aiter_llm_stream(llm_with_tools, messages, final_results, llm, records=[], target_words_per_chunk=target_words_per_chunk):
                 if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
                     return
@@ -217,7 +230,6 @@ async def execute_tool_calls(
                     ai = event.get("data").get("ai")
                 else:
                     yield event
-
 
             ai = AIMessage(
                 content = ai.content,
@@ -442,7 +454,6 @@ async def execute_tool_calls(
                 org_id=org_id,
                 user_id=user_id,
                 limit=vector_db_limit,
-
                 filter_groups=None,
                 virtual_record_ids_from_tool=virtual_record_ids,
             )
@@ -846,8 +857,6 @@ async def handle_json_mode(
     """
     Handle JSON mode streaming.
     """
-
-
     # Fast-path: if the last message is already an AI answer (e.g., from invalid tool call conversion), stream it directly
     try:
         last_msg = messages[-1] if messages else None
@@ -904,7 +913,9 @@ async def handle_json_mode(
 
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
-        async for token in call_aiter_llm_stream(llm, messages,final_results,records,target_words_per_chunk):
+        llm_with_structured_output = _apply_structured_output_if_anthropic(llm)
+
+        async for token in call_aiter_llm_stream(llm_with_structured_output, messages,final_results,llm,records,target_words_per_chunk):
             yield token
     except Exception as exc:
         yield {
@@ -1192,6 +1203,7 @@ async def call_aiter_llm_stream(
     llm,
     messages,
     final_results,
+    llm_without_tools,
     records=None,
     target_words_per_chunk=1,
     reflection_retry_count=0,
@@ -1203,8 +1215,31 @@ async def call_aiter_llm_stream(
 
     parts = []
     async for token in aiter_llm_stream(llm, messages,parts):
-        state.full_json_buf += token
+        if isinstance(token, dict):
+            state.full_json_buf = token
 
+            answer = token.get("answer", "")
+            if answer:
+                state.answer_buf = answer
+                normalized, cites = normalize_citations_and_chunks(
+                            answer, final_results,records
+                        )
+
+                chunk_text = normalized[state.prev_norm_len:]
+                state.prev_norm_len = len(normalized)
+                yield {
+                    "event": "answer_chunk",
+                    "data": {
+                        "chunk": chunk_text,
+                        "accumulated": normalized,
+                        "citations": cites,
+                    },
+                }
+
+            continue
+
+
+        state.full_json_buf += token
         # Look for the start of the "answer" field
         if not state.answer_buf:
             match = answer_key_re.search(state.full_json_buf)
@@ -1220,8 +1255,6 @@ async def call_aiter_llm_stream(
             if end_idx != -1:
                 state.answer_done = True
                 state.answer_buf = state.answer_buf[:end_idx]
-
-
         # Stream answer in word-based chunks
         if state.answer_buf:
             # Process words from current emit position
@@ -1274,37 +1307,48 @@ async def call_aiter_llm_stream(
                         break
 
     ai = None
+    tool_calls_happened = True
     for part in parts:
+        if isinstance(part, dict):
+            logger.info("part is a dict, breaking from loop")
+            tool_calls_happened = False
+            break
         if ai is None:
             ai = part
         else:
             ai += part
 
-    tool_calls = getattr(ai, 'tool_calls', [])
-    if tool_calls:
-        yield {
-            "event": "tool_calls",
-            "data": {
-                "ai": ai,
-            },
-        }
-        return
+    if tool_calls_happened:
+        tool_calls = getattr(ai, 'tool_calls', [])
+        if tool_calls:
+            yield {
+                "event": "tool_calls",
+                "data": {
+                    "ai": ai,
+                },
+            }
+            logger.info("tool_calls detected, returning")
+            return
 
     # Try to parse the full JSON buffer
     try:
+        response_text = state.full_json_buf
+        if  isinstance(response_text, str):
+            response_text = response_text.strip()
+            if '</think>' in response_text:
+                    response_text = response_text.split('</think>')[-1]
+            if response_text.startswith("```json"):
+                response_text = response_text.replace("```json", "", 1)
+            if response_text.endswith("```"):
+                response_text = response_text.rsplit("```", 1)[0]
+            response_text = response_text.strip()
 
-        response_text = state.full_json_buf.strip()
-        if '</think>' in response_text:
-                response_text = response_text.split('</think>')[-1]
-        if response_text.startswith("```json"):
-            response_text = response_text.replace("```json", "", 1)
-        if response_text.endswith("```"):
-            response_text = response_text.rsplit("```", 1)[0]
-        response_text = response_text.strip()
         try:
-            parsed = parser.parse(response_text)
+            if isinstance(response_text, str):
+                parsed = parser.parse(response_text)
+            else:
+                parsed = AnswerWithMetadataJSON.model_validate(response_text)
         except Exception as e:
-
             # JSON parsing failed - use reflection to guide the LLM
             if reflection_retry_count < max_reflection_retries:
                 yield {"event": "restreaming","data": {}}
@@ -1321,19 +1365,28 @@ async def call_aiter_llm_stream(
                 ))
                 # Add the reflection message to the messages list
                 updated_messages = messages.copy()
-                if ai is not None:
-                    ai_message = AIMessage(
-                        content=ai.content,
-                    )
-                    updated_messages.append(ai_message)
+
+                ai_message = AIMessage(
+                    content=response_text,
+                )
+                updated_messages.append(ai_message)
 
                 updated_messages.append(reflection_message)
 
+
                 # Recursively call the function with updated messages
+                llm_class_name = llm_without_tools.__class__.__name__
+                logger.info("llm_class_name", llm_class_name)
+                is_structured_mode = "Runnable" in llm_class_name
+
+                if not is_structured_mode:
+                    llm_with_structured_output = _apply_structured_output_if_anthropic(llm_without_tools)
+
                 async for event in call_aiter_llm_stream(
-                    llm,
+                    llm_with_structured_output,
                     updated_messages,
                     final_results,
+                    llm_without_tools,
                     records,
                     target_words_per_chunk,
                     reflection_retry_count + 1,
@@ -1380,10 +1433,9 @@ async def call_aiter_llm_stream(
             },
         }
     except Exception as e:
+        logger.error("Error in call_aiter_llm_stream", exc_info=True)
         yield {"event": "error","data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
         return
-
-
 
 def bind_tools_for_llm(llm: BaseChatModel, tools: List[object]) -> BaseChatModel:
     """
@@ -1416,3 +1468,21 @@ def bind_tools_for_llm(llm: BaseChatModel, tools: List[object]) -> BaseChatModel
         pass
 
     return llm.bind_tools(tools)
+
+
+def _apply_structured_output_if_anthropic(llm: BaseChatModel) -> BaseChatModel:
+    if isinstance(llm, ChatAnthropic):
+        try:
+            model_with_structure = llm.with_structured_output(
+                method="json_schema",
+                stream=True,
+                schema=transform_schema(AnswerWithMetadataJSON),
+            )
+            logger.info("Using structured output for Anthropic")
+            return model_with_structure
+        except Exception as e:
+            logger.warning("Failed to apply structured output for Anthropic, falling back to default. Error: %s", str(e))
+    else:
+        logger.info(f"LLM is of type {type(llm)}")
+        logger.info("Using non-structured LLM")
+    return llm
