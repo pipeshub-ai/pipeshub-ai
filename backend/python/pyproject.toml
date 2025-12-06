@@ -40,6 +40,7 @@ dependencies = [
     "fastapi==0.115.6",
     "fastembed==0.5.1",
     "html-to-markdown==2.3.0",
+    "hubspot-api-client>=9.2.0",
     "PyGithub==2.8.1",
     "python-gitlab==6.4.0",
     "google-api-python-client==2.161.0",
