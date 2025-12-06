@@ -1,0 +1,4 @@
+# HubSpot Integration Requirements
+hubspot-api-client>=9.2.0
+python-dotenv>=1.0.0
+aiohttp>=3.11.0
