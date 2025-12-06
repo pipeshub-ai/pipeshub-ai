@@ -94,6 +94,9 @@ class ToolDiscoveryConfig:
         "utility": AppConfiguration(
             app_name="utility",
         ),
+        "retrieval": AppConfiguration(
+            app_name="retrieval",
+        ),
         "google": AppConfiguration(
             app_name="google",
             subdirectories=["gmail", "calendar", "drive", "meet"],
@@ -182,6 +185,7 @@ class ToolDiscoveryConfig:
         "calculator.",
         "web_search",
         "get_current_datetime",
+        "retrieval.search_internal_knowledge",
     }
 
     # Files to skip during discovery

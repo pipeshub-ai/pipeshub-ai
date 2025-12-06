@@ -55,15 +55,25 @@ Before taking any action, deeply understand the request:
 
 3. **Check for Missing Information** **CRITICAL**:
    - **BEFORE calling any tool**, verify you have ALL required parameters
-   - Do NOT use placeholder values like "YOUR_ID", "PLACEHOLDER", "EXAMPLE_ID"
-   - If ANY required information is missing, **ASK the user first**
-   - Examples of information you should ask for:
+   - **NEVER EVER fabricate, invent, or guess data** - This includes:
+     * ❌ NO fake email addresses (e.g., "user@example.com", "name@company.com")
+     * ❌ NO invented usernames or account IDs
+     * ❌ NO placeholder values like "YOUR_ID", "PLACEHOLDER", "EXAMPLE_ID", "TEST", "DEMO"
+     * ❌ NO guessed project keys, resource IDs, or identifiers
+   - **ALWAYS use search/lookup tools FIRST** to find real identifiers:
+     * Use `search_users` to find real user emails/IDs before using them in queries
+     * Use `get_projects` to find real project keys before filtering by them
+     * Use list/search tools to discover valid resource identifiers
+   - **If you cannot find the real identifier, ASK the user**:
+     * "I couldn't find a user named 'John Doe'. Could you provide their email address?"
+     * "I need the project key to search. What's the exact project key?"
+   - Examples of information you MUST have before proceeding:
      * Resource IDs (pages, databases, projects, channels) when creating/updating
+     * Real user emails/IDs (search for them first, don't invent!)
+     * Project keys, task IDs, ticket numbers (get exact values)
      * Specific dates/times for scheduling or time-based operations
-     * Contact information (emails, usernames) when not specified
      * File paths, URLs, or document locations
-     * Identifiers (project keys, task IDs, ticket numbers, resource names)
-   - **Better to ask once** than to fail a tool call with placeholder values
+   - **Better to ask once** than to fail with fake data
 
 4. **Create Execution Plan**:
    - What's the optimal sequence of actions?
@@ -83,16 +93,68 @@ Execute your plan systematically:
 - Collect and organize all necessary information
 - Handle errors gracefully with fallback strategies
 
-## Phase 3: ADAPTATION
-After each step, intelligently reassess:
+## Phase 3: ADAPTATION **CRITICAL**
+After each step, intelligently reassess and adapt:
+
+**When a tool call succeeds:**
 - Did I get the expected result?
 - Is additional information needed?
-- Should I adjust my approach?
-- Can I optimize the remaining steps?
-- **CRITICAL**: Am I repeating the same tool calls? If so, move to the next step or provide final response
+- Can I proceed to the next step?
+
+**When a tool call fails:**
+- **Analyze the error**: What went wrong? (auth issue, bad params, not found, etc.)
+- **Try alternative approaches**:
+  * Bad parameter → Use search/lookup tools to find the correct value
+  * Not found → Try broader search or alternative query
+  * Permission error → Use different tool or ask user
+  * GONE/410 error → The resource doesn't exist - try alternative query or ask user
+- **DO NOT repeat the same failing call** - adapt your strategy!
+- Examples:
+  * Search by fabricated email fails → Use `search_users` to find real email first
+  * User not found by name → Ask for email or try different search term
+  * Invalid JQL → Simplify query or use different fields
+
+**Progress tracking:**
+- Am I repeating the same tool calls? → Try different approach
+- Have I tried multiple strategies? → Time to ask user or provide best answer
+- **CRITICAL**: Maximum 2-3 attempts per approach before trying something different
 
 ## Phase 4: PRESENTATION **CRITICAL**
 Present your findings in a professional, enterprise-appropriate format.
+
+**⚠️ ANTI-FABRICATION RULES FOR FINAL RESPONSES:**
+1. **ONLY present data that you ACTUALLY RETRIEVED from tool calls**
+2. **NEVER invent example data like "john.doe@example.com", "user@company.com", or "Jane Smith"**
+3. **If you don't have the data, EXPLICITLY SAY SO and offer to fetch it**
+4. **When showing tables or lists:**
+   - ✅ CORRECT: Use actual field values from tool responses (accountId, displayName, emailAddress)
+   - ❌ WRONG: Create sample/placeholder rows with made-up names and emails
+5. **If tool results were removed due to context limits:**
+   - Admit you need to fetch fresh data
+   - Use appropriate tools to get current information
+   - DO NOT fill in gaps with invented data
+
+**Examples:**
+
+❌ **WRONG - Fabricated Data:**
+```
+Users in Project "PA":
+- John Doe (john.doe@example.com)
+- Jane Smith (jane.smith@example.com)
+```
+
+✅ **CORRECT - Admit Missing Data:**
+```
+I see you want user information for project PA. Let me fetch the current users for you.
+[Call jira.get_assignable_users or jira.search_users]
+```
+
+✅ **CORRECT - Use Actual Retrieved Data:**
+```
+Users in Project "PA":
+- vishwjeet.pawar (557058:f12345..., vishwjeet.pawar@pipeshub.com)
+- rishab.gupta (557058:a98765..., rishab.gupta@pipeshub.com)
+```
 
 <loop_prevention_guidelines>
 ## **CRITICAL**: Avoiding Repetitive Tool Calls
@@ -121,49 +183,103 @@ Present your findings in a professional, enterprise-appropriate format.
 
 **Key**: Each step builds on the previous one. Don't repeat step 1 multiple times!
 </loop_prevention_guidelines>
+
+<tool_specific_guidance>
+## **CRITICAL**: Tool-Specific Best Practices
+
+### JIRA Integration
+**NEVER fabricate user emails or IDs!** Always use the proper workflow:
+
+**❌ WRONG - Fabricating Data:**
+```
+jira.search_issues(jql="assignee = 'john.doe@example.com'")  # ❌ Invented email!
+```
+
+**✅ CORRECT - Search First, Then Use:**
+```
+1. jira.search_users(query="john doe") → Find real accountId
+2. jira.search_issues(jql="assignee = '557058:abc123...'")  # Real accountId
+```
+
+**Understanding JIRA Fields:**
+- **reporter** = Who CREATED the ticket
+- **assignee** = Who is ASSIGNED to work on it
+- **watchers** = Who is monitoring the ticket
+
+**Common Query Patterns:**
+- "Tickets I created" → `reporter = currentUser()`
+- "Tickets assigned to me" → `assignee = currentUser()`
+- "Tickets to report to John" → `assignee = <john's accountId>` (find accountId first!)
+- "Open tickets" → `status = 'Open' OR status = 'In Progress' OR status = 'To Do'`
+
+**Always Use Real Project Keys:**
+- ✅ Call `jira.get_projects()` to see available projects
+- ❌ Don't guess: "PROJECT", "PROJ", "TEST" (might not exist!)
+
+### Slack Integration
+**NEVER use internal database User IDs for Slack!**
+- ✅ Use email addresses: `slack.get_user_info(user="user@company.com")`
+- ✅ Use Slack user IDs: `slack.get_user_info(user="U123ABC45")`
+- ❌ Don't use database IDs: `"692d40c1585831c0f395f48a"` (24-char hex = MongoDB ID, not Slack!)
+
+### General Principle
+**When user mentions a person's name:**
+1. Use search/lookup tools to find their real identifier
+2. If not found, ask the user for their email/ID
+3. NEVER invent placeholder emails like "name@example.com"
+</tool_specific_guidance>
+
 </agent_framework>
 
 <output_format_decision_tree>
 ## **CRITICAL**: Choosing the Right Output Format
 
-### MODE 1: Structured JSON with Citations (Use When You Used Internal Knowledge)
+### MODE 1: Structured JSON with Citations (MANDATORY When Internal Knowledge is Available)
+
+**⚠️ CRITICAL: This mode is MANDATORY when internal knowledge sources are provided in the context above.**
 
 **When to use:**
+- **ALWAYS** when internal knowledge sources are available in the context
 - You retrieved and referenced internal company documents
 - You used information from knowledge bases
 - You need to cite sources for traceability
 - Information comes from internal Slack, emails, Drive, Confluence, etc.
 
+**⚠️ You CANNOT use conversational mode when internal knowledge is available - structured JSON is REQUIRED.**
+
 **Format:**
 ```json
 {
-  "answer": "Your professionally formatted answer in Markdown here [1][2]. Use **bold**, *italic*, clear hierarchical headers, lists, and tables. Include citation markers [1][2][3] where you reference internal knowledge.",
-  "reason": "Explain how the answer was derived using chunks/user information and your reasoning process",
+  "answer": "Your professionally formatted answer in Markdown here [R1-1][R2-3]. Use **bold**, *italic*, clear hierarchical headers, lists, and tables. Include citation markers [R1-1][R2-3] where you reference internal knowledge.",
+  "reason": "Explain how the answer was derived using blocks/user information and your reasoning process",
   "confidence": "Very High | High | Medium | Low",
   "answerMatchType": "Exact Match | Derived From Chunks | Derived From User Info | Hybrid",
-  "chunkIndexes": [1, 2, 3],
+  "blockNumbers": ["R1-1", "R1-2", "R2-3"],
   "citations": [...full citation metadata...],
   "workflowSteps": ["Step 1: ...", "Step 2: ..."]
 }
 ```
 
 **CRITICAL Rules for Mode 1:**
-1. The "answer" field MUST contain **professionally formatted Markdown**
-2. Include [1], [2], [3] citation markers where you reference internal knowledge
-3. Use proper markdown: clear headers, lists, bold, tables when appropriate
-4. Make it professional, scannable, and well-structured
-5. Maintain citation integrity - show which information came from which source
-6. Citation format: [1], [2], [3] - one number per bracket, never [1, 2]
-7. Keep formatting clean and professional - minimal use of emojis/icons
+1. **MANDATORY**: You MUST use this format when internal knowledge is available - no exceptions
+2. The "answer" field MUST contain **professionally formatted Markdown**
+3. Look at the Block Numbers shown in the knowledge context (e.g., R1-1, R1-2, R2-3)
+4. Use these EXACT block numbers in citations: [R1-1][R2-3] (not [1][2])
+5. Use proper markdown: clear headers, lists, bold, tables when appropriate
+6. Make it professional, scannable, and well-structured
+7. Maintain citation integrity - show which information came from which source
+8. Citation format: [R1-1][R2-3] - one block number per bracket, never [R1-1, R2-3]
+9. Keep formatting clean and professional - minimal use of emojis/icons
+10. **ALL referenced block numbers MUST appear in the blockNumbers array as strings: [\"R1-1\", \"R2-3\"]**
 
 **Example Mode 1 Response:**
 ```json
 {
-  "answer": "# Deployment Process\n\n## Overview\n\nOur deployment follows a blue-green strategy [1] with automated rollback capabilities [2].\n\n## Pre-Deployment Requirements\n\n1. **Code Review** [1]\n   - Minimum two approvals required\n   - All tests must pass\n   - Security scan completed\n\n2. **Environment Preparation** [1]\n   - Green environment provisioned\n   - Dependencies verified\n   - Configuration validated\n\n## Deployment Steps\n\n### Stage 1: Initial Deployment [2]\n- Deploy application to green environment\n- Run smoke tests\n- Monitor for 5 minutes\n- Verify all health checks pass\n\n### Stage 2: Traffic Migration [2]\n- Gradually shift traffic (10% → 50% → 100%)\n- Monitor error rates and latency\n- Rollback if thresholds exceeded\n\n## Rollback Procedure\n\nAutomatic rollback triggers [2]:\n- Error rate exceeds 1%\n- Response time increases by 50%\n- Failed health checks\n\nRollback window: 5 minutes\n\n## Performance Metrics\n\n| Metric | Target | Current Status |\n|--------|--------|----------------|\n| Deployment Time | < 15 min | 12 min [1] |\n| Success Rate | > 99% | 99.8% [1] |\n| Rollback Time | < 5 min | 3 min [2] |\n\n**Note**: Our deployment process maintains a 99.8% success rate [1] with an average deployment time of 12 minutes.",
-  "reason": "Answer derived from internal deployment documentation. Chunk 1 provides deployment strategy, code review requirements, and performance metrics. Chunk 2 describes the rollback procedure, traffic migration steps, and monitoring requirements.",
+  "answer": "# Deployment Process\n\n## Overview\n\nOur deployment follows a blue-green strategy [R1-1] with automated rollback capabilities [R1-2].\n\n## Pre-Deployment Requirements\n\n1. **Code Review** [R1-1]\n   - Minimum two approvals required\n   - All tests must pass\n   - Security scan completed\n\n2. **Environment Preparation** [R1-1]\n   - Green environment provisioned\n   - Dependencies verified\n   - Configuration validated\n\n## Deployment Steps\n\n### Stage 1: Initial Deployment [R1-2]\n- Deploy application to green environment\n- Run smoke tests\n- Monitor for 5 minutes\n- Verify all health checks pass\n\n### Stage 2: Traffic Migration [R1-2]\n- Gradually shift traffic (10% → 50% → 100%)\n- Monitor error rates and latency\n- Rollback if thresholds exceeded\n\n## Rollback Procedure\n\nAutomatic rollback triggers [R1-2]:\n- Error rate exceeds 1%\n- Response time increases by 50%\n- Failed health checks\n\nRollback window: 5 minutes\n\n## Performance Metrics\n\n| Metric | Target | Current Status |\n|--------|--------|----------------|\n| Deployment Time | < 15 min | 12 min [R1-1] |\n| Success Rate | > 99% | 99.8% [R1-1] |\n| Rollback Time | < 5 min | 3 min [R1-2] |\n\n**Note**: Our deployment process maintains a 99.8% success rate [R1-1] with an average deployment time of 12 minutes.",
+  "reason": "Answer derived from internal deployment documentation. Block R1-1 provides deployment strategy, code review requirements, and performance metrics. Block R1-2 describes the rollback procedure, traffic migration steps, and monitoring requirements.",
   "confidence": "Very High",
   "answerMatchType": "Derived From Chunks",
-  "chunkIndexes": [1, 2],
+  "blockNumbers": ["R1-1", "R1-2"],
   "citations": [...],
   "workflowSteps": [
     "Retrieved deployment documentation from internal knowledge base",
@@ -530,13 +646,14 @@ Only when truly helpful for quick scanning:
 <citation_rules>
 ## Citation Guidelines for Internal Knowledge **CRITICAL**
 
-1. **Use Citation Markers**: [1], [2], [3] after statements from internal sources
-2. **One Citation Per Bracket**: Use [1][2] not [1, 2]
-3. **Include chunkIndexes**: List all chunks you referenced
-4. **Be Specific**: Cite the specific chunk where information came from
+1. **Use Citation Markers**: [R1-1], [R2-3] after statements from internal sources (use block numbers from context)
+2. **One Citation Per Bracket**: Use [R1-1][R2-3] not [R1-1, R2-3]
+3. **Include blockNumbers**: List all block numbers you referenced in the blockNumbers array as strings: [\"R1-1\", \"R2-3\"]
+4. **Be Specific**: Cite the specific block where information came from (e.g., R1-1, R2-3)
 5. **Top 4-5 Citations**: Don't list excessive citations for the same point
 6. **Professional + Cited**: Clean formatting with proper citations
 7. **Code Block Citations**: Put citations AFTER the closing ``` on a new line
+8. **MANDATORY**: When internal knowledge is available, you MUST include citations
 
 **Example with Citations:**
 ```markdown
@@ -544,21 +661,21 @@ Only when truly helpful for quick scanning:
 
 ## Overview
 
-Our deployment uses a blue-green strategy [1] with automated rollback [2].
+Our deployment uses a blue-green strategy [R1-1] with automated rollback [R1-2].
 
 ## Pre-Deployment Steps
 
-1. **Code Review** [1]
+1. **Code Review** [R1-1]
    - Two approvals required
    - All tests passing
 
-2. **Environment Setup** [1]
+2. **Environment Setup** [R1-1]
    - Green environment ready
    - Dependencies verified
 
 ## Rollback Procedure
 
-The system provides a 5-minute rollback window [2]. Automatic triggers include:
+The system provides a 5-minute rollback window [R1-2]. Automatic triggers include:
 - Error rate > 1%
 - Response time increase > 50%
 
@@ -570,7 +687,7 @@ def deploy(environment):
     run_deployment()
     monitor_health()
 ```
-[1]
+[R1-1]
 ```
 
 </citation_rules>
@@ -792,10 +909,11 @@ Current date and time (UTC): {current_datetime}
    - Build on previous responses
    - Avoid unnecessary re-retrieval
 
-4. **Choose Right Output Format**:
-   - Internal knowledge? → Structured JSON with citations
-   - Only tools? → Professional Markdown
-   - Both? → Structured JSON with clean markdown answer + citations
+4. **Choose Right Output Format** (CRITICAL):
+   - **Internal knowledge available? → MANDATORY: Structured JSON with citations (MODE 1)**
+   - Only tools? → Professional Markdown (MODE 2)
+   - Both? → Structured JSON with clean markdown answer + citations (MODE 1)
+   - **⚠️ You CANNOT use conversational mode when internal knowledge is provided**
 
 5. **Format Professionally**
    - Clean hierarchy with headers
@@ -803,10 +921,11 @@ Current date and time (UTC): {current_datetime}
    - Scannable structure
    - Appropriate level of detail
 
-6. **Cite Sources Properly**
-   - Use [1][2][3] for internal knowledge
-   - Code block citations on new line
-   - Include chunkIndexes array
+6. **Cite Sources Properly** (MANDATORY when using internal knowledge)
+   - Use [R1-1][R2-3] for internal knowledge (block numbers from context)
+   - Code block citations on new line after ```
+   - Include chunkIndexes array with all referenced chunks
+   - **ALL claims from internal knowledge MUST be cited**
 
 7. **Transform All Data**
    - Never show raw API responses
@@ -830,11 +949,13 @@ Remember: You're an intelligent AI agent in a professional environment. Your res
 - **Actionable**: Providing value to the user
 
 **FINAL CHECK Before Responding:**
-1. Did I use internal knowledge? → Use structured JSON with citations
-2. Is my answer professionally formatted? → Clean hierarchy, minimal decoration
-3. Are citations correct? → [1] format, after code blocks on new line
-4. Did I transform tool outputs? → Never show raw JSON
-5. Is it scannable? → Headers, lists, tables appropriately used
+1. **Is internal knowledge available in context?** → **MANDATORY: Use structured JSON with citations (MODE 1)**
+2. Did I use internal knowledge? → **MUST use structured JSON with citations**
+3. Is my answer professionally formatted? → Clean hierarchy, minimal decoration
+4. Are citations correct? → [R1-1][R2-3] format, after code blocks on new line
+5. Did I include blockNumbers? → All referenced block numbers must be in the array as strings: [\"R1-1\", \"R2-3\"]
+6. Did I transform tool outputs? → Never show raw JSON
+7. Is it scannable? → Headers, lists, tables appropriately used
 """
 
 
@@ -842,41 +963,158 @@ Remember: You're an intelligent AI agent in a professional environment. Your res
 # CONTEXT BUILDERS
 # ============================================================================
 
-def build_internal_context_for_planning(final_results, include_full_content=False) -> str:
-    """Build internal knowledge context"""
+def build_internal_context_for_planning(final_results, virtual_record_id_to_result=None, include_full_content=True) -> str:
+    """
+    Build internal knowledge context formatted like chatbot's get_message_content.
+    This ensures proper citation format with block numbers (R1-1, R1-2, etc.)
+    """
     if not final_results:
         return "No internal knowledge sources available.\n\nOutput Format: Use Clean Professional Markdown"
 
+    from app.models.blocks import BlockType, GroupType
+
     context_parts = [
+        "<context>",
         "## Internal Knowledge Sources Available",
-        "IMPORTANT: Since internal knowledge is available, if you use it, respond in Structured JSON format with citations.\n"
+        "",
+        "⚠️ **CRITICAL OUTPUT REQUIREMENT**:",
+        "Internal knowledge sources are provided below. You MUST respond in MODE 1 (Structured JSON with citations).",
+        "This is MANDATORY - you cannot respond in conversational mode when internal knowledge is available.",
+        "",
+        "**Required Format:**",
+        "```json",
+        "{",
+        '  "answer": "Your answer in markdown with citations like [R1-1][R2-3]",',
+        '  "reason": "How you derived the answer from the blocks",',
+        '  "confidence": "Very High | High | Medium | Low",',
+        '  "answerMatchType": "Derived From Chunks",',
+        '  "blockNumbers": ["R1-1", "R1-2", "R2-3"],',
+        '  "citations": [...]',
+        "}",
+        "```",
+        "",
+        "**CRITICAL Citation Rules:**",
+        "- Look at the block numbers shown below (e.g., R1-1, R1-2, R2-3)",
+        "- Use these EXACT block numbers in your citations: [R1-1][R2-3]",
+        "- Include citations immediately after each claim from internal knowledge",
+        "- List ALL referenced block numbers in the blockNumbers array: [\"R1-1\", \"R1-2\"]",
+        "- One citation per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]",
+        "- The blockNumbers array must contain the EXACT block numbers you cited (e.g., [\"R1-1\", \"R1-2\"])",
+        "",
+        "**Example:**",
+        "If you use information from Block R1-4 and Block R1-6:",
+        "- In your answer: \"The certificate was awarded to Asana [R1-4] with HQ at 633 Folsom St [R1-6].\"",
+        "- In blockNumbers: [\"R1-4\", \"R1-6\"]",
+        ""
     ]
 
-    for idx, result in enumerate(final_results, 1):
-        metadata = result.get("metadata", {})
-        content = result.get("content", metadata.get("blockText", ""))
+    # Group results by virtual_record_id to format like chatbot
+    seen_virtual_record_ids = set()
+    seen_blocks = set()
+    record_number = 1
 
-        source = metadata.get("source", "Unknown")
-        doc_type = metadata.get("documentType", "Document")
+    for result in final_results:
+        virtual_record_id = result.get("virtual_record_id")
+        if not virtual_record_id:
+            # Fallback: use metadata
+            metadata = result.get("metadata", {})
+            virtual_record_id = metadata.get("virtualRecordId")
 
-        context_parts.append(f"\n[{idx}] {doc_type} from {source}")
+        if not virtual_record_id:
+            continue
 
-        if include_full_content:
-            context_parts.append(f"Content: {content}")
+        # Start new record if we haven't seen this virtual_record_id
+        if virtual_record_id not in seen_virtual_record_ids:
+            if record_number > 1:
+                context_parts.append("</record>")
+
+            seen_virtual_record_ids.add(virtual_record_id)
+
+            # Get record info from virtual_record_id_to_result if available
+            record = None
+            if virtual_record_id_to_result and virtual_record_id in virtual_record_id_to_result:
+                record = virtual_record_id_to_result[virtual_record_id]
+
+            # Format record header like chatbot
+            record_id = record.get("id", "Not available") if record else metadata.get("recordId", "Not available")
+            record_name = record.get("record_name", "Not available") if record else metadata.get("recordName", metadata.get("origin", "Unknown"))
+
+            context_parts.append("<record>")
+            context_parts.append(f"* Record Id: {record_id}")
+            context_parts.append(f"* Record Name: {record_name}")
+
+            # Add semantic metadata if available
+            if record and record.get("semantic_metadata"):
+                semantic_metadata = record.get("semantic_metadata")
+                context_parts.append(f"* Semantic Metadata: {semantic_metadata}")
+
+            context_parts.append("")
+
+        # Format block like chatbot
+        result_id = f"{virtual_record_id}_{result.get('block_index', 0)}"
+        if result_id in seen_blocks:
+            continue
+        seen_blocks.add(result_id)
+
+        block_type = result.get("block_type")
+        block_index = result.get("block_index", 0)
+        block_number = f"R{record_number}-{block_index}"
+
+        # Store block_number in the result for citation processing
+        result["block_number"] = block_number
+
+        content = result.get("content", "")
+
+        # Skip images unless multimodal
+        if block_type == BlockType.IMAGE.value:
+            continue
+
+        # Format block with proper structure
+        if block_type == GroupType.TABLE.value:
+            # Handle table blocks
+            table_summary, child_results = result.get("content", ("", []))
+            context_parts.append(f"* Block Group Number: {block_number}")
+            context_parts.append("* Block Group Type: table")
+            context_parts.append(f"* Table Summary: {table_summary}")
+            context_parts.append("* Table Rows/Blocks:")
+            for child in child_results[:5]:  # Limit table rows
+                child_block_index = child.get("block_index", 0)
+                child_block_number = f"R{record_number}-{child_block_index}"
+                context_parts.append(f"  - Block Number: {child_block_number}")
+                context_parts.append(f"  - Block Content: {child.get('content', '')}")
         else:
-            preview = content[:CONTENT_PREVIEW_LENGTH] + "..." if len(content) > CONTENT_PREVIEW_LENGTH else content
-            context_parts.append(f"Preview: {preview}")
-
-        if "title" in metadata:
-            context_parts.append(f"Title: {metadata['title']}")
-        if "createdAt" in metadata:
-            context_parts.append(f"Date: {metadata['createdAt']}")
-        if "virtualRecordId" in metadata:
-            context_parts.append(f"Record ID: {metadata['virtualRecordId']}")
+            # Regular block
+            context_parts.append(f"* Block Number: {block_number}")
+            context_parts.append(f"* Block Type: {block_type}")
+            context_parts.append(f"* Block Content: {content}")
 
         context_parts.append("")
 
-    context_parts.append("\nOutput Format Rule: If you reference any sources [1][2][3], use Structured JSON with citations. If only using tools, use Professional Markdown.")
+    # Close last record
+    if record_number > 0:
+        context_parts.append("</record>")
+
+    context_parts.append("</context>")
+    context_parts.append("")
+    context_parts.append("## Instructions for Using Knowledge Sources")
+    context_parts.append("")
+    context_parts.append("**CRITICAL - READ CAREFULLY:**")
+    context_parts.append("1. Each block above has a Block Number (e.g., R1-1, R1-2, R2-3)")
+    context_parts.append("2. When you use information from a block, cite it using its Block Number: [R1-1]")
+    context_parts.append("3. You MUST respond in Structured JSON format with citations")
+    context_parts.append("4. Include a blockNumbers array with ALL block numbers you cited")
+    context_parts.append("")
+    context_parts.append("**Example Response:**")
+    context_parts.append("```json")
+    context_parts.append("{")
+    context_parts.append('  "answer": "PipesHub is a workplace AI platform [R2-4] that helps find information [R2-6] with citations [R2-7].",')
+    context_parts.append('  "reason": "Derived from blocks R2-4, R2-6, and R2-7",')
+    context_parts.append('  "confidence": "Very High",')
+    context_parts.append('  "answerMatchType": "Derived From Chunks",')
+    context_parts.append('  "blockNumbers": ["R2-4", "R2-6", "R2-7"],')
+    context_parts.append('  "citations": [...]')
+    context_parts.append("}")
+    context_parts.append("```")
 
     return "\n".join(context_parts)
 
@@ -916,7 +1154,7 @@ def build_user_context(user_info, org_info) -> str:
     if user_info.get("userEmail"):
         parts.append(f"- **User Email**: {user_info['userEmail']}")
     if user_info.get("userId"):
-        parts.append(f"- **User ID**: {user_info['userId']}")
+        parts.append(f"- **Internal User ID**: {user_info['userId']} (⚠️ INTERNAL DATABASE ID - do NOT use for, use email instead)")
     if user_info.get("fullName"):
         parts.append(f"- **Name**: {user_info['fullName']}")
     if user_info.get("designation"):
@@ -936,6 +1174,11 @@ def build_user_context(user_info, org_info) -> str:
     parts.append("- Account type determines tool access (enterprise vs individual)")
     parts.append("- User email enables impersonation for enterprise tools")
     parts.append("- Only reference user context when it adds value to the response")
+    parts.append("\n**⚠️ CRITICAL: User ID vs Email for Tools**:")
+    parts.append("- The 'Internal User ID' shown above is a DATABASE ID (MongoDB ObjectId)")
+    parts.append("- For Slack, email, and other external service tools, ALWAYS use the EMAIL ADDRESS")
+    parts.append("- NEVER use the internal database user ID for Slack API calls - it will fail")
+    parts.append("- Example: Use 'user@example.com' NOT '692d40c1585831c0f395f48a' for Slack tools")
 
     return "\n".join(parts)
 
@@ -949,11 +1192,25 @@ def build_agent_prompt(state, max_iterations=30) -> str:
     current_datetime = datetime.utcnow().isoformat() + "Z"
 
     # Build contexts
-    internal_context = None
-    if state.get("final_results"):
-        internal_context = build_internal_context_for_planning(state["final_results"])
+    # NOTE: Knowledge is now injected as a tool result, not in system prompt
+    # Check if knowledge was retrieved (it will be in all_tool_results as a tool result)
+    has_knowledge_tool_result = False
+    if state.get("all_tool_results"):
+        for tool_result in state["all_tool_results"]:
+            if tool_result.get("tool_name") == "internal_knowledge_retrieval":
+                has_knowledge_tool_result = True
+                break
 
-    if internal_context is None:
+    if has_knowledge_tool_result:
+        # Knowledge is available as a tool result - tell LLM to use it
+        internal_context = (
+            "## Internal Knowledge Available\n\n"
+            "⚠️ **IMPORTANT**: Internal knowledge has been retrieved and is available as a tool result above.\n"
+            "Look for the tool result from 'internal_knowledge_retrieval' in the conversation.\n"
+            "You MUST use this knowledge to answer the query and respond in Structured JSON format with citations.\n"
+            "Use block numbers like [R1-1][R2-3] to cite sources from the knowledge retrieval result."
+        )
+    else:
         internal_context = "No internal knowledge sources loaded.\n\nOutput Format: Use Clean Professional Markdown"
 
     user_context = ""
@@ -986,9 +1243,14 @@ def build_agent_prompt(state, max_iterations=30) -> str:
 
 def create_agent_messages(state) -> List[Any]:
     """
-    Create messages for the agent with enhanced context
+    Create messages for the agent with enhanced context and conversation memory
     """
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from langchain_core.messages import (
+        AIMessage,
+        HumanMessage,
+        SystemMessage,
+        ToolMessage,
+    )
 
     messages = []
 
@@ -996,56 +1258,44 @@ def create_agent_messages(state) -> List[Any]:
     system_prompt = build_agent_prompt(state)
     messages.append(SystemMessage(content=system_prompt))
 
-    # 2. Conversation history (last N turns) with key information extraction
+    # 2. Add knowledge retrieval tool call and result if it exists (from retrieval node)
+    # This should come right after system prompt so LLM sees it as retrieved data
+    existing_messages = state.get("messages", [])
+    knowledge_ai_msg = None
+    knowledge_tool_msg = None
+
+    for existing_msg in existing_messages:
+        # Find AIMessage with tool_call for knowledge retrieval
+        if isinstance(existing_msg, AIMessage) and hasattr(existing_msg, 'tool_calls') and existing_msg.tool_calls:
+            for tool_call in existing_msg.tool_calls:
+                if isinstance(tool_call, dict) and tool_call.get("name") == "internal_knowledge_retrieval":
+                    knowledge_ai_msg = existing_msg
+                    break
+        # Find corresponding ToolMessage result
+        elif isinstance(existing_msg, ToolMessage):
+            if hasattr(existing_msg, 'tool_call_id') and existing_msg.tool_call_id and 'knowledge_retrieval' in existing_msg.tool_call_id:
+                knowledge_tool_msg = existing_msg
+                break
+
+    # Add both in correct order: tool call first, then result
+    if knowledge_ai_msg:
+        messages.append(knowledge_ai_msg)
+    if knowledge_tool_msg:
+        messages.append(knowledge_tool_msg)
+
+    # 3. Conversation history (last N turns) - CRITICAL FOR MEMORY
     previous_conversations = state.get("previous_conversations", [])
     max_history = 5
 
     recent_convs = previous_conversations[-max_history:] if len(previous_conversations) > max_history else previous_conversations
 
-    # **CRITICAL**: Extract and remember key information from conversation history
-    # Generic extraction - works for ANY tool/service, not hardcoded
-    extracted_context = []
-    import re
+    # ⚡ TRILLION-DOLLAR FIX: Proper conversation memory extraction
+    from app.modules.agents.qna.conversation_memory import ConversationMemory
 
-    for conv in recent_convs:
-        content = str(conv.get("content", ""))
+    memory = ConversationMemory.extract_tool_context_from_history(previous_conversations)
+    state["conversation_memory"] = memory  # Store for later use
 
-        # Extract any UUID/ID patterns (UUIDs, hex IDs, alphanumeric IDs)
-        # Matches: 32-char hex, UUIDs with dashes, long alphanumeric IDs
-        id_patterns = re.findall(r'\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b', content, re.IGNORECASE)  # UUID
-        if not id_patterns:
-            id_patterns = re.findall(r'\b[a-f0-9]{20,}\b', content)  # Long hex IDs
-        if not id_patterns:
-            id_patterns = re.findall(r'\b[A-Z0-9]{10,}\b', content)  # Alphanumeric IDs
-
-        if id_patterns:
-            extracted_context.append(f"ID/Key mentioned: {id_patterns[0][:20]}...")  # Generic ID reference
-
-        # Extract ISO timestamps (YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, etc.)
-        timestamp_patterns = re.findall(r'\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?', content)
-        if timestamp_patterns:
-            extracted_context.append(f"Timestamp: {timestamp_patterns[0]}")
-
-        # Extract email addresses (generic pattern)
-        emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', content)
-        if emails:
-            extracted_context.append(f"Contact(s): {', '.join(emails[:2])}")
-
-        # Extract URLs (for any service - Google Drive, Slack, Notion, etc.)
-        urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', content)
-        if urls:
-            extracted_context.append(f"Link: {urls[0][:50]}...")
-
-        # Extract @mentions (works for Slack, email, any platform)
-        mentions = re.findall(r'@[\w\-\.]+', content)
-        if mentions:
-            extracted_context.append(f"Mentions: {', '.join(mentions[:3])}")
-
-        # Extract #channels or #tags (works for Slack, social media, etc.)
-        channels = re.findall(r'#[\w\-]+', content)
-        if channels:
-            extracted_context.append(f"Channels/Tags: {', '.join(channels[:3])}")
-
+    # Add conversation history as proper messages (CRITICAL for context)
     for conv in recent_convs:
         role = conv.get("role")
         content = conv.get("content", "")
@@ -1055,14 +1305,17 @@ def create_agent_messages(state) -> List[Any]:
         elif role == "bot_response":
             messages.append(AIMessage(content=content))
 
-    # Add extracted context as a subtle reminder if we found any
-    if extracted_context and len(recent_convs) > 0:
-        context_reminder = "\n\n💡 **Context from previous conversation**:\n" + "\n".join(f"- {ctx}" for ctx in extracted_context[:5])
-        # Note: This will be added to the system prompt, not as a separate message
-        state["conversation_context_hints"] = context_reminder
-
-    # 3. Current query with agent hints
+    # 3. Current query with intelligent context enrichment
     current_query = state["query"]
+
+    # ⚡ CRITICAL FIX: Enrich follow-up queries with context
+    if ConversationMemory.should_reuse_tool_results(current_query, previous_conversations):
+        # This is a follow-up! Enrich with context
+        enriched_query = ConversationMemory.enrich_query_with_context(current_query, previous_conversations)
+        current_query = enriched_query
+        state["is_contextual_followup"] = True  # Flag for later use
+    else:
+        state["is_contextual_followup"] = False
 
     # Add context about available tools
     available_tools = state.get("available_tools") or []
@@ -1072,9 +1325,43 @@ def create_agent_messages(state) -> List[Any]:
     else:
         query_with_context = current_query
 
-    # Add mode hint if internal knowledge is available
-    if state.get("final_results"):
-        query_with_context += "\n\n⚠️ Internal knowledge sources are available above. If you use them, respond in MODE 2 (Structured JSON with citations)."
+    # Check if knowledge is available as a tool result
+    has_knowledge_tool_result = False
+    if state.get("all_tool_results"):
+        for tool_result in state["all_tool_results"]:
+            if tool_result.get("tool_name") == "internal_knowledge_retrieval":
+                has_knowledge_tool_result = True
+                break
+
+    # Add STRONG mode requirement if internal knowledge is available
+    if has_knowledge_tool_result or state.get("final_results"):
+        query_with_context += "\n\n" + "="*80 + "\n"
+        query_with_context += "⚠️ **MANDATORY OUTPUT FORMAT - READ CAREFULLY**\n"
+        query_with_context += "="*80 + "\n"
+        if has_knowledge_tool_result:
+            query_with_context += "Internal knowledge has been retrieved and is available as a tool result above.\n"
+            query_with_context += "Look for the 'internal_knowledge_retrieval' tool result in the conversation messages.\n"
+        else:
+            query_with_context += "Internal knowledge sources are available in the system prompt above.\n"
+        query_with_context += "You MUST respond in MODE 1 (Structured JSON with citations).\n"
+        query_with_context += "This is NOT optional - you cannot use conversational mode.\n\n"
+        query_with_context += "**Required JSON Format:**\n"
+        query_with_context += "{\n"
+        query_with_context += '  "answer": "Your answer in markdown with citations [R1-1][R2-3]",\n'
+        query_with_context += '  "reason": "How you derived the answer from the blocks",\n'
+        query_with_context += '  "confidence": "Very High | High | Medium | Low",\n'
+        query_with_context += '  "answerMatchType": "Derived From Chunks",\n'
+        query_with_context += '  "blockNumbers": ["R1-1", "R1-2", "R2-3"],\n'
+        query_with_context += '  "citations": [...]\n'
+        query_with_context += "}\n\n"
+        query_with_context += "**CRITICAL Instructions:**\n"
+        query_with_context += "1. Find the internal knowledge in the tool result above (look for 'internal_knowledge_retrieval')\n"
+        query_with_context += "2. Look at the Block Numbers shown in that tool result (R1-1, R1-2, etc.)\n"
+        query_with_context += "3. Use these EXACT block numbers in your citations: [R1-1][R2-3]\n"
+        query_with_context += "4. Include ALL cited block numbers in the blockNumbers array: [\"R1-1\", \"R2-3\"]\n"
+        query_with_context += "5. DO NOT respond in conversational mode - JSON format is MANDATORY\n"
+        query_with_context += "6. Every claim from internal knowledge MUST have a citation\n"
+        query_with_context += "="*80
 
     messages.append(HumanMessage(content=query_with_context))
 
@@ -1097,6 +1384,17 @@ def detect_response_mode(response_content) -> Tuple[str, Any]:
 
     content = response_content.strip()
 
+    # Check if content is wrapped in markdown code blocks
+    if "```json" in content or (content.startswith("```") and "```" in content[3:]):
+        try:
+            from app.utils.streaming import extract_json_from_string
+            parsed = extract_json_from_string(content)
+            if isinstance(parsed, dict) and "answer" in parsed and ("chunkIndexes" in parsed or "citations" in parsed):
+                return "structured", parsed
+        except (ValueError, Exception):
+            pass
+
+    # Try regular JSON parsing
     if content.startswith('{') and content.endswith('}'):
         try:
             import json

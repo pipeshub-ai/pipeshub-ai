@@ -1,8 +1,10 @@
 
 import asyncio
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.agents.actions.response_transformer import ResponseTransformer
 from app.agents.actions.slack.config import SlackResponse
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -29,14 +31,28 @@ class Slack:
     def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
         """Helper method to run async operations in sync context"""
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're already in an async context, we need to use a thread pool
+            # Try to get or create an event loop for this thread
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in an async context - cannot use run_until_complete
+                # This shouldn't happen since tools are sync, but handle it
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(asyncio.run, coro)
                     return future.result()
-            else:
+            except RuntimeError:
+                # No running loop - we can safely use get_event_loop or create one
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_closed():
+                        # Loop is closed, create a new one
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                except RuntimeError:
+                    # No event loop at all - create a new one
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
                 return loop.run_until_complete(coro)
         except Exception as e:
             logger.error(f"Error running async operation: {e}")
@@ -74,6 +90,172 @@ class Slack:
         logger.error(f"Slack API error: {error_msg}")
         return SlackResponse(success=False, error=error_msg)
 
+    def _convert_markdown_to_slack_mrkdwn(self, text: str) -> str:
+        """
+        Convert standard markdown to Slack's mrkdwn format.
+
+        Key conversions:
+        - Headers (#, ##, ###) → *bold* text
+        - Bold (**text**) → *text* (single asterisk)
+        - Italic (*text* or _text_) → _text_ (underscore)
+        - Strikethrough (~~text~~) → ~text~
+        - Links ([text](url)) → <url|text>
+        - Code blocks (```) → preserved but cleaned
+        - Lists (- or *) → preserved
+        - Quotes (>) → preserved
+
+        Args:
+            text: Standard markdown text
+
+        Returns:
+            Text converted to Slack mrkdwn format
+        """
+        if not text:
+            return text
+
+        result = text
+
+        # First, protect code blocks, inline code, and citations from conversion
+        code_blocks = []
+        inline_codes = []
+        citations = []
+
+        # Extract and protect code blocks (triple backticks)
+        def protect_code_block(match) -> str:
+            idx = len(code_blocks)
+            code_blocks.append(match.group(0))
+            return f"__CODE_BLOCK_{idx}__"
+
+        result = re.sub(r'```[\s\S]*?```', protect_code_block, result)
+
+        # Extract and protect inline code (single backticks)
+        def protect_inline_code(match) -> str:
+            idx = len(inline_codes)
+            inline_codes.append(match.group(0))
+            return f"__INLINE_CODE_{idx}__"
+
+        result = re.sub(r'`[^`\n]+`', protect_inline_code, result)
+
+        # Protect citations like [R1-1], [R2-3], [1], [2] from being converted to links
+        def protect_citation(match) -> str:
+            idx = len(citations)
+            citations.append(match.group(0))
+            return f"__CITATION_{idx}__"
+
+        # Match citations like [R1-1], [R2-3], [1], [2] (but not markdown links)
+        result = re.sub(r'\[R?\d+-\d+\]|\[\d+\]', protect_citation, result)
+
+        # Convert headers (# Header, ## Header, ### Header) to bold
+        def replace_header(match) -> str:
+            header_text = match.group(2).strip()
+            return f"*{header_text}*\n"
+
+        result = re.sub(r'^(\#{1,6})\s+(.+)$', replace_header, result, flags=re.MULTILINE)
+
+        # Convert bold (**text** or __text__) to *text* (single asterisk)
+        def replace_bold(match) -> str:
+            content = match.group(1)
+            return f"*{content}*"
+
+        # Match **text** (double asterisk bold)
+        result = re.sub(r'\*\*([^*\n]+)\*\*', replace_bold, result)
+        # Match __text__ (double underscore bold) - but be careful not to match our placeholders
+        result = re.sub(r'(?<!_)__(?!_)([^_\n]+)(?<!_)__(?!_)', replace_bold, result)
+
+        # Convert strikethrough (~~text~~) → ~text~
+        result = re.sub(r'~~([^~\n]+)~~', r'~\1~', result)
+
+        # Convert links [text](url) to <url|text>
+        # This should not match citations since we protected them
+        def replace_link(match: re.Match[str]) -> str:
+            link_text = match.group(1)
+            url = match.group(2)
+            # Only convert if it looks like a URL (starts with http:// or https://)
+            if url.startswith(('http://', 'https://', 'mailto:')):
+                return f"<{url}|{link_text}>"
+            # Otherwise, might be a citation, leave as is
+            return match.group(0)
+
+        result = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', replace_link, result)
+
+        # Normalize list markers - ensure consistent spacing
+        # Slack supports both - and • for lists
+        result = re.sub(r'^\s*[-*]\s+', r'• ', result, flags=re.MULTILINE)
+
+        # Remove any remaining markdown header markers that weren't converted
+        result = re.sub(r'^#{1,6}\s+', '', result, flags=re.MULTILINE)
+
+        # Restore protected citations
+        for idx, citation in enumerate(citations):
+            result = result.replace(f"__CITATION_{idx}__", citation)
+
+        # Restore protected inline code
+        for idx, code in enumerate(inline_codes):
+            result = result.replace(f"__INLINE_CODE_{idx}__", code)
+
+        # Restore protected code blocks
+        for idx, code_block in enumerate(code_blocks):
+            result = result.replace(f"__CODE_BLOCK_{idx}__", code_block)
+
+        # Clean up excessive blank lines (more than 2 consecutive)
+        result = re.sub(r'\n{3,}', '\n\n', result)
+
+        # Trim trailing whitespace from lines
+        result = '\n'.join(line.rstrip() for line in result.split('\n'))
+
+        return result
+
+    def _resolve_channel(self, channel: str) -> str:
+        """Resolve a channel name (e.g., '#testing' or 'testing') to a channel ID (e.g., 'C1234567890').
+
+        This method handles cases where the LLM provides channel names instead of IDs.
+        If the channel is already an ID (matches Slack ID format), it returns it as-is.
+        Otherwise, it looks up the channel by name from the conversations list.
+
+        Slack channel IDs have the format:
+        - Public channels: Start with 'C' followed by alphanumeric (e.g., 'C1234567890')
+        - Private channels: Start with 'G' followed by alphanumeric (e.g., 'G1234567890')
+        - Direct messages: Start with 'D' followed by alphanumeric (e.g., 'D1234567890')
+
+        Args:
+            channel: Channel name (with or without # prefix) or channel ID
+
+        Returns:
+            Channel ID (e.g., 'C1234567890') or original value if resolution fails
+        """
+        try:
+            if not isinstance(channel, str):
+                return channel
+
+            # Remove # prefix if present
+            name = channel[1:] if channel.startswith('#') else channel
+
+            # Check if it's already a Slack channel ID format
+            # Slack IDs start with C (public), G (private), or D (DM) followed by alphanumeric
+            # Typically 10-11 characters, but can vary. Minimum reasonable length is 9.
+            slack_id_pattern = re.compile(r'^[CGD][A-Z0-9]{8,}$', re.IGNORECASE)
+            if slack_id_pattern.match(name):
+                return channel
+
+            # Try to find channel by name
+            clist = self._run_async(self.client.conversations_list())
+            cl_resp = self._handle_slack_response(clist)
+
+            if cl_resp.success and cl_resp.data and isinstance(cl_resp.data, dict):
+                channels = cl_resp.data.get('channels') or []
+                for c in channels:
+                    if isinstance(c, dict) and c.get('name') == name:
+                        channel_id = c.get('id')
+                        if channel_id:
+                            return channel_id
+                        break
+        except Exception as e:
+            # Log but don't fail - return original channel value
+            logger.debug(f"Error resolving channel '{channel}': {e}")
+
+        # Return original value if resolution fails
+        return channel
+
     @tool(
         app_name="slack",
         tool_name="send_message",
@@ -87,25 +269,43 @@ class Slack:
             ToolParameter(
                 name="message",
                 type=ParameterType.STRING,
-                description="The message to send",
+                description="The message to send. Must use Slack's mrkdwn format (NOT standard markdown). Supported formatting: *bold* (single asterisk, NOT **), _italic_ (underscore), `code` (backticks), ~strikethrough~ (tilde), > quote (greater than), • or - for lists. Headings are NOT supported - use *bold* instead of # headings. Links: <https://example.com|text>. Do NOT use ** for bold or # for headings as they will appear as literal text.",
                 required=True
             )
         ]
     )
     def send_message(self, channel: str, message: str) -> Tuple[bool, str]:
-        """Send a message to a channel"""
-        """
+        """Send a message to a channel using Slack's mrkdwn format.
+
+        The message will be automatically converted from standard markdown to Slack's mrkdwn format.
+        Supports standard markdown features which will be converted:
+        - Headers (#, ##, ###) → *bold* text
+        - Bold (**text**) → *text*
+        - Italic (*text* or _text_) → _text_
+        - Strikethrough (~~text~~) → ~text~
+        - Links ([text](url)) → <url|text>
+        - Code blocks and inline code are preserved
+        - Lists (- or *) → • (bullet points)
+
         Args:
             channel: The channel to send the message to
-            message: The message to send
+            message: The message to send in Slack mrkdwn format (see docstring for formatting rules)
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the message details
         """
         try:
-            # Use SlackDataSource method
-            response = self._run_async(self.client.chat_me_message(
-                channel=channel,
-                text=message
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
+            # Convert standard markdown to Slack mrkdwn format
+            slack_message = self._convert_markdown_to_slack_mrkdwn(message)
+
+            # Use chat_post_message to support markdown formatting
+            # mrkdwn=True enables Slack's markdown parsing (enabled by default, but explicit for clarity)
+            response = self._run_async(self.client.chat_post_message(
+                channel=chan,
+                text=slack_message,
+                mrkdwn=True
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -146,21 +346,7 @@ class Slack:
         """
         try:
             # Resolve channel name like "#bugs" to channel ID
-            chan = channel
-            try:
-                if isinstance(chan, str):
-                    name = chan[1:] if chan.startswith('#') else chan
-                    # If it doesn't look like a channel ID (C...), try to find by name
-                    if not name.startswith('C'):
-                        clist = self._run_async(self.client.conversations_list())
-                        cl_resp = self._handle_slack_response(clist)
-                        if cl_resp.success and cl_resp.data and isinstance(cl_resp.data, dict):
-                            for c in (cl_resp.data.get('channels') or []):
-                                if isinstance(c, dict) and c.get('name') == name:
-                                    chan = c.get('id') or chan
-                                    break
-            except Exception:
-                pass
+            chan = self._resolve_channel(channel)
 
             # Use SlackDataSource method
             response = self._run_async(self.client.conversations_history(
@@ -223,7 +409,37 @@ class Slack:
                         resolved_messages.append(msg)
                 enriched = dict(data)
                 enriched['messages'] = resolved_messages
-                return (True, SlackResponse(success=True, data=enriched).to_json())
+
+                # Transform the enriched data to remove unnecessary fields
+                transformed_data = (
+                    ResponseTransformer(enriched)
+                    .remove("ok", "*.blocks", "*.response_metadata",
+                            # File fields to remove (keep URLs for user access)
+                            "*.user_team", "*.editable", "*.mode", "*.is_external", "*.external_type",
+                            "*.is_public", "*.public_url_shared", "*.display_as_bot", "*.username",
+                            "*.media_display_type",
+                            # Remove all thumbnail URLs and dimensions (not needed, just preview images)
+                            "*.thumb_64", "*.thumb_80", "*.thumb_160", "*.thumb_360", "*.thumb_360_w",
+                            "*.thumb_360_h", "*.thumb_480", "*.thumb_480_w", "*.thumb_480_h",
+                            "*.thumb_720", "*.thumb_720_w", "*.thumb_720_h", "*.thumb_800",
+                            "*.thumb_800_w", "*.thumb_800_h", "*.thumb_960", "*.thumb_960_w",
+                            "*.thumb_960_h", "*.thumb_1024", "*.thumb_1024_w", "*.thumb_1024_h",
+                            "*.original_w", "*.original_h", "*.thumb_tiny",
+                            # Remove metadata flags
+                            "*.is_starred", "*.skipped_shares", "*.has_rich_preview", "*.file_access")
+                    .keep("messages", "id", "name", "text", "ts", "user", "channel", "team",
+                          "display_name", "real_name", "email", "resolved_text", "mentions",
+                          "thread_ts", "reply_count", "replies", "subscribed", "subtype",
+                          "type", "attachments", "blocks", "files", "reactions", "pinned_to",
+                          "permalink", "has_more", "next_cursor", "previous_cursor", "bot_profile",
+                          "client_msg_id", "upload",
+                          # Essential file fields to keep (including URLs for user access)
+                          "created", "timestamp", "title", "mimetype", "filetype", "pretty_type",
+                          "size", "url_private", "url_private_download", "permalink_public")
+                    .clean()
+                )
+
+                return (True, SlackResponse(success=True, data=transformed_data).to_json())
             except Exception:
                 # If enrichment fails, return original
                 return (slack_response.success, slack_response.to_json())
@@ -256,8 +472,11 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the channel info
         """
         try:
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
             # Use SlackDataSource method
-            response = self._run_async(self.client.conversations_info(channel=channel))
+            response = self._run_async(self.client.conversations_info(channel=chan))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -272,7 +491,7 @@ class Slack:
             ToolParameter(
                 name="user",
                 type=ParameterType.STRING,
-                description="The user to get the info of",
+                description="Slack user identifier. IMPORTANT: Use the user's EMAIL ADDRESS (e.g., 'user@example.com') or Slack user ID (starts with 'U', e.g., 'U123ABC45'). DO NOT use internal database user IDs (24-character hex strings). If you have the user's email from context, use that instead.",
                 required=True
             )
         ]
@@ -281,7 +500,7 @@ class Slack:
         """Get the info of a user"""
         """
         Args:
-            user: The user to get the info of
+            user: Slack user identifier (email or Slack user ID)
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the user info
         """
@@ -348,7 +567,21 @@ class Slack:
                 query=query,
                 count=limit
             ))
-            slack_response = self._handle_slack_response(response)
+            transformed_response = (
+                ResponseTransformer(response)
+                .remove(
+                        # Remove all thumbnail URLs and dimensions (not needed, just preview images)
+                        "*.thumb_64", "*.thumb_80", "*.thumb_160", "*.thumb_360", "*.thumb_360_w",
+                        "*.thumb_360_h", "*.thumb_480", "*.thumb_480_w", "*.thumb_480_h",
+                        "*.thumb_720", "*.thumb_720_w", "*.thumb_720_h", "*.thumb_800",
+                        "*.thumb_800_w", "*.thumb_800_h", "*.thumb_960", "*.thumb_960_w",
+                        "*.thumb_960_h", "*.thumb_1024", "*.thumb_1024_w", "*.thumb_1024_h",
+                        "*.original_w", "*.original_h", "*.thumb_tiny",
+                        )
+                    .clean()
+                )
+
+            slack_response = self._handle_slack_response(transformed_response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
             logger.error(f"Error in search_all: {e}")
@@ -376,8 +609,11 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the channel members
         """
         try:
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
             # Use SlackDataSource method
-            response = self._run_async(self.client.conversations_members(channel=channel))
+            response = self._run_async(self.client.conversations_members(channel=chan))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -517,10 +753,14 @@ class Slack:
             if not channel_id:
                 return (False, SlackResponse(success=False, error="Failed to get DM channel ID").to_json())
 
+            # Convert standard markdown to Slack mrkdwn format
+            slack_message = self._convert_markdown_to_slack_mrkdwn(message)
+
             # Send message to DM channel
             message_response = self._run_async(self.client.chat_post_message(
                 channel=channel_id,
-                text=message
+                text=slack_message,
+                mrkdwn=True
             ))
             message_slack_response = self._handle_slack_response(message_response)
             return (message_slack_response.success, message_slack_response.to_json())
@@ -566,8 +806,11 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the message details
         """
         try:
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
             kwargs = {
-                "channel": channel,
+                "channel": chan,
                 "text": message,
                 "mrkdwn": True
             }
@@ -625,9 +868,12 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the reply details
         """
         try:
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
             # If latest_message is True, get the latest message timestamp
             if latest_message and not thread_ts:
-                history_response = self._run_async(self.client.conversations_history(channel=channel, limit=1))
+                history_response = self._run_async(self.client.conversations_history(channel=chan, limit=1))
                 history_slack_response = self._handle_slack_response(history_response)
 
                 if not history_slack_response.success or not history_slack_response.data:
@@ -642,11 +888,15 @@ class Slack:
             if not thread_ts:
                 return (False, SlackResponse(success=False, error="No thread timestamp provided").to_json())
 
+            # Convert standard markdown to Slack mrkdwn format
+            slack_message = self._convert_markdown_to_slack_mrkdwn(message)
+
             # Send reply
             response = self._run_async(self.client.chat_post_message(
-                channel=channel,
-                text=message,
-                thread_ts=thread_ts
+                channel=chan,
+                text=slack_message,
+                thread_ts=thread_ts,
+                mrkdwn=True
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -676,6 +926,7 @@ class Slack:
         ]
     )
     def send_message_to_multiple_channels(self, channels: List[str], message: str) -> Tuple[bool, str]:
+        """Send a message to multiple channels. Message will be auto-converted from standard markdown to Slack mrkdwn."""
         """Send the same message to multiple channels"""
         """
         Args:
@@ -688,15 +939,23 @@ class Slack:
             results = []
             all_success = True
 
+            # Convert standard markdown to Slack mrkdwn format once for all channels
+            slack_message = self._convert_markdown_to_slack_mrkdwn(message)
+
             for channel in channels:
                 try:
+                    # Resolve channel name to channel ID if needed
+                    chan = self._resolve_channel(channel)
+
                     response = self._run_async(self.client.chat_post_message(
-                        channel=channel,
-                        text=message
+                        channel=chan,
+                        text=slack_message,
+                        mrkdwn=True
                     ))
                     slack_response = self._handle_slack_response(response)
                     results.append({
                         "channel": channel,
+                        "channel_id": chan,
                         "success": slack_response.success,
                         "data": slack_response.data if slack_response.success else None,
                         "error": slack_response.error if not slack_response.success else None
@@ -833,8 +1092,11 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the reaction details
         """
         try:
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
             response = self._run_async(self.client.reactions_add(
-                channel=channel,
+                channel=chan,
                 timestamp=timestamp,
                 name=name
             ))
@@ -959,8 +1221,11 @@ class Slack:
             if not user_ids:
                 return (False, SlackResponse(success=False, error="No valid users found to invite").to_json())
 
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
             response = self._run_async(self.client.conversations_invite(
-                channel=channel,
+                channel=chan,
                 users=user_ids
             ))
             slack_response = self._handle_slack_response(response)
@@ -1122,9 +1387,15 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the scheduled message details
         """
         try:
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
+            # Convert standard markdown to Slack mrkdwn format
+            slack_message = self._convert_markdown_to_slack_mrkdwn(message)
+
             response = self._run_async(self.client.chat_schedule_message(
-                channel=channel,
-                text=message,
+                channel=chan,
+                text=slack_message,
                 post_at=int(post_at)
             ))
             slack_response = self._handle_slack_response(response)
@@ -1268,8 +1539,11 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the pin details
         """
         try:
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
             response = self._run_async(self.client.pins_add(
-                channel=channel,
+                channel=chan,
                 timestamp=timestamp
             ))
             slack_response = self._handle_slack_response(response)
@@ -1320,7 +1594,22 @@ class Slack:
                 "recent_messages": history_slack_response.data.get('messages', []) if history_slack_response.data else []
             }
 
-            return (True, SlackResponse(success=True, data=result).to_json())
+            # Transform the result to remove unnecessary fields
+            transformed_result = (
+                ResponseTransformer(result)
+                .remove(
+                        # Remove all thumbnail URLs and dimensions (not needed, just preview images)
+                        "*.thumb_64", "*.thumb_80", "*.thumb_160", "*.thumb_360", "*.thumb_360_w",
+                        "*.thumb_360_h", "*.thumb_480", "*.thumb_480_w", "*.thumb_480_h",
+                        "*.thumb_720", "*.thumb_720_w", "*.thumb_720_h", "*.thumb_800",
+                        "*.thumb_800_w", "*.thumb_800_h", "*.thumb_960", "*.thumb_960_w",
+                        "*.thumb_960_h", "*.thumb_1024", "*.thumb_1024_w", "*.thumb_1024_h",
+                        "*.original_w", "*.original_h", "*.thumb_tiny",
+                    )
+                .clean()
+            )
+
+            return (True, SlackResponse(success=True, data=transformed_result).to_json())
 
         except Exception as e:
             logger.error(f"Error in get_unread_messages: {e}")
@@ -1396,24 +1685,26 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the message details
         """
         try:
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
             # Process mentions if provided
+            processed_message = message
             if mentions:
-                processed_message = message
                 for mention in mentions:
                     # Resolve user identifier to user ID
                     user_id = self._resolve_user_identifier(mention)
                     if user_id:
                         processed_message = processed_message.replace(f"@{mention}", f"<@{user_id}>")
 
-                response = self._run_async(self.client.chat_post_message(
-                    channel=channel,
-                    text=processed_message
-                ))
-            else:
-                response = self._run_async(self.client.chat_post_message(
-                    channel=channel,
-                    text=message
-                ))
+            # Convert standard markdown to Slack mrkdwn format
+            slack_message = self._convert_markdown_to_slack_mrkdwn(processed_message)
+
+            response = self._run_async(self.client.chat_post_message(
+                channel=chan,
+                text=slack_message,
+                mrkdwn=True
+            ))
 
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -1472,7 +1763,7 @@ class Slack:
             ToolParameter(
                 name="user",
                 type=ParameterType.STRING,
-                description="User ID to get conversations for",
+                description="Slack user identifier. IMPORTANT: Use the user's EMAIL ADDRESS (e.g., 'user@example.com') or Slack user ID (starts with 'U', e.g., 'U123ABC45'). DO NOT use internal database user IDs (24-character hex strings). If you have the user's email from context, use that instead.",
                 required=True
             ),
             ToolParameter(
@@ -1499,7 +1790,7 @@ class Slack:
         """Get conversations for a specific user"""
         """
         Args:
-            user: User ID to get conversations for
+            user: Slack user identifier (email or Slack user ID)
             types: Comma-separated list of conversation types
             exclude_archived: Exclude archived conversations
             limit: Maximum number of conversations to return
@@ -1612,7 +1903,7 @@ class Slack:
             ToolParameter(
                 name="user",
                 type=ParameterType.STRING,
-                description="User ID to get channels for",
+                description="Slack user identifier. IMPORTANT: Use the user's EMAIL ADDRESS (e.g., 'user@example.com') or Slack user ID (starts with 'U', e.g., 'U123ABC45'). DO NOT use internal database user IDs (24-character hex strings like '692d40c1585831c0f395f48a') - these are NOT Slack user IDs. If you have the user's email from context, use that instead.",
                 required=True
             ),
             ToolParameter(
@@ -1633,7 +1924,7 @@ class Slack:
         """Get channels that a specific user is a member of"""
         """
         Args:
-            user: User ID to get channels for
+            user: User ID, email, or display name to get channels for
             exclude_archived: Exclude archived channels
             types: Comma-separated list of channel types
         Returns:
@@ -1689,8 +1980,11 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the deletion details
         """
         try:
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
             kwargs = {
-                "channel": channel,
+                "channel": chan,
                 "ts": timestamp
             }
             if as_user is not None:
@@ -1754,8 +2048,11 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the update details
         """
         try:
+            # Resolve channel name to channel ID if needed
+            chan = self._resolve_channel(channel)
+
             kwargs = {
-                "channel": channel,
+                "channel": chan,
                 "ts": timestamp,
                 "text": text
             }
