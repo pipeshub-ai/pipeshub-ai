@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
@@ -903,7 +904,7 @@ export const updateRecord =
 
       // Check if there's a file in the request
       const hasFileBuffer = req.body.fileBuffer && req.body.fileBuffer.buffer;
-      let originalname, mimetype, size, extension, lastModified;
+      let originalname, mimetype, size, extension, lastModified, sha256Hash;
 
       if (hasFileBuffer) {
         ({ originalname, mimetype, size, lastModified } = req.body.fileBuffer);
@@ -914,6 +915,9 @@ export const updateRecord =
               .substring(originalname.lastIndexOf('.') + 1)
               .toLowerCase()
           : null;
+        // Calculate SHA-256 checksum for security
+        const buffer = req.body.fileBuffer.buffer;
+        sha256Hash = crypto.createHash('sha256').update(buffer).digest('hex');
       }
 
       if (!recordName) {
@@ -935,6 +939,7 @@ export const updateRecord =
           size,
           extension,
           lastModified,
+          sha256Hash,
         };
 
         // Get filename without extension to use as record name
@@ -2162,7 +2167,7 @@ export const getConnectorStats =
       try {
         // Call the Python service to get record
 
-        let queryParams = new URLSearchParams();
+        const queryParams = new URLSearchParams();
 
         queryParams.append('org_id', orgId);
         queryParams.append('connector', req.params.connector);
@@ -2240,7 +2245,6 @@ export const getRecordBuffer =
       if (!userId || !orgId) {
         throw new BadRequestError('User authentication is required');
       }
-
 
       const queryParams = new URLSearchParams();
       if (convertTo) {
