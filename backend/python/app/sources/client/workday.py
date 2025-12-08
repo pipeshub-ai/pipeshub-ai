@@ -39,11 +39,6 @@ class WorkdayRESTClient(HTTPClient):
 
         super().__init__(token, "Bearer")
 
-        self.headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-
     def get_base_url(self) -> str:
         """Get the base URL"""
         return self.base_url
