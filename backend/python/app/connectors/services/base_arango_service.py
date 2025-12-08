@@ -2106,11 +2106,19 @@ class BaseArangoService:
             user_id: External user ID doing the reindex
             org_id: Organization ID
             request: FastAPI request object
-            depth: Depth of children to reindex (-1 = unlimited, 0 = only this record,
-                   1 = direct children, etc.)
+            depth: Depth of children to reindex (-1 = unlimited/max 100, other negatives = 0,
+                   0 = only this record, 1 = direct children, etc.)
         """
         try:
             self.logger.info(f"🔄 Starting reindex for record {record_id} by user {user_id} with depth {depth}")
+
+            # Handle negative depth: -1 means unlimited (set to max 100), other negatives are invalid (set to 0)
+            if depth == -1:
+                depth = 100
+                self.logger.info(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
+            elif depth < 0:
+                self.logger.warning(f"Invalid negative depth {depth}, setting to 0 (single record only)")
+                depth = 0
 
             # Get record to determine connector type
             record = await self.get_document(record_id, CollectionNames.RECORDS.value)
@@ -2344,6 +2352,14 @@ class BaseArangoService:
         """
         try:
             self.logger.info(f"🔄 Starting record group reindex for {record_group_id} with depth {depth} by user {user_id}")
+
+            # Handle negative depth: -1 means unlimited (set to max 100), other negatives are invalid (set to 0)
+            if depth == -1:
+                depth = 100
+                self.logger.info(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
+            elif depth < 0:
+                self.logger.warning(f"Invalid negative depth {depth}, setting to 0 (direct records only)")
+                depth = 0
 
             # Get record group
             record_group = await self.get_document(record_group_id, CollectionNames.RECORD_GROUPS.value)
