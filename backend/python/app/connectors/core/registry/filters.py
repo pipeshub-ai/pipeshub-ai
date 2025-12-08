@@ -24,8 +24,8 @@ from app.config.configuration_service import ConfigurationService
 # Module logger for filter parsing warnings
 _logger = logging.getLogger(__name__)
 
-# Type alias for filter values (string, bool, list, number, or None)
-FilterValue = Union[str, bool, int, float, List[str], None]
+# Type alias for filter values (string, bool, list, number, tuple for datetime, or None)
+FilterValue = Union[str, bool, int, float, List[str], Tuple[Optional[int], ...], None]
 MAX_DATETIME_TUPLE_LENGTH = 2
 
 
@@ -153,6 +153,7 @@ class SyncFilterKey(str, Enum):
     SPACE_KEYS = "space_keys"
     FOLDER_IDS = "folder_ids"
     PROJECT_IDS = "project_ids"
+    PROJECT_KEYS = "project_keys"
     SITE_IDS = "site_ids"
     CHANNEL_IDS = "channel_ids"
 
@@ -197,6 +198,8 @@ class IndexingFilterKey(str, Enum):
     PAGE_ATTACHMENTS = "page_attachments"
     BLOGPOST_COMMENTS = "blogpost_comments"
     BLOGPOST_ATTACHMENTS = "blogpost_attachments"
+    ISSUE_COMMENTS = "issue_comments"
+    ISSUE_ATTACHMENTS = "issue_attachments"
 
 
 # Type to operators mapping (for validation and UI)
@@ -769,8 +772,8 @@ class FilterCollection(BaseModel):
                 filter_data = {"key": key, **val}
                 filters.append(Filter.model_validate(filter_data))
 
-            except ValueError:
-                log.warning("Invalid filter: {e}")
+            except ValueError as e:
+                log.warning(f"Invalid filter '{key}': {e}")
                 continue
 
         return cls(filters=filters)
