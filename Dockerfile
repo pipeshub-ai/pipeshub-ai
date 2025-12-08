@@ -111,9 +111,9 @@ start_nodejs() {
     
     # Wait for Node.js health check to pass
     log "Waiting for Node.js health check..."
-    MAX_RETRIES=30
-    RETRY_COUNT=0
-    HEALTH_CHECK_URL="http://localhost:3000/api/v1/health"
+    local MAX_RETRIES=30
+    local RETRY_COUNT=0
+    local HEALTH_CHECK_URL="http://localhost:3000/api/v1/health"
     
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
         if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
@@ -156,9 +156,9 @@ start_connector() {
     
     # Wait for Connector health check to pass
     log "Waiting for Connector health check..."
-    MAX_RETRIES=30
-    RETRY_COUNT=0
-    HEALTH_CHECK_URL="http://localhost:8088/health"
+    local MAX_RETRIES=30
+    local RETRY_COUNT=0
+    local HEALTH_CHECK_URL="http://localhost:8088/health"
     
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
         if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
