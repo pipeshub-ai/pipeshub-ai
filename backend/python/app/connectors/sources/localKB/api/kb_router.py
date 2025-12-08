@@ -830,12 +830,24 @@ async def create_kb_permissions(
                 detail="Invalid request body"
             )
         user_id = request.state.user.get("userId")
+        # Role is required for users, but optional for teams (teams don't have roles)
+        role = body.get("role")
+        user_ids = body.get("userIds") or []
+        team_ids = body.get("teamIds") or []
+
+        # Validate: role is required if users are provided
+        if user_ids and not role:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Role is required when adding users"
+            )
+
         result = await kb_service.create_kb_permissions(
             kb_id=kb_id,
             requester_id=user_id,
-            user_ids=body.get("userIds"),
-            team_ids=body.get("teamIds"),
-            role=body.get("role"),
+            user_ids=user_ids,
+            team_ids=team_ids,
+            role=role,
         )
         if not result or result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
@@ -876,12 +888,31 @@ async def update_kb_permission(
                 detail="Invalid request body"
             )
         user_id = request.state.user.get("userId")
+        # Teams don't have roles, so we can only update user permissions
+        user_ids = body.get("userIds") or []
+        team_ids = body.get("teamIds") or []
+        new_role = body.get("role")
+
+        # Validate: role is required
+        if not new_role:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Role is required"
+            )
+
+        # Teams don't have roles - reject at router level for faster feedback
+        if team_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Teams do not have roles. Only user permissions can be updated."
+            )
+
         result = await kb_service.update_kb_permission(
             kb_id=kb_id,
             requester_id=user_id,
-            user_ids=body.get("userIds"),
-            team_ids=body.get("teamIds"),
-            new_role=body.get("role"),
+            user_ids=user_ids,
+            team_ids=team_ids,
+            new_role=new_role,
         )
         if not result or result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
