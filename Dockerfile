@@ -108,6 +108,27 @@ start_nodejs() {
     node dist/index.js &
     NODEJS_PID=$!
     log "Node.js started with PID: $NODEJS_PID"
+    
+    # Wait for Node.js health check to pass
+    log "Waiting for Node.js health check..."
+    MAX_RETRIES=30
+    RETRY_COUNT=0
+    HEALTH_CHECK_URL="http://localhost:3000/api/v1/health"
+    
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
+            log "Node.js health check passed!"
+            break
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
+        sleep 2
+    done
+    
+    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        log "ERROR: Node.js health check failed after $MAX_RETRIES attempts"
+        return 1
+    fi
 }
 
 start_docling() {
@@ -132,6 +153,27 @@ start_connector() {
     python -m app.connectors_main &
     CONNECTOR_PID=$!
     log "Connector started with PID: $CONNECTOR_PID"
+    
+    # Wait for Connector health check to pass
+    log "Waiting for Connector health check..."
+    MAX_RETRIES=30
+    RETRY_COUNT=0
+    HEALTH_CHECK_URL="http://localhost:8088/health"
+    
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
+            log "Connector health check passed!"
+            break
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
+        sleep 2
+    done
+    
+    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        log "ERROR: Connector health check failed after $MAX_RETRIES attempts"
+        return 1
+    fi
 }
 
 start_query() {
@@ -170,12 +212,16 @@ cleanup() {
 # Trap signals for graceful shutdown
 trap cleanup SIGTERM SIGINT SIGQUIT
 
-# Start all services
+# Start all services in dependency order
 log "=== Process Monitor Starting ==="
+# 1. Start Node.js first and wait for health check
 start_nodejs
+# 2. Start Connector after Node.js is healthy, wait for health check
 start_connector
+# 3. Start Indexing and Query after Connector is healthy (order doesn't matter)
 start_indexing
 start_query
+# 4. Start Docling (can run independently)
 start_docling
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
