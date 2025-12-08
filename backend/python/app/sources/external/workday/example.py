@@ -4,8 +4,7 @@ import os
 
 from app.sources.client.workday import (
     WorkdayClient,
-    WorkdayOAuthConfig,
-    WorkdayTokenConfig,
+    WorkdayConfig,
 )
 from app.sources.external.workday.workday import WorkdayDataSource
 
@@ -22,18 +21,15 @@ async def main() -> None:
         logger.error("WORKDAY_BASE_URL environment variable is required")
         return
 
-    client = None
-    if workday_token:
-        logger.info("Using Token Authentication")
-        config = WorkdayTokenConfig(base_url=workday_base_url, token=workday_token)
-        client = WorkdayClient.build_with_config(config)
-    elif workday_oauth_token:
-        logger.info("Using OAuth Authentication")
-        config = WorkdayOAuthConfig(base_url=workday_base_url, access_token=workday_oauth_token)
-        client = WorkdayClient.build_with_config(config)
-    else:
+    # Use whichever token is available (API token or OAuth token)
+    token = workday_token or workday_oauth_token
+    if not token:
         logger.error("Either WORKDAY_TOKEN or WORKDAY_OAUTH_TOKEN environment variable is required")
         return
+
+    logger.info(f"Using {'Token' if workday_token else 'OAuth'} Authentication")
+    config = WorkdayConfig(base_url=workday_base_url, token=token)
+    client = WorkdayClient.build_with_config(config)
 
     # Initialize Data Source
     data_source = WorkdayDataSource(client)
