@@ -550,10 +550,7 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                       size="small"
                       startIcon={<Icon icon={addIcon} width={16} height={16} />}
                       onClick={() => setShowAddForm(true)}
-                      disabled={
-                        actionLoading ||
-                        (availableUsers.length === 0 && availableTeams.length === 0)
-                      }
+                      disabled={actionLoading}
                       sx={{
                         textTransform: 'none',
                         fontWeight: 500,
@@ -966,7 +963,16 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                             >
                               {actionLoading
                                 ? 'Adding...'
-                                : `Add ${selectedUsers.length + selectedTeams.length || ''} ${selectedUsers.length + selectedTeams.length === 1 ? 'Member' : 'Members'}`}
+                                : (() => {
+                                    const parts = [];
+                                    if (selectedUsers.length > 0) {
+                                      parts.push(`${selectedUsers.length} ${selectedUsers.length === 1 ? 'Member' : 'Members'}`);
+                                    }
+                                    if (selectedTeams.length > 0) {
+                                      parts.push(`${selectedTeams.length} ${selectedTeams.length === 1 ? 'Team' : 'Teams'}`);
+                                    }
+                                    return parts.length > 0 ? `Add ${parts.join(' and ')}` : 'Add';
+                                  })()}
                             </Button>
                           </Stack>
                         </Stack>
@@ -1026,7 +1032,6 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                     <Button
                       variant="outlined"
                       onClick={() => setShowAddForm(true)}
-                      disabled={availableUsers.length === 0 && availableTeams.length === 0}
                       size="small"
                       sx={{ textTransform: 'none' }}
                     >

@@ -744,6 +744,10 @@ export default function KnowledgeBaseComponent() {
   const renderContextMenu = () => {
     const canModify =
       currentUserPermission?.role === 'OWNER' || currentUserPermission?.role === 'WRITER';
+    const canReindex =
+      currentUserPermission?.role === 'OWNER' ||
+      currentUserPermission?.role === 'WRITER' ||
+      currentUserPermission?.role === 'READER';
 
     const folderMenuItems = [
       {
@@ -797,7 +801,7 @@ export default function KnowledgeBaseComponent() {
           handleMenuClose();
         },
       },
-      ...(canModify
+      ...(canReindex
         ? [
             {
               key: 'reindex',
@@ -808,6 +812,10 @@ export default function KnowledgeBaseComponent() {
                 handleMenuClose();
               },
             },
+          ]
+        : []),
+      ...(canModify
+        ? [
             {
               key: 'delete',
               label: 'Delete',

@@ -334,7 +334,7 @@ export const renderKBDetail = ({
                 <Box sx={{ display: { xs: 'inline', sm: 'none' } }}>
                   <Icon icon={accountMultipleIcon} fontSize={16} />
                 </Box>
-                <Box sx={{ display: { xs: 'none', sm: 'inline' } }}>Teams</Box>
+                <Box sx={{ display: { xs: 'none', sm: 'inline' } }}>Manage KB Access</Box>
               </ActionButton>
             )}
 

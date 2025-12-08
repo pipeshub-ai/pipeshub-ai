@@ -1182,15 +1182,12 @@ class BaseArangoService:
             else:
                 final_kb_roles = list(base_kb_roles)
 
-            # Build permission filter for connector records
-            def build_permission_filter(include_filter_vars: bool = True) -> str:
-                if permissions and include_filter_vars:
-                    return " AND permissionEdge.role IN @permission"
-                return ""
-
-            # ===== MAIN QUERY (with pagination and filters and file/mail records) =====
+            # Build filters
             record_filter = build_record_filters(True)
-            permission_filter = build_permission_filter(True)
+            permission_filter = "FILTER permissionEdge.role IN @role_filter" if permissions else ""
+            perm_edge_filter = "FILTER permEdge.role IN @role_filter" if permissions else ""
+            record_group_edge_filter = "FILTER recordGroupToRecordEdge.role IN @role_filter" if permissions else ""
+            child_rg_edge_filter = "FILTER childRgToRecordEdge.role IN @role_filter" if permissions else ""
             folder_filter = '''
                 LET targetDoc = FIRST(
                     FOR v IN 1..1 OUTBOUND record._id isOfType
@@ -1213,15 +1210,75 @@ class BaseArangoService:
             LET user_from = @user_from
             LET org_id = @org_id
 
-            // KB Records Section - Get records DIRECTLY from belongs_to edges (not through folders)
+            // Direct user permissions to KBs
+            LET directKbAccess = (
+                FOR kbEdge IN @@permission
+                    FILTER kbEdge._from == user_from
+                    FILTER kbEdge.type == "USER"
+                    FILTER STARTS_WITH(kbEdge._to, "recordGroups/")
+                    LET kb = DOCUMENT(kbEdge._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb,
+                        role: kbEdge.role,
+                        access_type: "direct"
+                    }}
+            )
+
+            // Team-based access to KBs: User -> Team -> KB
+            LET teamKbAccess = (
+                FOR teamKbPerm IN @@permission
+                    FILTER teamKbPerm.type == "TEAM"
+                    FILTER STARTS_WITH(teamKbPerm._to, "recordGroups/")
+                    LET kb = DOCUMENT(teamKbPerm._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    LET team_id = SPLIT(teamKbPerm._from, '/')[1]
+
+                    // Check if user is a member of this team
+                    LET user_team_role = FIRST(
+                        FOR userTeamPerm IN @@permission
+                            FILTER userTeamPerm._from == user_from
+                            FILTER userTeamPerm._to == CONCAT('teams/', team_id)
+                            FILTER userTeamPerm.type == "USER"
+                            RETURN userTeamPerm.role
+                    )
+
+                    FILTER user_team_role != null
+
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb,
+                        role: user_team_role,
+                        access_type: "team"
+                    }}
+            )
+
+            // Combine direct and team access, prioritizing direct access
+            LET allKbAccess = UNION(
+                (FOR access IN directKbAccess RETURN access),
+                (FOR teamAccess IN teamKbAccess
+                    LET hasDirect = LENGTH(
+                        FOR direct IN directKbAccess
+                            FILTER direct.kb_id == teamAccess.kb_id
+                            RETURN 1
+                    ) > 0
+                    FILTER NOT hasDirect
+                    RETURN teamAccess)
+            )
+
+            // Filter by requested permission roles
+            LET filteredKbAccess = (
+                FOR access IN allKbAccess
+                    FILTER access.role IN @kb_permissions
+                    RETURN access
+            )
+
+            // KB Records Section - Get records from all accessible KBs
             LET kbRecords = {
                 f'''(
-                    FOR kbEdge IN @@permission
-                        FILTER kbEdge._from == user_from
-                        FILTER kbEdge.type == "USER"
-                        FILTER kbEdge.role IN @kb_permissions
-                        LET kb = DOCUMENT(kbEdge._to)
-                        FILTER kb != null AND kb.orgId == org_id
+                    FOR access IN filteredKbAccess
+                        LET kb = access.kb_doc
                         // Get records that belong directly to the KB
                         FOR belongsEdge IN @@belongs_to
                             FILTER belongsEdge._to == kb._id
@@ -1235,7 +1292,7 @@ class BaseArangoService:
                             {record_filter}
                             RETURN {{
                                 record: record,
-                                permission: {{ role: kbEdge.role, type: kbEdge.type }},
+                                permission: {{ role: access.role, type: access.access_type == "team" ? "TEAM" : "USER" }},
                                 kb_id: kb._key,
                                 kb_name: kb.groupName
                             }}
@@ -1298,7 +1355,7 @@ class BaseArangoService:
                         FILTER belongsEdge.entityType == "ORGANIZATION"
                         FOR record, permEdge IN 1..1 ANY org._id @@permission
                             FILTER permEdge.type == "ORG"
-                            {permission_filter}
+                            {perm_edge_filter}
                             FILTER record != null
                             FILTER record.recordType != @drive_record_type
                             FILTER record.isDeleted != true
@@ -1366,7 +1423,7 @@ class BaseArangoService:
                             // Third hop: recordgroup -> record
                             FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
                                 // Assuming the edge from recordgroup to record should also be filtered
-                                {permission_filter}
+                                {record_group_edge_filter}
 
                                 FILTER record != null
                                 FILTER record.recordType != @drive_record_type
@@ -1403,7 +1460,7 @@ class BaseArangoService:
 
                     // Hop 4: child record_group -> record
                     FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id @@inherit_permissions
-                        {permission_filter}
+                        {child_rg_edge_filter}
 
                         FILTER record != null
                         FILTER record.recordType != @drive_record_type
@@ -1562,14 +1619,70 @@ class BaseArangoService:
             LET user_from = @user_from
             LET org_id = @org_id
 
+            // Direct user permissions to KBs
+            LET directKbAccess = (
+                FOR kbEdge IN @@permission
+                    FILTER kbEdge._from == user_from
+                    FILTER kbEdge.type == "USER"
+                    FILTER STARTS_WITH(kbEdge._to, "recordGroups/")
+                    LET kb = DOCUMENT(kbEdge._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb,
+                        role: kbEdge.role
+                    }}
+            )
+
+            // Team-based access to KBs
+            LET teamKbAccess = (
+                FOR teamKbPerm IN @@permission
+                    FILTER teamKbPerm.type == "TEAM"
+                    FILTER STARTS_WITH(teamKbPerm._to, "recordGroups/")
+                    LET kb = DOCUMENT(teamKbPerm._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    LET team_id = SPLIT(teamKbPerm._from, '/')[1]
+
+                    LET user_team_role = FIRST(
+                        FOR userTeamPerm IN @@permission
+                            FILTER userTeamPerm._from == user_from
+                            FILTER userTeamPerm._to == CONCAT('teams/', team_id)
+                            FILTER userTeamPerm.type == "USER"
+                            RETURN userTeamPerm.role
+                    )
+
+                    FILTER user_team_role != null
+
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb,
+                        role: user_team_role
+                    }}
+            )
+
+            // Combine and filter by role
+            LET allKbAccess = UNION(
+                (FOR access IN directKbAccess RETURN access),
+                (FOR teamAccess IN teamKbAccess
+                    LET hasDirect = LENGTH(
+                        FOR direct IN directKbAccess
+                            FILTER direct.kb_id == teamAccess.kb_id
+                            RETURN 1
+                    ) > 0
+                    FILTER NOT hasDirect
+                    RETURN teamAccess)
+            )
+
+            LET filteredKbAccess = (
+                FOR access IN allKbAccess
+                    FILTER access.role IN @kb_permissions
+                    RETURN access
+            )
+
             LET kbCount = {
                 f'''LENGTH(
-                    FOR kbEdge IN @@permission
-                        FILTER kbEdge._from == user_from
-                        FILTER kbEdge.type == "USER"
-                        FILTER kbEdge.role IN @kb_permissions
-                        LET kb = DOCUMENT(kbEdge._to)
-                        FILTER kb != null AND kb.orgId == org_id
+                    FOR access IN filteredKbAccess
+                        LET kb = access.kb_doc
                         FOR belongsEdge IN @@belongs_to
                             FILTER belongsEdge._to == kb._id
                             LET record = DOCUMENT(belongsEdge._from)
@@ -1630,7 +1743,7 @@ class BaseArangoService:
                         FILTER belongsEdge.entityType == "ORGANIZATION"
                         FOR record, permEdge IN 1..1 ANY org._id @@permission
                             FILTER permEdge.type == "ORG"
-                            {permission_filter}
+                            {perm_edge_filter}
                             FILTER record != null
                             FILTER record.recordType != @drive_record_type
                             FILTER record.isDeleted != true
@@ -1685,7 +1798,7 @@ class BaseArangoService:
 
                             // Third hop: recordgroup -> record
                             FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
-                                {permission_filter}
+                                {record_group_edge_filter}
 
                                 FILTER record != null
                                 FILTER record.recordType != @drive_record_type
@@ -1716,7 +1829,7 @@ class BaseArangoService:
 
                     // Hop 4: child record_group -> record
                     FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id @@inherit_permissions
-                        {permission_filter}
+                        {child_rg_edge_filter}
 
                         FILTER record != null
                         FILTER record.recordType != @drive_record_type
@@ -1958,7 +2071,7 @@ class BaseArangoService:
                     FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id @@inherit_permissions
 
                     FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id @@inherit_permissions
-                        {permission_filter}
+                        {child_rg_edge_filter}
 
                         FILTER record != null
                         FILTER record.recordType != @drive_record_type
@@ -2072,7 +2185,7 @@ class BaseArangoService:
             if indexing_status:
                 filter_bind_vars["indexing_status"] = indexing_status
             if permissions:
-                filter_bind_vars["permission"] = permissions
+                filter_bind_vars["role_filter"] = permissions
             if date_from:
                 filter_bind_vars["date_from"] = date_from
             if date_to:
@@ -13252,11 +13365,27 @@ class BaseArangoService:
             if has_local:
                 self.logger.info("🔍 Getting all KB records")
                 query += f"""
-                LET kbRecords = (
+                // Direct user-KB permissions
+                LET directKbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
                     FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )
+
+                // Team-based KB permissions: User -> Team -> KB -> Records
+                LET teamKbRecords = (
+                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("teams", team)
+                        FILTER userTeamEdge.type == "USER"
+                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER teamKbEdge.type == "TEAM"
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
                 """
                 unions.append("kbRecords")
                 if non_local_apps:
@@ -13277,12 +13406,29 @@ class BaseArangoService:
                 if kb_ids:
                     self.logger.info(f"🔍 Applying KB filtering for specific KBs: {kb_ids}")
                     query += f"""
-                    LET kbRecords = (
+                    // Direct user-KB permissions with filter
+                    LET directKbRecords = (
                         FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER kb._key IN @kb_ids
+                            FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                            FILTER kb._key IN @kb_ids
                         FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                         RETURN DISTINCT records
                     )
+
+                    // Team-based KB permissions with filter: User -> Team -> KB -> Records
+                    LET teamKbRecords = (
+                        FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                            FILTER IS_SAME_COLLECTION("teams", team)
+                            FILTER userTeamEdge.type == "USER"
+                        FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                            FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                            FILTER teamKbEdge.type == "TEAM"
+                            FILTER kb._key IN @kb_ids
+                        FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                        RETURN DISTINCT records
+                    )
+
+                    LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
                     """
                     unions.append("kbRecords")
                 if non_local_apps:
@@ -13299,11 +13445,27 @@ class BaseArangoService:
             else:
                 self.logger.info("🔍 Getting all accessible records")
                 query += f"""
-                LET kbRecords = (
+                // Direct user-KB permissions
+                LET directKbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
                     FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )
+
+                // Team-based KB permissions: User -> Team -> KB -> Records
+                LET teamKbRecords = (
+                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("teams", team)
+                        FILTER userTeamEdge.type == "USER"
+                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER teamKbEdge.type == "TEAM"
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
 
                 LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, kbRecords, anyoneRecords)
                 """
@@ -13323,11 +13485,27 @@ class BaseArangoService:
             else:
                 self.logger.info("🔍 Fallback logic to all accessible records")
                 query += f"""
-                LET kbRecords = (
+                // Direct user-KB permissions
+                LET directKbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
                     FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )
+
+                // Team-based KB permissions: User -> Team -> KB -> Records
+                LET teamKbRecords = (
+                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("teams", team)
+                        FILTER userTeamEdge.type == "USER"
+                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER teamKbEdge.type == "TEAM"
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
                 LET allAccessibleRecords = UNION_DISTINCT(directAndGroupRecords, kbRecords, anyoneRecords)
                 """
 
