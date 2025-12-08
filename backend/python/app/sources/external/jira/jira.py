@@ -16975,16 +16975,19 @@ class JiraDataSource:
 
     async def get_all_users(
         self,
+        query: Optional[str] = None,
         startAt: Optional[int] = None,
         maxResults: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get all users\n\nHTTP GET /rest/api/3/users/search\nQuery params:\n  - startAt (int, optional)\n  - maxResults (int, optional)"""
+        """Auto-generated from OpenAPI: Get all users\n\nHTTP GET /rest/api/3/users/search\nQuery params:\n  - query (str, optional)\n  - startAt (int, optional)\n  - maxResults (int, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
+        if query is not None:
+            _query['query'] = query
         if startAt is not None:
             _query['startAt'] = startAt
         if maxResults is not None:
@@ -16996,8 +16999,8 @@ class JiraDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
         resp = await self._client.execute(req)
