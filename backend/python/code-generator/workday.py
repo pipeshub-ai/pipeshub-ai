@@ -9,7 +9,6 @@ Generates comprehensive Workday DataSource covering 800+ endpoints.
 Pattern inspired by Microsoft Graph generators.
 """
 
-import argparse
 import json
 import re
 import sys
@@ -516,7 +515,9 @@ class WorkdayCodeGenerator:
         full_content = "\n".join(header) + "\n" + "\n".join(methods)
         
         import os
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        output_dir = os.path.dirname(output_path)
+        if output_dir:  # Only create directory if path contains a directory
+            os.makedirs(output_dir, exist_ok=True)
         with open(output_path, 'w') as f:
             f.write(full_content)
         
@@ -539,15 +540,13 @@ def generate_workday_client(output_path: str):
 
 def main() -> int:
     """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description='Generate COMPLETE Workday DataSource (Dynamic Fetch)'
-    )
-    parser.add_argument('--out', type=str, help='Output filename', required=True)
+    import os
     
-    args = parser.parse_args()
+    # Output to workday folder in current directory
+    output_path = os.path.join('workday', 'workday.py')
     
     try:
-        generate_workday_client(args.out)
+        generate_workday_client(output_path)
         return 0
     except Exception as e:
         print(f'❌ Error: {e}')
