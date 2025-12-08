@@ -128,7 +128,7 @@ class FolderResponse(BaseModel):
 
 class PermissionContents(BaseModel):
     """Response model for permission information"""
-    role: PermissionRole = Field(..., description="Permission role")
+    role: Optional[PermissionRole] = Field(None, description="Permission role (None for team permissions)")
     type: str = Field(..., description="Permission type")
 
 
@@ -195,7 +195,7 @@ class PermissionResponse(BaseModel):
     userId: Optional[str] = Field(None, description="User ID")
     email: Optional[str] = Field(None, description="User email")
     name: Optional[str] = Field(None, description="User name")
-    role: PermissionRole = Field(..., description="Permission role")
+    role: Optional[PermissionRole] = Field(None, description="Permission role (None for team permissions)")
     type: str = Field(..., description="Permission type")
     createdAtTimestamp: int = Field(..., description="Creation timestamp")
     updatedAtTimestamp: int = Field(..., description="Update timestamp")
