@@ -50,11 +50,14 @@ class WorkdayRESTClient(HTTPClient):
 
 
 @dataclass
-class WorkdayTokenConfig:
-    """Configuration for Workday REST client via Token
+class WorkdayConfig:
+    """Configuration for Workday REST client.
+
+    Supports both API tokens and OAuth access tokens.
+
     Args:
         base_url: The base URL of the Workday instance
-        token: The access token
+        token: The access token (API token or OAuth access token)
     """
     base_url: str
     token: str
@@ -65,22 +68,6 @@ class WorkdayTokenConfig:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-
-@dataclass
-class WorkdayOAuthConfig:
-    """Configuration for Workday REST client via OAuth
-    Args:
-        base_url: The base URL of the Workday instance
-        access_token: The OAuth access token
-    """
-    base_url: str
-    access_token: str
-
-    def create_client(self) -> WorkdayRESTClient:
-        return WorkdayRESTClient(self.base_url, self.access_token)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
 
 
 
@@ -102,7 +89,7 @@ class WorkdayClient(IClient):
     @classmethod
     def build_with_config(
         cls,
-        config: WorkdayTokenConfig | WorkdayOAuthConfig,
+        config: WorkdayConfig,
     ) -> "WorkdayClient":
         return cls(config.create_client())
 
@@ -129,20 +116,13 @@ class WorkdayClient(IClient):
 
             auth_type = auth_config.get("authType", "TOKEN")
 
-            if auth_type == "TOKEN" or auth_type == "API_TOKEN":
-                token = auth_config.get("token", "")
-                if not token:
-                    raise ValueError("Token required for token auth type")
-                client = WorkdayRESTClient(base_url, token)
+            # Extract token - support both 'token' and 'accessToken' field names
+            token = auth_config.get("token") or auth_config.get("accessToken") or auth_config.get("access_token")
 
-            elif auth_type == "OAUTH" or auth_type == "OAUTH2":
-                access_token = auth_config.get("accessToken") or auth_config.get("access_token", "")
-                if not access_token:
-                    raise ValueError("Access token required for OAuth auth type")
-                client = WorkdayRESTClient(base_url, access_token)
+            if not token:
+                raise ValueError(f"Token/access token required for {auth_type} auth type")
 
-            else:
-                raise ValueError(f"Invalid auth type: {auth_type}")
+            client = WorkdayRESTClient(base_url, token)
 
             logger.info(f"Successfully created Workday client with {auth_type} authentication")
             return cls(client)
