@@ -1,7 +1,7 @@
 import logging
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 try:
     from trello import TrelloClient as PyTrelloClient
@@ -61,33 +61,17 @@ class TrelloRESTClient:
         api_key: str,
         api_token: str,
     ) -> None:
-        self.api_key = api_key
-        self.api_token = api_token
-        self._client: Optional[PyTrelloClient] = None
-
-    def create_client(self) -> PyTrelloClient:
-        """Create and configure the Trello client
-
-        Returns:
-            Configured PyTrelloClient instance
-        """
-        self._client = PyTrelloClient(
-            api_key=self.api_key,
-            token=self.api_token,
+        self._client: PyTrelloClient = PyTrelloClient(
+            api_key=api_key,
+            token=api_token,
         )
-        return self._client
 
     def get_trello_client(self) -> PyTrelloClient:
         """Get the Trello client
 
         Returns:
             PyTrelloClient instance
-
-        Raises:
-            RuntimeError: If client not initialized
         """
-        if self._client is None:
-            raise RuntimeError("Client not initialized. Call create_client() first.")
         return self._client
 
 
@@ -99,18 +83,18 @@ class TrelloApiKeyConfig(BaseModel):
         api_token: Token generated via Trello authorization flow
     """
 
-    api_key: str = Field(..., description="API key from Trello Power-Ups admin")
-    api_token: str = Field(..., description="Token from Trello authorization")
+    api_key: SecretStr = Field(..., description="API key from Trello Power-Ups admin")
+    api_token: SecretStr = Field(..., description="Token from Trello authorization")
 
-    def create_client(self) -> TrelloRESTClient:
+    def create_client(self) -> "TrelloRESTClient":
         """Create a Trello client with API key and token authentication
 
         Returns:
             TrelloRESTClient instance
         """
         return TrelloRESTClient(
-            api_key=self.api_key,
-            api_token=self.api_token,
+            api_key=self.api_key.get_secret_value(),
+            api_token=self.api_token.get_secret_value(),
         )
 
     def to_dict(self) -> Dict[str, object]:
@@ -166,7 +150,6 @@ class TrelloClient(IClient):
             TrelloClient instance
         """
         client = config.create_client()
-        client.create_client()  # Initialize the SDK client
         return cls(client)
 
     @classmethod

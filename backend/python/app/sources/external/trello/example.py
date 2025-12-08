@@ -54,9 +54,9 @@ async def example_with_api_key() -> None:
     api_token = os.getenv("TRELLO_API_TOKEN")
 
     if not api_key:
-        raise Exception("TRELLO_API_KEY is not set")
+        raise ValueError("TRELLO_API_KEY is not set")
     if not api_token:
-        raise Exception("TRELLO_API_TOKEN is not set")
+        raise ValueError("TRELLO_API_TOKEN is not set")
 
     # Create Trello client with API key config
     trello_client = TrelloClient.build_with_config(

@@ -98,22 +98,20 @@ class TrelloDataSource:
         """
         try:
             loop = asyncio.get_running_loop()
+
+            def _serialize(data):
+                """Recursively serialize py-trello objects to dictionaries."""
+                if isinstance(data, list):
+                    return [_serialize(item) for item in data]
+                if hasattr(data, "__dict__"):
+                    return {k: v for k, v in data.__dict__.items() if not k.startswith("_")}
+                return data
+
             result = await loop.run_in_executor(
                 None,
                 lambda: func(*args, **kwargs)
             )
-            # Convert result to dict if it has a __dict__ attribute
-            if hasattr(result, '__dict__'):
-                data = {k: v for k, v in result.__dict__.items() if not k.startswith('_')}
-            elif isinstance(result, list):
-                data = [
-                    {k: v for k, v in item.__dict__.items() if not k.startswith('_')}
-                    if hasattr(item, '__dict__') else item
-                    for item in result
-                ]
-            else:
-                data = result
-            return TrelloResponse(success=True, data=data)
+            return TrelloResponse(success=True, data=_serialize(result))
         except Exception as e:
             return TrelloResponse(success=False, error=str(e))
 
@@ -163,14 +161,13 @@ class TrelloDataSource:
 
         def get_boards():
             member = client.get_member(member_id)
-            if board_filter == 'all':
-                return member.all_boards()
-            elif board_filter == 'open':
-                return member.open_boards()
-            elif board_filter == 'closed':
-                return member.closed_boards()
-            else:
-                return member.all_boards()
+            board_methods = {
+                "all": member.all_boards,
+                "open": member.open_boards,
+                "closed": member.closed_boards,
+            }
+            method = board_methods.get(board_filter, member.all_boards)
+            return method()
 
         return await self._execute(get_boards)
 
@@ -225,18 +222,7 @@ class TrelloDataSource:
             TrelloResponse: Standardized response with list of boards
         """
         client = self._get_trello_client()
-
-        def get_boards():
-            if board_filter == 'all':
-                return client.list_boards(board_filter='all')
-            elif board_filter == 'open':
-                return client.list_boards(board_filter='open')
-            elif board_filter == 'closed':
-                return client.list_boards(board_filter='closed')
-            else:
-                return client.list_boards()
-
-        return await self._execute(get_boards)
+        return await self._execute(client.list_boards, board_filter=board_filter)
 
     async def get_board(self, board_id: str) -> TrelloResponse:
         """
@@ -266,14 +252,14 @@ class TrelloDataSource:
 
         def get_lists():
             board = client.get_board(board_id)
-            if list_filter == 'all':
-                return board.all_lists()
-            elif list_filter == 'open':
-                return board.open_lists()
-            elif list_filter == 'closed':
-                return board.closed_lists()
-            else:
-                return board.list_lists()
+            list_methods = {
+                "all": board.all_lists,
+                "open": board.open_lists,
+                "closed": board.closed_lists,
+            }
+            # Defaults to open lists if filter is not recognized
+            method = list_methods.get(list_filter, board.open_lists)
+            return method()
 
         return await self._execute(get_lists)
 
