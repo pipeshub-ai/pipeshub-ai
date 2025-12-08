@@ -207,6 +207,7 @@ class IndexingFilterKey(str, Enum):
     BLOGPOST_COMMENTS = "blogpost_comments"
     BLOGPOST_ATTACHMENTS = "blogpost_attachments"
     ISSUE_COMMENTS = "issue_comments"
+    ISSUE_ATTACHMENTS = "issue_attachments"
 
 
 # Type to operators mapping (for validation and UI)

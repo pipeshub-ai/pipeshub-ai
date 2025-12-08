@@ -38,6 +38,7 @@ from app.connectors.sources.atlassian.core.oauth import (
 from app.models.entities import (
     AppUser,
     CommentRecord,
+    FileRecord,
     IndexingStatus,
     Record,
     RecordGroup,
@@ -67,7 +68,7 @@ JQL_TIME_BUFFER_MINUTES: int = 5  # Buffer time for incremental sync to catch ed
 ISSUE_SEARCH_FIELDS: List[str] = [
     "summary", "description", "status", "priority",
     "creator", "assignee", "created", "updated",
-    "issuetype", "project"
+    "issuetype", "project", "parent", "attachment"
 ]
 
 # HTTP status codes
@@ -275,6 +276,14 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
             description="Enable indexing of issue comments",
             default_value=True
         ))
+        .add_filter_field(FilterField(
+            name="issue_attachments",
+            display_name="Index Issue Attachments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of issue attachments",
+            default_value=True
+        ))
     )\
     .build_decorator()
 class JiraConnector(BaseConnector):
@@ -416,18 +425,7 @@ class JiraConnector(BaseConnector):
                 self.logger.info("No users found")
                 return
 
-            # Get last sync time
-            try:
-                last_sync_data = await self.issues_sync_point.read_sync_point("issues")
-                last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
-            except Exception:
-                last_sync_time = None
-
-            if last_sync_time:
-                self.logger.info(f"Starting incremental Jira sync for org: {org_id} from timestamp: {last_sync_time}")
-                
-            else:
-                self.logger.info(f"Starting full Jira sync for org: {org_id} (first sync)")
+            self.logger.info(f"Starting Jira sync for org: {org_id}")
 
             # Fetch and sync users
             self.logger.info("Fetching Jira users...")
@@ -458,7 +456,26 @@ class JiraConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(projects)
             self.logger.info("Synced projects as RecordGroups")
 
-            # Fetch and sync issues for each project (only new/updated)
+            # Get global sync checkpoint and check for filter changes
+            global_sync_key = "issues_global"
+            global_last_sync_time = None
+            
+            try:
+                sync_point_data = await self.issues_sync_point.read_sync_point(global_sync_key)
+                global_last_sync_time = sync_point_data.get("last_sync_time") if sync_point_data else None
+                
+                filters_changed = self._have_filters_changed(sync_point_data)
+                if filters_changed:
+                    self.logger.info("Filters changed - triggering full resync")
+                    global_last_sync_time = None
+            except Exception:
+                global_last_sync_time = None
+            
+            if global_last_sync_time:
+                self.logger.info(f"Incremental sync: using global checkpoint from {global_last_sync_time}")
+            else:
+                self.logger.info("Full sync: first time or filters changed - all projects will sync with current filter range")
+
             total_issues_synced = 0
             total_issues_fetched = 0
             total_new_issues = 0
@@ -467,13 +484,13 @@ class JiraConnector(BaseConnector):
 
             for project, project_permissions in projects:
                 try:
-                    self.logger.info(f"Fetching issues for project: {project.name} ({project.short_name})")
+                    self.logger.info(f"Syncing project {project.short_name} with global checkpoint: {global_last_sync_time}")
 
                     issues_with_permissions = await self._fetch_issues(
                         project.short_name,
                         project.external_group_id,
                         jira_users,
-                        last_sync_time,
+                        global_last_sync_time,
                         org_id
                     )
                     total_issues_fetched += len(issues_with_permissions)
@@ -529,25 +546,36 @@ class JiraConnector(BaseConnector):
                     self.logger.info(f"Completed syncing {len(issues_with_permissions)} issues for project {project.short_name} "
                                    f"(New: {len(new_records_with_permissions)}, Updated: {len(updated_records)})")
 
+                    total_issues_synced += len(issues_with_permissions)
+                    total_new_issues += len(new_records_with_permissions)
+                    total_updated_issues += len(updated_records)
+
                 except Exception as e:
                     self.logger.error(f"Error processing issues for project {project.short_name}: {e}")
                     continue
 
-            # Update sync point only if we fetched issues
-            if total_issues_fetched > 0:
+            # Update global sync checkpoint with current filter values
+            if total_issues_synced > 0 or len(projects) > 0:
                 current_time = get_epoch_timestamp_in_ms()
-                await self.issues_sync_point.update_sync_point("issues", {"last_sync_time": current_time})
-                self.logger.info(f"Jira sync completed. Total: {total_issues_synced} issues "
-                               f"(New: {total_new_issues}, Updated: {total_updated_issues})")
-            else:
-                self.logger.info("Jira sync completed - no new/updated issues found")
+                global_sync_key = "issues_global"
+                
+                sync_point_data = {
+                    "last_sync_time": current_time,
+                    "filters": self._get_current_filter_values()
+                }
+                
+                await self.issues_sync_point.update_sync_point(global_sync_key, sync_point_data)
+                self.logger.info(f"Updated global sync checkpoint to {current_time} with current filter values")
+
+            # Summary
+            self.logger.info(f"Jira sync completed. Total: {total_issues_synced} issues "
+                           f"(New: {total_new_issues}, Updated: {total_updated_issues})")
 
         except Exception as e:
             self.logger.error(f"Error during Jira sync: {e}", exc_info=True)
             raise
         finally:
             self._sync_in_progress = False
-            # Session cleanup now handled by Client layer
 
 
     async def _fetch_users(self, org_id: str) -> List[AppUser]:
@@ -557,12 +585,13 @@ class JiraConnector(BaseConnector):
 
         users: List[Dict[str, Any]] = []
         start_at = 0
+        max_results_per_request = 50
 
         while True:
-            # Use get_all_users which doesn't require query parameter
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_all_users(
-                maxResults=DEFAULT_MAX_RESULTS,
+                query='',
+                maxResults=max_results_per_request,
                 startAt=start_at
             )
 
@@ -570,7 +599,7 @@ class JiraConnector(BaseConnector):
                 raise Exception(f"Failed to fetch users: {response.text()}")
 
             users_batch = response.json()
-
+            
             if isinstance(users_batch, list):
                 batch_users = users_batch
             else:
@@ -580,11 +609,11 @@ class JiraConnector(BaseConnector):
                 break
 
             users.extend(batch_users)
-
-            if len(batch_users) < DEFAULT_MAX_RESULTS:
+            
+            if len(batch_users) < max_results_per_request:
                 break
 
-            start_at += len(batch_users)
+            start_at += max_results_per_request
 
         app_users: List[AppUser] = []
         users_without_email = 0
@@ -602,9 +631,6 @@ class JiraConnector(BaseConnector):
             email = user.get("emailAddress")
             if not email:
                 users_without_email += 1
-                self.logger.debug(
-                    f"Skipping user {account_id} ({user.get('displayName')}) - no email address"
-                )
                 continue
 
             app_user = AppUser(
@@ -617,13 +643,8 @@ class JiraConnector(BaseConnector):
             )
             app_users.append(app_user)
 
-        self.logger.info(
-            f"Fetched {len(app_users)} users total, "
-            f"skipped {users_without_email} users without email, "
-            f"skipped {inactive_users} inactive users"
-        )
+        self.logger.info(f"Fetched {len(app_users)} active users with emails")
         return app_users
-
 
     async def _fetch_projects(self) -> List[Tuple[RecordGroup, List[Permission]]]:
         """Fetch all projects with pagination using DataSource"""
@@ -647,12 +668,20 @@ class JiraConnector(BaseConnector):
 
             projects_batch = response.json()
             batch_projects = projects_batch.get("values", [])
+            
+            if not batch_projects:
+                break
+            
             projects.extend(batch_projects)
 
-            start_at = projects_batch.get("startAt", 0) + len(batch_projects)
+            # Move to next page
+            start_at += len(batch_projects)
+            
+            # Check if we've reached the end
             total = projects_batch.get("total", 0)
-
-            if start_at >= total or len(batch_projects) == 0:
+            is_last = projects_batch.get("isLast", False)
+            
+            if is_last or (total > 0 and start_at >= total):
                 break
 
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
@@ -682,7 +711,6 @@ class JiraConnector(BaseConnector):
 
         return record_groups
 
-
     async def _fetch_issues(
         self,
         project_key: str,
@@ -701,10 +729,8 @@ class JiraConnector(BaseConnector):
 
         issues: List[Dict[str, Any]] = []
 
-        # Build JQL query starting with project filter
         jql_conditions = [f'project = "{project_key}"']
 
-        # Build date filter parameters from sync filters (matching Confluence pattern)
         # Get modified filter
         modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
         modified_after = None
@@ -721,21 +747,20 @@ class JiraConnector(BaseConnector):
         if created_filter:
             created_after, created_before = created_filter.get_value(default=(None, None))
 
-        # Merge modified_after with last_sync_time (use the latest to avoid re-syncing old data)
-        if modified_after and last_sync_time:
-            modified_after = max(modified_after, last_sync_time)
-            self.logger.info(f"Using latest modified_after: {modified_after} (filter + checkpoint merged)")
-        elif modified_after:
-            self.logger.info(f"Using filter: fetching issues modified after {modified_after}")
+        # Determine modified_after from filter and/or checkpoint
+        if modified_after:
+            if last_sync_time:
+                modified_after = max(modified_after, last_sync_time)
+                self.logger.info(f"Incremental sync with filter: using {modified_after} (max of filter and checkpoint)")
+            else:
+                self.logger.info(f"Full sync with filter: fetching issues modified after {modified_after}")
         elif last_sync_time:
-            # Apply time buffer for incremental sync to catch updates that might have been missed
             buffer_minutes = JQL_TIME_BUFFER_MINUTES
             modified_after = last_sync_time - (buffer_minutes * 60 * 1000)
             self.logger.info(f"Incremental sync: fetching issues modified after checkpoint with {buffer_minutes}min buffer")
         else:
-            self.logger.info("Full sync: fetching all issues (first time)")
+            self.logger.info("Full sync: fetching all issues (no filter, first time)")
 
-        # Build JQL conditions from date filters
         if modified_after:
             modified_dt = datetime.fromtimestamp(modified_after / 1000, tz=timezone.utc)
             jql_conditions.append(f'updated >= "{modified_dt.strftime("%Y-%m-%d %H:%M")}"')
@@ -752,14 +777,14 @@ class JiraConnector(BaseConnector):
             created_dt = datetime.fromtimestamp(created_before / 1000, tz=timezone.utc)
             jql_conditions.append(f'created <= "{created_dt.strftime("%Y-%m-%d %H:%M")}"')
 
-        # Build final JQL with ORDER BY clause (required to avoid unbounded query error)
+        # Build final JQL (ORDER BY required for pagination)
         jql = " AND ".join(jql_conditions) + " ORDER BY updated ASC"
         self.logger.info(f"JQL Query: {jql}")
 
         next_page_token: Optional[str] = None
         page_count = 0
 
-        while page_count < MAX_PAGES_PER_PROJECT:
+        while True:
             page_count += 1
 
             try:
@@ -807,6 +832,10 @@ class JiraConnector(BaseConnector):
                 break
 
             issues.extend(batch_issues)
+            
+            # Log progress for large projects (every 10 pages)
+            if page_count % 10 == 0:
+                self.logger.info(f"Fetched {len(issues)} issues so far for project {project_key} (page {page_count})")
 
             # Get next page token from enhanced search API
             new_token = issues_batch.get("nextPageToken")
@@ -816,9 +845,6 @@ class JiraConnector(BaseConnector):
                 break
 
             next_page_token = new_token
-
-        if page_count >= MAX_PAGES_PER_PROJECT:
-            self.logger.warning(f"Reached max page limit ({MAX_PAGES_PER_PROJECT}) for project {project_key}")
 
         # Use transaction for efficient database lookups
         async with self.data_store_provider.transaction() as tx_store:
@@ -832,8 +858,10 @@ class JiraConnector(BaseConnector):
         tx_store,
         org_id: str
     ) -> List[Tuple[Record, List[Permission]]]:
-        """Build issue records with permissions from raw issue data"""
+        """Build issue records with permissions from raw issue data, respecting Jira hierarchy"""
         all_records: List[Tuple[Record, List[Permission]]] = []
+        epic_groups: List[Tuple[RecordGroup, List[Permission]]] = []
+        
         # Use the user-facing site URL for weburl construction
         atlassian_domain = self.site_url if self.site_url else ""
 
@@ -850,9 +878,19 @@ class JiraConnector(BaseConnector):
             description_adf = fields.get("description")
             description_text = adf_to_text(description_adf) if description_adf else None
 
-            # Extract issue type
+            # Extract issue type and hierarchy information
             issue_type_obj = fields.get("issuetype", {})
             issue_type = issue_type_obj.get("name") if issue_type_obj else None
+            hierarchy_level = issue_type_obj.get("hierarchyLevel") if issue_type_obj else None
+            
+            # Extract parent issue information
+            parent_obj = fields.get("parent")
+            parent_external_id = parent_obj.get("id") if parent_obj else None
+            parent_key = parent_obj.get("key") if parent_obj else None
+            
+            # Categorize issue type based on hierarchy level
+            is_epic = hierarchy_level == 1
+            is_subtask = hierarchy_level == -1
 
             # Build record name with issue type for better searchability
             # Format: "[Bug] Issue summary" or "[Story] Issue summary"
@@ -896,7 +934,34 @@ class JiraConnector(BaseConnector):
             created_at = self._parse_jira_timestamp(fields.get("created"))
             updated_at = self._parse_jira_timestamp(fields.get("updated"))
 
-            # Check for existing record to handle updates properly
+            # EPIC HANDLING: Create as RecordGroup instead of TicketRecord
+            if is_epic:
+                # Check for existing epic record group
+                existing_epic = await tx_store.get_record_group_by_external_id(
+                    connector_name=Connectors.JIRA,
+                    external_id=issue_id
+                )
+                
+                epic_id = existing_epic.id if existing_epic else str(uuid4())
+                
+                epic_record_group = RecordGroup(
+                    id=epic_id,
+                    org_id=org_id,
+                    name=issue_name,
+                    group_type=RecordGroupType.JIRA_EPIC,
+                    external_group_id=issue_id,
+                    connector_name=Connectors.JIRA,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    parent_external_group_id=project_id,
+                    inherit_permissions=True
+                )
+                
+                epic_groups.append((epic_record_group, permissions))
+                
+                continue  # Don't create TicketRecord for epics
+
+            # REGULAR ISSUE HANDLING: Story, Task, Bug, Sub-task
             existing_record = await tx_store.get_record_by_external_id(
                 connector_name=Connectors.JIRA,
                 external_id=issue_id
@@ -906,13 +971,30 @@ class JiraConnector(BaseConnector):
             is_new = existing_record is None
 
             # Only increment version if issue content actually changed
-            # Check if source_updated_at (issue's updated timestamp) has changed
             if is_new:
                 version = 0
             elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
                 version = existing_record.version + 1  # Issue content changed
             else:
                 version = existing_record.version if existing_record else 0  # Issue unchanged
+            
+            external_record_group_id = project_id  # Default: belong to Project
+            record_group_type = RecordGroupType.JIRA_PROJECT
+            parent_record_id = None
+            parent_record_type = None
+            
+            if parent_external_id and not is_subtask:
+                # Story/Task with Epic parent → belongs to Epic RecordGroup
+                external_record_group_id = parent_external_id
+                record_group_type = RecordGroupType.JIRA_EPIC
+            elif is_subtask and parent_external_id:
+                # Sub-task → has parent Record (creates PARENT_CHILD edge in recordRelations)
+                parent_record_id = parent_external_id
+                parent_record_type = RecordType.TICKET
+                # Sub-tasks inherit group membership from their parent
+                # For now, keep them in project level (could be enhanced to find parent's group)
+                external_record_group_id = project_id
+                record_group_type = RecordGroupType.JIRA_PROJECT
 
             issue_record = TicketRecord(
                 id=record_id,
@@ -930,8 +1012,10 @@ class JiraConnector(BaseConnector):
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.JIRA,
-                record_group_type=RecordGroupType.JIRA_PROJECT,
-                external_record_group_id=project_id,
+                record_group_type=record_group_type,
+                external_record_group_id=external_record_group_id,
+                parent_external_record_id=parent_record_id,
+                parent_record_type=parent_record_type,
                 version=version,
                 mime_type=MimeTypes.PLAIN_TEXT.value,
                 weburl=f"{atlassian_domain}/browse/{issue_key}" if atlassian_domain else None,
@@ -942,20 +1026,17 @@ class JiraConnector(BaseConnector):
             )
 
             # Set indexing status based on filter
-            if self.indexing_filters:
-                issues_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
-                if not issues_indexing_enabled:
-                    issue_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            # is_enabled() defaults to True if filter not configured
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
+                issue_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             all_records.append((issue_record, permissions))
-
+            
             # Fetch comments for this issue (always fetch, not just for updated issues)
             # This ensures we capture new comments even when the parent issue hasn't changed
             should_fetch_comments = True
             if self.indexing_filters:
                 should_fetch_comments = self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS)
-            
-            self.logger.debug(f"Should fetch comments for {issue_key}: {should_fetch_comments}")
 
             if should_fetch_comments:
                 try:
@@ -963,7 +1044,8 @@ class JiraConnector(BaseConnector):
                         issue_id,
                         issue_key,
                         permissions,
-                        project_id,
+                        external_record_group_id,  # Pass issue's group (Epic or Project)
+                        record_group_type,  # Pass issue's group type
                         org_id,
                         user_by_account_id,
                         tx_store
@@ -974,6 +1056,33 @@ class JiraConnector(BaseConnector):
                 except Exception as e:
                     self.logger.error(f"Failed to fetch comments for issue {issue_key}: {e}")
 
+            # Fetch attachments for this issue
+            should_fetch_attachments = True
+            if self.indexing_filters:
+                should_fetch_attachments = self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS)
+
+            if should_fetch_attachments:
+                try:
+                    attachment_records = await self._fetch_issue_attachments(
+                        issue_id,
+                        issue_key,
+                        fields,  
+                        permissions,
+                        external_record_group_id,
+                        record_group_type, 
+                        org_id,
+                        tx_store
+                    )
+                    if attachment_records:
+                        all_records.extend(attachment_records)
+                except Exception as e:
+                    self.logger.error(f"Failed to fetch attachments for issue {issue_key}: {e}")
+
+        # Create Epic RecordGroups first (so they exist when stories try to link)
+        if epic_groups:
+            self.logger.info(f"Creating {len(epic_groups)} Epic RecordGroups")
+            await self.data_entities_processor.on_new_record_groups(epic_groups)
+
         return all_records
 
     async def _fetch_issue_comments(
@@ -981,25 +1090,14 @@ class JiraConnector(BaseConnector):
         issue_id: str,
         issue_key: str,
         parent_permissions: List[Permission],
-        project_id: str,
+        parent_record_group_id: str,
+        parent_record_group_type: RecordGroupType,
         org_id: str,
         user_by_account_id: Dict[str, AppUser],
         tx_store
     ) -> List[Tuple[CommentRecord, List[Permission]]]:
         """
         Fetch comments for an issue.
-
-        Args:
-            issue_id: Jira issue ID
-            issue_key: Jira issue key (e.g., PIPBACKEND-123)
-            parent_permissions: Permissions inherited from parent issue
-            project_id: Project ID for the issue
-            org_id: Organization ID
-            user_by_account_id: Lookup dict for matching accountId to AppUser
-            tx_store: Transaction store for checking existing records
-
-        Returns:
-            List of tuples (CommentRecord, permissions)
         """
         comment_records: List[Tuple[CommentRecord, List[Permission]]] = []
 
@@ -1012,7 +1110,8 @@ class JiraConnector(BaseConnector):
             all_comments = []
 
             while True:
-                response = await self.data_source.get_comments(
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_comments(
                     issueIdOrKey=issue_id,
                     maxResults=DEFAULT_MAX_RESULTS,
                     startAt=start_at
@@ -1028,20 +1127,20 @@ class JiraConnector(BaseConnector):
                     break
 
                 all_comments.extend(comments)
-                self.logger.debug(f"Fetched {len(comments)} comments for issue {issue_key}, total so far: {len(all_comments)}")
+
+                # Move to next page
+                start_at += len(comments)
 
                 # Check if there are more comments
                 total = comment_data.get("total", 0)
-                current_start = comment_data.get("startAt", 0)
-                max_results = comment_data.get("maxResults", DEFAULT_MAX_RESULTS)
-
-                if current_start + max_results >= total:
+                if total > 0 and start_at >= total:
+                    break
+                
+                # Also break if we got less than requested (last page)
+                if len(comments) < DEFAULT_MAX_RESULTS:
                     break
 
-                start_at = current_start + max_results
-
             if not all_comments:
-                self.logger.debug(f"No comments found for issue {issue_key}")
                 return []
 
             self.logger.info(f"Processing {len(all_comments)} comments for issue {issue_key}")
@@ -1070,7 +1169,6 @@ class JiraConnector(BaseConnector):
                     version = existing_record.version + 1  # Comment content changed
                 else:
                     version = existing_record.version if existing_record else 0  # Comment unchanged
-                    version = existing_record.version  # Comment unchanged
 
                 # Extract comment content (ADF to text)
                 body_adf = comment.get("body")
@@ -1096,12 +1194,12 @@ class JiraConnector(BaseConnector):
                     external_record_id=f"comment_{comment_id}",
                     parent_external_record_id=issue_id,
                     parent_record_type=RecordType.TICKET,
-                    external_record_group_id=project_id,
+                    external_record_group_id=parent_record_group_id,  # Inherit from parent issue
                     connector_name=Connectors.JIRA,
                     origin=OriginTypes.CONNECTOR,
                     version=version,
                     mime_type=MimeTypes.PLAIN_TEXT.value,
-                    record_group_type=RecordGroupType.JIRA_PROJECT,
+                    record_group_type=parent_record_group_type,  # Inherit from parent issue
                     created_at=created_at,
                     updated_at=updated_at,
                     source_created_at=created_at,
@@ -1110,10 +1208,9 @@ class JiraConnector(BaseConnector):
                 )
 
                 # Set indexing status based on filter
-                if self.indexing_filters:
-                    comments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS)
-                    if not comments_indexing_enabled:
-                        comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                # is_enabled() defaults to True if filter not configured
+                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS):
+                    comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                 # Comments inherit permissions from parent issue
                 comment_permissions = parent_permissions.copy()
@@ -1138,6 +1235,154 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to fetch comments for issue {issue_key}: {e}", exc_info=True)
             return []
+
+    async def _fetch_issue_attachments(
+        self,
+        issue_id: str,
+        issue_key: str,
+        issue_fields: Dict[str, Any],
+        parent_permissions: List[Permission],
+        parent_record_group_id: str,
+        parent_record_group_type: RecordGroupType,
+        org_id: str,
+        tx_store
+    ) -> List[Tuple[FileRecord, List[Permission]]]:
+        """
+        Fetch attachments for an issue from issue fields.
+        """
+        attachment_records: List[Tuple[FileRecord, List[Permission]]] = []
+        
+        try:
+            # Get attachments from issue fields (already fetched in ISSUE_SEARCH_FIELDS)
+            attachments = issue_fields.get("attachment", [])
+            
+            if not attachments:
+                return []
+            
+            self.logger.info(f"Processing {len(attachments)} attachments for issue {issue_key}")
+            
+            # Use the user-facing site URL for weburl construction
+            atlassian_domain = self.site_url if self.site_url else ""
+            
+            for attachment in attachments:
+                attachment_id = attachment.get("id")
+                if not attachment_id:
+                    continue
+                
+                # Check for existing attachment record
+                existing_record = await tx_store.get_record_by_external_id(
+                    connector_name=Connectors.JIRA,
+                    external_id=f"attachment_{attachment_id}"
+                )
+                
+                # Get attachment metadata
+                filename = attachment.get("filename", "unknown")
+                file_size = attachment.get("size", 0)
+                mime_type = attachment.get("mimeType", MimeTypes.UNKNOWN.value)
+                content_url = attachment.get("content")  # Download URL
+                
+                # Parse timestamps
+                created_str = attachment.get("created")
+                created_at = self._parse_jira_timestamp(created_str) if created_str else 0
+                
+                # Extract extension from filename
+                extension = None
+                if '.' in filename:
+                    extension = filename.split('.')[-1].lower()
+                
+                # Determine version (increment if file was updated)
+                record_id = existing_record.id if existing_record else str(uuid4())
+                is_new = existing_record is None
+                
+                if is_new:
+                    version = 0
+                elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != created_at:
+                    version = existing_record.version + 1
+                else:
+                    version = existing_record.version if existing_record else 0
+                
+                # Create FileRecord
+                attachment_record = FileRecord(
+                    id=record_id,
+                    org_id=org_id,
+                    record_name=filename,
+                    record_type=RecordType.FILE,
+                    external_record_id=f"attachment_{attachment_id}",
+                    parent_external_record_id=issue_id,
+                    parent_record_type=RecordType.TICKET,
+                    external_record_group_id=parent_record_group_id,
+                    connector_name=Connectors.JIRA,
+                    origin=OriginTypes.CONNECTOR,
+                    version=version,
+                    mime_type=mime_type,
+                    record_group_type=parent_record_group_type,
+                    created_at=created_at,
+                    updated_at=created_at,
+                    source_created_at=created_at,
+                    source_updated_at=created_at,
+                    is_file=True,
+                    size_in_bytes=file_size,
+                    extension=extension,
+                    weburl=content_url if content_url else None,
+                )
+                
+                # Set indexing status based on filter
+                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
+                    attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                
+                # Attachments inherit permissions from parent issue
+                attachment_permissions = parent_permissions.copy()
+                
+                attachment_records.append((attachment_record, attachment_permissions))
+            
+            self.logger.info(f"Returning {len(attachment_records)} attachment records for issue {issue_key}")
+            return attachment_records
+            
+        except Exception as e:
+            self.logger.error(f"Failed to fetch attachments for issue {issue_key}: {e}", exc_info=True)
+            return []
+
+    def _get_current_filter_values(self) -> Dict[str, Any]:
+        """Get current filter values for storage in sync point"""
+        filter_values = {}
+        
+        if self.sync_filters:
+            # Store modified date filter
+            modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+            if modified_filter:
+                modified_after, modified_before = modified_filter.get_value(default=(None, None))
+                filter_values["modified_after"] = modified_after
+                filter_values["modified_before"] = modified_before
+            
+            # Store created date filter
+            created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+            if created_filter:
+                created_after, created_before = created_filter.get_value(default=(None, None))
+                filter_values["created_after"] = created_after
+                filter_values["created_before"] = created_before
+            
+            # Store project keys filter
+            project_keys_filter = self.sync_filters.get(SyncFilterKey.PROJECT_KEYS)
+            if project_keys_filter:
+                project_keys = project_keys_filter.get_value(default=[])
+                filter_values["project_keys"] = project_keys
+        
+        return filter_values
+    
+    def _have_filters_changed(self, sync_point_data: Optional[Dict[str, Any]]) -> bool:
+        """Check if current filters differ from stored filters in sync point"""
+        if not sync_point_data:
+            return False  # No previous sync point, not a change
+        
+        stored_filters = sync_point_data.get("filters", {})
+        current_filters = self._get_current_filter_values()
+        
+        # Compare filter values
+        if stored_filters != current_filters:
+            self.logger.info(f"Filter change detected: {stored_filters} -> {current_filters}")
+            return True
+        
+        return False
 
     def _build_permissions(
         self,
@@ -1204,6 +1449,46 @@ class JiraConnector(BaseConnector):
 
         return combined_text
 
+    async def _fetch_comment_content(self, comment_id: str, issue_id: str) -> str:
+        """Fetch comment content for streaming using DataSource"""
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+
+        # Use DataSource to get comment details
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.get_comment(
+            issueIdOrKey=issue_id,
+            id=comment_id
+        )
+
+        if response.status != HTTP_STATUS_OK:
+            raise Exception(f"Failed to fetch comment content: {response.text()}")
+
+        comment_details = response.json()
+        
+        # Extract comment body (ADF format)
+        body_adf = comment_details.get("body")
+        comment_text = adf_to_text(body_adf) if body_adf else ""
+        
+        # Extract author info
+        author = comment_details.get("author", {})
+        author_name = author.get("displayName", "Unknown")
+        
+        # Extract timestamps
+        created = comment_details.get("created", "")
+        updated = comment_details.get("updated", "")
+        
+        # Format comment content
+        header = f"Comment by {author_name}"
+        if created:
+            header += f" on {created}"
+        if updated and updated != created:
+            header += f" (updated: {updated})"
+        
+        combined_text = f"# {header}\n\n{comment_text}"
+        
+        return combined_text
+
     async def get_signed_url(self, record: Record) -> str:
         """Create a signed URL for a specific record"""
         return ""
@@ -1241,21 +1526,87 @@ class JiraConnector(BaseConnector):
         pass
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        """Stream issue content"""
+        """
+        Stream record content (issue, comment, or attachment).
+        """
         try:
             if not self.cloud_id:
                 await self.init()
 
-            issue_id = record.external_record_id
-            issue_content = await self._fetch_issue_content(issue_id)
+            if record.record_type == RecordType.TICKET:
+                # Stream issue content
+                issue_id = record.external_record_id
+                content = await self._fetch_issue_content(issue_id)
+                
+                return StreamingResponse(
+                    iter([content.encode('utf-8')]),
+                    media_type=MimeTypes.PLAIN_TEXT.value,
+                    headers={
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.txt"'
+                    }
+                )
+                
+            elif record.record_type == RecordType.COMMENT:
+                # Stream comment content
+                comment_id = record.external_record_id.replace("comment_", "")
+                
+                # Get parent issue ID from parent_external_record_id
+                issue_id = record.parent_external_record_id
+                if not issue_id:
+                    raise ValueError(f"Comment {comment_id} missing parent issue ID")
+                
+                # Fetch comment content using the new method
+                content = await self._fetch_comment_content(comment_id, issue_id)
+                
+                return StreamingResponse(
+                    iter([content.encode('utf-8')]),
+                    media_type=MimeTypes.PLAIN_TEXT.value,
+                    headers={
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.txt"'
+                    }
+                )
+                
+            elif record.record_type == RecordType.FILE:
+                # Stream attachment content
+                attachment_id = record.external_record_id.replace("attachment_", "")
+                
+                # Get attachment content using DataSource
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_attachment_content(
+                    id=attachment_id,
+                    redirect=False 
+                )
+                
+                if response.status != HTTP_STATUS_OK:
+                    raise Exception(f"Failed to fetch attachment content: {response.text()}")
+                
+                # Stream the attachment content
+                async def generate_attachment():
+                    content_bytes = response.bytes()
+                    yield content_bytes
+                
+                # Determine filename from record name
+                filename = record.record_name if hasattr(record, 'record_name') else f"attachment_{attachment_id}"
+                
+                # Safely encode filename for Content-Disposition header
+                # Replace non-ASCII characters to avoid latin-1 encoding errors
+                from urllib.parse import quote
+                safe_filename = filename.encode('ascii', 'ignore').decode('ascii') or f"attachment_{attachment_id}"
+                encoded_filename = quote(filename)
+                
+                return StreamingResponse(
+                    generate_attachment(),
+                    media_type=record.mime_type if hasattr(record, 'mime_type') else MimeTypes.UNKNOWN.value,
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{safe_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+                    }
+                )
+                
+            else:
+                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
 
-            return StreamingResponse(
-                iter([issue_content.encode('utf-8')]),
-                media_type=MimeTypes.PLAIN_TEXT.value,
-                headers={}
-            )
         except Exception as e:
-            self.logger.error(f"Error streaming issue {record.external_record_id}: {e}")
+            self.logger.error(f"Error streaming record {record.external_record_id} ({record.record_type}): {e}")
             raise
 
     @classmethod
