@@ -79,13 +79,17 @@ async def example_with_api_key() -> None:
 
     # Example 2: List all boards
     print("\n--- Listing all boards ---")
-    boards_response = await trello_datasource.list_boards(board_filter='open')
+    boards_response = await trello_datasource.list_boards(board_filter="open")
     _print_response("Boards:", boards_response)
 
     # Get first board ID for further examples
     board_id = None
-    if boards_response.success and boards_response.data and len(boards_response.data) > 0:
-        board_id = boards_response.data[0].get('id')
+    if (
+        boards_response.success
+        and boards_response.data
+        and len(boards_response.data) > 0
+    ):
+        board_id = boards_response.data[0].get("id")
         print(f"\nOK Using board ID for examples: {board_id}")
 
     if board_id:
@@ -101,8 +105,12 @@ async def example_with_api_key() -> None:
 
         # Get first list ID for card examples
         list_id = None
-        if lists_response.success and lists_response.data and len(lists_response.data) > 0:
-            list_id = lists_response.data[0].get('id')
+        if (
+            lists_response.success
+            and lists_response.data
+            and len(lists_response.data) > 0
+        ):
+            list_id = lists_response.data[0].get("id")
             print(f"\nOK Using list ID for examples: {list_id}")
 
         if list_id:
@@ -116,20 +124,20 @@ async def example_with_api_key() -> None:
             create_response = await trello_datasource.create_card(
                 list_id=list_id,
                 name="Test card from API",
-                desc="This card was created via the Trello API using py-trello"
+                desc="This card was created via the Trello API using py-trello",
             )
             _print_response("Created card:", create_response)
 
             # Get the created card ID
             if create_response.success and create_response.data:
-                card_id = create_response.data.get('id')
+                card_id = create_response.data.get("id")
 
                 # Example 7: Update the card
                 print(f"\n--- Updating card {card_id} ---")
                 update_response = await trello_datasource.update_card(
                     card_id=card_id,
                     name="Updated test card",
-                    desc="This card was updated via the API"
+                    desc="This card was updated via the API",
                 )
                 _print_response("Updated card:", update_response)
 
@@ -141,8 +149,7 @@ async def example_with_api_key() -> None:
                 # Example 9: Add a comment to the card
                 print(f"\n--- Adding comment to card {card_id} ---")
                 comment_response = await trello_datasource.add_card_comment(
-                    card_id=card_id,
-                    text="This is a test comment added via the API"
+                    card_id=card_id, text="This is a test comment added via the API"
                 )
                 _print_response("Comment added:", comment_response)
 
@@ -163,12 +170,12 @@ async def example_with_api_key() -> None:
 
     # Example 13: List member boards
     print("\n--- Listing member boards ---")
-    member_boards_response = await trello_datasource.list_member_boards('me', 'open')
+    member_boards_response = await trello_datasource.list_member_boards("me", "open")
     _print_response("Member boards:", member_boards_response)
 
     # Example 14: Get organizations
     print("\n--- Listing member organizations ---")
-    orgs_response = await trello_datasource.list_member_organizations('me')
+    orgs_response = await trello_datasource.list_member_organizations("me")
     _print_response("Member organizations:", orgs_response)
 
 

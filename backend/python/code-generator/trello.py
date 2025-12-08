@@ -6,11 +6,12 @@ Since we use the py-trello SDK, this script currently functions as a verified wr
 for the standardized wrapper class, ensuring consistent structure across the project.
 """
 
-import os
 from pathlib import Path
 
 # Target output file
-OUTPUT_PATH = Path(__file__).parents[1] / "app" / "sources" / "external" / "trello" / "trello.py"
+OUTPUT_PATH = (
+    Path(__file__).parents[1] / "app" / "sources" / "external" / "trello" / "trello.py"
+)
 
 # The source code for the TrelloDataSource wrapper
 TRELLO_SOURCE_CODE = '''"""
@@ -638,17 +639,19 @@ class TrelloDataSource:
         return await self._execute(get_members)
 '''
 
+
 def main() -> None:
     """Generate the Trello client file"""
-    
+
     # Create directory if it doesn't exist
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    
+
     print(f"Writing TrelloDataSource to {OUTPUT_PATH}...")
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         f.write(TRELLO_SOURCE_CODE)
-        
+
     print("Done!")
+
 
 if __name__ == "__main__":
     main()

@@ -18,9 +18,7 @@ class TrelloResponse(BaseModel):
     """Standardized Trello API response wrapper"""
 
     success: bool = Field(..., description="Whether the API call was successful")
-    data: Optional[Any] = Field(
-        None, description="Response data from Trello API"
-    )
+    data: Optional[Any] = Field(None, description="Response data from Trello API")
     error: Optional[str] = Field(None, description="Error message if the call failed")
     message: Optional[str] = Field(None, description="Additional message information")
 
