@@ -57,6 +57,8 @@ async def main():
                 worker_detail = await data_source.get_staffing_v7_workers(ID=worker_id)
                 if worker_detail.success:
                     logger.info(f"  ✓ Retrieved worker details successfully")
+                else:
+                    logger.error(f"  ✗ Failed to fetch worker details: {worker_detail.error}")
     else:
         logger.error(f"  ✗ Failed to fetch workers: {workers_response.error}")
 

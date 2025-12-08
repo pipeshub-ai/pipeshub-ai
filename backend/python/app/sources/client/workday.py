@@ -21,11 +21,12 @@ class WorkdayResponse(BaseModel):
         return self.model_dump()
 
 
-class WorkdayRESTClientViaToken(HTTPClient):
-    """Workday REST client via Token Authentication (Bearer token)
+class WorkdayRESTClient(HTTPClient):
+    """Workday REST client for Token or OAuth Authentication.
+    
     Args:
         base_url: The base URL of the Workday instance
-        token: The access token to use for authentication
+        token: The access token to use for authentication (Bearer token or OAuth token)
     """
     def __init__(self, base_url: str, token: str) -> None:
         if not base_url:
@@ -48,33 +49,6 @@ class WorkdayRESTClientViaToken(HTTPClient):
         return self.base_url
 
 
-class WorkdayRESTClientViaOAuth(HTTPClient):
-    """Workday REST client via OAuth 2.0
-    Args:
-        base_url: The base URL of the Workday instance
-        access_token: The OAuth access token
-    """
-    def __init__(self, base_url: str, access_token: str) -> None:
-        if not base_url:
-            raise ValueError("Workday base_url cannot be empty")
-        if not access_token:
-            raise ValueError("Workday access_token cannot be empty")
-
-        self.base_url = base_url.rstrip('/')
-        self.access_token = access_token
-
-        super().__init__(access_token, "Bearer")
-
-        self.headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-
-    def get_base_url(self) -> str:
-        """Get the base URL"""
-        return self.base_url
-
-
 @dataclass
 class WorkdayTokenConfig:
     """Configuration for Workday REST client via Token
@@ -85,8 +59,8 @@ class WorkdayTokenConfig:
     base_url: str
     token: str
 
-    def create_client(self) -> WorkdayRESTClientViaToken:
-        return WorkdayRESTClientViaToken(self.base_url, self.token)
+    def create_client(self) -> WorkdayRESTClient:
+        return WorkdayRESTClient(self.base_url, self.token)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -102,11 +76,12 @@ class WorkdayOAuthConfig:
     base_url: str
     access_token: str
 
-    def create_client(self) -> WorkdayRESTClientViaOAuth:
-        return WorkdayRESTClientViaOAuth(self.base_url, self.access_token)
+    def create_client(self) -> WorkdayRESTClient:
+        return WorkdayRESTClient(self.base_url, self.access_token)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
 
 
 class WorkdayClient(IClient):
@@ -114,11 +89,11 @@ class WorkdayClient(IClient):
 
     def __init__(
         self,
-        client: WorkdayRESTClientViaToken | WorkdayRESTClientViaOAuth
+        client: WorkdayRESTClient
     ) -> None:
         self.client = client
 
-    def get_client(self) -> WorkdayRESTClientViaToken | WorkdayRESTClientViaOAuth:
+    def get_client(self) -> WorkdayRESTClient:
         return self.client
 
     def get_base_url(self) -> str:
@@ -158,13 +133,13 @@ class WorkdayClient(IClient):
                 token = auth_config.get("token", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
-                client = WorkdayRESTClientViaToken(base_url, token)
+                client = WorkdayRESTClient(base_url, token)
 
             elif auth_type == "OAUTH" or auth_type == "OAUTH2":
                 access_token = auth_config.get("accessToken") or auth_config.get("access_token", "")
                 if not access_token:
                     raise ValueError("Access token required for OAuth auth type")
-                client = WorkdayRESTClientViaOAuth(base_url, access_token)
+                client = WorkdayRESTClient(base_url, access_token)
 
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}")
@@ -187,4 +162,4 @@ class WorkdayClient(IClient):
             return config or {}
         except Exception as e:
             logger.error(f"Failed to get Workday connector config: {e}")
-            return {}
+            raise
