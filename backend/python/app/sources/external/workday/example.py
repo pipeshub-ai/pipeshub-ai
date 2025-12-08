@@ -1,14 +1,19 @@
 import asyncio
-import os
 import logging
-from app.sources.client.workday import WorkdayClient, WorkdayTokenConfig, WorkdayOAuthConfig
+import os
+
+from app.sources.client.workday import (
+    WorkdayClient,
+    WorkdayOAuthConfig,
+    WorkdayTokenConfig,
+)
 from app.sources.external.workday.workday import WorkdayDataSource
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-async def main():
+async def main() -> None:
     workday_base_url = os.environ.get("WORKDAY_BASE_URL")
     workday_token = os.environ.get("WORKDAY_TOKEN")
     workday_oauth_token = os.environ.get("WORKDAY_OAUTH_TOKEN")
@@ -40,14 +45,14 @@ async def main():
     # =========================================================================
     logger.info("📋 [1] WORKERS (Users) Operations")
     logger.info("-" * 60)
-    
+
     # List workers with pagination
     logger.info("  ↳ Fetching workers list (limit: 5)...")
     workers_response = await data_source.list_staffing_v7_workers(limit=5, offset=0)
     if workers_response.success:
         workers_count = len(workers_response.data.get('data', [])) if workers_response.data else 0
         logger.info(f"  ✓ Successfully fetched {workers_count} workers")
-        
+
         # Get details of first worker if available
         if workers_response.data and workers_response.data.get('data'):
             first_worker = workers_response.data['data'][0]
@@ -56,7 +61,7 @@ async def main():
                 logger.info(f"  ↳ Fetching details for worker: {worker_id}")
                 worker_detail = await data_source.get_staffing_v7_workers(ID=worker_id)
                 if worker_detail.success:
-                    logger.info(f"  ✓ Retrieved worker details successfully")
+                    logger.info("  ✓ Retrieved worker details successfully")
                 else:
                     logger.error(f"  ✗ Failed to fetch worker details: {worker_detail.error}")
     else:
@@ -76,14 +81,14 @@ async def main():
     # =========================================================================
     logger.info("\n📂 [2] GROUPS (Supervisory Organizations) Operations")
     logger.info("-" * 60)
-    
+
     # List supervisory organizations
     logger.info("  ↳ Fetching supervisory organizations...")
     orgs_response = await data_source.list_staffing_v7_supervisory_organizations(limit=5)
     if orgs_response.success:
         orgs_count = len(orgs_response.data.get('data', [])) if orgs_response.data else 0
         logger.info(f"  ✓ Successfully fetched {orgs_count} organizations")
-        
+
         # Get details of first organization
         if orgs_response.data and orgs_response.data.get('data'):
             first_org = orgs_response.data['data'][0]
@@ -92,12 +97,12 @@ async def main():
                 logger.info(f"  ↳ Fetching details for organization: {org_id}")
                 org_detail = await data_source.get_staffing_v7_supervisory_organizations(ID=org_id)
                 if org_detail.success:
-                    logger.info(f"  ✓ Retrieved organization details successfully")
-                    
+                    logger.info("  ✓ Retrieved organization details successfully")
+
                 # Get workers in this organization
                 logger.info(f"  ↳ Fetching workers in organization: {org_id}")
                 org_workers = await data_source.list_staffing_v7_supervisory_organizations_workers(
-                    ID=org_id, 
+                    ID=org_id,
                     limit=5
                 )
                 if org_workers.success:
@@ -111,7 +116,7 @@ async def main():
     # =========================================================================
     logger.info("\n🔒 [3] PERMISSIONS (Security Groups) Operations")
     logger.info("-" * 60)
-    
+
     # Get common API workers organizations (includes security groups)
     logger.info("  ↳ Fetching worker organizations (includes security context)...")
     worker_orgs = await data_source.list_api_common_v1_workers_organizations(limit=5)
@@ -135,14 +140,14 @@ async def main():
     # =========================================================================
     logger.info("\n👤 [4] HR ROLES (Job Profiles) Operations")
     logger.info("-" * 60)
-    
+
     # List job profiles (HR roles)
     logger.info("  ↳ Fetching job profiles...")
     profiles_response = await data_source.list_staffing_v7_job_profiles(limit=5)
     if profiles_response.success:
         profiles_count = len(profiles_response.data.get('data', [])) if profiles_response.data else 0
         logger.info(f"  ✓ Successfully fetched {profiles_count} job profiles")
-        
+
         # Get details of first job profile
         if profiles_response.data and profiles_response.data.get('data'):
             first_profile = profiles_response.data['data'][0]
@@ -151,7 +156,7 @@ async def main():
                 logger.info(f"  ↳ Fetching details for job profile: {profile_id}")
                 profile_detail = await data_source.get_staffing_v7_job_profiles(ID=profile_id)
                 if profile_detail.success:
-                    logger.info(f"  ✓ Retrieved job profile details successfully")
+                    logger.info("  ✓ Retrieved job profile details successfully")
     else:
         logger.error(f"  ✗ Failed to fetch job profiles: {profiles_response.error}")
 
@@ -169,7 +174,7 @@ async def main():
     # =========================================================================
     logger.info("\n➕ [5] Additional Operations")
     logger.info("-" * 60)
-    
+
     # List worker direct reports (reporting hierarchy)
     logger.info("  ↳ Fetching worker direct reports...")
     reports_response = await data_source.list_api_common_v1_workers_direct_reports(limit=5)

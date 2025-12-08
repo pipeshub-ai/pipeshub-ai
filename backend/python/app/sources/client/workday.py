@@ -23,7 +23,7 @@ class WorkdayResponse(BaseModel):
 
 class WorkdayRESTClient(HTTPClient):
     """Workday REST client for Token or OAuth Authentication.
-    
+
     Args:
         base_url: The base URL of the Workday instance
         token: The access token to use for authentication (Bearer token or OAuth token)
