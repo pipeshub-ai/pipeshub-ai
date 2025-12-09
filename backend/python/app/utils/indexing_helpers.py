@@ -3,8 +3,8 @@ import json
 from typing import Dict, List, Tuple, Union
 
 from jinja2 import Template
-from langchain.output_parsers import PydanticOutputParser
-from langchain.schema import AIMessage, HumanMessage
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService

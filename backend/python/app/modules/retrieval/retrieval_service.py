@@ -2,9 +2,9 @@ import asyncio
 import time
 from typing import Any, Dict, List, Optional
 
-from langchain.chat_models.base import BaseChatModel
-from langchain.embeddings.base import Embeddings
-from langchain.schema import Document
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.embeddings import Embeddings
+from langchain_core.documents import Document
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client import models
 

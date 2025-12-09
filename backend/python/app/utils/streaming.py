@@ -1,6 +1,14 @@
 import asyncio
 import json
+from langchain_mistralai import ChatMistralAI
+from langchain_cohere import ChatCohere
+
 import logging
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_anthropic import ChatAnthropic
+from langchain_openai import AzureChatOpenAI
+
+from langchain_openai import ChatOpenAI
 import os
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
@@ -8,13 +16,13 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 import aiohttp
 from anthropic import transform_schema
 from fastapi import HTTPException
-from langchain.chat_models.base import BaseChatModel
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.output_parsers import PydanticOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-
+from langchain_groq import ChatGroq
 from app.config.constants.http_status_code import HttpStatusCode
-from app.modules.qna.prompt_templates import AnswerWithMetadataJSON
+from app.modules.qna.prompt_templates import AnswerWithMetadataDict, AnswerWithMetadataJSON
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
@@ -207,13 +215,20 @@ async def execute_tool_calls(
 
     if not tools:
         raise ValueError("Tools are required")
-
-
-    llm_with_tools = bind_tools_for_llm(llm, tools)
-
-
-
-
+    
+    llm_with_structured_output = None
+    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
+        if isinstance(llm, ChatAnthropic):
+            if "opus-4-1" in llm.model or "opus-4-5" in llm.model or "haiku-4-5" in llm.model or "sonnet-4-5" in llm.model:
+                llm_with_structured_output = _apply_structured_output(llm)
+        else:
+            llm_with_structured_output = _apply_structured_output(llm)
+    
+    if llm_with_structured_output is not None:
+        llm_to_pass = bind_tools_for_llm(llm_with_structured_output.first, tools)
+    else:
+        llm_to_pass = bind_tools_for_llm(llm, tools)
+    
     hops = 0
     tools_executed = False
     tool_args = []
@@ -224,7 +239,7 @@ async def execute_tool_calls(
             # Measure LLM invocation latency
 
             ai = None
-            async for event in call_aiter_llm_stream(llm_with_tools, messages, final_results, llm, records=[], target_words_per_chunk=target_words_per_chunk):
+            async for event in call_aiter_llm_stream(llm_to_pass, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk):
                 if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
                     return
@@ -517,7 +532,7 @@ async def execute_tool_calls(
 
         hops += 1
 
-    if len(tool_results)>0:
+    if len(tool_results)>0 and not isinstance(llm, ChatMistralAI):
         messages.append(HumanMessage(content="""Strictly follow the citation guidelines mentioned in the prompt above."""))
 
     yield {
@@ -915,9 +930,17 @@ async def handle_json_mode(
 
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
-        llm_with_structured_output = _apply_structured_output_if_anthropic(llm)
+        llm_with_structured_output = None
+        if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
+            if isinstance(llm, ChatAnthropic):
+                if "opus-4-1" in llm.model or "opus-4-5" in llm.model or "haiku-4-5" in llm.model or "sonnet-4-5" in llm.model:
+                    llm_with_structured_output = _apply_structured_output(llm)
+            else:
+                llm_with_structured_output = _apply_structured_output(llm)
 
-        async for token in call_aiter_llm_stream(llm_with_structured_output, messages,final_results,llm,records,target_words_per_chunk):
+        llm_to_pass = llm if llm_with_structured_output is None else llm_with_structured_output
+
+        async for token in call_aiter_llm_stream(llm_to_pass, messages,final_results,records,target_words_per_chunk):
             yield token
     except Exception as exc:
         yield {
@@ -1205,7 +1228,6 @@ async def call_aiter_llm_stream(
     llm,
     messages,
     final_results,
-    llm_without_tools,
     records=None,
     target_words_per_chunk=1,
     reflection_retry_count=0,
@@ -1374,21 +1396,12 @@ async def call_aiter_llm_stream(
                 updated_messages.append(ai_message)
 
                 updated_messages.append(reflection_message)
-
-
-                # Recursively call the function with updated messages
-                llm_class_name = llm_without_tools.__class__.__name__
-                logger.info("llm_class_name", llm_class_name)
-                is_structured_mode = "Runnable" in llm_class_name
-
-                if not is_structured_mode:
-                    llm_with_structured_output = _apply_structured_output_if_anthropic(llm_without_tools)
-
+                
+                
                 async for event in call_aiter_llm_stream(
-                    llm_with_structured_output,
+                    llm,
                     updated_messages,
                     final_results,
-                    llm_without_tools,
                     records,
                     target_words_per_chunk,
                     reflection_retry_count + 1,
@@ -1471,20 +1484,25 @@ def bind_tools_for_llm(llm: BaseChatModel, tools: List[object]) -> BaseChatModel
 
     return llm.bind_tools(tools)
 
-
-def _apply_structured_output_if_anthropic(llm: BaseChatModel) -> BaseChatModel:
+def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
+    additional_kwargs = {
+        "method": "json_schema",
+    }
     if isinstance(llm, ChatAnthropic):
-        try:
-            model_with_structure = llm.with_structured_output(
-                method="json_schema",
-                stream=True,
-                schema=transform_schema(AnswerWithMetadataJSON),
-            )
-            logger.info("Using structured output for Anthropic")
-            return model_with_structure
-        except Exception as e:
-            logger.warning("Failed to apply structured output for Anthropic, falling back to default. Error: %s", str(e))
-    else:
-        logger.info(f"LLM is of type {type(llm)}")
+        additional_kwargs["stream"] = True
+    # elif isinstance(llm, ChatCohere):
+        # additional_kwargs["method"] = "json_mode"
+
+    try:
+        model_with_structure = llm.with_structured_output(
+            AnswerWithMetadataDict,
+            **additional_kwargs
+        )
+        logger.info("Using structured output")
+        return model_with_structure
+    except Exception as e:
+        logger.warning("Failed to apply structured output, falling back to default. Error: %s", str(e))
         logger.info("Using non-structured LLM")
+        
     return llm
+

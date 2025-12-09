@@ -1,4 +1,4 @@
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 # Prompt for summarizing an entire sheet with multiple tables
 sheet_summary_prompt = ChatPromptTemplate.from_messages(
