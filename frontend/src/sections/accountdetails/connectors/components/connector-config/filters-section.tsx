@@ -19,11 +19,13 @@ import {
   TextField,
   Popper,
   Chip,
+  Tooltip,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import filterIcon from '@iconify-icons/mdi/filter-outline';
 import addIcon from '@iconify-icons/mdi/plus';
 import removeIcon from '@iconify-icons/mdi/delete-outline';
+import infoIcon from '@iconify-icons/mdi/information-outline';
 import { 
   ConnectorConfig, 
   FilterSchemaField, 
@@ -1288,17 +1290,80 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
               <Iconify icon={filterIcon} width={16} color={theme.palette.primary.main} />
             </Box>
             <Box sx={{ flex: 1 }}>
-              <Typography 
-                variant="subtitle2" 
-                sx={{ 
-                  fontWeight: 600, 
-                  fontSize: '0.875rem',
-                  color: theme.palette.text.primary,
-                  lineHeight: 1.4,
-                }}
-              >
-                {title}
-              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                <Typography 
+                  variant="subtitle2" 
+                  sx={{ 
+                    fontWeight: 600, 
+                    fontSize: '0.875rem',
+                    color: theme.palette.text.primary,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {title}
+                </Typography>
+                {filterType === 'indexing' && (
+                  <Tooltip
+                    title={
+                      <Box sx={{ p: 0.5 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.75, fontSize: '0.8125rem' }}>
+                          What are Indexing Filters?
+                        </Typography>
+                        <Typography variant="body2" sx={{ mb: 1, fontSize: '0.75rem', lineHeight: 1.5 }}>
+                          Indexing filters control which synced data gets processed and made searchable in the AI system.
+                        </Typography>
+                        <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5, fontSize: '0.8125rem' }}>
+                          How it works:
+                        </Typography>
+                        <Typography component="div" variant="body2" sx={{ fontSize: '0.75rem', lineHeight: 1.6 }}>
+                          <strong>1. Sync Phase:</strong> Data is downloaded from the source (controlled by Sync Filters)
+                          <br />
+                          <strong>2. Index Phase:</strong> Downloaded data is processed for AI search (controlled by Indexing Filters)
+                          <br />
+                          <br />
+                          <strong>Example:</strong> You can sync all pages but only index pages and comments, excluding attachments from AI search.
+                        </Typography>
+                      </Box>
+                    }
+                    arrow
+                    placement="right"
+                    enterDelay={200}
+                    leaveDelay={200}
+                    sx={{
+                      '& .MuiTooltip-tooltip': {
+                        maxWidth: 400,
+                        bgcolor: isDark 
+                          ? alpha(theme.palette.grey[900], 0.98)
+                          : alpha(theme.palette.grey[800], 0.95),
+                        boxShadow: `0 8px 24px ${alpha(theme.palette.common.black, 0.25)}`,
+                        p: 1.5,
+                      },
+                      '& .MuiTooltip-arrow': {
+                        color: isDark 
+                          ? alpha(theme.palette.grey[900], 0.98)
+                          : alpha(theme.palette.grey[800], 0.95),
+                      },
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'help',
+                        color: theme.palette.info.main,
+                        transition: 'all 0.2s',
+                        '&:hover': {
+                          color: theme.palette.info.dark,
+                          transform: 'scale(1.1)',
+                        },
+                      }}
+                    >
+                      <Iconify icon={infoIcon} width={16} />
+                    </Box>
+                  </Tooltip>
+                )}
+              </Box>
               <Typography 
                 variant="caption" 
                 color="text.secondary" 

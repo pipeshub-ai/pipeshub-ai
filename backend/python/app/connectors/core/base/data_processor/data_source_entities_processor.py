@@ -20,6 +20,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroup,
     RecordType,
@@ -326,6 +327,14 @@ class DataSourceEntitiesProcessor:
 
             if records_to_publish:
                 for record in records_to_publish:
+                    # Skip publishing indexing events for records with AUTO_INDEX_OFF status
+                    if hasattr(record, 'indexing_status') and record.indexing_status == IndexingStatus.AUTO_INDEX_OFF.value:
+                        self.logger.debug(
+                            f"Skipping automatic indexing event for record {record.id} "
+                            f"with AUTO_INDEX_OFF status"
+                        )
+                        continue
+
                     await self.messaging_producer.send_message(
                             "record-events",
                             {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
