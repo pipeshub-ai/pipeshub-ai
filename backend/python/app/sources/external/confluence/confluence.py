@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Any, AsyncGenerator, Dict, Literal, Optional, Union
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Union
 
 import httpx
 
@@ -1996,6 +1996,9 @@ class ConfluenceDataSource:
         created_after: Optional[str] = None,
         created_before: Optional[str] = None,
         space_key: Optional[str] = None,
+        page_ids: Optional[List[str]] = None,
+        page_ids_operator: Optional[Literal["in", "not_in"]] = None,
+        include_children: bool = False,
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
@@ -2012,6 +2015,9 @@ class ConfluenceDataSource:
             created_after: Filter pages created after this datetime (ISO 8601)
             created_before: Filter pages created before this datetime (ISO 8601)
             space_key: Filter pages by specific space key
+            page_ids: Filter specific pages by IDs (includes children if include_children=True)
+            page_ids_operator: "in" to include pages, "not_in" to exclude (default: "in")
+            include_children: Include child pages of specified page_ids (default: False)
             order_by: CQL sort field - lastModified, created, or title (default: None, API default).
                       Must be specified together with sort_order, or neither.
             sort_order: Sort direction - asc or desc (default: None, API default).
@@ -2049,6 +2055,24 @@ class ConfluenceDataSource:
         # Add space filter if provided
         if space_key:
             cql_parts.append(f"space='{space_key}'")
+
+        # Add page IDs filter with children support
+        if page_ids:
+            ids_str = ", ".join(page_ids)
+            is_exclude = page_ids_operator == "not_in"
+
+            if is_exclude:
+                # Exclude pages: NOT (id in (...) OR ancestor in (...))
+                if include_children:
+                    cql_parts.append(f"NOT (id in ({ids_str}) OR ancestor in ({ids_str}))")
+                else:
+                    cql_parts.append(f"id not in ({ids_str})")
+            else:
+                # Include pages: (id in (...) OR ancestor in (...))
+                if include_children:
+                    cql_parts.append(f"(id in ({ids_str}) OR ancestor in ({ids_str}))")
+                else:
+                    cql_parts.append(f"id in ({ids_str})")
 
         if modified_after:
             formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
@@ -2102,6 +2126,8 @@ class ConfluenceDataSource:
         created_after: Optional[str] = None,
         created_before: Optional[str] = None,
         space_key: Optional[str] = None,
+        blogpost_ids: Optional[List[str]] = None,
+        blogpost_ids_operator: Optional[Literal["in", "not_in"]] = None,
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
@@ -2118,6 +2144,8 @@ class ConfluenceDataSource:
             created_after: Filter blogposts created after this datetime (ISO 8601)
             created_before: Filter blogposts created before this datetime (ISO 8601)
             space_key: Filter blogposts by specific space key
+            blogpost_ids: Filter specific blogposts by IDs
+            blogpost_ids_operator: "in" to include blogposts, "not_in" to exclude (default: "in")
             order_by: CQL sort field - lastModified, created, or title (default: None, API default).
                       Must be specified together with sort_order, or neither.
             sort_order: Sort direction - asc or desc (default: None, API default).
@@ -2155,6 +2183,16 @@ class ConfluenceDataSource:
         # Add space filter if provided
         if space_key:
             cql_parts.append(f"space='{space_key}'")
+
+        # Add blogpost IDs filter (no children for blogposts)
+        if blogpost_ids:
+            ids_str = ", ".join(blogpost_ids)
+            is_exclude = blogpost_ids_operator == "not_in"
+
+            if is_exclude:
+                cql_parts.append(f"id not in ({ids_str})")
+            else:
+                cql_parts.append(f"id in ({ids_str})")
 
         if modified_after:
             formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)

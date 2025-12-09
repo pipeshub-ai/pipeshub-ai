@@ -3,7 +3,7 @@
 import json
 import logging
 from dataclasses import asdict
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Literal, Mapping, Optional
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
@@ -9108,6 +9108,8 @@ class OutlookCalendarContactsDataSource:
     async def users_list_mail_folders(
         self,
         user_id: str,
+        folder_names: Optional[List[str]] = None,
+        folder_filter_mode: Optional[Literal["include", "exclude"]] = "include",
         includeHiddenFolders: Optional[str] = None,
         dollar_orderby: Optional[List[str]] = None,
         dollar_select: Optional[List[str]] = None,
@@ -9127,13 +9129,15 @@ class OutlookCalendarContactsDataSource:
         Operation type: mail
         Args:
             user_id (str, required): Outlook user id identifier
+            folder_names (List[str], optional): List of folder display names to filter
+            folder_filter_mode (str, optional): 'include' to whitelist or 'exclude' to blacklist folder_names
             includeHiddenFolders (str, optional): Include Hidden Folders
             dollar_orderby (List[str], optional): Order items by property values
             dollar_select (List[str], optional): Select properties to be returned
             dollar_expand (List[str], optional): Expand related entities
             select (optional): Select specific properties to return
             expand (optional): Expand related entities (e.g., attachments, calendar)
-            filter (optional): Filter the results using OData syntax
+            filter (optional): Filter the results using OData syntax (overridden if folder_names provided)
             orderby (optional): Order the results by specified properties
             search (optional): Search for messages, events, or contacts by content
             top (optional): Limit number of results returned
@@ -9145,8 +9149,20 @@ class OutlookCalendarContactsDataSource:
         """
         # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
+            # Build filter string from folder_names if provided
+            # Note: MS Graph mailFolders doesn't support 'in' operator, use 'eq' with 'or' instead
+            if folder_names and folder_filter_mode:
+                if folder_filter_mode.lower() == 'include':
+                    # Include only specified folders: use OR with eq
+                    conditions = [f"displayName eq '{name}'" for name in folder_names]
+                    filter = ' or '.join(conditions)
+                else:
+                    # Exclude specified folders: use AND with ne
+                    conditions = [f"displayName ne '{name}'" for name in folder_names]
+                    filter = ' and '.join(conditions)
+
+            # Use typed query parameters for MailFolders
+            query_params = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -9164,18 +9180,21 @@ class OutlookCalendarContactsDataSource:
             if skip is not None:
                 query_params.skip = skip
 
-            # Create proper typed request configuration
-            config = RequestConfiguration()
+            # Create proper typed request configuration for MailFolders
+            config = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
-            if headers:
-                config.headers = headers
-
-            # Add consistency level for search operations in Outlook
+            # Add consistency level for search operations
             if search:
                 if not config.headers:
                     config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers.add('ConsistencyLevel', 'eventual')
+
+            if headers:
+                if not config.headers:
+                    config.headers = {}
+                for key, value in headers.items():
+                    config.headers.add(key, value)
 
             response = await self.client.users.by_user_id(user_id).mail_folders.get(request_configuration=config)
             return self._handle_mail_folders_response(response)
@@ -13211,8 +13230,8 @@ class OutlookCalendarContactsDataSource:
                 if search:
                     query_params.search = search
 
-                # Create request configuration with query parameters
-                request_configuration = RequestConfiguration(
+                # Create request configuration with query parameters using typed class
+                request_configuration = DeltaRequestBuilder.DeltaRequestBuilderGetRequestConfiguration(
                     query_parameters=query_params
                 )
 
