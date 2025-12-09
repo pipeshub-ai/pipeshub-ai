@@ -1,50 +1,52 @@
-# ruff: noqa
-"""
-Minimal Zoom Example (PipesHub-style)
-Matches Dropbox/Slack example format.
+"""Example usage for the Zoom datasource.
+
+This example demonstrates token-based usage via ZoomClient.build_with_config().
 """
 
-import asyncio
+import sys
 import os
-from app.sources.client.zoom.zoom import ZoomClient, ZoomAppKeySecretConfig
-from app.sources.external.zoom.zoom_ import ZoomDataSource
+import asyncio
+
+# PATCH IMPORT ROOT (go up to project root)
+ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../../../..")
+)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+# Standard imports
+from app.sources.client.zoom.zoom import ZoomClient, ZoomTokenConfig   # type: ignore
+from app.sources.external.zoom.zoom import ZoomDataSource             # type: ignore
 
 
-async def main():
-    # Load credentials from environment (local run only)
-    client_id = os.getenv("ZOOM_CLIENT_ID")
-    client_secret = os.getenv("ZOOM_CLIENT_SECRET")
-    account_id = os.getenv("ZOOM_ACCOUNT_ID")
-
-    if not all([client_id, client_secret, account_id]):
-        raise RuntimeError("Missing env vars: ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET / ZOOM_ACCOUNT_ID")
-
-    # Build config
-    cfg = ZoomAppKeySecretConfig(
-        client_id=client_id,
-        client_secret=client_secret,
-        account_id=account_id,
+async def main() -> None:
+    # Example: Using a static Zoom OAuth token
+    config = ZoomTokenConfig(
         base_url="https://api.zoom.us/v2",
+        token="your_zoom_oauth_token_here",
     )
 
-    # Build client
-    zoom_client = await ZoomClient.build_with_config(cfg)
+    # Build high-level wrapper
+    zoom_client = ZoomClient.build_with_config(config)
 
-    # DataSource
-    ds = ZoomDataSource(zoom_client)
+    # ❗ IMPORTANT: Extract the underlying REST client
+    rest_client = zoom_client.get_client()
 
-    # Basic tests
-    print("\nListing users:")
-    users = await ds.users_list(page_size=5)
-    print(users)
+    # Datasource MUST receive the REST client, not ZoomClient wrapper
+    ds = ZoomDataSource(rest_client)
 
-    print("\nListing meetings for 'me':")
-    meetings = await ds.list_meetings("me", page_size=5)
-    print(meetings)
+    # Try a simple API call
+    try:
+        resp = await ds.account_settings(accountId="REPLACE_WITH_ACCOUNT_ID")
 
-    print("\nGetting raw /users/me:")
-    raw = await ds.raw_request("GET", "/users/me")
-    print(raw)
+        print("Response:", resp)
+    except Exception as e:
+        print("Error:", e)
+
+    # Close if supported
+    close = getattr(rest_client, "close", None)
+    if callable(close):
+        await close()
 
 
 if __name__ == "__main__":
