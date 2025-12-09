@@ -1041,7 +1041,6 @@ export const useConnectorConfig = ({
       }
 
 
-
       /**
        * Process filter fields for saving - converts values to proper format
        */

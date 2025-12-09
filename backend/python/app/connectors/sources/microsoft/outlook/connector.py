@@ -31,11 +31,22 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     DocumentationLink,
 )
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterType,
+    IndexingFilterKey,
+    SyncFilterKey,
+    load_connector_filters,
+)
 from app.connectors.sources.microsoft.common.apps import OutlookApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
     FileRecord,
+    IndexingStatus,
     MailRecord,
     Record,
     RecordGroupType,
@@ -129,6 +140,37 @@ class OutlookCredentials:
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .add_filter_field(FilterField(
+            name="folders",
+            display_name="Folders",
+            description="Filter emails by folder names (e.g., Inbox, Sent Items). Leave empty to sync all folders.",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[]
+        ))
+        .add_filter_field(FilterField(
+            name="received_date",
+            display_name="Received Date",
+            description="Filter emails by received date.",
+            filter_type=FilterType.DATETIME,
+            category=FilterCategory.SYNC
+        ))
+        .add_filter_field(FilterField(
+            name="mails",
+            display_name="Index Emails",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of email messages",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name="attachments",
+            display_name="Index Attachments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of email attachments",
+            default_value=True
+        ))
     )\
     .build_decorator()
 class OutlookConnector(BaseConnector):
@@ -165,6 +207,9 @@ class OutlookConnector(BaseConnector):
             data_store_provider=self.data_store_provider
         )
 
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
+
 
     async def init(self) -> bool:
         """Initialize the Outlook connector with credentials and Graph client."""
@@ -189,6 +234,10 @@ class OutlookConnector(BaseConnector):
             self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
             self.external_users_client = UsersGroupsDataSource(self.external_client)
 
+            # Load filters from config service
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "outlook", self.logger
+            )
 
             # Test connection
             if not await self.test_connection_and_access():
@@ -391,11 +440,33 @@ class OutlookConnector(BaseConnector):
         try:
             user_id = user.source_user_id
 
-            # Get all folders for this user
-            folders = await self._get_all_folders_for_user(user_id)
+            # Extract folder filter parameters for API-level filtering
+            folder_names: Optional[List[str]] = None
+            folder_filter_mode: Optional[str] = None
+
+            folders_filter = self.sync_filters.get(SyncFilterKey.FOLDERS)
+            if folders_filter and not folders_filter.is_empty():
+                filter_value = folders_filter.get_value()
+                filter_operator = folders_filter.get_operator()
+
+                if filter_value and isinstance(filter_value, list):
+                    folder_names = filter_value
+                    if filter_operator == FilterOperator.IN:
+                        folder_filter_mode = "include"
+                        self.logger.info(f"Filtering to include folders: {folder_names}")
+                    elif filter_operator == FilterOperator.NOT_IN:
+                        folder_filter_mode = "exclude"
+                        self.logger.info(f"Filtering to exclude folders: {folder_names}")
+
+            # Get folders for this user with optional filtering
+            folders = await self._get_all_folders_for_user(
+                user_id,
+                folder_names=folder_names,
+                folder_filter_mode=folder_filter_mode
+            )
 
             if not folders:
-                return f"No folders found for {user.email}"
+                return f"No folders found for {user.email}" + (" after applying filters" if folder_names else "")
 
             total_processed = 0
             folder_results = []
@@ -512,15 +583,31 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error creating all thread edges for user {user.email}: {e}")
             return 0
 
-    async def _get_all_folders_for_user(self, user_id: str) -> List[Dict]:
-        """Get all top-level folders for a user."""
+    async def _get_all_folders_for_user(
+        self,
+        user_id: str,
+        folder_names: Optional[List[str]] = None,
+        folder_filter_mode: Optional[str] = None
+    ) -> List[Dict]:
+        """Get all top-level folders for a user with optional filtering.
+
+        Args:
+            user_id: User identifier
+            folder_names: Optional list of folder display names to filter
+            folder_filter_mode: 'include' to whitelist or 'exclude' to blacklist folder_names
+
+        Returns:
+            List of folder dictionaries
+        """
         try:
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            # Use the existing folder delta method but ignore delta_link for simplicity
+            # Use API-level filtering with eq/ne operators
             response: OutlookMailFoldersResponse = await self.external_outlook_client.users_list_mail_folders(
-                user_id=user_id
+                user_id=user_id,
+                folder_names=folder_names,
+                folder_filter_mode=folder_filter_mode,
             )
 
             if not response.success:
@@ -636,18 +723,42 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
+            # Build filter string for receivedDateTime if configured
+            # Note: MS Graph delta queries have limited filter support
+            # receivedDateTime filter only supports 'ge' (greater than or equal)
+            # For 'le' (IS_BEFORE), we apply client-side filtering after fetching
+            filter_string = None
+            received_before_dt: Optional[datetime] = None  # For client-side filtering
+
+            received_date_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            if received_date_filter and not received_date_filter.is_empty():
+                received_after_iso, received_before_iso = received_date_filter.get_datetime_iso()
+
+                # API supports 'ge' (greater than or equal) - apply server-side
+                if received_after_iso:
+                    filter_string = f"receivedDateTime ge {received_after_iso}Z"
+                    self.logger.info(f"Applying received date filter (server-side): {filter_string}")
+
+                # API doesn't support 'le' - we'll filter client-side
+                if received_before_iso:
+                    # Parse ISO string to datetime for client-side comparison
+                    received_before_dt = datetime.strptime(received_before_iso, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+                    self.logger.info(f"Will apply received date filter (client-side): receivedDateTime before {received_before_iso}")
+
             # Use the new fetch_all_messages_delta method that handles pagination automatically
             messages, new_delta_link = await self.external_outlook_client.fetch_all_messages_delta(
                 user_id=user_id,
                 mailFolder_id=folder_id,
                 saved_delta_link=delta_link,
                 page_size=100,
+                filter=filter_string,
                 select = [
                     'id',
                     'subject',
                     'hasAttachments',
                     'createdDateTime',
                     'lastModifiedDateTime',
+                    'receivedDateTime',
                     'webLink',
                     'from',
                     'toRecipients',
@@ -658,6 +769,38 @@ class OutlookConnector(BaseConnector):
                     'conversationIndex'
                 ]
             )
+
+            # Apply client-side filtering for IS_BEFORE if needed
+            if received_before_dt is not None and messages:
+                original_count = len(messages)
+                filtered_messages = []
+
+                for msg in messages:
+                    # Get receivedDateTime from message
+                    received_dt = self._safe_get_attr(msg, 'received_date_time')
+                    if received_dt is None:
+                        # If no received date, include the message
+                        filtered_messages.append(msg)
+                        continue
+
+                    # Compare datetime objects directly
+                    if isinstance(received_dt, datetime):
+                        # Ensure timezone-aware comparison
+                        if received_dt.tzinfo is None:
+                            received_dt = received_dt.replace(tzinfo=timezone.utc)
+                        # Include message if received before the cutoff
+                        if received_dt < received_before_dt:
+                            filtered_messages.append(msg)
+                    else:
+                        filtered_messages.append(msg)
+
+                messages = filtered_messages
+                filtered_out = original_count - len(messages)
+                if filtered_out > 0:
+                    self.logger.info(
+                        f"Client-side date filter applied: {original_count} -> {len(messages)} messages "
+                        f"(filtered out {filtered_out} messages received after cutoff)"
+                    )
 
             self.logger.info(f"Delta sync completed for folder {folder_id}: retrieved {len(messages)} total messages across all pages")
 
@@ -774,6 +917,10 @@ class OutlookConnector(BaseConnector):
                 conversation_index=self._safe_get_attr(message, 'conversation_index', ''),
             )
 
+            # Apply indexing filter for mail records
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
+                email_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
             permissions = await self._extract_email_permissions(message, email_record.id, user_email)
 
             return RecordUpdate(
@@ -878,7 +1025,7 @@ class OutlookConnector(BaseConnector):
         if not parent_weburl:
             self.logger.error(f"No parent weburl found for attachment id {attachment_id}, file name {file_name}, with parent message id {message_id}")
 
-        return FileRecord(
+        attachment_record = FileRecord(
             id=attachment_record_id,
             org_id=org_id,
             record_name=file_name,
@@ -900,6 +1047,12 @@ class OutlookConnector(BaseConnector):
             size_in_bytes=self._safe_get_attr(attachment, 'size', 0),
             extension=extension,
         )
+
+        # Apply indexing filter for attachment records
+        if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
+            attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+        return attachment_record
 
     async def _process_email_attachments_with_folder(self, org_id: str, user: AppUser, message: Dict,
                                                   email_permissions: List[Permission], folder_id: str, folder_name: str) -> List[RecordUpdate]:

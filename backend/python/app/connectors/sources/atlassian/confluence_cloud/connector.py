@@ -119,6 +119,22 @@ CONTENT_EXPAND_PARAMS = (
             category=FilterCategory.SYNC,
             default_value=[]
         ))
+        .add_filter_field(FilterField(
+            name="page_ids",
+            display_name="Page IDs",
+            description="Filter specific pages by ID.",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[]
+        ))
+        .add_filter_field(FilterField(
+            name="blogpost_ids",
+            display_name="Blogpost IDs",
+            description="Filter specific blogposts by ID.",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[]
+        ))
         .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
         # Indexing filters - Pages
@@ -237,9 +253,6 @@ class ConfluenceConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "confluence", self.logger
             )
-
-            self.logger.info(f"Sync filters: {self.sync_filters}")
-            self.logger.info(f"Indexing filters: {self.indexing_filters}")
 
             # Test connection
             if not await self.test_connection_and_access():
@@ -671,14 +684,29 @@ class ConfluenceConnector(BaseConnector):
         try:
             self.logger.info(f"Starting {content_type} synchronization for space {space_key}...")
             # Get indexing filter settings based on content type (default=True means index if not configured)
+            content_ids_filter = None
             if record_type == RecordType.CONFLUENCE_PAGE:
                 content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES)
                 content_comments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGE_COMMENTS)
                 content_attachments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGE_ATTACHMENTS)
+                content_ids_filter = self.sync_filters.get(SyncFilterKey.PAGE_IDS)
             else:  # CONFLUENCE_BLOGPOST
                 content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOSTS)
                 content_comments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOST_COMMENTS)
                 content_attachments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOST_ATTACHMENTS)
+                content_ids_filter = self.sync_filters.get(SyncFilterKey.BLOGPOST_IDS)
+
+            # Get content IDs filter based on content type
+            content_ids = None
+            content_ids_operator_str = None
+            if content_ids_filter is not None:
+                content_ids = content_ids_filter.get_value()
+                content_ids_operator = content_ids_filter.get_operator()
+                # Extract operator value string for datasource
+                content_ids_operator_str = content_ids_operator.value if hasattr(content_ids_operator, 'value') else str(content_ids_operator)
+                if content_ids:
+                    action = "Excluding" if content_ids_operator_str == "not_in" else "Including"
+                    self.logger.info(f"🔍 Filter: {action} {content_type}s by IDs: {content_ids}")
 
             # Get last sync checkpoint (use content_type as suffix)
             sync_point_key = generate_record_sync_point_key(
@@ -696,7 +724,7 @@ class ConfluenceConnector(BaseConnector):
             modified_before = None
 
             if modified_filter:
-                modified_after, modified_before = modified_filter.get_datetime_iso(default=(None, None))
+                modified_after, modified_before = modified_filter.get_datetime_iso()
 
             # Get created filter
             created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
@@ -704,7 +732,7 @@ class ConfluenceConnector(BaseConnector):
             created_before = None
 
             if created_filter:
-                created_after, created_before = created_filter.get_datetime_iso(default=(None, None))
+                created_after, created_before = created_filter.get_datetime_iso()
 
             # Merge modified_after with checkpoint (use the latest)
             if modified_after and last_sync_time:
@@ -748,6 +776,9 @@ class ConfluenceConnector(BaseConnector):
                         cursor=cursor,
                         limit=batch_size,
                         space_key=space_key,
+                        page_ids=content_ids,
+                        page_ids_operator=content_ids_operator_str,
+                        include_children=True,
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
@@ -762,6 +793,8 @@ class ConfluenceConnector(BaseConnector):
                         cursor=cursor,
                         limit=batch_size,
                         space_key=space_key,
+                        blogpost_ids=content_ids,
+                        blogpost_ids_operator=content_ids_operator_str,
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
@@ -834,7 +867,8 @@ class ConfluenceConnector(BaseConnector):
                                     item_title,
                                     comment_type,
                                     permissions,
-                                    space_id
+                                    space_id,
+                                    content_type
                                 )
                                 # Set indexing status for comments if disabled
                                 for comment_record, comment_permissions in comments:
@@ -895,20 +929,6 @@ class ConfluenceConnector(BaseConnector):
                 await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": latest_update_time})
                 self.logger.info(f"Updated {content_type}s sync checkpoint to {latest_update_time}")
 
-                # Initialize audit log sync point if it doesn't exist (first sync)
-                # This ensures audit log tracking starts from the same point as page sync
-                audit_sync_key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "permissions", "audit_log")
-                existing_audit_sync = await self.audit_log_sync_point.read_sync_point(audit_sync_key)
-                if not existing_audit_sync:
-                    # Convert ISO timestamp to milliseconds for audit log sync point
-                    audit_sync_time_ms = self._parse_confluence_datetime(latest_update_time)
-                    if audit_sync_time_ms:
-                        await self.audit_log_sync_point.update_sync_point(
-                            audit_sync_key,
-                            {"last_sync_time_ms": audit_sync_time_ms}
-                        )
-                        self.logger.info(f"Initialized audit log sync point to {audit_sync_time_ms}")
-
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
 
         except Exception as e:
@@ -925,14 +945,16 @@ class ConfluenceConnector(BaseConnector):
         - Content restriction removed (user/group loses access)
 
         Flow:
-        1. Get last audit sync time (skip if not initialized yet)
-        2. Fetch audit logs since last sync (category=Permissions, content scope)
-        3. Extract unique content titles from audit records
-        4. Search content by titles to get full page/blog data
-        5. For each found content: fetch current permissions and upsert
-        6. Update audit log sync point with latest timestamp
+        1. Get last audit sync time
+        2. If first run (no checkpoint): Initialize with current time and skip (permissions already synced)
+        3. If subsequent run: Fetch audit logs since last sync
+        4. Extract unique content titles from audit records
+        5. Search content by titles and check if exists in DB
+        6. For each existing content: Fetch current permissions and update
+        7. Update audit log sync point with current timestamp
 
-        Note: Audit log sync point is initialized during first page sync in _sync_content.
+        Note: First run initializes checkpoint but skips permission sync because
+        the initial content sync (_sync_content) already synced all permissions.
         """
         try:
             self.logger.info("🔍 Starting permission sync from audit log...")
@@ -944,13 +966,22 @@ class ConfluenceConnector(BaseConnector):
             last_audit_sync = await self.audit_log_sync_point.read_sync_point(audit_sync_key)
             last_sync_time_ms = last_audit_sync.get("last_sync_time_ms") if last_audit_sync else None
 
-            # Skip if audit log sync point doesn't exist yet (will be initialized during page sync)
-            if last_sync_time_ms is None:
-                self.logger.info("⏭️ Audit log sync point not initialized yet - skipping permission sync")
-                return
-
-            # Current time as end date
+            # Current time as checkpoint
             current_time_ms = int(datetime.now().timestamp() * 1000)
+
+            # First run: Initialize checkpoint and skip (permissions already synced during content sync)
+            if last_sync_time_ms is None:
+                self.logger.info(
+                    "🆕 First audit log sync - initializing checkpoint to current time and skipping. "
+                    "Permissions already synced during content sync."
+                )
+
+                # Save initial checkpoint
+                await self.audit_log_sync_point.update_sync_point(
+                    audit_sync_key,
+                    {"last_sync_time_ms": current_time_ms}
+                )
+                return
 
             self.logger.info(f"🔄 Fetching audit logs from {last_sync_time_ms} to {current_time_ms}")
 
@@ -968,10 +999,10 @@ class ConfluenceConnector(BaseConnector):
 
             self.logger.info(f"📋 Found {len(content_titles)} content items with permission changes")
 
-            # Search for content by titles and sync their permissions
+            # Search for content by titles and sync their permissions (only if exists in DB)
             await self._sync_content_permissions_by_titles(content_titles)
 
-            # Update audit log sync point
+            # Update audit log sync point with current time
             await self.audit_log_sync_point.update_sync_point(
                 audit_sync_key,
                 {"last_sync_time_ms": current_time_ms}
@@ -1079,10 +1110,13 @@ class ConfluenceConnector(BaseConnector):
         """
         Search for content by titles and sync their current permissions.
 
+        IMPORTANT: This method ONLY updates permissions for records that already exist in the database.
+        It will NOT create new records, ensuring sync filters are respected.
+
         For each found content item:
-        1. Transform to WebpageRecord
-        2. Fetch current permissions
-        3. Upsert record with permissions
+        1. Check if record exists in DB (by external_record_id)
+        2. If exists: Fetch current permissions and update
+        3. If not exists: Skip (record was filtered out during initial sync)
 
         Args:
             titles: List of content titles to search for
@@ -1093,6 +1127,7 @@ class ConfluenceConnector(BaseConnector):
         # Batch titles to avoid CQL query size limits (process 50 at a time)
         batch_size = 50
         total_synced = 0
+        total_skipped = 0
         total_permissions = 0
 
         for i in range(0, len(titles), batch_size):
@@ -1136,7 +1171,21 @@ class ConfluenceConnector(BaseConnector):
                             self.logger.debug(f"Skipping unknown content type: {item_type}")
                             continue
 
-                        self.logger.debug(f"Syncing permissions for {item_type}: {item_title} ({item_id})")
+                        # Check if record exists in database (respects sync filters)
+                        existing_record = await self.data_store.get_record_by_external_id(
+                            external_record_id=item_id
+                        )
+
+                        if not existing_record:
+                            # Record doesn't exist - it was filtered out during initial sync
+                            self.logger.debug(
+                                f"Skipping {item_type} '{item_title}' ({item_id}) - "
+                                f"not in database (filtered out during sync)"
+                            )
+                            total_skipped += 1
+                            continue
+
+                        self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({item_id})")
 
                         # Transform to WebpageRecord
                         webpage_record = self._transform_to_webpage_record(item_data, record_type)
@@ -1147,7 +1196,7 @@ class ConfluenceConnector(BaseConnector):
                         permissions = await self._fetch_page_permissions(item_id)
                         total_permissions += len(permissions)
 
-                        # Add to batch
+                        # Add to batch for update
                         records_with_permissions.append((webpage_record, permissions))
                         total_synced += 1
 
@@ -1155,16 +1204,19 @@ class ConfluenceConnector(BaseConnector):
                         self.logger.error(f"❌ Failed to sync permissions for {item_data.get('title')}: {item_error}")
                         continue
 
-                # Upsert batch to database
+                # Update batch in database
                 if records_with_permissions:
                     await self.data_entities_processor.on_new_records(records_with_permissions)
-                    self.logger.info(f"Synced permissions for {len(records_with_permissions)} content items")
+                    self.logger.info(f"Updated permissions for {len(records_with_permissions)} content items")
 
             except Exception as batch_error:
                 self.logger.error(f"❌ Failed to process titles batch: {batch_error}")
                 continue
 
-        self.logger.info(f"✅ Permission sync complete. Items: {total_synced}, Permissions: {total_permissions}")
+        if total_skipped > 0:
+            self.logger.info(f"🔍 Skipped {total_skipped} items not in database (filtered during sync)")
+
+        self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
 
     async def _fetch_space_permissions(self, space_id: str, space_name: str) -> List[Permission]:
         """
@@ -2078,6 +2130,7 @@ class ConfluenceConnector(BaseConnector):
             # Parse timestamps - v1 vs v2 have different structures
             source_created_at = None
             source_updated_at = None
+            version_number = 0
 
             # Try v2 format first (createdAt at top level)
             created_at_v2 = attachment_data.get("createdAt")
@@ -2090,21 +2143,25 @@ class ConfluenceConnector(BaseConnector):
                 if created_date:
                     source_created_at = self._parse_confluence_datetime(created_date)
 
-            # Try v2 format for updated date (version.createdAt)
+            # Try v2 format for updated date and version (version.createdAt, version.number)
             version_data = attachment_data.get("version", {})
             if isinstance(version_data, dict):
                 version_created_at = version_data.get("createdAt")
                 if version_created_at:
                     source_updated_at = self._parse_confluence_datetime(version_created_at)
+                version_number = version_data.get("number", 0)
 
-            # Fall back to v1 format (history.lastUpdated.when)
-            if not source_updated_at:
+            # Fall back to v1 format (history.lastUpdated.when, history.lastUpdated.number)
+            if not source_updated_at or not version_number:
                 history = attachment_data.get("history", {})
                 last_updated = history.get("lastUpdated", {})
                 if isinstance(last_updated, dict):
-                    updated_when = last_updated.get("when")
-                    if updated_when:
-                        source_updated_at = self._parse_confluence_datetime(updated_when)
+                    if not source_updated_at:
+                        updated_when = last_updated.get("when")
+                        if updated_when:
+                            source_updated_at = self._parse_confluence_datetime(updated_when)
+                    if not version_number:
+                        version_number = last_updated.get("number", 0)
 
             # Extract file size - v2 has it at top level, v1 in extensions
             file_size = attachment_data.get("fileSize")  # v2 format
@@ -2112,11 +2169,14 @@ class ConfluenceConnector(BaseConnector):
                 extensions = attachment_data.get("extensions", {})
                 file_size = extensions.get("fileSize")  # v1 format
 
-            # Extract mime type - v2 has it at top level (mediaType), v1 in extensions
+            # Extract mime type - v2 has it at top level (mediaType), v1 in extensions or metadata
             media_type = attachment_data.get("mediaType")  # v2 format
             if not media_type:
                 extensions = attachment_data.get("extensions", {})
-                media_type = extensions.get("mediaType")  # v1 format
+                media_type = extensions.get("mediaType")  # v1 format (extensions)
+            if not media_type:
+                metadata = attachment_data.get("metadata", {})
+                media_type = metadata.get("mediaType")  # v1 format (metadata)
 
             mime_type = None
             if media_type:
@@ -2152,11 +2212,6 @@ class ConfluenceConnector(BaseConnector):
                         if "/wiki/" in self_link:
                             base_url = self_link.split("/wiki/")[0] + "/wiki"
                             web_url = f"{base_url}{web_path}"
-
-            # Extract version number
-            version_number = 0
-            if isinstance(version_data, dict):
-                version_number = version_data.get("number", 0)
 
             # Generate unique ID for attachment
             attachment_record_id = str(uuid.uuid4())

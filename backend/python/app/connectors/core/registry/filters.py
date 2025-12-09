@@ -24,10 +24,10 @@ from app.config.configuration_service import ConfigurationService
 # Module logger for filter parsing warnings
 _logger = logging.getLogger(__name__)
 
-# Type alias for filter values (string, bool, list, number, or None)
-FilterValue = Union[str, bool, int, float, List[str], None]
-MAX_DATETIME_TUPLE_LENGTH = 2
-
+# Type alias for filter values (string, bool, list, number, datetime tuple, or None)
+# Datetime values are stored as (start, end) tuple of epoch integers in milliseconds
+FilterValue = Union[str, bool, int, float, List[str], Tuple[Optional[int], Optional[int]], None]
+MAX_DATETIME_TUPLE_LENGTH = 2  # (start, end)
 
 class FilterType(str, Enum):
     """Supported filter data types"""
@@ -148,10 +148,12 @@ class SyncFilterKey(str, Enum):
     # Time-based filters
     MODIFIED = "modified"
     CREATED = "created"
+    RECEIVED_DATE = "received_date"
 
     # Container/scope filters
     SPACE_KEYS = "space_keys"
     FOLDER_IDS = "folder_ids"
+    FOLDERS = "folders"
     PROJECT_IDS = "project_ids"
     SITE_IDS = "site_ids"
     CHANNEL_IDS = "channel_ids"
@@ -160,6 +162,8 @@ class SyncFilterKey(str, Enum):
     CONTENT_STATUS = "content_status"
     FILE_EXTENSIONS = "file_extensions"
     MAX_FILE_SIZE = "max_file_size"
+    PAGE_IDS = "page_ids"
+    BLOGPOST_IDS = "blogpost_ids"
 
     # User filters
     OWNER_IDS = "owner_ids"
@@ -184,6 +188,7 @@ class IndexingFilterKey(str, Enum):
     FILES = "files"
     DOCUMENTS = "documents"
     EMAILS = "emails"
+    MAILS = "mails"
     MESSAGES = "messages"
     ISSUES = "issues"
     TICKETS = "tickets"
@@ -386,32 +391,16 @@ class Filter(BaseModel):
 
                 if filter_type == FilterType.DATETIME and data['value'] is not None:
                     value = data['value']
-                    # Convert dict {start:, end:} to tuple of epochs
+                    # Convert dict {start, end} to tuple of epoch integers (milliseconds)
                     if isinstance(value, dict):
                         start = value.get('start')
                         end = value.get('end')
-                        # Ensure values are integers (epoch)
+                        # Convert to integers (epoch in milliseconds)
                         start = int(start) if start is not None else None
                         end = int(end) if end is not None else None
-                        # Create tuple: (start, end) or (start,) if end is None
-                        if start is not None:
-                            data['value'] = (start, end) if end is not None else (start,)
-                        else:
-                            data['value'] = None
-                    elif isinstance(value, list):
-                        if len(value) > 0:
-                            # Convert list elements to integers
-                            int_values = [int(v) if v is not None else None for v in value]
-                            data['value'] = tuple(int_values) if len(int_values) > 1 else (int_values[0],)
-                        else:
-                            data['value'] = None
-                    elif isinstance(value, tuple):
-                        # Ensure tuple elements are integers
-                        int_values = tuple(int(v) if v is not None else None for v in value)
-                        data['value'] = int_values
-                    elif isinstance(value, (int, float)):
-                        # Single epoch value
-                        data['value'] = (int(value),)
+                        data['value'] = (start, end)
+                    else:
+                        data['value'] = None
 
         return data
 
@@ -458,23 +447,23 @@ class Filter(BaseModel):
         # Validate value type (if value is set)
         if self.value is not None:
             if self.type == FilterType.DATETIME:
-                # Datetime values should be tuples of epoch integers: (start,) or (start, end)
+                # Datetime values are tuples: (start, end) where each is epoch ms or None
                 if not isinstance(self.value, tuple):
                     raise ValueError(
                         f"Invalid value type for '{self.type.value}': "
                         f"expected tuple, got {type(self.value).__name__}"
                     )
-                # Validate tuple elements are integers (epoch) or None
+                # Validate tuple length is exactly 2
+                if len(self.value) != MAX_DATETIME_TUPLE_LENGTH:
+                    raise ValueError(
+                        f"Invalid datetime tuple length: expected 2 elements (start, end), got {len(self.value)}"
+                    )
+                # Validate tuple elements are integers (epoch ms) or None
                 for i, item in enumerate(self.value):
                     if item is not None and not isinstance(item, int):
                         raise ValueError(
-                            f"Invalid datetime tuple item at index {i}: expected int (epoch), got {type(item).__name__}"
+                            f"Invalid datetime tuple item at index {i}: expected int (epoch ms), got {type(item).__name__}"
                         )
-                # Validate tuple length (1 or 2 elements)
-                if len(self.value) > MAX_DATETIME_TUPLE_LENGTH:
-                    raise ValueError(
-                        f"Invalid datetime tuple length: expected 1 or 2 elements, got {len(self.value)}"
-                    )
             else:
                 expected_types: Dict[FilterType, type | tuple] = {
                     FilterType.STRING: str,
@@ -522,39 +511,20 @@ class Filter(BaseModel):
         """
         Get filter value (raw).
 
-        For datetime filters, returns normalized tuple of epoch timestamps based on operator:
-        - IS_AFTER: (start_epoch, None) - start has value, end is None
-        - IS_BEFORE: (None, start_epoch) - start is None, end has value
-        - IS_BETWEEN: (start_epoch, end_epoch) - both have values
+        For datetime filters, returns tuple (start, end) in epoch milliseconds:
+        - IS_AFTER: (start_epoch, None)
+        - IS_BEFORE: (None, end_epoch)
+        - IS_BETWEEN: (start_epoch, end_epoch)
 
         Args:
             default: Default value to return if value is None or empty (default: None)
 
         Returns:
             Filter value, or default if value is empty/None
-            For datetime filters: tuple[int | None, int | None] (epoch timestamps)
+            For datetime filters: tuple[int | None, int | None] (epoch in milliseconds)
         """
         if self.is_empty():
             return default
-
-        # Normalize datetime values based on operator
-        if self.type == FilterType.DATETIME and isinstance(self.value, tuple):
-            operator = self.get_operator()
-            start_epoch = self.value[0] if len(self.value) > 0 else None
-            end_epoch = self.value[1] if len(self.value) > 1 else None
-
-            if operator == DatetimeOperator.IS_AFTER:
-                # IS_AFTER: (start_epoch, None)
-                return (start_epoch, None)
-            elif operator == DatetimeOperator.IS_BEFORE:
-                # IS_BEFORE: (None, start_epoch) - the start_epoch becomes the "before" value
-                return (None, start_epoch)
-            elif operator == DatetimeOperator.IS_BETWEEN:
-                # IS_BETWEEN: (start_epoch, end_epoch)
-                return (start_epoch, end_epoch)
-            else:
-                # For other operators, return as-is
-                return self.value
 
         return self.value
 
@@ -572,7 +542,7 @@ class Filter(BaseModel):
         Get start epoch from datetime filter value.
 
         Returns:
-            Start epoch timestamp (int), or None if not a datetime filter or value is empty
+            Start epoch timestamp (milliseconds), or None if not a datetime filter or value is empty
         """
         if self.type != FilterType.DATETIME or self.is_empty():
             return None
@@ -585,7 +555,7 @@ class Filter(BaseModel):
         Get end epoch from datetime filter value.
 
         Returns:
-            End epoch timestamp (int), or None if not a datetime filter, value is empty, or no end date
+            End epoch timestamp (milliseconds), or None if not a datetime filter, value is empty, or no end date
         """
         if self.type != FilterType.DATETIME or self.is_empty():
             return None
@@ -595,21 +565,29 @@ class Filter(BaseModel):
 
     @staticmethod
     def _epoch_to_iso(epoch: Optional[int]) -> Optional[str]:
-        """Convert epoch timestamp to ISO format string (without seconds)."""
+        """Convert epoch timestamp (milliseconds) to ISO format string.
+
+        Args:
+            epoch: Epoch timestamp in milliseconds
+
+        Returns:
+            ISO format string (e.g., "2025-12-04T10:30:00")
+        """
         if epoch is None:
             return None
-        dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
-        return dt.strftime("%Y-%m-%dT%H:%M")
+        # Convert milliseconds to seconds
+        epoch_seconds = epoch / 1000
+        dt = datetime.fromtimestamp(epoch_seconds, tz=timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     def get_datetime_iso(self) -> Tuple[Optional[str], Optional[str]]:
         """
         Get datetime filter value as ISO format strings.
 
-        Returns normalized tuple based on operator:
-        - IS_AFTER: (start_iso, None)
-        - IS_BEFORE: (None, end_iso)
-        - IS_BETWEEN: (start_iso, end_iso)
-        - Other operators (LAST_X_DAYS): (start_iso, end_iso) as stored
+        Value format from JSON is always {start, end} → tuple (start, end)
+        - IS_AFTER: {start: epoch, end: None} → (start_iso, None)
+        - IS_BEFORE: {start: None, end: epoch} → (None, end_iso)
+        - IS_BETWEEN: {start: epoch, end: epoch} → (start_iso, end_iso)
 
         Returns:
             Tuple of (start_iso, end_iso) where each is an ISO format string or None.
@@ -618,18 +596,10 @@ class Filter(BaseModel):
         if self.type != FilterType.DATETIME or self.is_empty():
             return (None, None)
 
-        operator = self.get_operator()
-        start_epoch = self.value[0] if len(self.value) > 0 else None
-        end_epoch = self.value[1] if len(self.value) > 1 else None
+        start_epoch = self.value[0]
+        end_epoch = self.value[1]
 
-        if operator == DatetimeOperator.IS_AFTER:
-            return (self._epoch_to_iso(start_epoch), None)
-        elif operator == DatetimeOperator.IS_BEFORE:
-            return (None, self._epoch_to_iso(start_epoch))
-        elif operator == DatetimeOperator.IS_BETWEEN:
-            return (self._epoch_to_iso(start_epoch), self._epoch_to_iso(end_epoch))
-        else:
-            return (self._epoch_to_iso(start_epoch), self._epoch_to_iso(end_epoch))
+        return (self._epoch_to_iso(start_epoch), self._epoch_to_iso(end_epoch))
 
     @property
     def operator_value(self) -> str:
@@ -758,7 +728,7 @@ class FilterCollection(BaseModel):
             try:
                 # Validate filter structure
                 if not isinstance(val, dict):
-                    log.warning("Skipping filter: expected dict, got {type(val).__name__}")
+                    log.warning(f"Skipping filter: expected dict, got {type(val).__name__}")
                     continue
 
                 if "operator" not in val or "type" not in val:
@@ -769,8 +739,8 @@ class FilterCollection(BaseModel):
                 filter_data = {"key": key, **val}
                 filters.append(Filter.model_validate(filter_data))
 
-            except ValueError:
-                log.warning("Invalid filter: {e}")
+            except ValueError as e:
+                log.warning(f"Invalid filter: {e}")
                 continue
 
         return cls(filters=filters)
