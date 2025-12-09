@@ -25,12 +25,11 @@ Total Methods: 26
 """
 
 import asyncio
-from typing import List, Optional
-
-from trello import TrelloClient as PyTrelloClient
+from typing import Callable, Dict, List, Optional
 
 # Import from our client module
 from app.sources.client.trello.trello import TrelloClient, TrelloResponse
+from trello import TrelloClient as PyTrelloClient
 
 
 class TrelloDataSource:
@@ -86,7 +85,9 @@ class TrelloDataSource:
         """
         return self.client
 
-    async def _execute(self, func, *args, **kwargs) -> TrelloResponse:
+    async def _execute(
+        self, func: Callable[..., object], *args: object, **kwargs: object
+    ) -> TrelloResponse:
         """Execute a synchronous py-trello function asynchronously.
 
         Args:
@@ -100,7 +101,7 @@ class TrelloDataSource:
         try:
             loop = asyncio.get_running_loop()
 
-            def _serialize(data):
+            def _serialize(data: object) -> object:
                 """Recursively serialize py-trello objects to dictionaries."""
                 if isinstance(data, list):
                     return [_serialize(item) for item in data]
@@ -160,7 +161,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_boards():
+        def get_boards() -> object:
             member = client.get_member(member_id)
             board_methods = {
                 "all": member.all_boards,
@@ -184,7 +185,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_cards():
+        def get_cards() -> object:
             member = client.get_member(member_id)
             return member.fetch_cards()
 
@@ -202,7 +203,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_orgs():
+        def get_orgs() -> object:
             member = client.get_member(member_id)
             return member.fetch_organizations()
 
@@ -251,7 +252,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_lists():
+        def get_lists() -> object:
             board = client.get_board(board_id)
             list_methods = {
                 "all": board.all_lists,
@@ -276,7 +277,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_cards():
+        def get_cards() -> object:
             board = client.get_board(board_id)
             return board.all_cards()
 
@@ -294,7 +295,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_members():
+        def get_members() -> object:
             board = client.get_board(board_id)
             return board.get_members()
 
@@ -357,13 +358,15 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_cards():
+        def get_cards() -> object:
             trello_list = client.get_list(list_id)
             return trello_list.list_cards()
 
         return await self._execute(get_cards)
 
-    async def create_list(self, board_id: str, name: str, pos: Optional[str] = None) -> TrelloResponse:
+    async def create_list(
+        self, board_id: str, name: str, pos: Optional[str] = None
+    ) -> TrelloResponse:
         """
         Create a new list on a board
 
@@ -377,7 +380,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def create():
+        def create() -> object:
             board = client.get_board(board_id)
             return board.add_list(name, pos=pos)
 
@@ -395,7 +398,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def archive():
+        def archive() -> Dict[str, object]:
             trello_list = client.get_list(list_id)
             trello_list.close()
             return {"archived": True, "list_id": list_id}
@@ -444,7 +447,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def create():
+        def create() -> object:
             trello_list = client.get_list(list_id)
             return trello_list.add_card(
                 name=name,
@@ -479,7 +482,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def update():
+        def update() -> object:
             card = client.get_card(card_id)
             if name is not None:
                 card.set_name(name)
@@ -505,7 +508,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def delete():
+        def delete() -> Dict[str, object]:
             card = client.get_card(card_id)
             card.delete()
             return {"deleted": True, "card_id": card_id}
@@ -524,7 +527,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_checklists():
+        def get_checklists() -> object:
             card = client.get_card(card_id)
             return card.fetch_checklists()
 
@@ -542,7 +545,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_attachments():
+        def get_attachments() -> object:
             card = client.get_card(card_id)
             return card.get_attachments()
 
@@ -560,7 +563,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_comments():
+        def get_comments() -> object:
             card = client.get_card(card_id)
             return card.get_comments()
 
@@ -579,7 +582,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def add_comment():
+        def add_comment() -> object:
             card = client.get_card(card_id)
             return card.comment(text)
 
@@ -614,7 +617,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_boards():
+        def get_boards() -> object:
             org = client.get_organization(org_id)
             return org.get_boards()
 
@@ -632,7 +635,7 @@ class TrelloDataSource:
         """
         client = self._get_trello_client()
 
-        def get_members():
+        def get_members() -> object:
             org = client.get_organization(org_id)
             return org.get_members()
 
@@ -641,13 +644,12 @@ class TrelloDataSource:
 
 
 def main() -> None:
-    """Generate the Trello client file"""
-
+    """Generate the Trello client file."""
     # Create directory if it doesn't exist
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Writing TrelloDataSource to {OUTPUT_PATH}...")
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+    with OUTPUT_PATH.open("w", encoding="utf-8") as f:
         f.write(TRELLO_SOURCE_CODE)
 
     print("Done!")
