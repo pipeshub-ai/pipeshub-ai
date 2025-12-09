@@ -237,7 +237,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
         )
 
     elif provider == EmbeddingProvider.TOGETHER.value:
-        from langchain_together import TogetherEmbeddings
+        from app.utils.custom_embeddings import TogetherEmbeddings
 
         return TogetherEmbeddings(
             model=model_name,
@@ -478,7 +478,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
             )
 
     elif provider == LLMProvider.TOGETHER.value:
-        from langchain_together import ChatTogether
+        from app.utils.custom_chat_model import ChatTogether
 
         return ChatTogether(
                 model=model_name,
