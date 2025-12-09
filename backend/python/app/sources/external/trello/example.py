@@ -24,7 +24,7 @@ def _print_response(title: str, response: TrelloResponse, max_items: int = 10) -
     print(title)
 
     if not response.success:
-        print(f"ERROR Error: {response.error}")
+        print(f"Error: {response.error}")
         return
 
     data = response.data

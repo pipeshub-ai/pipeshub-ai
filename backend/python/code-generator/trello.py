@@ -153,7 +153,7 @@ class TrelloDataSource:
 
         Args:
             member_id: Member ID or 'me' for authenticated user
-            board_filter: Filter for boards ('all', 'open', 'closed', 'starred', etc.)
+            board_filter: Filter for boards ('all', 'open', 'closed')
 
         Returns:
             TrelloResponse: Standardized response with list of boards
