@@ -90,7 +90,8 @@ class Confluence:
                     "data": {}
                 })
         else:
-            error_text = response.text if hasattr(response, 'text') else str(response)
+            # Fix: response.text is a method, not a property - must call it
+            error_text = response.text() if hasattr(response, 'text') else str(response)
             logger.error(f"HTTP error {response.status}: {error_text}")
             return False, json.dumps({
                 "error": f"HTTP {response.status}",
@@ -216,7 +217,7 @@ class Confluence:
             response = self._run_async(
                 self.client.get_page_by_id(
                     id=page_id_int,
-                    body_format={"storage": {}}
+                    body_format="storage"
                 )
             )
             return self._handle_response(response, "Page content fetched successfully")

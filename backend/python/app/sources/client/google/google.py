@@ -242,7 +242,28 @@ class GoogleClient(IClient):
                 merged = dict(creds)
                 merged['clientId'] = auth_cfg.get("clientId")
                 merged['clientSecret'] = auth_cfg.get("clientSecret")
+
+                # Validate required fields for OAuth refresh
+                missing_fields = []
+                if not merged.get('access_token'):
+                    missing_fields.append('access_token')
+                if not merged.get('refresh_token'):
+                    missing_fields.append('refresh_token')
+                if not merged.get('clientId'):
+                    missing_fields.append('clientId')
+                if not merged.get('clientSecret'):
+                    missing_fields.append('clientSecret')
+
+                if missing_fields:
+                    error_msg = f"Incomplete OAuth credentials for {service_name}. Missing fields: {', '.join(missing_fields)}. Please re-authenticate the connector."
+                    logger.error(f"❌ {error_msg}")
+                    raise ValueError(error_msg)
+
                 return merged
+            else:
+                error_msg = f"No credentials found for {service_name} in configuration. Please authenticate the connector."
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
         except Exception as e:
             logger.error(f"❌ Failed to get individual token for {service_name}: {str(e)}")
             raise
