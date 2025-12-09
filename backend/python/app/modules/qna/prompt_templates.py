@@ -1,6 +1,8 @@
 from typing import List, Literal
-from typing_extensions import TypedDict
+
 from pydantic import BaseModel
+from typing_extensions import TypedDict
+
 
 class AnswerWithMetadata(BaseModel):
     """Schema for the answer with metadata"""

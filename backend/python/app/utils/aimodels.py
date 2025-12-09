@@ -3,8 +3,8 @@ import os
 from enum import Enum
 from typing import Any, Dict
 
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.embeddings.embeddings import Embeddings
+from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,

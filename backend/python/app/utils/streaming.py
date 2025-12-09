@@ -1,28 +1,25 @@
 import asyncio
 import json
-from langchain_mistralai import ChatMistralAI
-from langchain_cohere import ChatCohere
-
 import logging
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_anthropic import ChatAnthropic
-from langchain_openai import AzureChatOpenAI
-
-from langchain_openai import ChatOpenAI
 import os
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 import aiohttp
-from anthropic import transform_schema
 from fastapi import HTTPException
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.output_parsers import PydanticOutputParser
 from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_groq import ChatGroq
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_mistralai import ChatMistralAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
+
 from app.config.constants.http_status_code import HttpStatusCode
-from app.modules.qna.prompt_templates import AnswerWithMetadataDict, AnswerWithMetadataJSON
+from app.modules.qna.prompt_templates import (
+    AnswerWithMetadataDict,
+    AnswerWithMetadataJSON,
+)
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
@@ -215,7 +212,7 @@ async def execute_tool_calls(
 
     if not tools:
         raise ValueError("Tools are required")
-    
+
     llm_with_structured_output = None
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
         if isinstance(llm, ChatAnthropic):
@@ -223,12 +220,12 @@ async def execute_tool_calls(
                 llm_with_structured_output = _apply_structured_output(llm)
         else:
             llm_with_structured_output = _apply_structured_output(llm)
-    
+
     if llm_with_structured_output is not None:
         llm_to_pass = bind_tools_for_llm(llm_with_structured_output.first, tools)
     else:
         llm_to_pass = bind_tools_for_llm(llm, tools)
-    
+
     hops = 0
     tools_executed = False
     tool_args = []
@@ -1396,8 +1393,8 @@ async def call_aiter_llm_stream(
                 updated_messages.append(ai_message)
 
                 updated_messages.append(reflection_message)
-                
-                
+
+
                 async for event in call_aiter_llm_stream(
                     llm,
                     updated_messages,
@@ -1503,6 +1500,6 @@ def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
     except Exception as e:
         logger.warning("Failed to apply structured output, falling back to default. Error: %s", str(e))
         logger.info("Using non-structured LLM")
-        
+
     return llm
 

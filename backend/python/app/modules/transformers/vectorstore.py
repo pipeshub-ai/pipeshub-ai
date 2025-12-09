@@ -6,9 +6,8 @@ from typing import List, Optional
 
 import httpx
 import spacy
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.documents import Document
-
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client.http.models import PointStruct

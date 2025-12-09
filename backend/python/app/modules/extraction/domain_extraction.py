@@ -6,9 +6,9 @@ from typing import List, Literal
 import aiohttp
 import jwt
 import numpy as np
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
-from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import TfidfVectorizer
