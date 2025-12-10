@@ -57,6 +57,7 @@ class OAuthToken:
     token_type: str = "Bearer"
     expires_in: Optional[int] = None
     refresh_token: Optional[str] = None
+    refresh_token_expires_in: Optional[int] = None  # used by Microsoft/OneDrive
     scope: Optional[str] = None
     id_token: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
@@ -86,19 +87,24 @@ class OAuthToken:
             "token_type": self.token_type,
             "expires_in": self.expires_in,
             "refresh_token": self.refresh_token,
+            "refresh_token_expires_in": self.refresh_token_expires_in,
             "scope": self.scope,
             "id_token": self.id_token,
             "created_at": self.created_at.isoformat(),
             "uid": self.uid,
-            "account_id": self.account_id
+            "account_id": self.account_id,
+            "team_id": self.team_id
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'OAuthToken':
-        """Create token from dictionary"""
+        """Create token from dictionary, filtering out unknown fields"""
         if 'created_at' in data and isinstance(data['created_at'], str):
             data['created_at'] = datetime.fromisoformat(data['created_at'])
-        return cls(**data)
+        # Filter to only known fields to handle varying OAuth provider responses
+        known_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered_data = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered_data)
 
 
 class OAuthProvider:
@@ -183,7 +189,7 @@ class OAuthProvider:
                 raise Exception(error_msg)
             token_data = await response.json()
 
-        token = OAuthToken(**token_data)
+        token = OAuthToken.from_dict(token_data)
         return token
 
     async def refresh_access_token(self, refresh_token: str) -> OAuthToken:
@@ -205,7 +211,7 @@ class OAuthProvider:
             token_data = await response.json()
 
         # Create new token with current timestamp
-        token = OAuthToken(**token_data)
+        token = OAuthToken.from_dict(token_data)
 
         # Handle different OAuth providers:
         # - Google: doesn't return refresh_token on refresh, so preserve the old one
