@@ -2,27 +2,39 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from typing import (
     Any,
     Callable,
     Dict,
     List,
+    Literal,
+    Mapping,
     Optional,
+    Sequence,
+    Set,
     Tuple,
     Union,
     cast,
 )
 
+import openai
 import requests
 from langchain_core.embeddings import Embeddings
 from langchain_core.utils import convert_to_secret_str, get_from_dict_or_env
-from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
+from langchain_core.utils.utils import (
+    from_env,
+    get_pydantic_field_names,
+    secret_from_env,
+)
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from tenacity import (
     before_sleep_log,
     retry,
     stop_after_attempt,
     wait_exponential,
 )
+from typing_extensions import Self
 
 from app.utils.logger import create_logger
 
@@ -254,33 +266,9 @@ class VoyageEmbeddings(BaseModel, Embeddings):
             texts, batch_size=self.batch_size, input_type=input_type
         )
 
-import warnings
-from typing import (
-    Any,
-    Dict,
-    List,
-    Literal,
-    Mapping,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-    Union,
-)
-
-import openai
-from langchain_core.utils.utils import from_env, get_pydantic_field_names, secret_from_env
-
-from pydantic import (
-    ConfigDict,
-    Field,
-    SecretStr,
-    model_validator,
-)
-from typing_extensions import Self
 
 class TogetherEmbeddings(BaseModel, Embeddings):
-   
+
     client: Any = Field(default=None, exclude=True)  #: :meta private:
     async_client: Any = Field(default=None, exclude=True)  #: :meta private:
     model: str = "BAAI/bge-base-en-v1.5"
@@ -359,7 +347,7 @@ class TogetherEmbeddings(BaseModel, Embeddings):
 
     @model_validator(mode="before")
     @classmethod
-    def build_extra(cls, values: Dict[str, Any]) -> Any:
+    def build_extra(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Build extra kwargs from additional params that were passed in."""
         all_required_field_names = get_pydantic_field_names(cls)
         extra = values.get("model_kwargs", {})

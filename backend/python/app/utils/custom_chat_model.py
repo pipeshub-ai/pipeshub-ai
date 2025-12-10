@@ -15,7 +15,7 @@ from typing_extensions import Self
 
 
 class ChatTogether(BaseChatOpenAI):
-    
+
     @property
     def lc_secrets(self) -> Dict[str, str]:
         """A map of constructor argument names to secret ids.
@@ -49,7 +49,7 @@ class ChatTogether(BaseChatOpenAI):
         return "together-chat"
 
     def _get_ls_params(
-        self, stop: Optional[List[str]] = None, **kwargs: Any
+        self, stop: Optional[List[str]] = None, **kwargs: Any  # noqa: ANN401
     ) -> LangSmithParams:
         """Get the parameters used to invoke the model."""
         params = super()._get_ls_params(stop=stop, **kwargs)

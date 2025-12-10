@@ -3,8 +3,6 @@ import json
 import logging
 import os
 import re
-from langchain_groq import ChatGroq
-
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 import aiohttp
@@ -13,6 +11,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.runnables import Runnable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -22,8 +21,6 @@ from app.modules.qna.prompt_templates import (
     AnswerWithMetadataDict,
     AnswerWithMetadataJSON,
 )
-from langchain_aws import ChatBedrock
-
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
@@ -218,7 +215,7 @@ async def execute_tool_calls(
         raise ValueError("Tools are required")
 
     llm_to_pass = get_llm_to_pass(llm)
-    
+
     if hasattr(llm_to_pass, "first"):
         print(f"llm_to_pass  if     : {type(llm_to_pass.first)}")
         llm_to_pass = bind_tools_for_llm(llm_to_pass.first, tools,llm)
@@ -226,8 +223,8 @@ async def execute_tool_calls(
         print(f"llm_to_pass: {type(llm)}")
         llm_to_pass = bind_tools_for_llm(llm, tools,llm)
 
-    
-   
+
+
     hops = 0
     tools_executed = False
     tool_args = []
@@ -1463,7 +1460,7 @@ def bind_tools_for_llm(llm_to_pass, tools: List[object],llm: BaseChatModel) -> B
 
                 formatted_tools.append(tool_dict)
 
-            logger.info(f"tools for Bedrock, bind successfully")
+            logger.info("tools for Bedrock, bind successfully")
             return llm_to_pass.bind(tools=formatted_tools)
     except ImportError:
         pass
@@ -1496,7 +1493,7 @@ def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
 
     return llm
 
-def get_llm_to_pass(llm: BaseChatModel):
+def get_llm_to_pass(llm: BaseChatModel) -> BaseChatModel|Runnable:
     llm_with_structured_output = None
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
         if isinstance(llm, ChatAnthropic):
