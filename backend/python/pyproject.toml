@@ -57,7 +57,7 @@ dependencies = [
     "langchain-groq==1.1.0",
     "langchain-huggingface==1.1.0",
     "langchain-mistralai==0.2.12",
-    "langchain-ollama==0.3.10",
+    "langchain-ollama==1.0.0",
     "langchain-openai==1.1.1",
     "langchain-qdrant==1.0.0",
     "langchain-voyageai==0.3.0",

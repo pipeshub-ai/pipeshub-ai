@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import re
+from langchain_groq import ChatGroq
+
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 import aiohttp
@@ -20,6 +22,8 @@ from app.modules.qna.prompt_templates import (
     AnswerWithMetadataDict,
     AnswerWithMetadataJSON,
 )
+from langchain_aws import ChatBedrock
+
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
@@ -213,19 +217,17 @@ async def execute_tool_calls(
     if not tools:
         raise ValueError("Tools are required")
 
-    llm_with_structured_output = None
-    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
-        if isinstance(llm, ChatAnthropic):
-            if "opus-4-1" in llm.model or "opus-4-5" in llm.model or "haiku-4-5" in llm.model or "sonnet-4-5" in llm.model:
-                llm_with_structured_output = _apply_structured_output(llm)
-        else:
-            llm_with_structured_output = _apply_structured_output(llm)
-
-    if llm_with_structured_output is not None:
-        llm_to_pass = bind_tools_for_llm(llm_with_structured_output.first, tools)
+    llm_to_pass = get_llm_to_pass(llm)
+    
+    if hasattr(llm_to_pass, "first"):
+        print(f"llm_to_pass  if     : {type(llm_to_pass.first)}")
+        llm_to_pass = bind_tools_for_llm(llm_to_pass.first, tools,llm)
     else:
-        llm_to_pass = bind_tools_for_llm(llm, tools)
+        print(f"llm_to_pass: {type(llm)}")
+        llm_to_pass = bind_tools_for_llm(llm, tools,llm)
 
+    
+   
     hops = 0
     tools_executed = False
     tool_args = []
@@ -234,7 +236,6 @@ async def execute_tool_calls(
         # with error handling for provider-level tool failures
         try:
             # Measure LLM invocation latency
-
             ai = None
             async for event in call_aiter_llm_stream(llm_to_pass, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk):
                 if event.get("event") == "complete" or event.get("event") == "error":
@@ -927,15 +928,7 @@ async def handle_json_mode(
 
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
-        llm_with_structured_output = None
-        if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
-            if isinstance(llm, ChatAnthropic):
-                if "opus-4-1" in llm.model or "opus-4-5" in llm.model or "haiku-4-5" in llm.model or "sonnet-4-5" in llm.model:
-                    llm_with_structured_output = _apply_structured_output(llm)
-            else:
-                llm_with_structured_output = _apply_structured_output(llm)
-
-        llm_to_pass = llm if llm_with_structured_output is None else llm_with_structured_output
+        llm_to_pass = get_llm_to_pass(llm)
 
         async for token in call_aiter_llm_stream(llm_to_pass, messages,final_results,records,target_words_per_chunk):
             yield token
@@ -1394,7 +1387,6 @@ async def call_aiter_llm_stream(
 
                 updated_messages.append(reflection_message)
 
-
                 async for event in call_aiter_llm_stream(
                     llm,
                     updated_messages,
@@ -1449,7 +1441,7 @@ async def call_aiter_llm_stream(
         yield {"event": "error","data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
         return
 
-def bind_tools_for_llm(llm: BaseChatModel, tools: List[object]) -> BaseChatModel:
+def bind_tools_for_llm(llm_to_pass, tools: List[object],llm: BaseChatModel) -> BaseChatModel:
     """
     Bind tools to the LLM, handling provider-specific quirks.
     """
@@ -1471,7 +1463,8 @@ def bind_tools_for_llm(llm: BaseChatModel, tools: List[object]) -> BaseChatModel
 
                 formatted_tools.append(tool_dict)
 
-            return llm.bind(tools=formatted_tools)
+            logger.info(f"tools for Bedrock, bind successfully")
+            return llm_to_pass.bind(tools=formatted_tools)
     except ImportError:
         pass
     except (TypeError, AttributeError, KeyError) as e:
@@ -1479,7 +1472,7 @@ def bind_tools_for_llm(llm: BaseChatModel, tools: List[object]) -> BaseChatModel
         logger.warning(f"Failed to format tools for Bedrock: {e}")
         pass
 
-    return llm.bind_tools(tools)
+    return llm_to_pass.bind_tools(tools)
 
 def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
     additional_kwargs = {
@@ -1503,3 +1496,14 @@ def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
 
     return llm
 
+def get_llm_to_pass(llm: BaseChatModel):
+    llm_with_structured_output = None
+    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
+        if isinstance(llm, ChatAnthropic):
+            if "opus-4-1" in llm.model or "opus-4-5" in llm.model or "haiku-4-5" in llm.model or "sonnet-4-5" in llm.model:
+                llm_with_structured_output = _apply_structured_output(llm)
+        else:
+            llm_with_structured_output = _apply_structured_output(llm)
+
+    llm_to_pass = llm if llm_with_structured_output is None else llm_with_structured_output
+    return llm_to_pass
