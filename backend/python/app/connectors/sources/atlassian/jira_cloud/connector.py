@@ -36,7 +36,9 @@ from app.connectors.sources.atlassian.core.oauth import (
     AtlassianScope,
 )
 from app.models.entities import (
+    AppRole,
     AppUser,
+    AppUserGroup,
     CommentRecord,
     FileRecord,
     IndexingStatus,
@@ -52,15 +54,11 @@ from app.sources.external.jira.jira import JiraDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # API URLs
-RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
-BASE_URL = "https://api.atlassian.com/ex/jira"
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 
 # Pagination constants
 DEFAULT_MAX_RESULTS: int = 100
-THRESHOLD_PAGINATION_LIMIT: int = 100
-MAX_PAGES_PER_PROJECT: int = 50
 BATCH_PROCESSING_SIZE: int = 200
 
 # JQL query constants
@@ -307,6 +305,7 @@ class JiraConnector(BaseConnector):
         self.cloud_id: Optional[str] = None
         self.site_url: Optional[str] = None
         self._sync_in_progress: bool = False
+        self._client_refs: List[Any] = []  # Track transient clients for cleanup
 
         # Initialize sync points
         org_id = self.data_entities_processor.org_id
@@ -369,14 +368,8 @@ class JiraConnector(BaseConnector):
     async def _get_fresh_datasource(self) -> JiraDataSource:
         """
         Get JiraDataSource with ALWAYS-FRESH access token.
-
-        This method:
-        1. Fetches current OAuth token from config
-        2. Rebuilds client with fresh token if needed
-        3. Returns datasource with current token
-
-        Returns:
-            JiraDataSource with current valid token
+        Note: The returned datasource creates a new HTTP client that should be
+        closed after use to prevent connection leaks.
         """
         # Fetch fresh access token from config
         fresh_token = await self._get_access_token()
@@ -386,6 +379,9 @@ class JiraConnector(BaseConnector):
             self.logger,
             self.config_service
         )
+        
+        # Track client for cleanup (helps reduce connection leaks)
+        self._client_refs.append(client)
 
         # Return new datasource with fresh client
         return JiraDataSource(client)
@@ -403,7 +399,6 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}")
             return 0
-
 
     async def run_sync(self) -> None:
         """Run sync of Jira projects and issues - only new/updated tickets"""
@@ -434,6 +429,11 @@ class JiraConnector(BaseConnector):
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"Synced {len(jira_users)} Jira users")
 
+            # Fetch and sync user groups
+            self.logger.info("Fetching Jira user groups...")
+            await self._sync_user_groups(org_id, jira_users)
+            self.logger.info("User groups sync completed")
+
             # Fetch projects
             self.logger.info("Fetching Jira projects...")
             projects = await self._fetch_projects()
@@ -455,6 +455,11 @@ class JiraConnector(BaseConnector):
             # Sync projects as RecordGroups
             await self.data_entities_processor.on_new_record_groups(projects)
             self.logger.info("Synced projects as RecordGroups")
+            
+            # Fetch and sync project roles
+            self.logger.info("Fetching Jira project roles...")
+            await self._sync_project_roles(projects, jira_users)
+            self.logger.info("Project roles sync completed")
 
             # Get global sync checkpoint and check for filter changes
             global_sync_key = "issues_global"
@@ -546,10 +551,6 @@ class JiraConnector(BaseConnector):
                     self.logger.info(f"Completed syncing {len(issues_with_permissions)} issues for project {project.short_name} "
                                    f"(New: {len(new_records_with_permissions)}, Updated: {len(updated_records)})")
 
-                    total_issues_synced += len(issues_with_permissions)
-                    total_new_issues += len(new_records_with_permissions)
-                    total_updated_issues += len(updated_records)
-
                 except Exception as e:
                     self.logger.error(f"Error processing issues for project {project.short_name}: {e}")
                     continue
@@ -566,6 +567,31 @@ class JiraConnector(BaseConnector):
                 
                 await self.issues_sync_point.update_sync_point(global_sync_key, sync_point_data)
                 self.logger.info(f"Updated global sync checkpoint to {current_time} with current filter values")
+
+            # Detect and handle deletions via Audit API
+            audit_sync_key = "issues_audit_deletions"
+            audit_last_sync_time = None
+            
+            try:
+                audit_sync_point_data = await self.issues_sync_point.read_sync_point(audit_sync_key)
+                audit_last_sync_time = audit_sync_point_data.get("last_sync_time") if audit_sync_point_data else None
+            except Exception:
+                audit_last_sync_time = None
+            
+            # Use audit sync point if exists, otherwise use global issues sync point
+            deletion_check_time = audit_last_sync_time or global_last_sync_time
+            
+            if deletion_check_time:
+                deleted_count = await self._detect_and_handle_deletions(deletion_check_time)
+                self.logger.info(f"Processed {deleted_count} deleted issues")
+                
+                # Save audit sync point to avoid re-processing same deletions
+                audit_current_time = get_epoch_timestamp_in_ms()
+                await self.issues_sync_point.update_sync_point(
+                    audit_sync_key,
+                    {"last_sync_time": audit_current_time}
+                )
+                self.logger.info(f"Updated audit sync checkpoint to {audit_current_time}")
 
             # Summary
             self.logger.info(f"Jira sync completed. Total: {total_issues_synced} issues "
@@ -646,6 +672,838 @@ class JiraConnector(BaseConnector):
         self.logger.info(f"Fetched {len(app_users)} active users with emails")
         return app_users
 
+    async def _detect_and_handle_deletions(self, last_sync_time: int) -> int:
+        """
+        Detect and handle deleted issues using Jira Audit API.
+        
+        Args:
+            last_sync_time: Last sync timestamp in milliseconds
+            
+        Returns:
+            Count of deleted issues processed
+        """
+        try:
+            self.logger.info("🔍 Checking for deleted issues via Audit API...")
+            
+            # Convert timestamp to ISO format
+            from_date = datetime.fromtimestamp(
+                last_sync_time / 1000, 
+                tz=timezone.utc
+            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            
+            to_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            
+            # Fetch audit records for issue deletions
+            deleted_issue_keys = await self._fetch_deleted_issues_from_audit(from_date, to_date)
+            
+            if not deleted_issue_keys:
+                self.logger.info("ℹ️ No deleted issues found in audit log")
+                return 0
+            
+            self.logger.info(f"📋 Found {len(deleted_issue_keys)} deleted issues: {deleted_issue_keys}")
+            
+            # Handle each deletion
+            deleted_count = 0
+            for issue_key in deleted_issue_keys:
+                try:
+                    await self._handle_deleted_issue(issue_key)
+                    deleted_count += 1
+                except Exception as e:
+                    self.logger.error(f"Error handling deleted issue {issue_key}: {e}")
+                    continue
+            
+            return deleted_count
+            
+        except Exception as e:
+            self.logger.error(f"Error detecting deletions: {e}", exc_info=True)
+            # Don't fail entire sync if deletion detection fails
+            return 0
+
+    async def _fetch_deleted_issues_from_audit(
+        self, 
+        from_date: str, 
+        to_date: str
+    ) -> List[str]:
+        """
+        Fetch deleted issue keys from Jira Audit API.
+        
+        Args:
+            from_date: Start date in ISO format (e.g., "2025-12-09T10:00:00.000Z")
+            to_date: End date in ISO format
+            
+        Returns:
+            List of deleted issue keys (e.g., ["PA-450", "PROJ-123"])
+        """
+        deleted_issue_keys = []
+        offset = 0
+        limit = 1000  # Max per request
+        
+        while True:
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_audit_records(
+                    offset=offset,
+                    limit=limit,
+                    from_=from_date,
+                    to=to_date
+                )
+                
+                if response.status != HTTP_STATUS_OK:
+                    self.logger.warning(f"Failed to fetch audit records: {response.text()}")
+                    break
+                
+                audit_data = response.json()
+                records = audit_data.get("records", [])
+                
+                if not records:
+                    break
+                
+                # Filter for issue deletion events
+                for record in records:
+                    object_item = record.get("objectItem", {})
+                    type_name = object_item.get("typeName")
+                    
+                    # Check if this is an issue deletion
+                    if type_name == "ISSUE_DELETE":
+                        issue_key = object_item.get("name")  # e.g., "PA-450"
+                        if issue_key:
+                            deleted_issue_keys.append(issue_key)
+                            self.logger.debug(f"🗑️ Audit: Issue {issue_key} deleted at {record.get('created')}")
+                
+                # Check pagination
+                total = audit_data.get("total", 0)
+                if offset + len(records) >= total:
+                    break
+                
+                offset += limit
+                
+            except Exception as e:
+                self.logger.error(f"Error fetching audit records at offset {offset}: {e}")
+                break
+        
+        return deleted_issue_keys
+
+    async def _handle_deleted_issue(self, issue_key: str) -> None:
+        """
+        Handle deletion of an issue and its related entities (comments, attachments).
+        
+        Args:
+            issue_key: Issue key (e.g., "PA-450")
+        """
+        try:
+            self.logger.info(f"🗑️ Handling deletion of issue {issue_key}")
+            
+            # Try to fetch issue details to get the actual issue ID
+            # Note: This will fail with 404 if truly deleted, but worth trying
+            # in case it was moved or the audit record is stale
+            issue_id = None
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_issue(issueIdOrKey=issue_key)
+                if response.status == HTTP_STATUS_OK:
+                    self.logger.warning(f"Issue {issue_key} still exists in Jira (not deleted, maybe moved?)")
+                    return  # Don't delete if it still exists
+            except Exception:
+                # Expected - issue is deleted (404)
+                pass
+            
+            async with self.data_store_provider.transaction() as tx_store:
+                # Fetch ALL records ONCE to avoid multiple database calls
+                # This is shared between finding the issue and finding its children
+                all_status_values = [status.value for status in IndexingStatus]
+                
+                all_records = await tx_store.get_records_by_status(
+                    org_id=self.data_entities_processor.org_id,
+                    connector_name=Connectors.JIRA,
+                    status_filters=all_status_values,
+                    limit=None
+                )
+                
+                # Search for issue in the cached records by webUrl pattern
+                issue_record = None
+                for record in all_records:
+                    if record.record_type == RecordType.TICKET:
+                        # Check if weburl contains the issue key
+                        if hasattr(record, 'weburl') and record.weburl and f"/browse/{issue_key}" in record.weburl:
+                            issue_record = record
+                            issue_id = record.external_record_id
+                            break
+                
+                if not issue_record:
+                    self.logger.warning(f"Issue {issue_key} not found in database (already deleted or never synced?)")
+                    return
+                
+                record_internal_id = issue_record.id
+                self.logger.info(f"Found issue {issue_key} with internal ID {record_internal_id}, external ID {issue_id}")
+                
+                # 1. Delete child Sub-tasks (pass cached records to avoid refetch)
+                subtask_count = await self._delete_issue_children(
+                    issue_id, 
+                    RecordType.TICKET, 
+                    tx_store,
+                    all_records  # ✅ Pass cached records
+                )
+                
+                # 2. Delete child comments (pass cached records to avoid refetch)
+                comment_count = await self._delete_issue_children(
+                    issue_id, 
+                    RecordType.COMMENT, 
+                    tx_store,
+                    all_records  # ✅ Pass cached records
+                )
+                
+                # 3. Delete child attachments (pass cached records to avoid refetch)
+                attachment_count = await self._delete_issue_children(
+                    issue_id, 
+                    RecordType.FILE, 
+                    tx_store,
+                    all_records  # ✅ Pass cached records
+                )
+                                
+                # 4. Delete the issue itself and all its edges
+                await tx_store.arango_service.delete_records_and_relations(
+                    node_key=record_internal_id,
+                    hard_delete=True,
+                    transaction=tx_store.txn
+                )
+                
+                self.logger.info(
+                    f"✅ Deleted issue {issue_key} and its children "
+                    f"({subtask_count} sub-tasks, {comment_count} comments, {attachment_count} attachments)"
+                )
+                
+        except Exception as e:
+            self.logger.error(f"Error handling deleted issue {issue_key}: {e}", exc_info=True)
+            # Don't raise - continue processing other deletions
+
+    async def _delete_issue_children(
+        self, 
+        parent_issue_id: str, 
+        child_type: RecordType,
+        tx_store,
+        cached_records: List[Record] = None
+    ) -> int:
+        """
+        Delete all child records (sub-tasks, comments, or attachments) for a deleted issue.
+        
+        Args:
+            parent_issue_id: External issue ID
+            child_type: RecordType.TICKET (sub-tasks), RecordType.COMMENT, or RecordType.FILE
+            tx_store: Transaction store
+            cached_records: Optional pre-fetched records to avoid database query
+            
+        Returns:
+            Count of deleted child records
+        """
+        try:
+            deleted_count = 0
+            # Map child type to readable name
+            child_type_name = {
+                RecordType.TICKET: "sub-task",
+                RecordType.COMMENT: "comment",
+                RecordType.FILE: "attachment"
+            }.get(child_type, str(child_type))
+            
+            # Use cached records if provided, otherwise fetch (for backwards compatibility)
+            if cached_records is None:
+                all_status_values = [status.value for status in IndexingStatus]
+                cached_records = await tx_store.get_records_by_status(
+                    org_id=self.data_entities_processor.org_id,
+                    connector_name=Connectors.JIRA,
+                    status_filters=all_status_values,
+                    limit=None
+                )
+            
+            for record in cached_records:
+                # Check if this is the right type with matching parent
+                if (record.record_type == child_type and 
+                    hasattr(record, 'parent_external_record_id') and
+                    record.parent_external_record_id == parent_issue_id):
+                    
+                    # If deleting a sub-task (TICKET), recursively delete its children first
+                    if child_type == RecordType.TICKET:
+                        subtask_id = record.external_record_id
+                        # Delete sub-task's comments
+                        await self._delete_issue_children(
+                            subtask_id, 
+                            RecordType.COMMENT, 
+                            tx_store,
+                            cached_records
+                        )
+                        # Delete sub-task's attachments
+                        await self._delete_issue_children(
+                            subtask_id, 
+                            RecordType.FILE, 
+                            tx_store,
+                            cached_records
+                        )
+                        # Note: No need to recursively delete sub-sub-tasks as Jira doesn't support them
+                    
+                    # Delete record and all its edges (indexer cleanup handled automatically)
+                    await tx_store.arango_service.delete_records_and_relations(
+                        node_key=record.id,
+                        hard_delete=True,
+                        transaction=tx_store.txn
+                    )
+                    deleted_count += 1
+                    self.logger.debug(f"  Deleted {child_type_name} {record.external_record_id}")
+            
+            return deleted_count
+            
+        except Exception as e:
+            self.logger.error(f"Error deleting {child_type_name}s for issue {parent_issue_id}: {e}")
+            return 0
+
+    async def _sync_project_roles(
+        self, 
+        projects: List[Tuple[RecordGroup, List[Permission]]], 
+        jira_users: List[AppUser]
+    ) -> None:
+        """
+        Sync Jira project roles for all projects.
+        
+        Args:
+            projects: List of (RecordGroup, permissions) tuples for projects
+            jira_users: List of all Jira users for email lookup
+        """
+        try:
+            self.logger.info("Starting Jira project roles synchronization")
+            
+            all_roles = []
+            
+            for project, _ in projects:
+                project_key = project.short_name
+                self.logger.info(f"Fetching roles for project {project_key}")
+                
+                # Fetch roles for this project
+                project_roles = await self._fetch_project_roles(project_key, jira_users)
+                all_roles.extend(project_roles)
+                
+                self.logger.info(f"Found {len(project_roles)} roles for project {project_key}")
+            
+            if all_roles:
+                # Process all roles at once
+                await self.data_entities_processor.on_new_app_roles(all_roles)
+                self.logger.info(f"Successfully synced {len(all_roles)} project roles")
+            else:
+                self.logger.info("No project roles found across all projects")
+                
+        except Exception as e:
+            self.logger.error(f"Error syncing project roles: {e}", exc_info=True)
+            # Don't raise - continue with sync even if roles fail
+
+    async def _fetch_project_roles(
+        self, 
+        project_key: str, 
+        jira_users: List[AppUser]
+    ) -> List[Tuple[AppRole, List[AppUser]]]:
+        """
+        Fetch all roles for a specific project and their members.
+        
+        Args:
+            project_key: Jira project key (e.g., "PA", "QUES")
+            jira_users: List of all Jira users for member lookup
+            
+        Returns:
+            List of (AppRole, List[AppUser]) tuples
+        """
+        roles_with_members = []
+        
+        try:
+            datasource = await self._get_fresh_datasource()
+            
+            # Step 1: Get all roles for the project
+            response = await datasource.get_project_roles(projectIdOrKey=project_key)
+            
+            if response.status != HTTP_STATUS_OK:
+                self.logger.warning(f"Failed to fetch roles for project {project_key}: {response.text()}")
+                return []
+            
+            roles_data = response.json()
+            # Response format: {"Administrators": "https://.../role/10002", "Developers": "..."}
+            
+            # Step 2: Fetch details for each role
+            for role_name, role_url in roles_data.items():
+                try:
+                    # Extract role ID from URL (e.g., ".../role/10002" → "10002")
+                    role_id = role_url.split('/')[-1]
+                    
+                    # Get role details including actors
+                    role_response = await datasource.get_project_role(
+                        projectIdOrKey=project_key,
+                        id=int(role_id)
+                    )
+                    
+                    if role_response.status != HTTP_STATUS_OK:
+                        self.logger.warning(f"Failed to fetch role details for {role_name}: {role_response.text()}")
+                        continue
+                    
+                    role_details = role_response.json()
+                    
+                    # Create AppRole
+                    app_role = AppRole(
+                        app_name=Connectors.JIRA,
+                        source_role_id=f"{project_key}_{role_id}",  # Make unique per project
+                        name=f"{project_key}: {role_name}",
+                        org_id=self.data_entities_processor.org_id
+                    )
+                    
+                    # Extract members (actors) from role
+                    role_members = self._extract_role_members(role_details, jira_users)
+                    
+                    roles_with_members.append((app_role, role_members))
+                    self.logger.debug(f"Role {role_name} has {len(role_members)} members")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing role {role_name}: {e}")
+                    continue
+            
+            return roles_with_members
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching roles for project {project_key}: {e}", exc_info=True)
+            return []
+
+    def _extract_role_members(
+        self, 
+        role_details: Dict[str, Any], 
+        jira_users: List[AppUser]
+    ) -> List[AppUser]:
+        """
+        Extract user members from role details.
+        
+        Args:
+            role_details: Role details from Jira API
+            jira_users: List of all Jira users for lookup
+            
+        Returns:
+            List of AppUser objects who are members of this role
+        """
+        members = []
+        user_email_map = {user.email: user for user in jira_users}
+        
+        try:
+            # Role details format:
+            # {
+            #   "self": "...",
+            #   "name": "Administrators",
+            #   "id": 10002,
+            #   "actors": [
+            #     {
+            #       "id": 10240,
+            #       "displayName": "John Doe",
+            #       "type": "atlassian-user-role-actor",
+            #       "actorUser": {
+            #         "accountId": "712020:...",
+            #         "emailAddress": "john@example.com"
+            #       }
+            #     },
+            #     {
+            #       "id": 10241,
+            #       "displayName": "Developers",
+            #       "type": "atlassian-group-role-actor",
+            #       "actorGroup": {
+            #         "name": "jira-developers",
+            #         "groupId": "..."
+            #       }
+            #     }
+            #   ]
+            # }
+            
+            actors = role_details.get("actors", [])
+            
+            for actor in actors:
+                actor_type = actor.get("type")
+                
+                # Handle user actors
+                if actor_type == "atlassian-user-role-actor":
+                    actor_user = actor.get("actorUser", {})
+                    email = actor_user.get("emailAddress")
+                    
+                    if email and email in user_email_map:
+                        members.append(user_email_map[email])
+                    else:
+                        self.logger.debug(f"User {email} not found in jira_users list")
+                
+                # Handle group actors (expand group members)
+                elif actor_type == "atlassian-group-role-actor":
+                    actor_group = actor.get("actorGroup", {})
+                    group_name = actor_group.get("name")
+                    self.logger.debug(f"Role contains group: {group_name} (groups as actors not yet expanded)")
+                    # Note: Could expand group members here if needed
+            
+            return members
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting role members: {e}", exc_info=True)
+            return []
+
+    async def _sync_user_groups(self, org_id: str, jira_users: List[AppUser]) -> None:
+        """
+        Sync Jira user groups and their members.
+        """
+        try:
+            self.logger.info("Starting Jira user group synchronization")
+            
+            # Fetch all groups
+            groups = await self._fetch_groups()
+            if not groups:
+                self.logger.info("No groups found in Jira")
+                return
+            
+            self.logger.info(f"Found {len(groups)} groups. Fetching members...")
+            
+            # Create email -> AppUser lookup for efficient matching
+            user_by_email = {user.email.lower(): user for user in jira_users if user.email}
+            
+            user_groups_batch = []
+            total_memberships = 0
+            
+            for group in groups:
+                try:
+                    group_id = group.get("groupId")
+                    group_name = group.get("name")
+                    
+                    if not group_id or not group_name:
+                        continue
+                    
+                    self.logger.debug(f"Processing group: {group_name} ({group_id})")
+                    
+                    # Create AppUserGroup (always create, even if no members)
+                    user_group = AppUserGroup(
+                        app_name=Connectors.JIRA,
+                        source_user_group_id=group_id,
+                        name=group_name,
+                        org_id=org_id,
+                        description=f"Jira user group: {group_name}"
+                    )
+                    
+                    # Fetch members for this group
+                    member_emails = await self._fetch_group_members(group_id, group_name)
+                    
+                    # Map member emails to AppUser objects
+                    app_users = []
+                    if member_emails:
+                        for email in member_emails:
+                            user = user_by_email.get(email.lower())
+                            if user:
+                                app_users.append(user)
+                            else:
+                                self.logger.debug(f"Member email {email} not found in synced users")
+                    
+                    # Add group to batch (with or without members)
+                    user_groups_batch.append((user_group, app_users))
+                    total_memberships += len(app_users)
+                    
+                    if app_users:
+                        self.logger.debug(f"Group {group_name}: {len(app_users)} members")
+                    else:
+                        self.logger.debug(f"Group {group_name}: no members with email")
+                    
+                except Exception as group_error:
+                    self.logger.error(f"Failed to process group {group.get('name')}: {group_error}")
+                    continue
+            
+            # Save all groups in one batch
+            if user_groups_batch:
+                await self.data_entities_processor.on_new_user_groups(user_groups_batch)
+                self.logger.info(f"✅ Synced {len(user_groups_batch)} groups with {total_memberships} total memberships")
+            else:
+                self.logger.info("No groups with valid members to sync")
+                
+        except Exception as e:
+            self.logger.error(f"Error syncing user groups: {e}", exc_info=True)
+            # Don't raise - group sync failure shouldn't stop the entire sync
+
+    async def _sync_project_roles(
+        self, 
+        projects: List[Tuple[RecordGroup, List[Permission]]], 
+        jira_users: List[AppUser]
+    ) -> None:
+        """
+        Sync Jira project roles for all projects.
+        
+        Args:
+            projects: List of (RecordGroup, permissions) tuples for projects
+            jira_users: List of all Jira users for email lookup
+        """
+        try:
+            self.logger.info("Starting Jira project roles synchronization")
+            
+            all_roles = []
+            
+            for project, _ in projects:
+                project_key = project.short_name
+                self.logger.info(f"Fetching roles for project {project_key}")
+                
+                # Fetch roles for this project
+                project_roles = await self._fetch_project_roles(project_key, jira_users)
+                all_roles.extend(project_roles)
+                
+                self.logger.info(f"Found {len(project_roles)} roles for project {project_key}")
+            
+            if all_roles:
+                # Process all roles at once
+                await self.data_entities_processor.on_new_app_roles(all_roles)
+                self.logger.info(f"✅ Successfully synced {len(all_roles)} project roles")
+            else:
+                self.logger.info("No project roles found across all projects")
+                
+        except Exception as e:
+            self.logger.error(f"Error syncing project roles: {e}", exc_info=True)
+            # Don't raise - continue with sync even if roles fail
+
+    async def _fetch_project_roles(
+        self, 
+        project_key: str, 
+        jira_users: List[AppUser]
+    ) -> List[Tuple[AppRole, List[AppUser]]]:
+        """
+        Fetch all roles for a specific project and their members.
+        
+        Args:
+            project_key: Jira project key (e.g., "PA", "QUES")
+            jira_users: List of all Jira users for member lookup
+            
+        Returns:
+            List of (AppRole, List[AppUser]) tuples
+        """
+        roles_with_members = []
+        
+        try:
+            datasource = await self._get_fresh_datasource()
+            
+            # Step 1: Get all roles for the project
+            response = await datasource.get_project_roles(projectIdOrKey=project_key)
+            
+            if response.status != HTTP_STATUS_OK:
+                self.logger.warning(f"Failed to fetch roles for project {project_key}: {response.text()}")
+                return []
+            
+            roles_data = response.json()
+            # Response format: {"Administrators": "https://.../role/10002", "Developers": "..."}
+            
+            # Step 2: Fetch details for each role
+            for role_name, role_url in roles_data.items():
+                try:
+                    # Extract role ID from URL (e.g., ".../role/10002" → "10002")
+                    role_id = role_url.split('/')[-1]
+                    
+                    # Get role details including actors
+                    role_response = await datasource.get_project_role(
+                        projectIdOrKey=project_key,
+                        id=int(role_id)
+                    )
+                    
+                    if role_response.status != HTTP_STATUS_OK:
+                        self.logger.warning(f"Failed to fetch role details for {role_name}: {role_response.text()}")
+                        continue
+                    
+                    role_details = role_response.json()
+                    
+                    # Create AppRole
+                    app_role = AppRole(
+                        app_name=Connectors.JIRA,
+                        source_role_id=f"{project_key}_{role_id}",  # Make unique per project
+                        name=f"{project_key}: {role_name}",
+                        org_id=self.data_entities_processor.org_id
+                    )
+                    
+                    # Extract members (actors) from role
+                    role_members = self._extract_role_members(role_details, jira_users)
+                    
+                    roles_with_members.append((app_role, role_members))
+                    self.logger.debug(f"Role {role_name} has {len(role_members)} members")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing role {role_name}: {e}")
+                    continue
+            
+            return roles_with_members
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching roles for project {project_key}: {e}", exc_info=True)
+            return []
+
+    def _extract_role_members(
+        self, 
+        role_details: Dict[str, Any], 
+        jira_users: List[AppUser]
+    ) -> List[AppUser]:
+        """
+        Extract user members from role details.
+        
+        Args:
+            role_details: Role details from Jira API
+            jira_users: List of all Jira users for lookup
+            
+        Returns:
+            List of AppUser objects who are members of this role
+        """
+        members = []
+        user_email_map = {user.email.lower(): user for user in jira_users if user.email}
+        
+        try:
+            # Role details format:
+            # {
+            #   "self": "...",
+            #   "name": "Administrators",
+            #   "id": 10002,
+            #   "actors": [
+            #     {
+            #       "id": 10240,
+            #       "displayName": "John Doe",
+            #       "type": "atlassian-user-role-actor",
+            #       "actorUser": {
+            #         "accountId": "712020:...",
+            #         "emailAddress": "john@example.com"
+            #       }
+            #     },
+            #     {
+            #       "id": 10241,
+            #       "displayName": "Developers",
+            #       "type": "atlassian-group-role-actor",
+            #       "actorGroup": {
+            #         "name": "jira-developers",
+            #         "groupId": "..."
+            #       }
+            #     }
+            #   ]
+            # }
+            
+            actors = role_details.get("actors", [])
+            
+            for actor in actors:
+                actor_type = actor.get("type")
+                
+                # Handle user actors
+                if actor_type == "atlassian-user-role-actor":
+                    actor_user = actor.get("actorUser", {})
+                    email = actor_user.get("emailAddress")
+                    
+                    if email:
+                        email_lower = email.lower()
+                        if email_lower in user_email_map:
+                            members.append(user_email_map[email_lower])
+                        else:
+                            self.logger.debug(f"User {email} not found in jira_users list")
+                
+                # Handle group actors (skip for now - groups handled separately)
+                elif actor_type == "atlassian-group-role-actor":
+                    actor_group = actor.get("actorGroup", {})
+                    group_name = actor_group.get("name")
+                    self.logger.debug(f"Role contains group: {group_name} (group actors not expanded)")
+                    # Note: Groups in roles are handled via user group sync
+            
+            return members
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting role members: {e}", exc_info=True)
+            return []
+
+    async def _fetch_groups(self) -> List[Dict[str, Any]]:
+        """
+        Fetch all Jira groups using the bulk_get_groups API.
+        """
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+        
+        groups: List[Dict[str, Any]] = []
+        start_at = 0
+        max_results = 50  # Jira API default
+        
+        while True:
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.bulk_get_groups(
+                    startAt=start_at,
+                    maxResults=max_results
+                )
+                
+                if response.status != HTTP_STATUS_OK:
+                    self.logger.error(f"Failed to fetch groups: {response.text()}")
+                    break
+                
+                groups_data = response.json()
+                batch_groups = groups_data.get("values", [])
+                
+                if not batch_groups:
+                    break
+                
+                groups.extend(batch_groups)
+                
+                # Check pagination
+                is_last = groups_data.get("isLast", False)
+                if is_last:
+                    break
+                
+                start_at += len(batch_groups)
+                
+                # Also break if we got less than requested (safety check)
+                if len(batch_groups) < max_results:
+                    break
+                    
+            except Exception as e:
+                self.logger.error(f"Error fetching groups at offset {start_at}: {e}")
+                break
+        
+        self.logger.info(f"Fetched {len(groups)} total groups")
+        return groups
+
+    async def _fetch_group_members(self, group_id: str, group_name: str) -> List[str]:
+        """
+        Fetch all members of a Jira group.
+        """
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+        
+        member_emails: List[str] = []
+        start_at = 0
+        max_results = 50
+        
+        while True:
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_users_from_group(
+                    groupname=group_name,  # Use groupname instead of groupId
+                    includeInactiveUsers=False,  # Only active users
+                    startAt=start_at,
+                    maxResults=max_results
+                )
+                
+                if response.status != HTTP_STATUS_OK:
+                    self.logger.warning(f"Failed to fetch members for group {group_name}: {response.text()}")
+                    break
+                
+                members_data = response.json()
+                batch_members = members_data.get("values", [])
+                
+                if not batch_members:
+                    break
+                
+                # Extract emails from members
+                for member in batch_members:
+                    email = member.get("emailAddress")
+                    if email:
+                        member_emails.append(email)
+                
+                # Check pagination
+                is_last = members_data.get("isLast", False)
+                if is_last:
+                    break
+                
+                start_at += len(batch_members)
+                
+                # Also break if we got less than requested
+                if len(batch_members) < max_results:
+                    break
+                    
+            except Exception as e:
+                self.logger.error(f"Error fetching members for group {group_name}: {e}")
+                break
+        
+        return member_emails
+
     async def _fetch_projects(self) -> List[Tuple[RecordGroup, List[Permission]]]:
         """Fetch all projects with pagination using DataSource"""
         if not self.data_source:
@@ -719,7 +1577,9 @@ class JiraConnector(BaseConnector):
         last_sync_time: Optional[int] = None,
         org_id: Optional[str] = None
     ) -> List[Tuple[Record, List[Permission]]]:
-        """Fetch issues for a project using JQL search - only new/updated if last_sync_time provided"""
+        """
+        Fetch issues for a project using JQL search - only new/updated if last_sync_time provided
+        """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
@@ -832,10 +1692,6 @@ class JiraConnector(BaseConnector):
                 break
 
             issues.extend(batch_issues)
-            
-            # Log progress for large projects (every 10 pages)
-            if page_count % 10 == 0:
-                self.logger.info(f"Fetched {len(issues)} issues so far for project {project_key} (page {page_count})")
 
             # Get next page token from enhanced search API
             new_token = issues_batch.get("nextPageToken")
@@ -959,7 +1815,7 @@ class JiraConnector(BaseConnector):
                 
                 epic_groups.append((epic_record_group, permissions))
                 
-                continue  # Don't create TicketRecord for epics
+                continue 
 
             # REGULAR ISSUE HANDLING: Story, Task, Bug, Sub-task
             existing_record = await tx_store.get_record_by_external_id(
@@ -976,9 +1832,9 @@ class JiraConnector(BaseConnector):
             elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
                 version = existing_record.version + 1  # Issue content changed
             else:
-                version = existing_record.version if existing_record else 0  # Issue unchanged
+                version = existing_record.version if existing_record else 0  
             
-            external_record_group_id = project_id  # Default: belong to Project
+            external_record_group_id = project_id  
             record_group_type = RecordGroupType.JIRA_PROJECT
             parent_record_id = None
             parent_record_type = None
@@ -1025,14 +1881,12 @@ class JiraConnector(BaseConnector):
                 updated_at=updated_at
             )
 
-            # Set indexing status based on filter
             # is_enabled() defaults to True if filter not configured
             if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
                 issue_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             all_records.append((issue_record, permissions))
             
-            # Fetch comments for this issue (always fetch, not just for updated issues)
             # This ensures we capture new comments even when the parent issue hasn't changed
             should_fetch_comments = True
             if self.indexing_filters:
@@ -1204,7 +2058,7 @@ class JiraConnector(BaseConnector):
                     updated_at=updated_at,
                     source_created_at=created_at,
                     source_updated_at=updated_at,
-                    author_source_id=author_account_id,
+                    author_source_id=author_account_id or "unknown",
                 )
 
                 # Set indexing status based on filter
@@ -1512,14 +2366,468 @@ class JiraConnector(BaseConnector):
         await self.run_sync()
 
     async def cleanup(self) -> None:
-        """Cleanup resources - now handled by Client layer"""
-        # Client layer handles session cleanup automatically
-        pass
+        """Cleanup resources - close HTTP client connections"""
+        try:
+            # Close all tracked transient clients
+            closed_count = 0
+            for client_wrapper in self._client_refs:
+                try:
+                    if hasattr(client_wrapper, 'client') and client_wrapper.client:
+                        http_client = client_wrapper.client
+                        if hasattr(http_client, 'close'):
+                            await http_client.close()
+                            closed_count += 1
+                except Exception as e:
+                    self.logger.debug(f"Error closing transient client: {e}")
+            
+            if closed_count > 0:
+                self.logger.debug(f"Closed {closed_count} transient HTTP client(s)")
+            
+            # Clear the list
+            self._client_refs.clear()
+            
+            # Close main data source client
+            if self.data_source and hasattr(self.data_source, 'client'):
+                client_wrapper = self.data_source.client
+                if hasattr(client_wrapper, 'client') and client_wrapper.client:
+                    http_client = client_wrapper.client
+                    if hasattr(http_client, 'close'):
+                        await http_client.close()
+                        self.logger.debug("Closed main Jira HTTP client connection")
+        except Exception as e:
+            self.logger.warning(f"Error during cleanup: {e}")
+        finally:
+            self.data_source = None
 
     async def reindex_records(self, record_results: List[Record]) -> None:
-        """Reindex records - not implemented for Jira yet."""
-        self.logger.warning("Reindex not implemented for Jira connector")
-        pass
+        """Reindex a list of Jira records.
+
+        This method:
+        1. For each record, checks if it has been updated at the source
+        2. If updated, upserts the record in DB
+        3. Publishes reindex events for all records via data_entities_processor
+        4. Skips reindex for records that are not properly typed (base Record class)"""
+        try:
+            if not record_results:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(record_results)} Jira records")
+
+            # Ensure external clients are initialized
+            if not self.data_source:
+                self.logger.error("DataSource not initialized. Call init() first.")
+                raise Exception("DataSource not initialized. Call init() first.")
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+
+            for record in record_results:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non updated records
+            if non_updated_records:
+                # Filter out records that are not properly typed (e.g., fell back to base Record class)
+                reindexable_records = []
+                skipped_count = 0
+
+                for record in non_updated_records:
+                    # Only reindex properly typed records (TicketRecord, CommentRecord, FileRecord)
+                    # Check if it's a subclass of Record but not the base Record class itself
+                    record_class_name = type(record).__name__
+                    if record_class_name != 'Record':
+                        reindexable_records.append(record)
+                    else:
+                        self.logger.warning(
+                            f"Record {record.id} ({record.record_type}) is base Record class "
+                            f"(not properly typed), skipping reindex"
+                        )
+                        skipped_count += 1
+
+                if reindexable_records:
+                    try:
+                        await self.data_entities_processor.reindex_existing_records(reindexable_records)
+                        self.logger.info(f"Published reindex events for {len(reindexable_records)} non updated records")
+                    except NotImplementedError as e:
+                        self.logger.warning(
+                            f"Cannot reindex records - to_kafka_record not implemented: {e}"
+                        )
+
+                if skipped_count > 0:
+                    self.logger.warning(f"Skipped reindex for {skipped_count} records that are not properly typed")
+
+        except Exception as e:
+            self.logger.error(f"Error during Jira reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch record from source and return data for reindexing.
+        """
+        try:
+            if record.record_type == RecordType.TICKET:
+                return await self._check_and_fetch_updated_issue(org_id, record)
+            elif record.record_type == RecordType.COMMENT:
+                return await self._check_and_fetch_updated_comment(org_id, record)
+            elif record.record_type == RecordType.FILE:
+                return await self._check_and_fetch_updated_attachment(org_id, record)
+            else:
+                self.logger.warning(f"Unsupported record type for reindex: {record.record_type}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_issue(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch issue from source for reindexing."""
+        try:
+            issue_id = record.external_record_id
+
+            # Fetch issue from source
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_issue(
+                issueIdOrKey=issue_id,
+                expand=[]
+            )
+
+            if response.status == HTTP_STATUS_GONE or response.status == HTTP_STATUS_BAD_REQUEST:
+                self.logger.warning(f"Issue {issue_id} not found at source, may have been deleted")
+                return None
+
+            if response.status != HTTP_STATUS_OK:
+                self.logger.warning(f"Failed to fetch issue {issue_id}: HTTP {response.status}")
+                return None
+
+            issue_data = response.json()
+            fields = issue_data.get("fields", {})
+
+            # Check if updated timestamp changed
+            current_updated = fields.get("updated")
+            current_updated_at = self._parse_jira_timestamp(current_updated) if current_updated else 0
+
+            # Compare with stored timestamp
+            if hasattr(record, 'source_updated_at') and record.source_updated_at == current_updated_at:
+                self.logger.debug(f"Issue {issue_id} has not changed at source")
+                return None
+
+            self.logger.info(f"Issue {issue_id} has changed at source (timestamp: {record.source_updated_at if hasattr(record, 'source_updated_at') else 'N/A'} -> {current_updated_at})")
+
+            # Transform issue to TicketRecord
+            issue_key = issue_data.get("key", issue_id)
+            issue_name = fields.get("summary", "")
+            description = fields.get("description", {})
+            priority = fields.get("priority", {}).get("name", "")
+            status = fields.get("status", {}).get("name", "")
+
+            # Get creator and assignee info
+            creator = fields.get("creator", {})
+            creator_email = creator.get("emailAddress")
+            creator_name = creator.get("displayName", "Unknown")
+
+            assignee = fields.get("assignee", {})
+            assignee_email = assignee.get("emailAddress")
+            assignee_name = assignee.get("displayName")
+
+            # Parse timestamps
+            created = fields.get("created")
+            created_at = self._parse_jira_timestamp(created) if created else 0
+
+            # Get project info
+            project = fields.get("project", {})
+            project_id = project.get("id", "")
+
+            # Increment version
+            version = record.version + 1 if hasattr(record, 'version') else 1
+
+            # Create updated TicketRecord preserving record ID
+            issue_record = TicketRecord(
+                id=record.id,  # Preserve existing ID
+                org_id=org_id,
+                priority=priority,
+                status=status,
+                summary=issue_name,
+                description=adf_to_text(description) if description else "",
+                creator_email=creator_email,
+                creator_name=creator_name,
+                assignee=assignee_name,
+                assignee_email=assignee_email,
+                external_record_id=issue_id,
+                record_name=issue_name,
+                record_type=RecordType.TICKET,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.JIRA,
+                record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.JIRA_PROJECT,
+                external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else project_id,
+                parent_external_record_id=record.parent_external_record_id if hasattr(record, 'parent_external_record_id') else None,
+                parent_record_type=record.parent_record_type if hasattr(record, 'parent_record_type') else None,
+                version=version,
+                mime_type=MimeTypes.PLAIN_TEXT.value,
+                weburl=record.weburl if hasattr(record, 'weburl') else None,
+                source_created_at=created_at,
+                source_modified_at=current_updated_at,
+                created_at=created_at,
+                updated_at=current_updated_at
+            )
+
+            # Build permissions (creator and assignee)
+            permissions = self._build_permissions(creator_email, assignee_email)
+
+            return (issue_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching issue {record.external_record_id}: {e}")
+            return None
+
+    async def _check_and_fetch_updated_comment(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch comment from source for reindexing."""
+        try:
+            # Extract comment ID (remove "comment_" prefix)
+            external_id = record.external_record_id
+            if external_id.startswith("comment_"):
+                comment_id = external_id.replace("comment_", "")
+            else:
+                comment_id = external_id
+
+            # Get parent issue ID
+            issue_id = record.parent_external_record_id if hasattr(record, 'parent_external_record_id') else None
+            if not issue_id:
+                self.logger.warning(f"Comment {comment_id} missing parent issue ID")
+                return None
+
+            # Fetch comment from source
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_comment(
+                issueIdOrKey=issue_id,
+                id=comment_id
+            )
+
+            if response.status == HTTP_STATUS_GONE or response.status == HTTP_STATUS_BAD_REQUEST:
+                self.logger.warning(f"Comment {comment_id} not found at source, may have been deleted")
+                return None
+
+            if response.status != HTTP_STATUS_OK:
+                self.logger.warning(f"Failed to fetch comment {comment_id}: HTTP {response.status}")
+                return None
+
+            comment_data = response.json()
+
+            # Check if updated timestamp changed
+            current_updated = comment_data.get("updated")
+            current_updated_at = self._parse_jira_timestamp(current_updated) if current_updated else 0
+
+            # Compare with stored timestamp
+            if hasattr(record, 'source_updated_at') and record.source_updated_at == current_updated_at:
+                self.logger.debug(f"Comment {comment_id} has not changed at source")
+                return None
+
+            self.logger.info(f"Comment {comment_id} has changed at source")
+
+            # Extract author info
+            author = comment_data.get("author", {})
+            author_email = author.get("emailAddress")
+            author_name = author.get("displayName", "Unknown")
+            author_account_id = author.get("accountId")
+
+            # Parse timestamps
+            created = comment_data.get("created")
+            created_at = self._parse_jira_timestamp(created) if created else 0
+
+            # Increment version
+            version = record.version + 1 if hasattr(record, 'version') else 1
+
+            # Create updated CommentRecord preserving record ID
+            comment_record = CommentRecord(
+                id=record.id,  # Preserve existing ID
+                org_id=org_id,
+                record_name=record.record_name if hasattr(record, 'record_name') else f"Comment by {author_name}",
+                record_type=RecordType.COMMENT,
+                external_record_id=external_id,
+                parent_external_record_id=issue_id,
+                parent_record_type=RecordType.TICKET,
+                external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else None,
+                connector_name=Connectors.JIRA,
+                origin=OriginTypes.CONNECTOR,
+                version=version,
+                mime_type=MimeTypes.PLAIN_TEXT.value,
+                record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.JIRA_PROJECT,
+                created_at=created_at,
+                updated_at=current_updated_at,
+                source_created_at=created_at,
+                source_updated_at=current_updated_at,
+                author_source_id=author_account_id or "unknown",
+            )
+
+            # Get parent issue to fetch permissions
+            datasource_for_parent = await self._get_fresh_datasource()
+            parent_response = await datasource_for_parent.get_issue(
+                issueIdOrKey=issue_id,
+                expand=[]
+            )
+
+            # Build parent issue permissions
+            parent_permissions = []
+            if parent_response.status == HTTP_STATUS_OK:
+                parent_data = parent_response.json()
+                parent_fields = parent_data.get("fields", {})
+                parent_creator = parent_fields.get("creator", {})
+                parent_assignee = parent_fields.get("assignee", {})
+                parent_creator_email = parent_creator.get("emailAddress")
+                parent_assignee_email = parent_assignee.get("emailAddress")
+                parent_permissions = self._build_permissions(parent_creator_email, parent_assignee_email)
+
+            # Comment inherits parent permissions
+            comment_permissions = parent_permissions.copy()
+
+            # Add comment author to permissions if not already there
+            if author_email:
+                author_has_permission = any(p.email == author_email for p in comment_permissions)
+                if not author_has_permission:
+                    comment_permissions.append(Permission(
+                        entity_type=EntityType.USER,
+                        email=author_email,
+                        type=PermissionType.READ,
+                    ))
+
+            return (comment_record, comment_permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching comment {record.external_record_id}: {e}")
+            return None
+
+    async def _check_and_fetch_updated_attachment(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch attachment from source for reindexing."""
+        try:
+            # Extract attachment ID (remove "attachment_" prefix)
+            external_id = record.external_record_id
+            if external_id.startswith("attachment_"):
+                attachment_id = external_id.replace("attachment_", "")
+            else:
+                attachment_id = external_id
+
+            # Get parent issue ID
+            issue_id = record.parent_external_record_id if hasattr(record, 'parent_external_record_id') else None
+            if not issue_id:
+                self.logger.warning(f"Attachment {attachment_id} missing parent issue ID")
+                return None
+
+            # Fetch issue to get attachment metadata
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_issue(
+                issueIdOrKey=issue_id,
+                expand=[]
+            )
+
+            if response.status == HTTP_STATUS_GONE or response.status == HTTP_STATUS_BAD_REQUEST:
+                self.logger.warning(f"Parent issue {issue_id} not found at source")
+                return None
+
+            if response.status != HTTP_STATUS_OK:
+                self.logger.warning(f"Failed to fetch parent issue {issue_id}: HTTP {response.status}")
+                return None
+
+            issue_data = response.json()
+            fields = issue_data.get("fields", {})
+            attachments = fields.get("attachment", [])
+
+            # Find the specific attachment
+            attachment_data = None
+            for att in attachments:
+                if str(att.get("id")) == str(attachment_id):
+                    attachment_data = att
+                    break
+
+            if not attachment_data:
+                self.logger.warning(f"Attachment {attachment_id} not found in issue {issue_id}, may have been deleted")
+                return None
+
+            # Check if created timestamp changed (attachments don't have updated field)
+            current_created = attachment_data.get("created")
+            current_created_at = self._parse_jira_timestamp(current_created) if current_created else 0
+
+            # Compare with stored timestamp
+            if hasattr(record, 'source_updated_at') and record.source_updated_at == current_created_at:
+                self.logger.debug(f"Attachment {attachment_id} has not changed at source")
+                return None
+
+            self.logger.info(f"Attachment {attachment_id} has changed at source")
+
+            # Get attachment metadata
+            filename = attachment_data.get("filename", "unknown")
+            file_size = attachment_data.get("size", 0)
+            mime_type = attachment_data.get("mimeType", MimeTypes.UNKNOWN.value)
+            content_url = attachment_data.get("content")
+
+            # Extract extension
+            extension = None
+            if '.' in filename:
+                extension = filename.split('.')[-1].lower()
+
+            # Increment version
+            version = record.version + 1 if hasattr(record, 'version') else 1
+
+            # Create updated FileRecord preserving record ID
+            attachment_record = FileRecord(
+                id=record.id,  # Preserve existing ID
+                org_id=org_id,
+                record_name=filename,
+                record_type=RecordType.FILE,
+                external_record_id=external_id,
+                parent_external_record_id=issue_id,
+                parent_record_type=RecordType.TICKET,
+                external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else None,
+                connector_name=Connectors.JIRA,
+                origin=OriginTypes.CONNECTOR,
+                version=version,
+                mime_type=mime_type,
+                record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.JIRA_PROJECT,
+                created_at=current_created_at,
+                updated_at=current_created_at,
+                source_created_at=current_created_at,
+                source_updated_at=current_created_at,
+                is_file=True,
+                size_in_bytes=file_size,
+                extension=extension,
+                weburl=content_url if content_url else None,
+            )
+
+            # Get parent issue to fetch permissions
+            # (We already fetched the issue above, reuse the issue_data)
+            fields_for_perms = issue_data.get("fields", {})
+            creator_for_perms = fields_for_perms.get("creator", {})
+            assignee_for_perms = fields_for_perms.get("assignee", {})
+            creator_email_for_perms = creator_for_perms.get("emailAddress")
+            assignee_email_for_perms = assignee_for_perms.get("emailAddress")
+            permissions = self._build_permissions(creator_email_for_perms, assignee_email_for_perms)
+
+            return (attachment_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")
+            return None
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         """Handle webhook notifications"""
