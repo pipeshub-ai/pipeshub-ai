@@ -1,22 +1,28 @@
-"""Example builder for PipesHub service registry / build_from_services pattern.
-
-This file demonstrates how the Zoom datasource can be wired into the services container.
 """
-# zoom unified version
+Build from services example
+"""
 
-from typing import Any
-from app.services.service_builder import service_builder  # type: ignore
-from app.services.service_manager import ServiceManager  # type: ignore
+import sys, os, asyncio, logging
 
-from app.sources.client.zoom.zoom import ZoomClient  # type: ignore
-from app.sources.external.zoom.zoom import ZoomDataSource  # type: ignore
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../.."))
+APP = os.path.join(ROOT, "backend", "python")
+if ROOT not in sys.path: sys.path.insert(0, ROOT)
+if APP not in sys.path: sys.path.insert(0, APP)
 
-@service_builder("zoom")
-def build_zoom(services: ServiceManager) -> Any:
-    """Build the Zoom datasource from the services container.
+from backend.python.app.sources.client.zoom.zoom import ZoomClient
+from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
+from backend.python.app.config.configuration_service import ConfigurationService
 
-    Expected:
-      - services.get("zoom_rest_client") returns an IClient instance configured for Zoom.
-    """
-    client = services.get("zoom_rest_client")
-    return ZoomDataSource(client)
+
+async def main():
+    logger = logging.getLogger("zoom")
+    cs = ConfigurationService()
+    client = await ZoomClient.build_from_services(logger, cs)
+    rc = client.get_client()
+    ds = ZoomDataSource(rc)
+
+    print([m for m in dir(ds) if not m.startswith("_")][:100])
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

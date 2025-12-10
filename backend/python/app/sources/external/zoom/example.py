@@ -1,53 +1,54 @@
-"""Example usage for the Zoom datasource.
-
-This example demonstrates token-based usage via ZoomClient.build_with_config().
+"""
+Example usage of the ZoomDataSource
 """
 
-import sys
-import os
-import asyncio
+import sys, os, asyncio
 
-# PATCH IMPORT ROOT (go up to project root)
-ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../../../../..")
-)
+# --- Fix sys.path so "backend.python.…" imports work ---
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../.."))
+APP = os.path.join(ROOT, "backend", "python")
+
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+if APP not in sys.path:
+    sys.path.insert(0, APP)
 
-# Standard imports
-from app.sources.client.zoom.zoom import ZoomClient, ZoomTokenConfig   # type: ignore
-from app.sources.external.zoom.zoom import ZoomDataSource             # type: ignore
-
+# Correct imports
+from backend.python.app.sources.client.zoom.zoom import ZoomClient, ZoomTokenConfig
+from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
+        
 
 async def main() -> None:
-    # Example: Using a static Zoom OAuth token
-    config = ZoomTokenConfig(
-        base_url="https://api.zoom.us/v2",
-        token="your_zoom_oauth_token_here",
+    token = os.getenv("ZOOM_TOKEN")
+    if not token:
+        raise Exception("ZOOM_TOKEN not set")
+
+    account_id = os.getenv("ZOOM_ACCOUNT_ID")
+    if not account_id:
+        raise Exception("ZOOM_ACCOUNT_ID not set")
+
+    # Build wrapper
+    wrapper = ZoomClient.build_with_config(
+        ZoomTokenConfig(
+            base_url="https://api.zoom.us/v2",
+            token=token,
+        )
     )
 
-    # Build high-level wrapper
-    zoom_client = ZoomClient.build_with_config(config)
+    # ❗ Get the underlying REST client
+    rest_client = wrapper.get_client()
 
-    # ❗ IMPORTANT: Extract the underlying REST client
-    rest_client = zoom_client.get_client()
-
-    # Datasource MUST receive the REST client, not ZoomClient wrapper
+    # Build datasource correctly
     ds = ZoomDataSource(rest_client)
 
-    # Try a simple API call
+    print("Testing account_managed_domain:")
     try:
-        resp = await ds.account_settings(accountId="REPLACE_WITH_ACCOUNT_ID")
-
-        print("Response:", resp)
+        resp = await ds.users()
+        print(resp.response.json())  
     except Exception as e:
         print("Error:", e)
-
-    # Close if supported
-    close = getattr(rest_client, "close", None)
-    if callable(close):
-        await close()
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+

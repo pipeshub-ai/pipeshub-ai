@@ -1,276 +1,281 @@
-# backend/python/app/sources/client/zoom/zoom.py
-# ruff: noqa
-
-import logging
 import base64
-from dataclasses import dataclass, asdict
-from typing import Optional, Dict, Any, Union
+import json
+import logging
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, Optional
 
-from app.sources.client.http.http_client import HTTPClient
-from app.sources.client.http.http_request import HTTPRequest
-from app.sources.client.http.http_response import HTTPResponse
-from app.sources.client.iclient import IClient
-from app.config.configuration_service import ConfigurationService
+import httpx   # <-- NEW: raw client for OAuth token
 
-LOG = logging.getLogger(__name__)
+from backend.python.app.config.configuration_service import ConfigurationService
+from backend.python.app.sources.client.http.http_client import HTTPClient
+from backend.python.app.sources.client.http.http_request import HTTPRequest
+from backend.python.app.sources.client.iclient import IClient
 
 
-# =====================================================================
-# Zoom Response Wrapper
-# =====================================================================
+# ======================================================================
+# Standard Zoom Response Wrapper
+# ======================================================================
+
 @dataclass
 class ZoomResponse:
     success: bool
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
-
-
-# =====================================================================
-# Config DataClasses
-# =====================================================================
-@dataclass
-class ZoomTokenConfig:
-    base_url: str
-    token: str
+    message: Optional[str] = None
 
     def to_dict(self):
         return asdict(self)
 
-
-@dataclass
-class ZoomAppKeySecretConfig:
-    client_id: str
-    client_secret: str
-    account_id: str
-    base_url: str = "https://api.zoom.us/v2"
-    ssl: bool = True
-    timeout: Optional[float] = None
-
-    async def create_client(self, is_team: bool = False):
-        token, expires_in = await self._fetch_token()
-        return ZoomRESTClientViaToken(
-            base_url=self.base_url,
-            token=token,
-            token_expires_in=expires_in,
-            timeout=self.timeout
-        )
-
-    async def _fetch_token(self) -> (str, int):
-        creds = f"{self.client_id}:{self.client_secret}"
-        encoded = base64.b64encode(creds.encode()).decode()
-
-        url = "https://zoom.us/oauth/token"
-        form_body = {
-            "grant_type": "account_credentials",
-            "account_id": self.account_id,
-        }
-
-        req = HTTPRequest(
-            method="POST",
-            url=url,
-            headers={
-                "Authorization": f"Basic {encoded}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body=form_body,
-            query_params={},
-            path_params={},
-        )
-
-        http_client = HTTPClient(token="")
-        resp: HTTPResponse = await http_client.execute(req)
-
-        data = resp.json()
-        token = data.get("access_token")
-        expires_in = int(data.get("expires_in", 3600))
-
-        if not token:
-            LOG.error("Failed to fetch Zoom token: %s", data)
-            raise RuntimeError("Zoom token fetch failed")
-
-        return token, expires_in
-
-    def to_dict(self):
-        return asdict(self)
+    def to_json(self):
+        return json.dumps(self.to_dict())
 
 
-# =====================================================================
-# REST Client with Auto Refresh
-# =====================================================================
-class ZoomRESTClientViaToken:
+# ======================================================================
+# SERVER-TO-SERVER OAUTH CLIENT
+# ======================================================================
+
+class ZoomRESTClientViaServerToServer(HTTPClient):
+    """
+    Zoom REST client using Server-to-Server OAuth.
+    Handles all token requests and token rotation.
+    """
+
     def __init__(
         self,
-        base_url: str,
-        token: str,
-        token_expires_in: Optional[int] = None,
-        timeout: Optional[float] = None,
-        logger: Optional[logging.Logger] = None
-    ):
+        account_id: str,
+        client_id: str,
+        client_secret: str,
+        base_url: str = "https://api.zoom.us/v2",
+    ) -> None:
+
+        # Call parent with empty token — will be filled after OAuth
+        super().__init__(token="", token_type="Bearer")
+
         self.base_url = base_url.rstrip("/")
-        self.token = token
-        self.token_expires_in = token_expires_in or 3600
-        self.timeout = timeout
-        self.logger = logger or LOG
+        self.account_id = account_id
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.access_token: Optional[str] = None
 
-        self.http_client = HTTPClient(
-            token=self.token,
-            token_type="Bearer",
-            timeout=self.timeout
-        )
+        self.headers.update({
+            "Content-Type": "application/json"
+        })
 
-        self._client_id = None
-        self._client_secret = None
-        self._account_id = None
+    # -------------------------------------------------------------
 
-    def inject_credentials(self, client_id, client_secret, account_id):
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._account_id = account_id
+    def get_base_url(self) -> str:
+        return self.base_url
 
-    async def _fetch_new_token(self):
-        if not all([self._client_id, self._client_secret, self._account_id]):
-            raise RuntimeError("Client credentials not injected; cannot refresh token")
+    # -------------------------------------------------------------
+    # FIXED TOKEN REQUEST (uses httpx correctly)
+    # -------------------------------------------------------------
 
-        creds = f"{self._client_id}:{self._client_secret}"
-        encoded = base64.b64encode(creds.encode()).decode()
+    async def _get_access_token(self) -> str:
+        """
+        Fetch access token using Zoom Server-to-Server OAuth.
+        This is the corrected working version.
+        """
 
-        url = "https://zoom.us/oauth/token"
-        form_body = {
-            "grant_type": "account_credentials",
-            "account_id": self._account_id,
+        # reuse if already fetched
+        if self.access_token:
+            return self.access_token
+
+        # Prepare Basic Auth header
+        cred = f"{self.client_id}:{self.client_secret}"
+        encoded = base64.b64encode(cred.encode()).decode()
+
+        headers = {
+            "Authorization": f"Basic {encoded}",
+            "Content-Type": "application/x-www-form-urlencoded",
         }
 
-        req = HTTPRequest(
-            method="POST",
-            url=url,
-            headers={
-                "Authorization": f"Basic {encoded}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body=form_body,
-            query_params={},
-            path_params={},
+        token_url = (
+            f"https://zoom.us/oauth/token"
+            f"?grant_type=account_credentials&account_id={self.account_id}"
         )
 
-        http_client = HTTPClient(token="")
-        resp: HTTPResponse = await http_client.execute(req)
+        # ---- FIX: Use httpx.AsyncClient, NOT your internal HTTPClient ----
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(token_url, headers=headers)
+            data = resp.json()
 
-        data = resp.json()
         token = data.get("access_token")
-        expires_in = int(data.get("expires_in", 3600))
-
         if not token:
-            raise RuntimeError(f"Failed to refresh Zoom token: {data}")
+            raise RuntimeError(f"Failed to fetch Zoom access token: {data}")
 
-        self.token = token
-        self.token_expires_in = expires_in
-        self.http_client = HTTPClient(
-            token=self.token,
-            token_type="Bearer",
-            timeout=self.timeout
-        )
+        # store token
+        self.access_token = token
+        self.headers["Authorization"] = f"Bearer {token}"
 
-        self.logger.info("Zoom token refreshed successfully (expires_in=%s)", expires_in)
+        return token
 
-    async def request(self, method, endpoint, params=None, body=None) -> ZoomResponse:
-        url = f"{self.base_url}{endpoint}"
+    # -------------------------------------------------------------
+
+    async def ensure_authenticated(self) -> None:
+        """Ensure OAuth token is present before request()."""
+        if not self.access_token:
+            await self._get_access_token()
+
+    # -------------------------------------------------------------
+    # REQUIRED BY DATASOURCE → Unified request()
+    # -------------------------------------------------------------
+
+    async def request(self, method: str, url: str, params=None, body=None, timeout=None):
+        """
+        The datasource always calls this method.
+        It must convert high-level args into HTTPRequest and call execute().
+        """
+
+        await self.ensure_authenticated()
 
         req = HTTPRequest(
             method=method,
             url=url,
-            headers={},
+            headers=self.headers,
             query_params=params or {},
-            body=body or {},
-            path_params={},
+            body=body,
+            timeout=timeout,
         )
 
-        try:
-            resp: HTTPResponse = await self.http_client.execute(req)
-
-            status = getattr(resp.response, "status_code", None) or getattr(resp, "status_code", None)
-
-            if status == 204 or (hasattr(resp, "content") and not getattr(resp, "content")):
-                return ZoomResponse(success=True, data={"status": "no_content"})
-
-            if status == 401:
-                self.logger.info("401 received; refreshing Zoom token...")
-                try:
-                    await self._fetch_new_token()
-                except Exception as e:
-                    self.logger.exception("Token refresh failed: %s", e)
-                    return ZoomResponse(success=False, error=str(e))
-
-                resp = await self.http_client.execute(req)
-
-            return ZoomResponse(success=True, data=resp.json())
-
-        except Exception as e:
-            self.logger.exception("Zoom request failed: %s %s", method, endpoint)
-            return ZoomResponse(success=False, error=str(e))
+        return await self.execute(req)
 
 
-# =====================================================================
-# Zoom Client (Builder)
-# =====================================================================
+# ======================================================================
+# STATIC TOKEN OAUTH CLIENT
+# ======================================================================
+
+class ZoomRESTClientViaToken(HTTPClient):
+    """
+    Zoom REST client using a pre-generated OAuth token.
+    """
+
+    def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
+        super().__init__(token, token_type)
+        self.base_url = base_url.rstrip("/")
+
+        self.headers.update({
+            "Content-Type": "application/json"
+        })
+
+    def get_base_url(self) -> str:
+        return self.base_url
+
+    # For token auth, request() simply wraps execute()
+    async def request(self, method: str, url: str, params=None, body=None, timeout=None):
+
+        req = HTTPRequest(
+            method=method,
+            url=url,
+            headers=self.headers,
+            query_params=params or {},
+            body=body,
+            timeout=timeout,
+        )
+
+        return await self.execute(req)
+
+
+# ======================================================================
+# CONFIG CLASSES
+# ======================================================================
+
+@dataclass
+class ZoomServerToServerConfig:
+    account_id: str
+    client_id: str
+    client_secret: str
+    base_url: str = "https://api.zoom.us/v2"
+    ssl: bool = True
+
+    def create_client(self):
+        return ZoomRESTClientViaServerToServer(
+            self.account_id,
+            self.client_id,
+            self.client_secret,
+            self.base_url,
+        )
+
+    def to_dict(self):
+        return asdict(self)
+
+
+@dataclass
+class ZoomTokenConfig:
+    base_url: str
+    token: str
+    ssl: bool = True
+
+    def create_client(self):
+        return ZoomRESTClientViaToken(self.base_url, self.token)
+
+    def to_dict(self):
+        return asdict(self)
+
+
+# ======================================================================
+# TOP-LEVEL CLIENT WRAPPER
+# ======================================================================
+
 class ZoomClient(IClient):
-    def __init__(self, client):
+    """Unified builder wrapper used by PipesHub."""
+
+    def __init__(self, client: ZoomRESTClientViaServerToServer | ZoomRESTClientViaToken) -> None:
         self.client = client
 
     def get_client(self):
         return self.client
 
     @classmethod
-    async def build_with_config(cls, config):
-        if isinstance(config, ZoomAppKeySecretConfig):
-            rest_client = await config.create_client()
-            rest_client.inject_credentials(config.client_id, config.client_secret, config.account_id)
-            return cls(client=rest_client)
-
-        elif isinstance(config, ZoomTokenConfig):
-            rest_client = ZoomRESTClientViaToken(base_url=config.base_url, token=config.token)
-            return cls(client=rest_client)
-
-        raise ValueError("Unsupported config type for ZoomClient")
+    def build_with_config(cls, config: ZoomServerToServerConfig | ZoomTokenConfig) -> "ZoomClient":
+        return cls(config.create_client())
 
     @classmethod
-    async def build_from_services(cls, logger, config_service):
-        cfg = await config_service.get_config("/services/connectors/zoom/config")
-        if not cfg:
-            raise ValueError("Zoom configuration not found in ConfigurationService")
+    async def build_from_services(
+        cls,
+        logger: logging.Logger,
+        config_service: ConfigurationService,
+    ) -> "ZoomClient":
 
-        auth_type = cfg.get("authType", "APP_KEY_SECRET")
-        auth = cfg.get("auth", {})
+        try:
+            conf = await cls._get_connector_config(logger, config_service)
+            if not conf:
+                raise ValueError("Failed to load Zoom connector configuration")
 
-        if auth_type == "APP_KEY_SECRET":
-            client_id = auth.get("clientId") or auth.get("client_id")
-            client_secret = auth.get("clientSecret") or auth.get("client_secret")
-            account_id = auth.get("accountId") or auth.get("account_id")
-            base_url = auth.get("baseUrl", "https://api.zoom.us/v2")
-            timeout = auth.get("timeout")
+            auth = conf.get("auth", {})
 
-            if not all([client_id, client_secret, account_id]):
-                raise ValueError("clientId, clientSecret, accountId are required")
-
-            cfg_obj = ZoomAppKeySecretConfig(
-                client_id=client_id,
-                client_secret=client_secret,
-                account_id=account_id,
-                base_url=base_url,
-                timeout=timeout,
-            )
-
-            rest_client = await cfg_obj.create_client()
-            rest_client.inject_credentials(client_id, client_secret, account_id)
-
-            return cls(client=rest_client)
-
-        elif auth_type == "TOKEN":
-            token = auth.get("token") or auth.get("access_token")
+            auth_type = auth.get("authType", "TOKEN")
             base_url = auth.get("baseUrl", "https://api.zoom.us/v2")
 
-            if not token:
-                raise ValueError("token required for TOKEN authType")
+            if auth_type == "SERVER_TO_SERVER":
+                account_id = auth.get("accountId")
+                client_id = auth.get("clientId")
+                client_secret = auth.get("clientSecret")
+                if not (account_id and client_id and client_secret):
+                    raise ValueError("Missing S2S credentials")
 
-            return cls(client=ZoomRESTClientViaToken(base_url=base_url, token=token))
+                c = ZoomRESTClientViaServerToServer(
+                    account_id=account_id,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    base_url=base_url,
+                )
 
-        raise ValueError(f"Unsupported authType: {auth_type}")
+            else:  # TOKEN
+                token = auth.get("token")
+                if not token:
+                    raise ValueError("Missing Zoom OAuth token")
+                c = ZoomRESTClientViaToken(base_url, token)
+
+            return cls(c)
+
+        except Exception as e:
+            logger.error(f"Failed to build Zoom client from services: {e}")
+            raise
+
+    @staticmethod
+    async def _get_connector_config(logger, config_service):
+        try:
+            return await config_service.get_config("/services/connectors/zoom/config") or {}
+        except Exception as e:
+            logger.error(f"Failed to get Zoom connector config: {e}")
+            return {}
