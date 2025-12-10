@@ -71,26 +71,35 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
         <Stack spacing={1}>
           {(connector.authType || '').toUpperCase() === 'OAUTH' && !hideAuthenticate && (
             <Button
-              variant="contained"
+              variant={isAuthenticated ? 'outlined' : 'contained'}
               fullWidth
               size="small"
               startIcon={<Iconify icon={keyIcon} width={14} height={14} />}
               onClick={onAuthenticate}
-              disabled={loading || isAuthenticated}
+              disabled={loading}
               sx={{
                 textTransform: 'none',
                 fontWeight: 500,
                 justifyContent: 'flex-start',
                 borderRadius: 1,
-                backgroundColor: isAuthenticated ? theme.palette.success.main : theme.palette.secondary.main,
-                '&:hover': {
-                  backgroundColor: isAuthenticated 
-                    ? alpha(theme.palette.success.main, 0.8)
-                    : alpha(theme.palette.secondary.main, 0.8),
-                },
+                ...(isAuthenticated
+                  ? {
+                      color: theme.palette.success.main,
+                      borderColor: theme.palette.success.main,
+                      '&:hover': {
+                        backgroundColor: alpha(theme.palette.success.main, 0.08),
+                        borderColor: theme.palette.success.main,
+                      },
+                    }
+                  : {
+                      backgroundColor: theme.palette.secondary.main,
+                      '&:hover': {
+                        backgroundColor: alpha(theme.palette.secondary.main, 0.8),
+                      },
+                    }),
               }}
             >
-              {isAuthenticated ? 'Authenticated' : 'Authenticate'}
+              {isAuthenticated ? 'Reauthenticate' : 'Authenticate'}
             </Button>
           )}
 
