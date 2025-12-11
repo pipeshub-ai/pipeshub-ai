@@ -223,12 +223,12 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
 
     elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
-        
+
         check_embedding_ctx_length = True
         base_url = configuration['endpoint']
         if "google" in base_url or "cohere" in base_url or "voyage" in base_url:
             check_embedding_ctx_length = False
-        
+
         return OpenAIEmbeddings(
             model=model_name,
             api_key=configuration['apiKey'],
