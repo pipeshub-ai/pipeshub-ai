@@ -3,18 +3,22 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+import httpx
+from aiolimiter import AsyncLimiter
+
 from app.config.configuration_service import ConfigurationService
 
 try:
-    from azure.identity.aio import ClientSecretCredential  #type: ignore
-    from kiota_authentication_azure.azure_identity_authentication_provider import (  #type: ignore
+    from azure.identity.aio import ClientSecretCredential  # type: ignore
+    from kiota_authentication_azure.azure_identity_authentication_provider import (  # type: ignore
         AzureIdentityAuthenticationProvider,
     )
-    from kiota_http.httpx_request_adapter import HttpxRequestAdapter  #type: ignore
-    from msgraph import GraphServiceClient  #type: ignore
+    from kiota_http.httpx_request_adapter import HttpxRequestAdapter  # type: ignore
+    from msgraph import GraphServiceClient  # type: ignore
 except ImportError:
     raise ImportError("azure-identity is not installed. Please install it with `pip install azure-identity`")
 
+from app.sources.client.http.resilient_transport import ResilientHTTPTransport
 from app.sources.client.iclient import IClient
 
 
@@ -71,7 +75,10 @@ class MSGraphClientWithClientIdSecret:
         client_secret: str,
         tenant_id: str,
         scopes: List[str] = ["https://graph.microsoft.com/.default"],
-        mode: GraphMode = GraphMode.APP
+        mode: GraphMode = GraphMode.APP,
+        rate_limiter: Optional[AsyncLimiter] = None,
+        resilience_config: Optional[Dict[str, Any]] = None,
+        logger: Optional[logging.Logger] = None
     ) -> None:
         self.mode = mode
         # Store credential as instance variable to prevent HTTP transport from being closed prematurely
@@ -82,7 +89,37 @@ class MSGraphClientWithClientIdSecret:
             # Requires Application permissions + Admin consent.
             self.credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
             auth_provider = AzureIdentityAuthenticationProvider(self.credential, scopes=scopes)
-            adapter = HttpxRequestAdapter(auth_provider)
+
+            # Get resilience config values (with proper None handling)
+            config = resilience_config or {}
+
+            # Create rate limiter if explicitly provided or configured
+            limiter = rate_limiter
+            if limiter is None and config.get('rate_limit') is not None:
+                rate_limit = config['rate_limit']
+                # Validate rate_limit is a positive number before creating AsyncLimiter
+                if not isinstance(rate_limit, (int, float)) or rate_limit <= 0:
+                    raise ValueError(
+                        f"rate_limit must be a positive number, got: {rate_limit} ({type(rate_limit).__name__})"
+                    )
+                limiter = AsyncLimiter(rate_limit, 1)
+            # else: limiter remains None = no rate limiting overhead
+
+            # Create HTTP client with resilient transport
+            # Note: ResilientHTTPTransport validates all retry parameters in __init__
+            http_client = httpx.AsyncClient(
+                transport=ResilientHTTPTransport(
+                    rate_limiter=limiter,  # Can be None (validated by transport)
+                    max_retries=config.get('max_retries', 3),
+                    base_delay=config.get('base_delay', 1.0),
+                    max_delay=config.get('max_delay', 32.0),
+                    logger=logger
+                ),
+                timeout=30.0
+            )
+
+            # Create adapter with resilient HTTP client
+            adapter = HttpxRequestAdapter(auth_provider, http_client=http_client)
             self.client = GraphServiceClient(request_adapter=adapter)
         else:
             raise ValueError(f"Invalid mode: {mode}")
@@ -132,8 +169,22 @@ class MSGraphClientWithClientIdSecretConfig:
     client_secret: str
     tenant_id: str
 
-    def create_client(self, mode: GraphMode = GraphMode.APP) -> MSGraphClientWithClientIdSecret:
-        return MSGraphClientWithClientIdSecret(self.client_id, self.client_secret, self.tenant_id, mode=mode)
+    def create_client(
+        self,
+        mode: GraphMode = GraphMode.APP,
+        rate_limiter: Optional[AsyncLimiter] = None,
+        resilience_config: Optional[Dict[str, Any]] = None,
+        logger: Optional[logging.Logger] = None
+    ) -> MSGraphClientWithClientIdSecret:
+        return MSGraphClientWithClientIdSecret(
+            self.client_id,
+            self.client_secret,
+            self.tenant_id,
+            mode=mode,
+            rate_limiter=rate_limiter,
+            resilience_config=resilience_config,
+            logger=logger
+        )
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -176,15 +227,23 @@ class MSGraphClient(IClient):
     def build_with_config(
         cls,
         config: MSGraphUsernamePasswordConfig | MSGraphClientWithClientIdSecretConfig | MSGraphClientWithCertificatePathConfig, #type:ignore
-        mode: GraphMode = GraphMode.APP) -> 'MSGraphClient':
+        mode: GraphMode = GraphMode.APP,
+        rate_limiter: Optional[AsyncLimiter] = None,
+        resilience_config: Optional[Dict[str, Any]] = None,
+        logger: Optional[logging.Logger] = None
+    ) -> 'MSGraphClient':
         """
-        Build MSGraphClient with configuration (placeholder for future OAuth2/enterprise support)
+        Build MSGraphClient with configuration
         Args:
             config: MSGraphConfigBase instance
+            mode: Graph mode (APP or DELEGATED)
+            rate_limiter: Optional rate limiter
+            resilience_config: Optional resilience configuration
+            logger: Optional logger
         Returns:
-            MSGraphClient instance with placeholder implementation
+            MSGraphClient instance
         """
-        return cls(config.create_client(mode))
+        return cls(config.create_client(mode, rate_limiter, resilience_config, logger))
 
     @classmethod
     async def build_from_services(

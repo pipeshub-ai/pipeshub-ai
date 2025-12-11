@@ -92,6 +92,12 @@ CONTENT_EXPAND_PARAMS = (
     .with_auth_type("OAUTH")\
     .with_description("Sync pages, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
+    .with_resilience_config(
+        rate_limit=10,
+        max_retries=3,
+        base_delay=1.0,
+        max_delay=32.0
+    )\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/confluence.svg")
         .with_realtime_support(False)
@@ -241,10 +247,14 @@ class ConfluenceConnector(BaseConnector):
         try:
             self.logger.info("🔧 Initializing Confluence Cloud Connector...")
 
+            # Get resilience config from connector metadata
+            self.logger.info(f"Resilience config: {self.resilience_config}")
+
             # Build client from services (handles config loading, token, base URL internally)
             self.external_client = await ExternalConfluenceClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
+                resilience_config=self.resilience_config,
             )
 
             # Initialize data source

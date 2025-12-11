@@ -87,6 +87,12 @@ class OutlookCredentials:
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync emails from Outlook")\
     .with_categories(["Email"])\
+    .with_resilience_config(
+        rate_limit=50,
+        max_retries=5,
+        base_delay=2.0,
+        max_delay=60.0
+    )\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/outlook.svg")
         .add_documentation_link(DocumentationLink(
@@ -220,14 +226,20 @@ class OutlookConnector(BaseConnector):
             # Load credentials
             self.credentials = await self._get_credentials(org_id)
 
-            # Create shared MSGraph client - store as instance variable for proper cleanup
+            # Get resilience config from connector metadata (via base class property)
+            self.logger.info(f"Resilience config: {self.resilience_config}")
+
+            # Create shared MSGraph client with resilience config
             self.external_client: ExternalMSGraphClient = ExternalMSGraphClient.build_with_config(
                 MSGraphClientWithClientIdSecretConfig(
                     self.credentials.client_id,
                     self.credentials.client_secret,
                     self.credentials.tenant_id
                 ),
-                mode=GraphMode.APP
+                mode=GraphMode.APP,
+                rate_limiter=self.rate_limiter,
+                resilience_config=self.resilience_config,
+                logger=self.logger
             )
 
             # Create both data source clients

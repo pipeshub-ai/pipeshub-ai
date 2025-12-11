@@ -1,6 +1,8 @@
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from aiolimiter import AsyncLimiter
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.exception.exception import HttpStatusCode
@@ -45,8 +47,20 @@ class ConfluenceRESTClientViaApiKey(HTTPClient):
 
 
 class ConfluenceRESTClientViaToken(HTTPClient):
-    def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
-        super().__init__(token, token_type)
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        token_type: str = "Bearer",
+        max_retries: int = 0,
+        rate_limiter = None
+    ) -> None:
+        super().__init__(
+            token=token,
+            token_type=token_type,
+            max_retries=max_retries,
+            rate_limiter=rate_limiter
+        )
         self.base_url = base_url
         self.token = token
 
@@ -93,14 +107,23 @@ class ConfluenceTokenConfig:
         base_url: The base URL of the Confluence instance
         token: The token to use for authentication
         ssl: Whether to use SSL
+        max_retries: Maximum retry attempts (default: 0)
+        rate_limiter: Optional AsyncLimiter for rate limiting
     """
 
     base_url: str
     token: str
     ssl: bool = False
+    max_retries: int = 0
+    rate_limiter = None
 
     def create_client(self) -> ConfluenceRESTClientViaToken:
-        return ConfluenceRESTClientViaToken(self.base_url, self.token)
+        return ConfluenceRESTClientViaToken(
+            self.base_url,
+            self.token,
+            max_retries=self.max_retries,
+            rate_limiter=self.rate_limiter
+        )
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -239,11 +262,13 @@ class ConfluenceClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        resilience_config: Optional[Dict[str, Any]] = None,
     ) -> "ConfluenceClient":
         """Build ConfluenceClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+            resilience_config: Optional resilience configuration for rate limiting and retries
         Returns:
             ConfluenceClient instance
         """
@@ -262,6 +287,20 @@ class ConfluenceClient(IClient):
 
             # Extract configuration values
             auth_type = auth_config.get("authType", "BEARER_TOKEN")  # token, username_password, api_key
+
+            # Get resilience config values
+            res_config = resilience_config or {}
+            max_retries = res_config.get('max_retries', 0)
+
+            # Create rate limiter if configured
+            rate_limiter = None
+            if res_config.get('rate_limit') is not None:
+                rate_limit = res_config['rate_limit']
+                if not isinstance(rate_limit, (int, float)) or rate_limit <= 0:
+                    raise ValueError(
+                        f"rate_limit must be a positive number, got: {rate_limit} ({type(rate_limit).__name__})"
+                    )
+                rate_limiter = AsyncLimiter(rate_limit, 1)
 
             # Create appropriate client based on auth type
             # to be implemented
@@ -291,7 +330,12 @@ class ConfluenceClient(IClient):
                 if not base_url:
                     raise ValueError("Confluence base_url not found in configuration")
 
-                client = ConfluenceRESTClientViaToken(base_url, token)
+                client = ConfluenceRESTClientViaToken(
+                    base_url,
+                    token,
+                    max_retries=max_retries,
+                    rate_limiter=rate_limiter
+                )
             elif auth_type == "OAUTH":
                 access_token = credentials_config.get("access_token", "")
                 if not access_token:
@@ -303,7 +347,12 @@ class ConfluenceClient(IClient):
                 if not base_url:
                     raise ValueError("Confluence base_url not found in configuration")
 
-                client = ConfluenceRESTClientViaToken(base_url, access_token)
+                client = ConfluenceRESTClientViaToken(
+                    base_url,
+                    access_token,
+                    max_retries=max_retries,
+                    rate_limiter=rate_limiter
+                )
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}")
 

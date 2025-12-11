@@ -34,7 +34,8 @@ def Connector(
     auth_type: str,
     app_description: str = "",
     app_categories: List[str] = [],
-    config: Optional[Dict[str, Any]] = None
+    config: Optional[Dict[str, Any]] = None,
+    resilience_config: Optional[Dict[str, Any]] = None
 ) -> Callable[[Type], Type]:
     """
     Decorator to register a connector with metadata and full config schema.
@@ -44,6 +45,7 @@ def Connector(
         app_group: Group the app belongs to (e.g., "Google Workspace")
         auth_type: Authentication type (e.g., "oauth", "api_token")
         config: Complete configuration schema for the connector
+        resilience_config: Rate limiting and retry configuration
     """
     def decorator(cls) -> Type:
         # Store metadata in the class
@@ -53,7 +55,8 @@ def Connector(
             "authType": auth_type,
             "appDescription": app_description,
             "appCategories": app_categories,
-            "config": config or {}
+            "config": config or {},
+            "resilienceConfig": resilience_config or {}
         }
 
         # Mark class as a connector
