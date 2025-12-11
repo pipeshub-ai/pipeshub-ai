@@ -226,8 +226,8 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
 
         check_embedding_ctx_length = True
         base_url = configuration['endpoint']
-        if "google" in base_url or "cohere" in base_url or "voyage" in base_url:
-            check_embedding_ctx_length = False
+        providers_to_skip_check = ("google", "cohere", "voyage")
+        check_embedding_ctx_length = not any(p in base_url for p in providers_to_skip_check)
 
         return OpenAIEmbeddings(
             model=model_name,
