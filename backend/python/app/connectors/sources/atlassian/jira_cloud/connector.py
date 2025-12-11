@@ -36,7 +36,6 @@ from app.connectors.sources.atlassian.core.oauth import (
     AtlassianScope,
 )
 from app.models.entities import (
-    AppRole,
     AppUser,
     AppUserGroup,
     CommentRecord,
@@ -452,14 +451,9 @@ class JiraConnector(BaseConnector):
 
             self.logger.info(f"Found {len(projects)} projects")
 
-            # Sync projects as RecordGroups
+            # Sync projects as RecordGroups (includes Permission Scheme-based permissions)
             await self.data_entities_processor.on_new_record_groups(projects)
-            self.logger.info("Synced projects as RecordGroups")
-            
-            # Fetch and sync project roles
-            self.logger.info("Fetching Jira project roles...")
-            await self._sync_project_roles(projects, jira_users)
-            self.logger.info("Project roles sync completed")
+            self.logger.info("Synced projects as RecordGroups with permission scheme data")
 
             # Get global sync checkpoint and check for filter changes
             global_sync_key = "issues_global"
@@ -954,188 +948,166 @@ class JiraConnector(BaseConnector):
             self.logger.error(f"Error deleting {child_type_name}s for issue {parent_issue_id}: {e}")
             return 0
 
-    async def _sync_project_roles(
+    async def _fetch_project_permission_scheme(
         self, 
-        projects: List[Tuple[RecordGroup, List[Permission]]], 
-        jira_users: List[AppUser]
-    ) -> None:
+        project_key: str
+    ) -> List[Permission]:
         """
-        Sync Jira project roles for all projects.
+        Fetch permission holders for a project from its Permission Scheme.
         
-        Args:
-            projects: List of (RecordGroup, permissions) tuples for projects
-            jira_users: List of all Jira users for email lookup
-        """
-        try:
-            self.logger.info("Starting Jira project roles synchronization")
-            
-            all_roles = []
-            
-            for project, _ in projects:
-                project_key = project.short_name
-                self.logger.info(f"Fetching roles for project {project_key}")
-                
-                # Fetch roles for this project
-                project_roles = await self._fetch_project_roles(project_key, jira_users)
-                all_roles.extend(project_roles)
-                
-                self.logger.info(f"Found {len(project_roles)} roles for project {project_key}")
-            
-            if all_roles:
-                # Process all roles at once
-                await self.data_entities_processor.on_new_app_roles(all_roles)
-                self.logger.info(f"Successfully synced {len(all_roles)} project roles")
-            else:
-                self.logger.info("No project roles found across all projects")
-                
-        except Exception as e:
-            self.logger.error(f"Error syncing project roles: {e}", exc_info=True)
-            # Don't raise - continue with sync even if roles fail
-
-    async def _fetch_project_roles(
-        self, 
-        project_key: str, 
-        jira_users: List[AppUser]
-    ) -> List[Tuple[AppRole, List[AppUser]]]:
-        """
-        Fetch all roles for a specific project and their members.
+        This is the correct way to determine who can access a Jira project.
+        Jira uses Permission Schemes (not Project Roles) to define access.
+        
+        Permission Schemes grant permissions like BROWSE_PROJECTS to:
+        - Groups (e.g., "jira-software-users")
+        - Application Roles (e.g., "jira-software")
+        - Specific Users
+        - Anyone (all authenticated users)
         
         Args:
             project_key: Jira project key (e.g., "PA", "QUES")
-            jira_users: List of all Jira users for member lookup
             
         Returns:
-            List of (AppRole, List[AppUser]) tuples
+            List of Permission objects for entities that can access this project
         """
-        roles_with_members = []
+        permissions: List[Permission] = []
         
         try:
             datasource = await self._get_fresh_datasource()
             
-            # Step 1: Get all roles for the project
-            response = await datasource.get_project_roles(projectIdOrKey=project_key)
+            # Step 1: Get the permission scheme assigned to this project
+            scheme_response = await datasource.get_assigned_permission_scheme(
+                projectKeyOrId=project_key,
+                expand="all"
+            )
             
-            if response.status != HTTP_STATUS_OK:
-                self.logger.warning(f"Failed to fetch roles for project {project_key}: {response.text()}")
+            if scheme_response.status != HTTP_STATUS_OK:
+                self.logger.warning(f"Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
                 return []
             
-            roles_data = response.json()
-            # Response format: {"Administrators": "https://.../role/10002", "Developers": "..."}
+            scheme_data = scheme_response.json()
+            scheme_id = scheme_data.get("id")
+            scheme_name = scheme_data.get("name", "Unknown")
+            self.logger.debug(f"Project {project_key} uses permission scheme: {scheme_name} (ID: {scheme_id})")
             
-            # Step 2: Fetch details for each role
-            for role_name, role_url in roles_data.items():
-                try:
-                    # Extract role ID from URL (e.g., ".../role/10002" → "10002")
-                    role_id = role_url.split('/')[-1]
+            # Step 2: Get all permission grants in this scheme
+            grants_response = await datasource.get_permission_scheme_grants(
+                schemeId=scheme_id,
+                expand="all"
+            )
+            
+            if grants_response.status != HTTP_STATUS_OK:
+                self.logger.warning(f"Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
+                return []
+            
+            grants_data = grants_response.json()
+            permission_grants = grants_data.get("permissions", [])
+            
+            # Step 3: Filter for BROWSE_PROJECTS permission (determines who can see the project)
+            # BROWSE_PROJECTS is the key permission for viewing projects and issues
+            relevant_permission_types = ["BROWSE_PROJECTS"]
+            
+            seen_holders = set()  # To avoid duplicates
+            
+            for grant in permission_grants:
+                permission_name = grant.get("permission")
+                
+                if permission_name not in relevant_permission_types:
+                    continue
+                
+                holder = grant.get("holder", {})
+                holder_type = holder.get("type")
+                holder_param = holder.get("parameter")
+                
+                # Create unique key for deduplication
+                holder_key = f"{holder_type}:{holder_param}"
+                if holder_key in seen_holders:
+                    continue
+                seen_holders.add(holder_key)
+                
+                # Process different holder types and create Permission objects
+                if holder_type == "group" and holder_param:
+                    # Group has BROWSE_PROJECTS permission
+                    permissions.append(Permission(
+                        entity_type=EntityType.GROUP,
+                        external_id=holder_param,  # Group name acts as external ID
+                        type=PermissionType.READ
+                    ))
+                    self.logger.debug(f"  {project_key}: BROWSE → group '{holder_param}'")
+                
+                elif holder_type == "applicationRole":
+                    # Application role grants access to licensed users
+                    # If no parameter: ALL licensed Jira users (common in Jira Free)
+                    # If parameter: specific role like "jira-software"
+                    if holder_param:
+                        role_name = holder_param
+                    else:
+                        role_name = "all_licensed_users"  # No param = all Jira users
                     
-                    # Get role details including actors
-                    role_response = await datasource.get_project_role(
-                        projectIdOrKey=project_key,
-                        id=int(role_id)
-                    )
+                    permissions.append(Permission(
+                        entity_type=EntityType.ORG,
+                        external_id=role_name,
+                        type=PermissionType.READ
+                    ))
+                    self.logger.debug(f"  {project_key}: BROWSE → applicationRole '{role_name}' (org-level)")
+                
+                elif holder_type == "user" and holder_param:
+                    # Specific user has access
+                    permissions.append(Permission(
+                        entity_type=EntityType.USER,
+                        external_id=holder_param,  # accountId
+                        type=PermissionType.READ
+                    ))
+                    self.logger.debug(f"  {project_key}: BROWSE → user '{holder_param}'")
+                
+                elif holder_type == "anyone":
+                    # All authenticated users have access
+                    # Treat as ORG-level permission
+                    permissions.append(Permission(
+                        entity_type=EntityType.ORG,
+                        external_id="anyone_authenticated",
+                        type=PermissionType.READ
+                    ))
+                    self.logger.debug(f"  {project_key}: BROWSE → anyone (all authenticated)")
+                
+                elif holder_type == "projectRole":
+                    # Project role has access (e.g., Administrators, Service Desk Team)
+                    # Get the role details from the expanded response
+                    project_role = holder.get("projectRole", {})
+                    role_name = project_role.get("name", f"Role_{holder_param}")
+                    role_id = holder_param or project_role.get("id")
                     
-                    if role_response.status != HTTP_STATUS_OK:
-                        self.logger.warning(f"Failed to fetch role details for {role_name}: {role_response.text()}")
+                    # Skip app-only roles
+                    if role_name == "atlassian-addons-project-access":
+                        self.logger.debug(f"  {project_key}: Skipping app-only role '{role_name}'")
                         continue
                     
-                    role_details = role_response.json()
-                    
-                    # Create AppRole
-                    app_role = AppRole(
-                        app_name=Connectors.JIRA,
-                        source_role_id=f"{project_key}_{role_id}",  # Make unique per project
-                        name=f"{project_key}: {role_name}",
-                        org_id=self.data_entities_processor.org_id
-                    )
-                    
-                    # Extract members (actors) from role
-                    role_members = self._extract_role_members(role_details, jira_users)
-                    
-                    roles_with_members.append((app_role, role_members))
-                    self.logger.debug(f"Role {role_name} has {len(role_members)} members")
-                    
-                except Exception as e:
-                    self.logger.error(f"Error processing role {role_name}: {e}")
-                    continue
+                    # Store as ROLE permission - will be resolved via project role sync
+                    permissions.append(Permission(
+                        entity_type=EntityType.ROLE,
+                        external_id=f"{project_key}_{role_id}",  # Unique per project
+                        type=PermissionType.READ
+                    ))
+                    self.logger.debug(f"  {project_key}: BROWSE → projectRole '{role_name}'")
+                
+                elif holder_type == "sd.customer.portal.only":
+                    # JSM Service Desk customers (portal access)
+                    # These are external customers who can only access via the portal
+                    permissions.append(Permission(
+                        entity_type=EntityType.ORG,
+                        external_id="jsm_portal_customers",
+                        type=PermissionType.READ
+                    ))
+                    self.logger.debug(f"  {project_key}: BROWSE → JSM portal customers")
+                
+                # Note: "reporter", "assignee", "projectLead" are issue-level permissions,
+                # not project-level. They're handled at the issue/record level.
             
-            return roles_with_members
+            self.logger.info(f"Project {project_key}: found {len(permissions)} permission grants from scheme")
+            return permissions
             
         except Exception as e:
-            self.logger.error(f"Error fetching roles for project {project_key}: {e}", exc_info=True)
-            return []
-
-    def _extract_role_members(
-        self, 
-        role_details: Dict[str, Any], 
-        jira_users: List[AppUser]
-    ) -> List[AppUser]:
-        """
-        Extract user members from role details.
-        
-        Args:
-            role_details: Role details from Jira API
-            jira_users: List of all Jira users for lookup
-            
-        Returns:
-            List of AppUser objects who are members of this role
-        """
-        members = []
-        user_email_map = {user.email: user for user in jira_users}
-        
-        try:
-            # Role details format:
-            # {
-            #   "self": "...",
-            #   "name": "Administrators",
-            #   "id": 10002,
-            #   "actors": [
-            #     {
-            #       "id": 10240,
-            #       "displayName": "John Doe",
-            #       "type": "atlassian-user-role-actor",
-            #       "actorUser": {
-            #         "accountId": "712020:...",
-            #         "emailAddress": "john@example.com"
-            #       }
-            #     },
-            #     {
-            #       "id": 10241,
-            #       "displayName": "Developers",
-            #       "type": "atlassian-group-role-actor",
-            #       "actorGroup": {
-            #         "name": "jira-developers",
-            #         "groupId": "..."
-            #       }
-            #     }
-            #   ]
-            # }
-            
-            actors = role_details.get("actors", [])
-            
-            for actor in actors:
-                actor_type = actor.get("type")
-                
-                # Handle user actors
-                if actor_type == "atlassian-user-role-actor":
-                    actor_user = actor.get("actorUser", {})
-                    email = actor_user.get("emailAddress")
-                    
-                    if email and email in user_email_map:
-                        members.append(user_email_map[email])
-                    else:
-                        self.logger.debug(f"User {email} not found in jira_users list")
-                
-                # Handle group actors (expand group members)
-                elif actor_type == "atlassian-group-role-actor":
-                    actor_group = actor.get("actorGroup", {})
-                    group_name = actor_group.get("name")
-                    self.logger.debug(f"Role contains group: {group_name} (groups as actors not yet expanded)")
-                    # Note: Could expand group members here if needed
-            
-            return members
-            
-        except Exception as e:
-            self.logger.error(f"Error extracting role members: {e}", exc_info=True)
+            self.logger.error(f"Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
             return []
 
     async def _sync_user_groups(self, org_id: str, jira_users: List[AppUser]) -> None:
@@ -1214,192 +1186,6 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error syncing user groups: {e}", exc_info=True)
             # Don't raise - group sync failure shouldn't stop the entire sync
-
-    async def _sync_project_roles(
-        self, 
-        projects: List[Tuple[RecordGroup, List[Permission]]], 
-        jira_users: List[AppUser]
-    ) -> None:
-        """
-        Sync Jira project roles for all projects.
-        
-        Args:
-            projects: List of (RecordGroup, permissions) tuples for projects
-            jira_users: List of all Jira users for email lookup
-        """
-        try:
-            self.logger.info("Starting Jira project roles synchronization")
-            
-            all_roles = []
-            
-            for project, _ in projects:
-                project_key = project.short_name
-                self.logger.info(f"Fetching roles for project {project_key}")
-                
-                # Fetch roles for this project
-                project_roles = await self._fetch_project_roles(project_key, jira_users)
-                all_roles.extend(project_roles)
-                
-                self.logger.info(f"Found {len(project_roles)} roles for project {project_key}")
-            
-            if all_roles:
-                # Process all roles at once
-                await self.data_entities_processor.on_new_app_roles(all_roles)
-                self.logger.info(f"✅ Successfully synced {len(all_roles)} project roles")
-            else:
-                self.logger.info("No project roles found across all projects")
-                
-        except Exception as e:
-            self.logger.error(f"Error syncing project roles: {e}", exc_info=True)
-            # Don't raise - continue with sync even if roles fail
-
-    async def _fetch_project_roles(
-        self, 
-        project_key: str, 
-        jira_users: List[AppUser]
-    ) -> List[Tuple[AppRole, List[AppUser]]]:
-        """
-        Fetch all roles for a specific project and their members.
-        
-        Args:
-            project_key: Jira project key (e.g., "PA", "QUES")
-            jira_users: List of all Jira users for member lookup
-            
-        Returns:
-            List of (AppRole, List[AppUser]) tuples
-        """
-        roles_with_members = []
-        
-        try:
-            datasource = await self._get_fresh_datasource()
-            
-            # Step 1: Get all roles for the project
-            response = await datasource.get_project_roles(projectIdOrKey=project_key)
-            
-            if response.status != HTTP_STATUS_OK:
-                self.logger.warning(f"Failed to fetch roles for project {project_key}: {response.text()}")
-                return []
-            
-            roles_data = response.json()
-            # Response format: {"Administrators": "https://.../role/10002", "Developers": "..."}
-            
-            # Step 2: Fetch details for each role
-            for role_name, role_url in roles_data.items():
-                try:
-                    # Extract role ID from URL (e.g., ".../role/10002" → "10002")
-                    role_id = role_url.split('/')[-1]
-                    
-                    # Get role details including actors
-                    role_response = await datasource.get_project_role(
-                        projectIdOrKey=project_key,
-                        id=int(role_id)
-                    )
-                    
-                    if role_response.status != HTTP_STATUS_OK:
-                        self.logger.warning(f"Failed to fetch role details for {role_name}: {role_response.text()}")
-                        continue
-                    
-                    role_details = role_response.json()
-                    
-                    # Create AppRole
-                    app_role = AppRole(
-                        app_name=Connectors.JIRA,
-                        source_role_id=f"{project_key}_{role_id}",  # Make unique per project
-                        name=f"{project_key}: {role_name}",
-                        org_id=self.data_entities_processor.org_id
-                    )
-                    
-                    # Extract members (actors) from role
-                    role_members = self._extract_role_members(role_details, jira_users)
-                    
-                    roles_with_members.append((app_role, role_members))
-                    self.logger.debug(f"Role {role_name} has {len(role_members)} members")
-                    
-                except Exception as e:
-                    self.logger.error(f"Error processing role {role_name}: {e}")
-                    continue
-            
-            return roles_with_members
-            
-        except Exception as e:
-            self.logger.error(f"Error fetching roles for project {project_key}: {e}", exc_info=True)
-            return []
-
-    def _extract_role_members(
-        self, 
-        role_details: Dict[str, Any], 
-        jira_users: List[AppUser]
-    ) -> List[AppUser]:
-        """
-        Extract user members from role details.
-        
-        Args:
-            role_details: Role details from Jira API
-            jira_users: List of all Jira users for lookup
-            
-        Returns:
-            List of AppUser objects who are members of this role
-        """
-        members = []
-        user_email_map = {user.email.lower(): user for user in jira_users if user.email}
-        
-        try:
-            # Role details format:
-            # {
-            #   "self": "...",
-            #   "name": "Administrators",
-            #   "id": 10002,
-            #   "actors": [
-            #     {
-            #       "id": 10240,
-            #       "displayName": "John Doe",
-            #       "type": "atlassian-user-role-actor",
-            #       "actorUser": {
-            #         "accountId": "712020:...",
-            #         "emailAddress": "john@example.com"
-            #       }
-            #     },
-            #     {
-            #       "id": 10241,
-            #       "displayName": "Developers",
-            #       "type": "atlassian-group-role-actor",
-            #       "actorGroup": {
-            #         "name": "jira-developers",
-            #         "groupId": "..."
-            #       }
-            #     }
-            #   ]
-            # }
-            
-            actors = role_details.get("actors", [])
-            
-            for actor in actors:
-                actor_type = actor.get("type")
-                
-                # Handle user actors
-                if actor_type == "atlassian-user-role-actor":
-                    actor_user = actor.get("actorUser", {})
-                    email = actor_user.get("emailAddress")
-                    
-                    if email:
-                        email_lower = email.lower()
-                        if email_lower in user_email_map:
-                            members.append(user_email_map[email_lower])
-                        else:
-                            self.logger.debug(f"User {email} not found in jira_users list")
-                
-                # Handle group actors (skip for now - groups handled separately)
-                elif actor_type == "atlassian-group-role-actor":
-                    actor_group = actor.get("actorGroup", {})
-                    group_name = actor_group.get("name")
-                    self.logger.debug(f"Role contains group: {group_name} (group actors not expanded)")
-                    # Note: Groups in roles are handled via user group sync
-            
-            return members
-            
-        except Exception as e:
-            self.logger.error(f"Error extracting role members: {e}", exc_info=True)
-            return []
 
     async def _fetch_groups(self) -> List[Dict[str, Any]]:
         """
@@ -1565,7 +1351,15 @@ class JiraConnector(BaseConnector):
                 description=description,
                 web_url=project.get("url"),
             )
-            record_groups.append((record_group, []))
+            
+            # Fetch project permissions from Permission Scheme
+            # This determines which groups/users can access the project
+            project_permissions = await self._fetch_project_permission_scheme(project_key)
+            
+            record_groups.append((record_group, project_permissions))
+            
+            if project_permissions:
+                self.logger.info(f"Project {project_key}: {len(project_permissions)} permission grants from scheme")
 
         return record_groups
 
