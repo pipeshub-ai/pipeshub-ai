@@ -1,54 +1,71 @@
 """
-Example usage of the ZoomDataSource
+Example usage of the ZoomDataSource with S2S OAuth
+"""
+"""
+
+
+How to run the Zoom code generator:
+
+    python backend/python/code-generator/zoom.py \
+        --spec-dir backend/python/code-generator/zoom_specs \
+        --out-dir backend/python/app/sources/external/zoom \
+        --overwrite
+
+How to run this example:
+
+    python backend/python/app/sources/external/zoom/example.py
 """
 
 import sys, os, asyncio
 
-# --- Fix sys.path so "backend.python.…" imports work ---
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../.."))
 APP = os.path.join(ROOT, "backend", "python")
 
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-if APP not in sys.path:
-    sys.path.insert(0, APP)
+if ROOT not in sys.path: sys.path.insert(0, ROOT)
+if APP not in sys.path: sys.path.insert(0, APP)
 
-# Correct imports
-from backend.python.app.sources.client.zoom.zoom import ZoomClient, ZoomTokenConfig
+from backend.python.app.sources.client.zoom.zoom import (
+    ZoomClient,
+    ZoomServerToServerConfig,
+)
 from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
-        
 
-async def main() -> None:
-    token = os.getenv("ZOOM_TOKEN")
-    if not token:
-        raise Exception("ZOOM_TOKEN not set")
 
-    account_id = os.getenv("ZOOM_ACCOUNT_ID")
-    if not account_id:
-        raise Exception("ZOOM_ACCOUNT_ID not set")
+async def main():
 
-    # Build wrapper
+    ACCOUNT_ID = os.getenv("ZOOM_ACCOUNT_ID")
+    CLIENT_ID = os.getenv("ZOOM_CLIENT_ID")
+    CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET")
+
+    if not ACCOUNT_ID or not CLIENT_ID or not CLIENT_SECRET:
+        raise Exception("Missing S2S Zoom credentials in env variables")
+
+    # Build wrapper using S2S config
     wrapper = ZoomClient.build_with_config(
-        ZoomTokenConfig(
-            base_url="https://api.zoom.us/v2",
-            token=token,
+        ZoomServerToServerConfig(
+            account_id=ACCOUNT_ID,
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
         )
     )
 
-    # ❗ Get the underlying REST client
+    # Get REST client
     rest_client = wrapper.get_client()
 
-    # Build datasource correctly
+    # Create datasource
     ds = ZoomDataSource(rest_client)
 
-    print("Testing account_managed_domain:")
-    try:
-        resp = await ds.users()
-        print(resp.response.json())  
-    except Exception as e:
-        print("Error:", e)
+    print("Calling Zoom API with S2S token generation...")
 
+    # First API call → automatically generates token inside the client
+    resp = await ds.users()
+    print("\n🔹 Raw Response Object:")
+    print(resp)
+    try:
+        print("\n🔹 Parsed JSON from response:")
+        print(resp.json())
+    except Exception as e:
+        print("Could not parse JSON:", e)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
