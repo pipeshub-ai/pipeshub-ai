@@ -88,7 +88,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
 
         # Split by comma to handle multiple citations in single brackets
         citation_keys = [c.strip() for c in citations_str.split(',') if c.strip()]
-        
+
         for citation_key in citation_keys:
             if citation_key not in seen:
                 unique_citations.append(citation_key)
@@ -206,13 +206,13 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
 
         # Split by comma to handle multiple citations (filter out empty strings)
         citation_keys = [c.strip() for c in citations_str.split(',') if c.strip()]
-        
+
         # Map each citation to its new number
         new_nums = []
         for old_key in citation_keys:
             if old_key in citation_mapping:
                 new_nums.append(str(citation_mapping[old_key]))
-        
+
         if new_nums:
             # Always output regular brackets for consistency
             return ''.join(f"[{num}]" for num in new_nums)
