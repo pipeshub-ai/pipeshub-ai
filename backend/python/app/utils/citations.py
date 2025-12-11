@@ -65,32 +65,34 @@ def fix_json_string(json_str) -> str:
 def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]],records: List[Dict[str, Any]]=None) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
-    and create corresponding citation chunks with correct mapping
+    and create corresponding citation chunks with correct mapping.
+    Handles both single citations [R1-2] and multiple citations [R1-2, R1-3, R2-1].
     """
     if records is None:
         records = []
     # Extract all citation numbers from the answer text
     # Match both regular square brackets [R1-2] and Chinese brackets 【R1-2】
-    citation_pattern = r'\[R(\d+)-(\d+)\]|【R(\d+)-(\d+)】'
+    # Also match multiple citations within a single pair of brackets [R1-2, R1-3]
+    citation_pattern = r'\[\s*((?:R\d+-\d+(?:\s*,\s*)?)+)\s*\]|【\s*((?:R\d+-\d+(?:\s*,\s*)?)+)\s*】'
     matches = re.finditer(citation_pattern, answer_text)
 
     unique_citations = []
     seen = set()
-    bracket_styles = {}  # Track bracket style for each citation
 
     for match in matches:
-        # Check which group matched (groups 1,2 for [...], groups 3,4 for 【...】)
-        if match.group(1):  # Regular brackets [R1-2]
-            citation_key = f"R{match.group(1)}-{match.group(2)}"
-            bracket_style = 'regular'
-        else:  # Chinese brackets 【R1-2】
-            citation_key = f"R{match.group(3)}-{match.group(4)}"
-            bracket_style = 'chinese'
+        # Check which group matched (group 1 for [...], group 2 for 【...】)
+        if match.group(1):  # Regular brackets [R1-2] or [R1-2, R1-3]
+            citations_str = match.group(1)
+        else:  # Chinese brackets 【R1-2】 or 【R1-2, R1-3】
+            citations_str = match.group(2)
 
-        if citation_key not in seen:
-            unique_citations.append(citation_key)
-            bracket_styles[citation_key] = bracket_style
-            seen.add(citation_key)
+        # Split by comma to handle multiple citations in single brackets
+        citation_keys = [c.strip() for c in citations_str.split(',') if c.strip()]
+        
+        for citation_key in citation_keys:
+            if citation_key not in seen:
+                unique_citations.append(citation_key)
+                seen.add(citation_key)
 
     if not unique_citations:
         return answer_text, []
@@ -196,16 +198,24 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
 
     # Replace citation numbers in answer text - always use regular brackets for output
     def replace_citation(match) -> str:
-        # Check which group matched to get the citation key
-        if match.group(1):  # Regular brackets [R1-2]
-            old_key = f"R{match.group(1)}-{match.group(2)}"
-        else:  # Chinese brackets 【R1-2】
-            old_key = f"R{match.group(3)}-{match.group(4)}"
+        # Check which group matched to get the citation keys
+        if match.group(1):  # Regular brackets [R1-2] or [R1-2, R1-3]
+            citations_str = match.group(1)
+        else:  # Chinese brackets 【R1-2】 or 【R1-2, R1-3】
+            citations_str = match.group(2)
 
-        if old_key in citation_mapping:
-            new_num = citation_mapping[old_key]
+        # Split by comma to handle multiple citations (filter out empty strings)
+        citation_keys = [c.strip() for c in citations_str.split(',') if c.strip()]
+        
+        # Map each citation to its new number
+        new_nums = []
+        for old_key in citation_keys:
+            if old_key in citation_mapping:
+                new_nums.append(str(citation_mapping[old_key]))
+        
+        if new_nums:
             # Always output regular brackets for consistency
-            return f"[{new_num}]"
+            return ''.join(f"[{num}]" for num in new_nums)
         return ""
 
     normalized_answer = re.sub(citation_pattern, replace_citation, answer_text)
