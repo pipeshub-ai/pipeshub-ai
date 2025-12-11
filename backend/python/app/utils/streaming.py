@@ -45,6 +45,8 @@ else:
 
 MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
+MAX_REFLECTION_RETRIES_DEFAULT = 2
+
 
 # Create a logger for this module
 parser = PydanticOutputParser(pydantic_object=AnswerWithMetadataJSON)
@@ -1195,7 +1197,7 @@ async def call_aiter_llm_stream(
     records=None,
     target_words_per_chunk=1,
     reflection_retry_count=0,
-    max_reflection_retries=2,
+    max_reflection_retries=MAX_REFLECTION_RETRIES_DEFAULT,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
     state = AnswerParserState()
