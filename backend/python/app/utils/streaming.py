@@ -1195,7 +1195,7 @@ async def call_aiter_llm_stream(
     records=None,
     target_words_per_chunk=1,
     reflection_retry_count=0,
-    max_reflection_retries=1,
+    max_reflection_retries=2,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
     state = AnswerParserState()
