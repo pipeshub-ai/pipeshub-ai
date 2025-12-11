@@ -2,7 +2,12 @@
 import asyncio
 import os
 
-from app.sources.client.zoom.zoom import ZoomClient, ZoomOAuthConfig, ZoomTokenConfig
+from app.sources.client.zoom.zoom import (
+    ZoomClient,
+    ZoomOAuthConfig,
+    ZoomRESTClientViaOAuth,
+    ZoomTokenConfig,
+)
 from app.sources.external.zoom.zoom import ZoomDataSource
 
 
@@ -67,9 +72,13 @@ async def example_with_oauth() -> None:
 
     # Get access token via Server-to-Server OAuth
     client = zoom_client.get_client()
-    if hasattr(client, "get_access_token_via_server_to_server"):
+    if isinstance(client, ZoomRESTClientViaOAuth):
         access_token = await client.get_access_token_via_server_to_server()
-        print(f"Access token obtained: {access_token[:20]}..." if access_token else "Failed to get token")
+        print(
+            f"Access token obtained: {access_token[:20]}..."
+            if access_token
+            else "Failed to get token"
+        )
 
     zoom_data_source = ZoomDataSource(zoom_client)
     print("Zoom data source created")

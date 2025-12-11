@@ -123,7 +123,7 @@ class ZoomRESTClientViaOAuth(HTTPClient):
 
             return self.access_token
         except Exception as e:
-            raise Exception(f"Failed to exchange account credentials for token: {e!s}") from e
+            raise ValueError(f"Failed to exchange account credentials for token: {e!s}") from e
 
 
 @dataclass
@@ -240,12 +240,6 @@ class ZoomClient(IClient):
             auth_config = config.get("auth", {}) or {}
             if not auth_config:
                 raise ValueError("Auth configuration not found in Zoom connector configuration")
-
-            credentials_config = config.get("credentials", {}) or {}
-            if not credentials_config:
-                raise ValueError(
-                    "Credentials configuration not found in Zoom connector configuration",
-                )
 
             # Extract configuration values
             auth_type = auth_config.get("authType", "OAUTH")  # OAUTH or TOKEN
