@@ -81,10 +81,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
 
     for match in matches:
         # Check which group matched (group 1 for [...], group 2 for 【...】)
-        if match.group(1):  # Regular brackets [R1-2] or [R1-2, R1-3]
-            citations_str = match.group(1)
-        else:  # Chinese brackets 【R1-2】 or 【R1-2, R1-3】
-            citations_str = match.group(2)
+        citations_str = match.group(1) or match.group(2)
 
         # Split by comma to handle multiple citations in single brackets
         citation_keys = [c.strip() for c in citations_str.split(',') if c.strip()]
@@ -199,19 +196,12 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     # Replace citation numbers in answer text - always use regular brackets for output
     def replace_citation(match) -> str:
         # Check which group matched to get the citation keys
-        if match.group(1):  # Regular brackets [R1-2] or [R1-2, R1-3]
-            citations_str = match.group(1)
-        else:  # Chinese brackets 【R1-2】 or 【R1-2, R1-3】
-            citations_str = match.group(2)
+        citations_str = match.group(1) or match.group(2)
 
         # Split by comma to handle multiple citations (filter out empty strings)
         citation_keys = [c.strip() for c in citations_str.split(',') if c.strip()]
 
-        # Map each citation to its new number
-        new_nums = []
-        for old_key in citation_keys:
-            if old_key in citation_mapping:
-                new_nums.append(str(citation_mapping[old_key]))
+        new_nums = [str(citation_mapping[old_key]) for old_key in citation_keys if old_key in citation_mapping]
 
         if new_nums:
             # Always output regular brackets for consistency
