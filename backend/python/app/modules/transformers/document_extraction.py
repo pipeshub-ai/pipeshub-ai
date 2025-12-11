@@ -71,7 +71,7 @@ class DocumentExtraction(Transformer):
         self.logger.info("🎯 Document extraction completed successfully")
 
 
-    def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int | None) -> List[dict]:
+    def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int) -> List[dict]:
         MAX_TOKENS = int(context_length * CONTENT_TOKEN_RATIO)
         MAX_IMAGES = 50
         total_tokens = 0
@@ -177,7 +177,7 @@ class DocumentExtraction(Transformer):
         self.logger.info("🎯 Extracting domain metadata")
         self.llm, config= await get_llm(self.config_service)
         is_multimodal_llm = config.get("isMultimodal")
-        context_length = config.get("contextLength",DEFAULT_CONTEXT_LENGTH)
+        context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
