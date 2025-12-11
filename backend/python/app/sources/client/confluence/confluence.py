@@ -53,7 +53,7 @@ class ConfluenceRESTClientViaToken(HTTPClient):
         token: str,
         token_type: str = "Bearer",
         max_retries: int = 0,
-        rate_limiter = None
+        rate_limiter: Optional[AsyncLimiter] = None
     ) -> None:
         super().__init__(
             token=token,
@@ -115,7 +115,7 @@ class ConfluenceTokenConfig:
     token: str
     ssl: bool = False
     max_retries: int = 0
-    rate_limiter = None
+    rate_limiter: Optional[AsyncLimiter] = None
 
     def create_client(self) -> ConfluenceRESTClientViaToken:
         return ConfluenceRESTClientViaToken(

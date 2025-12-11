@@ -61,19 +61,25 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
 
     def _should_retry(self, response_or_exc, attempt: int) -> bool:
         """
-        Check if request should be retried based on status code or exception type.
-        
-        Retries on:
+        Check if a request that returned a response should be retried based on its status code.
+
+        Retries on HTTP status codes:
         - 429 (Too Many Requests)
-        - 5xx (Server errors: 500-599)
-        
+        - 5xx (Server errors: 500-511)
+
+        Note: Network-level errors (timeouts, connection errors) are handled separately
+        in `handle_async_request` and trigger retries there.
+
         Args:
-            response_or_exc: Either httpx.Response or Exception
-            attempt: Current attempt number
+            response_or_exc: An `httpx.Response` or `httpx.HTTPStatusError` instance.
+            attempt: Current attempt number (0-indexed).
+
+        Returns:
+            True if the request should be retried, False otherwise.
         """
         if attempt >= self.max_retries:
             return False
-        
+
         # Handle Response objects
         if isinstance(response_or_exc, httpx.Response):
             status_code = response_or_exc.status_code
@@ -81,7 +87,7 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
                 status_code == HTTPStatus.TOO_MANY_REQUESTS or
                 HTTPStatus.INTERNAL_SERVER_ERROR <= status_code <= HTTPStatus.NETWORK_AUTHENTICATION_REQUIRED
             )
-        
+
         # Handle HTTPStatusError exceptions
         if isinstance(response_or_exc, httpx.HTTPStatusError):
             status_code = response_or_exc.response.status_code
@@ -89,7 +95,7 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
                 status_code == HTTPStatus.TOO_MANY_REQUESTS or
                 HTTPStatus.INTERNAL_SERVER_ERROR <= status_code <= HTTPStatus.NETWORK_AUTHENTICATION_REQUIRED
             )
-        
+
         # Network errors are handled separately in handle_async_request
         return False
 

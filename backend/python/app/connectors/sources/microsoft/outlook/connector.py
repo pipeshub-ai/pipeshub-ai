@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
-from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -196,7 +195,6 @@ class OutlookConnector(BaseConnector):
             data_store_provider,
             config_service,
         )
-        self.rate_limiter = AsyncLimiter(50, 1)
         self.external_outlook_client: Optional[OutlookCalendarContactsDataSource] = None
         self.external_users_client: Optional[UsersGroupsDataSource] = None
         self.credentials: Optional[OutlookCredentials] = None
@@ -237,7 +235,6 @@ class OutlookConnector(BaseConnector):
                     self.credentials.tenant_id
                 ),
                 mode=GraphMode.APP,
-                rate_limiter=self.rate_limiter,
                 resilience_config=self.resilience_config,
                 logger=self.logger
             )
