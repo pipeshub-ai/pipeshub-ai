@@ -318,49 +318,40 @@ class EventProcessor:
 
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
-                # Decode JSON content if it's streamed data
-                if isinstance(file_content, bytes):
-                    try:
-                        file_content = json.loads(file_content.decode("utf-8"))
-                    except json.JSONDecodeError as e:
-                        self.logger.error(
-                            f"Failed to decode Google Slides content: {str(e)}"
-                        )
-                        raise
-                result = await self.processor.process_google_slides(
-                    record_id, record_version, org_id, file_content, virtual_record_id
+                result = await self.processor.process_pptx_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    pptx_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
                 return result
 
             if mime_type == MimeTypes.GOOGLE_DOCS.value:
                 self.logger.info("🚀 Processing Google Docs")
-                # Decode JSON content if it's streamed data
-                if isinstance(file_content, bytes):
-                    try:
-                        file_content = json.loads(file_content.decode("utf-8"))
-                    except json.JSONDecodeError as e:
-                        self.logger.error(
-                            f"Failed to decode Google Docs content: {str(e)}"
-                        )
-                        raise
-                result = await self.processor.process_google_docs(
-                    record_id, record_version, org_id, file_content, virtual_record_id
+                result = await self.processor.process_docx_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    docx_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
                 return result
 
             if mime_type == MimeTypes.GOOGLE_SHEETS.value:
                 self.logger.info("🚀 Processing Google Sheets")
-                # Decode JSON content if it's streamed data
-                if isinstance(file_content, bytes):
-                    try:
-                        file_content = json.loads(file_content.decode("utf-8"))
-                    except json.JSONDecodeError as e:
-                        self.logger.error(
-                            f"Failed to decode Google Sheets content: {str(e)}"
-                        )
-                        raise
-                result = await self.processor.process_google_sheets(
-                    record_id, record_version, org_id, file_content, virtual_record_id
+                result = await self.processor.process_excel_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    excel_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
                 return result
 

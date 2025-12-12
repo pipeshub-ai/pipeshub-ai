@@ -517,77 +517,144 @@ async def download_file(
 
                 if mime_type == "application/vnd.google-apps.presentation":
                     logger.info("🚀 Processing Google Slides")
-                    google_slides_parser = await get_google_slides_parser(request)
-                    await google_slides_parser.connect_service(
-                        user_email, org_id, user_id, app_name=connector.lower()
-                    )
-                    result = await google_slides_parser.process_presentation(file_id)
+                    logger.info(f"Starting binary file download for file_id: {file_id}")
+                    async def file_stream() -> AsyncGenerator[bytes, None]:
+                        file_buffer = io.BytesIO()
+                        try:
+                            logger.info("Initiating download process...")
+                            request = request = drive_service.files().export_media(fileId=file_id,mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+                            downloader = MediaIoBaseDownload(file_buffer, request)
 
-                    # Convert result to JSON and return as StreamingResponse
-                    json_data = json.dumps(result).encode("utf-8")
+                            done = False
+                            while not done:
+                                status, done = downloader.next_chunk()
+                                logger.info(f"Download {int(status.progress() * 100)}%.")
+
+                            # Reset buffer position to start
+                            file_buffer.seek(0)
+
+                            # Stream the response with content type from metadata
+                            logger.info("Initiating streaming response...")
+                            yield file_buffer.read()
+
+                        except Exception as download_error:
+                            logger.error(f"Download failed: {repr(download_error)}")
+                            if hasattr(download_error, "response"):
+                                logger.error(
+                                    f"Response status: {download_error.response.status_code}"
+                                )
+                                logger.error(
+                                    f"Response content: {download_error.response.content}"
+                                )
+                            raise HTTPException(
+                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                detail=f"File download failed: {repr(download_error)}",
+                            )
+                        finally:
+                            file_buffer.close()
+
+                    # Return streaming response with proper headers
+                    headers = {
+                        "Content-Disposition": f'attachment; filename="{record.record_name}"'
+                    }
+
                     return StreamingResponse(
-                        iter([json_data]), media_type="application/json"
-                    )
+                        file_stream(), media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", headers=headers
+                    )                           
 
                 if mime_type == "application/vnd.google-apps.document":
                     logger.info("🚀 Processing Google Docs")
-                    google_docs_parser = await get_google_docs_parser(request)
-                    await google_docs_parser.connect_service(
-                        user_email, org_id, user_id, app_name=connector.lower()
-                    )
-                    content = await google_docs_parser.parse_doc_content(file_id)
-                    all_content, headers, footers = (
-                        google_docs_parser.order_document_content(content)
-                    )
-                    result = {
-                        "all_content": all_content,
-                        "headers": headers,
-                        "footers": footers,
+                    logger.info(f"Starting binary file download for file_id: {file_id}")
+                    async def file_stream() -> AsyncGenerator[bytes, None]:
+                        file_buffer = io.BytesIO()
+                        try:
+                            logger.info("Initiating download process...")
+                            request = request = drive_service.files().export_media(fileId=file_id,mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                            downloader = MediaIoBaseDownload(file_buffer, request)
+
+                            done = False
+                            while not done:
+                                status, done = downloader.next_chunk()
+                                logger.info(f"Download {int(status.progress() * 100)}%.")
+
+                            # Reset buffer position to start
+                            file_buffer.seek(0)
+
+                            # Stream the response with content type from metadata
+                            logger.info("Initiating streaming response...")
+                            yield file_buffer.read()
+
+                        except Exception as download_error:
+                            logger.error(f"Download failed: {repr(download_error)}")
+                            if hasattr(download_error, "response"):
+                                logger.error(
+                                    f"Response status: {download_error.response.status_code}"
+                                )
+                                logger.error(
+                                    f"Response content: {download_error.response.content}"
+                                )
+                            raise HTTPException(
+                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                detail=f"File download failed: {repr(download_error)}",
+                            )
+                        finally:
+                            file_buffer.close()
+
+                    # Return streaming response with proper headers
+                    headers = {
+                        "Content-Disposition": f'attachment; filename="{record.record_name}"'
                     }
 
-                    # Convert result to JSON and return as StreamingResponse
-                    json_data = json.dumps(result).encode("utf-8")
                     return StreamingResponse(
-                        iter([json_data]), media_type="application/json"
-                    )
+                        file_stream(), media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers=headers
+                    )                                        
 
                 if mime_type == "application/vnd.google-apps.spreadsheet":
                     logger.info("🚀 Processing Google Sheets")
-                    google_sheets_parser = await get_google_sheets_parser(request)
-                    await google_sheets_parser.connect_service(
-                        user_email, org_id, user_id, app_name=connector.lower()
-                    )
-                    llm, _ = await get_llm(config_service)
-                    # List and process spreadsheets
-                    parsed_result = await google_sheets_parser.parse_spreadsheet(
-                        file_id
-                    )
-                    all_sheet_results = []
-                    for sheet_idx, sheet in enumerate(parsed_result["sheets"], 1):
-                        sheet_name = sheet["name"]
+                    logger.info(f"Starting binary file download for file_id: {file_id}")
+                    async def file_stream() -> AsyncGenerator[bytes, None]:
+                        file_buffer = io.BytesIO()
+                        try:
+                            logger.info("Initiating download process...")
+                            request = request = drive_service.files().export_media(fileId=file_id,mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                            downloader = MediaIoBaseDownload(file_buffer, request)
 
-                        # Process sheet with summaries
-                        sheet_data = (
-                            await google_sheets_parser.process_sheet_with_summaries(
-                                llm, sheet_name, file_id
+                            done = False
+                            while not done:
+                                status, done = downloader.next_chunk()
+                                logger.info(f"Download {int(status.progress() * 100)}%.")
+
+                            # Reset buffer position to start
+                            file_buffer.seek(0)
+
+                            # Stream the response with content type from metadata
+                            logger.info("Initiating streaming response...")
+                            yield file_buffer.read()
+
+                        except Exception as download_error:
+                            logger.error(f"Download failed: {repr(download_error)}")
+                            if hasattr(download_error, "response"):
+                                logger.error(
+                                    f"Response status: {download_error.response.status_code}"
+                                )
+                                logger.error(
+                                    f"Response content: {download_error.response.content}"
+                                )
+                            raise HTTPException(
+                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                detail=f"File download failed: {repr(download_error)}",
                             )
-                        )
-                        if sheet_data is None:
-                            continue
+                        finally:
+                            file_buffer.close()
 
-                        all_sheet_results.append(sheet_data)
-
-                    result = {
-                        "parsed_result": parsed_result,
-                        "all_sheet_results": all_sheet_results,
+                    # Return streaming response with proper headers
+                    headers = {
+                        "Content-Disposition": f'attachment; filename="{record.record_name}"'
                     }
 
-                    # Convert result to JSON and return as StreamingResponse
-                    json_data = json.dumps(result).encode("utf-8")
-                    logger.info("Streaming Google Sheets result")
                     return StreamingResponse(
-                        iter([json_data]), media_type="application/json"
-                    )
+                        file_stream(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers
+                    )                                        
 
                 # Enhanced logging for regular file download
                 logger.info(f"Starting binary file download for file_id: {file_id}")
