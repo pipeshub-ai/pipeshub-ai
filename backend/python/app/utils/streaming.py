@@ -53,6 +53,7 @@ else:
 MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
 MAX_REFLECTION_RETRIES_DEFAULT = 2
+CLAUDE_MODELS_WITH_STRUCTURED_OUTPUT_SUPPORT = ["opus-4-5", "sonnet-4-5", "haiku-4-5", "opus-4-1"]
 
 
 # Create a logger for this module
@@ -1483,7 +1484,8 @@ def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
             if not model_str:
                 logger.warning("model name not found, using non-structured LLM")
                 return llm
-            has_supported_model = "opus-4-5" in model_str or "sonnet-4-5" in model_str or "haiku-4-5" in model_str or "opus-4-1" in model_str
+
+            has_supported_model = any(m in model_str for m in CLAUDE_MODELS_WITH_STRUCTURED_OUTPUT_SUPPORT)
             if not has_supported_model:
                 logger.info("Using non-structured LLM")
                 return llm
