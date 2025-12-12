@@ -164,11 +164,14 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
             content = getattr(response, "content", response)
             parts.append(response)
 
-            text = _stringify_content(content)
-            if text:
-                yield text
+            if isinstance(content, dict):
+                yield content
             else:
-                logger.info("No content found in response")
+                text = _stringify_content(content)
+                if text:
+                    yield text
+                else:
+                    logger.info("No content found in response")
     except Exception as e:
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
         raise
