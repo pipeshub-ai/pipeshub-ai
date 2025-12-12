@@ -179,3 +179,4 @@ image_*.png
 
 
 .cursorignore
+backend/python/cleanup.ps1
