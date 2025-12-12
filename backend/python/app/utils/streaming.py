@@ -1433,7 +1433,7 @@ async def call_aiter_llm_stream(
         yield {"event": "error","data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
         return
 
-def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|False:
+def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|bool:
     """
     Bind tools to the LLM, handling provider-specific quirks.
     """
