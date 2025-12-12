@@ -20,6 +20,7 @@ import {
   Popper,
   Chip,
   Tooltip,
+  Switch,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import filterIcon from '@iconify-icons/mdi/filter-outline';
@@ -105,6 +106,14 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
   const { filters } = connectorConfig.config;
   const syncFilters = filters?.sync;
   const indexingFilters = filters?.indexing;
+
+  // Get the manual sync field from indexing filters
+  const manualSyncField = indexingFilters?.schema?.fields?.find(
+    (field) => field.name === 'enable_manual_sync'
+  );
+  const manualSyncValue = typeof formData.enable_manual_sync?.value === 'boolean' 
+    ? formData.enable_manual_sync.value 
+    : false;
 
   const hasSyncFilters = syncFilters?.schema?.fields && syncFilters.schema.fields.length > 0;
   const hasIndexingFilters = indexingFilters?.schema?.fields && indexingFilters.schema.fields.length > 0;
@@ -377,7 +386,10 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
    */
   const getAvailableFilters = (filterType: 'sync' | 'indexing'): FilterSchemaField[] => {
     const schema = filterType === 'sync' ? syncFilters?.schema : indexingFilters?.schema;
-    const availableFields = schema?.fields || [];
+    const availableFields = (schema?.fields || []).filter(
+      // Exclude enable_manual_sync from indexing filters accordion
+      (field) => filterType !== 'indexing' || field.name !== 'enable_manual_sync'
+    );
     const activeFilterNames = Object.keys(formData).filter(
       (key) => formData[key] !== undefined && formData[key] !== null
     );
@@ -390,7 +402,10 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
    */
   const getActiveFilters = (filterType: 'sync' | 'indexing'): Array<FilterSchemaField & { filterId: string }> => {
     const schema = filterType === 'sync' ? syncFilters?.schema : indexingFilters?.schema;
-    const availableFields = schema?.fields || [];
+    const availableFields = (schema?.fields || []).filter(
+      // Exclude enable_manual_sync from indexing filters accordion
+      (field) => filterType !== 'indexing' || field.name !== 'enable_manual_sync'
+    );
     const activeFilterNames = Object.keys(formData).filter(
       (key) => {
         const filterValue = formData[key];
@@ -1224,9 +1239,18 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
       return null;
     }
 
+    // Filter out enable_manual_sync from indexing filters accordion (shown separately above)
+    const filteredSchema = filterType === 'indexing'
+      ? { ...filterSchema, fields: filterSchema.fields.filter(f => f.name !== 'enable_manual_sync') }
+      : filterSchema;
+
+    if (filteredSchema.fields.length === 0) {
+      return null;
+    }
+
     const activeFilters = getActiveFilters(filterType);
     const availableFilters = getAvailableFilters(filterType);
-    const isBooleanOnly = filterSchema.fields.every((f) => f.filterType === 'boolean');
+    const isBooleanOnly = filteredSchema.fields.every((f) => f.filterType === 'boolean');
 
     const isExpanded = expandedAccordions[filterType] ?? false;
 
@@ -1271,8 +1295,15 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
           sx={{
             px: 2,
             py: 1.5,
+            '&.Mui-expanded': {
+              minHeight: 48,
+              my: 0,
+            },
             '& .MuiAccordionSummary-content': {
               my: 0,
+              '&.Mui-expanded': {
+                my: 0,
+              },
             },
           }}
         >
@@ -1302,67 +1333,54 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
                 >
                   {title}
                 </Typography>
-                {filterType === 'indexing' && (
-                  <Tooltip
-                    title={
-                      <Box sx={{ p: 0.5 }}>
-                        <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.75, fontSize: '0.8125rem' }}>
-                          What are Indexing Filters?
-                        </Typography>
-                        <Typography variant="body2" sx={{ mb: 1, fontSize: '0.75rem', lineHeight: 1.5 }}>
-                          Indexing filters control which synced data gets processed and made searchable in the AI system.
-                        </Typography>
-                        <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5, fontSize: '0.8125rem' }}>
-                          How it works:
-                        </Typography>
-                        <Typography component="div" variant="body2" sx={{ fontSize: '0.75rem', lineHeight: 1.6 }}>
-                          <strong>1. Sync Phase:</strong> Data is downloaded from the source (controlled by Sync Filters)
-                          <br />
-                          <strong>2. Index Phase:</strong> Downloaded data is processed for AI search (controlled by Indexing Filters)
-                          <br />
-                          <br />
-                          <strong>Example:</strong> You can sync all pages but only index pages and comments, excluding attachments from AI search.
-                        </Typography>
-                      </Box>
-                    }
-                    arrow
-                    placement="right"
-                    enterDelay={200}
-                    leaveDelay={200}
+                <Tooltip
+                  title={
+                    <Box sx={{ p: 0.5 }}>
+                      <Typography variant="body2" sx={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
+                        {filterType === 'sync' 
+                          ? 'Control what data is downloaded from the source. Use these filters to limit which data gets synced to your knowledge base.'
+                          : 'Choose what gets made searchable for AI search. All synced data is available, but only checked items are searchable in AI chat.'
+                        }
+                      </Typography>
+                    </Box>
+                  }
+                  arrow
+                  placement="right"
+                  enterDelay={200}
+                  leaveDelay={200}
+                  sx={{
+                    '& .MuiTooltip-tooltip': {
+                      maxWidth: 400,
+                      bgcolor: isDark 
+                        ? alpha(theme.palette.grey[900], 0.98)
+                        : alpha(theme.palette.grey[800], 0.95),
+                      boxShadow: `0 8px 24px ${alpha(theme.palette.common.black, 0.25)}`,
+                      p: 1.5,
+                    },
+                    '& .MuiTooltip-arrow': {
+                      color: isDark 
+                        ? alpha(theme.palette.grey[900], 0.98)
+                        : alpha(theme.palette.grey[800], 0.95),
+                    },
+                  }}
+                >
+                  <Box
                     sx={{
-                      '& .MuiTooltip-tooltip': {
-                        maxWidth: 400,
-                        bgcolor: isDark 
-                          ? alpha(theme.palette.grey[900], 0.98)
-                          : alpha(theme.palette.grey[800], 0.95),
-                        boxShadow: `0 8px 24px ${alpha(theme.palette.common.black, 0.25)}`,
-                        p: 1.5,
-                      },
-                      '& .MuiTooltip-arrow': {
-                        color: isDark 
-                          ? alpha(theme.palette.grey[900], 0.98)
-                          : alpha(theme.palette.grey[800], 0.95),
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'help',
+                      color: theme.palette.info.main,
+                      transition: 'all 0.2s',
+                      '&:hover': {
+                        color: theme.palette.info.dark,
+                        transform: 'scale(1.1)',
                       },
                     }}
                   >
-                    <Box
-                      sx={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        cursor: 'help',
-                        color: theme.palette.info.main,
-                        transition: 'all 0.2s',
-                        '&:hover': {
-                          color: theme.palette.info.dark,
-                          transform: 'scale(1.1)',
-                        },
-                      }}
-                    >
-                      <Iconify icon={infoIcon} width={16} />
-                    </Box>
-                  </Tooltip>
-                )}
+                    <Iconify icon={infoIcon} width={16} />
+                  </Box>
+                </Tooltip>
               </Box>
               <Typography 
                 variant="caption" 
@@ -1415,7 +1433,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         <AccordionDetails sx={{ px: 2, pb: 2 }}>
           {isBooleanOnly ? (
             <Grid container spacing={2}>
-              {filterSchema.fields.map((field) => renderFilterField(field, 0, 1, filterSchema, false))}
+              {filteredSchema.fields.map((field) => renderFilterField(field, 0, 1, filteredSchema, false))}
             </Grid>
           ) : (
             <Box>
@@ -1548,7 +1566,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
                             : `0 1px 2px ${alpha(theme.palette.common.black, 0.03)}`,
                         }}
                       >
-                        {renderFilterField(field, index, activeFilters.length, filterSchema, filterType === 'sync')}
+                        {renderFilterField(field, index, activeFilters.length, filteredSchema, filterType === 'sync')}
                       </Paper>
                     </React.Fragment>
                   ))}
@@ -1571,6 +1589,127 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         height: '100%',
       }}
     >
+      {/* Manual Sync Control - Only show if the connector has indexing filters */}
+      {hasIndexingFilters && manualSyncField && (
+        <Paper
+          elevation={0}
+          sx={{
+            px: 2,
+            py: 1.6,
+            borderRadius: 1.25,
+            border: `1.5px solid ${isDark ? alpha(theme.palette.common.white, 0.2) : alpha(theme.palette.common.black, 0.25)}`,
+            bgcolor: isDark
+              ? alpha(theme.palette.background.paper, 0.4)
+              : theme.palette.background.paper,
+            boxShadow: isDark
+              ? `0 1px 3px ${alpha(theme.palette.common.black, 0.2)}`
+              : `0 1px 3px ${alpha(theme.palette.common.black, 0.05)}`,
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
+            <Box
+              sx={{
+                p: 0.625,
+                borderRadius: 1,
+                bgcolor: alpha(theme.palette.primary.main, 0.1),
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <Iconify icon="mdi:car-transmission" width={16} color={theme.palette.primary.main} />
+            </Box>
+            <Box sx={{ flex: 1 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.25 }}>
+                <Typography
+                  variant="subtitle2"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.875rem',
+                    color: theme.palette.text.primary,
+                  }}
+                >
+                  {manualSyncField.displayName}
+                </Typography>
+                <Tooltip
+                  title={
+                    <Box sx={{ p: 0.5 }}>
+                      <Typography variant="body2" sx={{ mb: 1, fontSize: '0.75rem', lineHeight: 1.5 }}>
+                        <strong>OFF (Default):</strong> Records are automatically indexed based on the indexing filters below.
+                        <br />
+                        <br />
+                        <strong>ON:</strong> No records are automatically indexed. You manually select which records to index from the knowledge base.
+                      </Typography>
+                    </Box>
+                  }
+                  arrow
+                  placement="right"
+                  enterDelay={200}
+                  leaveDelay={200}
+                  sx={{
+                    '& .MuiTooltip-tooltip': {
+                      maxWidth: 400,
+                      bgcolor: isDark 
+                        ? alpha(theme.palette.grey[900], 0.98)
+                        : alpha(theme.palette.grey[800], 0.95),
+                      boxShadow: `0 8px 24px ${alpha(theme.palette.common.black, 0.25)}`,
+                      p: 1.5,
+                    },
+                    '& .MuiTooltip-arrow': {
+                      color: isDark 
+                        ? alpha(theme.palette.grey[900], 0.98)
+                        : alpha(theme.palette.grey[800], 0.95),
+                    },
+                  }}
+                >
+                  <Box
+                    sx={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'help',
+                      color: theme.palette.info.main,
+                      transition: 'all 0.2s',
+                      '&:hover': {
+                        color: theme.palette.info.dark,
+                        transform: 'scale(1.1)',
+                      },
+                    }}
+                  >
+                    <Iconify icon={infoIcon} width={16} />
+                  </Box>
+                </Tooltip>
+              </Box>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{
+                  fontSize: '0.75rem',
+                  lineHeight: 1.5,
+                }}
+              >
+                {manualSyncField.description}
+              </Typography>
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+              <Switch
+                checked={manualSyncValue}
+                onChange={(e) => handleValueChange('enable_manual_sync', e.target.checked, indexingFilters?.schema)}
+                sx={{
+                  '& .MuiSwitch-switchBase.Mui-checked': {
+                    color: theme.palette.primary.main,
+                  },
+                  '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+                    backgroundColor: theme.palette.primary.main,
+                  },
+                }}
+              />
+            </Box>
+          </Box>
+        </Paper>
+      )}
+
       {hasSyncFilters && syncFilters?.schema && renderFilterSection(
         'Sync Filters',
         'Configure filters to control what data is synchronized',
@@ -1580,7 +1719,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
 
       {hasIndexingFilters && indexingFilters?.schema && renderFilterSection(
         'Indexing Filters',
-        'Configure filters to control what data is indexed',
+        'Configure filters to control what data is searchable by AI',
         indexingFilters.schema,
         'indexing'
       )}
@@ -1796,8 +1935,8 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         variant="outlined" 
         sx={{ 
           borderRadius: 1.25,
-          py: 1,
-          px: 1.75,
+          py: 0.5,
+          px: 1.25,
           flexShrink: 0,
           bgcolor: isDark
             ? alpha(theme.palette.info.main, 0.08)
@@ -1807,6 +1946,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
             : alpha(theme.palette.info.main, 0.1),
           '& .MuiAlert-icon': { fontSize: '1.25rem', py: 0.5 },
           '& .MuiAlert-message': { py: 0.25 },
+          alignItems: 'center',
         }}
       >
         <Typography variant="body2" sx={{ fontSize: '0.8125rem', lineHeight: 1.5, fontWeight: 400 }}>

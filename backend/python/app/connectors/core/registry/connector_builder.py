@@ -500,6 +500,18 @@ class CommonFields:
         )
 
     @staticmethod
+    def enable_manual_sync_filter() -> FilterField:
+        """Standard manual sync control filter (master switch for indexing)"""
+        return FilterField(
+            name="enable_manual_sync",
+            display_name="Enable Manual Sync",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Disable automatic indexing for all synced records.",
+            default_value=False
+        )
+
+    @staticmethod
     def batch_size_field() -> CustomField:
         """Standard batch size sync field"""
         return CustomField(

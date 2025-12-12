@@ -137,6 +137,7 @@ CONTENT_EXPAND_PARAMS = (
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         # Indexing filters - Pages
         .add_filter_field(FilterField(
             name="pages",
