@@ -52,6 +52,8 @@ class Connectors(Enum):
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
 
+    NEXTCLOUD = "NEXTCLOUD"
+
     SERVICENOW = "SERVICENOW"
 
     UNKNOWN = "UNKNOWN"
@@ -65,6 +67,7 @@ class AppGroups(Enum):
     SERVICENOW = "Servicenow"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    NEXTCLOUD = "NEXTCLOUD"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"

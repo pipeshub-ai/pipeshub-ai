@@ -119,47 +119,63 @@ class NextcloudClient(IClient):
             if not config:
                 raise ValueError("Failed to get Nextcloud connector configuration")
 
-            auth_config = config.get("auth", {}) or {}
-            if not auth_config:
-                raise ValueError("Auth configuration not found in Nextcloud connector configuration")
+            logger.debug(f"Loaded Nextcloud config structure: {list(config.keys())}")
 
+            # 2. Extract credentials - check multiple possible locations
+            auth_config = config.get("auth", {}) or {}
             credentials_config = config.get("credentials", {}) or {}
 
-            # 2. Extract Base URL (Mandatory for Nextcloud)
-            # Nextcloud is self-hosted, so URL is not dynamic/discovered like Confluence Cloud
-            base_url = credentials_config.get("baseUrl") or config.get("baseUrl")
+            # Try to get baseUrl from multiple locations
+            base_url = (
+                auth_config.get("baseUrl") or
+                credentials_config.get("baseUrl") or
+                config.get("baseUrl")
+            )
+
             if not base_url:
+                logger.error(f"Configuration structure: auth={list(auth_config.keys())}, credentials={list(credentials_config.keys())}")
                 raise ValueError("Nextcloud 'baseUrl' is required in configuration")
+
+            # Clean up base_url
+            base_url = base_url.rstrip('/')
+            logger.info(f"Using Nextcloud base URL: {base_url}")
 
             # 3. Determine Auth Type
             auth_type = auth_config.get("authType", "BASIC_AUTH")
+            logger.debug(f"Using auth type: {auth_type}")
+
             client = None
 
             if auth_type == "BASIC_AUTH":
                 # Standard App Password / User flow
-                username = auth_config.get("username")
-                password = auth_config.get("password")
+                username = auth_config.get("username") or credentials_config.get("username")
+                password = auth_config.get("password") or credentials_config.get("password")
 
                 if not username or not password:
+                    logger.error("Missing username or password in configuration")
                     raise ValueError("Username and Password required for BASIC_AUTH type")
 
+                logger.info(f"Creating Basic Auth client for user: {username}")
                 client = NextcloudRESTClientViaUsernamePassword(base_url, username, password)
 
             elif auth_type == "BEARER_TOKEN":
                 # SSO / OIDC Flow
-                token = auth_config.get("bearerToken")
+                token = auth_config.get("bearerToken") or credentials_config.get("bearerToken")
                 if not token:
+                    logger.error("Missing bearerToken in configuration")
                     raise ValueError("Token required for BEARER_TOKEN auth type")
 
+                logger.info("Creating Bearer Token client")
                 client = NextcloudRESTClientViaToken(base_url, token)
 
             else:
                 raise ValueError(f"Invalid auth type for Nextcloud: {auth_type}")
 
+            logger.info("Nextcloud client created successfully")
             return cls(client)
 
         except Exception as e:
-            logger.error(f"Failed to build Nextcloud client from services: {str(e)}")
+            logger.error(f"Failed to build Nextcloud client from services: {str(e)}", exc_info=True)
             raise
 
     @staticmethod
@@ -167,7 +183,9 @@ class NextcloudClient(IClient):
         """Fetch connector config from etcd for Nextcloud."""
         try:
             config = await config_service.get_config("/services/connectors/nextcloud/config")
+            if not config:
+                logger.warning("No configuration found at /services/connectors/nextcloud/config")
             return config or {}
         except Exception as e:
-            logger.error(f"Failed to get Nextcloud connector config: {e}")
+            logger.error(f"Failed to get Nextcloud connector config: {e}", exc_info=True)
             return {}
