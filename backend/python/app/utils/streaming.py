@@ -11,7 +11,6 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.runnables import Runnable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -218,7 +217,7 @@ async def execute_tool_calls(
     if not llm_to_pass:
         logger.warning("Failed to bind tools for LLM, so using structured output")
         llm_to_pass = _apply_structured_output(llm)
-   
+
     hops = 0
     tools_executed = False
     tool_args = []
@@ -1487,7 +1486,7 @@ def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
                 return llm
 
             additional_kwargs["stream"] = True
-            
+
         additional_kwargs["method"] = "json_schema"
 
         try:
@@ -1500,7 +1499,7 @@ def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
         except Exception as e:
             logger.warning("Failed to apply structured output, falling back to default. Error: %s", str(e))
             logger.info("Using non-structured LLM")
-    
+
     logger.info("Using non-structured LLM")
     return llm
 
