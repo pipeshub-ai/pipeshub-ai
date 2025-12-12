@@ -216,6 +216,7 @@ async def execute_tool_calls(
 
     llm_to_pass = bind_tools_for_llm(llm, tools)
     if not llm_to_pass:
+        logger.warning("Failed to bind tools for LLM, so using structured output")
         llm_to_pass = _apply_structured_output(llm)
    
     hops = 0
@@ -1472,25 +1473,35 @@ def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|bool:
         return False
 
 def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
-    additional_kwargs = {
-        "method": "json_schema",
-    }
-    if isinstance(llm, ChatAnthropic):
-        additional_kwargs["stream"] = True
-    # elif isinstance(llm, ChatCohere):
-        # additional_kwargs["method"] = "json_mode"
+    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
 
-    try:
-        model_with_structure = llm.with_structured_output(
-            AnswerWithMetadataDict,
-            **additional_kwargs
-        )
-        logger.info("Using structured output")
-        return model_with_structure
-    except Exception as e:
-        logger.warning("Failed to apply structured output, falling back to default. Error: %s", str(e))
-        logger.info("Using non-structured LLM")
+        additional_kwargs = {}
+        if isinstance(llm, ChatAnthropic):
+            model_str = getattr(llm, 'model', None)
+            if not model_str:
+                logger.warning("model name not found, using non-structured LLM")
+                return llm
+            has_supported_model = "opus-4-5" in model_str or "sonnet-4-5" in model_str or "haiku-4-5" in model_str or "opus-4-1" in model_str
+            if not has_supported_model:
+                logger.info("Using non-structured LLM")
+                return llm
 
+            additional_kwargs["stream"] = True
+            
+        additional_kwargs["method"] = "json_schema"
+
+        try:
+            model_with_structure = llm.with_structured_output(
+                AnswerWithMetadataDict,
+                **additional_kwargs
+            )
+            logger.info("Using structured output")
+            return model_with_structure
+        except Exception as e:
+            logger.warning("Failed to apply structured output, falling back to default. Error: %s", str(e))
+            logger.info("Using non-structured LLM")
+    
+    logger.info("Using non-structured LLM")
     return llm
 
 
