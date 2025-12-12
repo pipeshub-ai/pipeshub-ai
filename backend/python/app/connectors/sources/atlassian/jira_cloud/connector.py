@@ -1,7 +1,6 @@
 """Jira Cloud Connector Implementation"""
 import re
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from logging import Logger
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -36,6 +35,7 @@ from app.connectors.sources.atlassian.core.oauth import (
     AtlassianScope,
 )
 from app.models.entities import (
+    AppRole,
     AppUser,
     AppUserGroup,
     CommentRecord,
@@ -71,17 +71,7 @@ ISSUE_SEARCH_FIELDS: List[str] = [
 # HTTP status codes
 HTTP_STATUS_OK: int = 200
 HTTP_STATUS_BAD_REQUEST: int = 400
-HTTP_STATUS_UNAUTHORIZED: int = 401
 HTTP_STATUS_GONE: int = 410
-
-@dataclass
-class AtlassianCloudResource:
-    """Represents an Atlassian Cloud resource (site)."""
-    id: str
-    name: str
-    url: str
-    scopes: List[str]
-    avatar_url: Optional[str] = None
 
 def adf_to_text(adf_content: Dict[str, Any]) -> str:
     """
@@ -284,7 +274,9 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
     )\
     .build_decorator()
 class JiraConnector(BaseConnector):
-    """Jira connector for syncing projects, issues, and users from Jira Cloud"""
+    """
+    Jira connector for syncing projects, issues, and users from Jira 
+    """
 
     def __init__(
         self,
@@ -304,7 +296,7 @@ class JiraConnector(BaseConnector):
         self.cloud_id: Optional[str] = None
         self.site_url: Optional[str] = None
         self._sync_in_progress: bool = False
-        self._client_refs: List[Any] = []  # Track transient clients for cleanup
+        self._client_refs: List[Any] = []
 
         # Initialize sync points
         org_id = self.data_entities_processor.org_id
@@ -316,12 +308,13 @@ class JiraConnector(BaseConnector):
             data_store_provider=data_store_provider
         )
 
-        # Filters will be loaded in init()
         self.sync_filters = None
         self.indexing_filters = None
 
     async def init(self) -> None:
-        """Initialize Jira client using proper Client + DataSource architecture"""
+        """
+        Initialize Jira client using proper Client + DataSource architecture
+        """
         try:
             # Load filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -357,7 +350,9 @@ class JiraConnector(BaseConnector):
             raise
 
     async def _get_access_token(self) -> str:
-        """Get access token from config"""
+        """
+        Get access token from config
+        """
         config = await self.config_service.get_config(f"{OAUTH_JIRA_CONFIG_PATH}")
         access_token = config.get("credentials", {}).get("access_token") if config else None
         if not access_token:
@@ -367,8 +362,6 @@ class JiraConnector(BaseConnector):
     async def _get_fresh_datasource(self) -> JiraDataSource:
         """
         Get JiraDataSource with ALWAYS-FRESH access token.
-        Note: The returned datasource creates a new HTTP client that should be
-        closed after use to prevent connection leaks.
         """
         # Fetch fresh access token from config
         fresh_token = await self._get_access_token()
@@ -386,7 +379,9 @@ class JiraConnector(BaseConnector):
         return JiraDataSource(client)
 
     def _parse_jira_timestamp(self, timestamp_str: Optional[str]) -> int:
-        """Parse Jira timestamp to epoch milliseconds"""
+        """
+        Parse Jira timestamp to epoch milliseconds
+        """
         if not timestamp_str:
             return 0
         try:
@@ -422,22 +417,19 @@ class JiraConnector(BaseConnector):
             self.logger.info(f"Starting Jira sync for org: {org_id}")
 
             # Fetch and sync users
-            self.logger.info("Fetching Jira users...")
             jira_users = await self._fetch_users(org_id)
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"Synced {len(jira_users)} Jira users")
 
             # Fetch and sync user groups
-            self.logger.info("Fetching Jira user groups...")
             await self._sync_user_groups(org_id, jira_users)
-            self.logger.info("User groups sync completed")
 
-            # Fetch projects
-            self.logger.info("Fetching Jira projects...")
-            projects = await self._fetch_projects()
+            # Fetch projects (returns record_groups and raw project data)
+            projects, raw_projects = await self._fetch_projects()
 
             # Apply project_keys filter if configured
+            allowed_keys = None
             if self.sync_filters:
                 project_keys_filter = self.sync_filters.get(SyncFilterKey.PROJECT_KEYS)
                 if project_keys_filter:
@@ -447,13 +439,20 @@ class JiraConnector(BaseConnector):
                             (proj, perms) for proj, perms in projects
                             if proj.short_name in allowed_keys
                         ]
-                        self.logger.info(f"Filtered to {len(projects)} projects based on project_keys filter: {allowed_keys}")
+                        raw_projects = [
+                            proj for proj in raw_projects
+                            if proj.get("key") in allowed_keys
+                        ]
 
-            self.logger.info(f"Found {len(projects)} projects")
+            # Sync project roles BEFORE RecordGroups (so roles exist for permission edges)
+            project_keys_for_roles = [proj.short_name for proj, _ in projects]
+            await self._sync_project_roles(project_keys_for_roles, jira_users)
+            
+            # Sync project lead roles BEFORE RecordGroups (using raw project data)
+            await self._sync_project_lead_roles(raw_projects, jira_users)
 
             # Sync projects as RecordGroups (includes Permission Scheme-based permissions)
             await self.data_entities_processor.on_new_record_groups(projects)
-            self.logger.info("Synced projects as RecordGroups with permission scheme data")
 
             # Get global sync checkpoint and check for filter changes
             global_sync_key = "issues_global"
@@ -463,17 +462,10 @@ class JiraConnector(BaseConnector):
                 sync_point_data = await self.issues_sync_point.read_sync_point(global_sync_key)
                 global_last_sync_time = sync_point_data.get("last_sync_time") if sync_point_data else None
                 
-                filters_changed = self._have_filters_changed(sync_point_data)
-                if filters_changed:
-                    self.logger.info("Filters changed - triggering full resync")
+                if self._have_filters_changed(sync_point_data):
                     global_last_sync_time = None
             except Exception:
                 global_last_sync_time = None
-            
-            if global_last_sync_time:
-                self.logger.info(f"Incremental sync: using global checkpoint from {global_last_sync_time}")
-            else:
-                self.logger.info("Full sync: first time or filters changed - all projects will sync with current filter range")
 
             total_issues_synced = 0
             total_issues_fetched = 0
@@ -483,8 +475,6 @@ class JiraConnector(BaseConnector):
 
             for project, project_permissions in projects:
                 try:
-                    self.logger.info(f"Syncing project {project.short_name} with global checkpoint: {global_last_sync_time}")
-
                     issues_with_permissions = await self._fetch_issues(
                         project.short_name,
                         project.external_group_id,
@@ -498,9 +488,6 @@ class JiraConnector(BaseConnector):
                         self.logger.info(f"No new/updated issues for project {project.short_name}")
                         continue
 
-                    self.logger.info(f"Found {len(issues_with_permissions)} new/updated issues for project {project.short_name}")
-
-                    # Separate new records from updated records (including both issues and comments)
                     new_records_with_permissions = [
                         (record, perms) for record, perms in issues_with_permissions
                         if record.version == 0
@@ -511,7 +498,6 @@ class JiraConnector(BaseConnector):
                         if record.version > 0
                     ]
 
-                    # Process new records
                     if new_records_with_permissions:
                         for i in range(0, len(new_records_with_permissions), batch_size):
                             batch = new_records_with_permissions[i:i + batch_size]
@@ -546,7 +532,7 @@ class JiraConnector(BaseConnector):
                                    f"(New: {len(new_records_with_permissions)}, Updated: {len(updated_records)})")
 
                 except Exception as e:
-                    self.logger.error(f"Error processing issues for project {project.short_name}: {e}")
+                    self.logger.error(f"Error processing issues for project {project.short_name}: {e}", exc_info=True)
                     continue
 
             # Update global sync checkpoint with current filter values
@@ -600,6 +586,7 @@ class JiraConnector(BaseConnector):
 
     async def _fetch_users(self, org_id: str) -> List[AppUser]:
         """Fetch all active Jira users using DataSource"""
+
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
@@ -636,21 +623,17 @@ class JiraConnector(BaseConnector):
             start_at += max_results_per_request
 
         app_users: List[AppUser] = []
-        users_without_email = 0
-        inactive_users = 0
 
         for user in users:
             account_id = user.get("accountId")
 
             # Only include active users
             if not user.get("active", True):
-                inactive_users += 1
                 continue
 
             # Skip users without email address
             email = user.get("emailAddress")
             if not email:
-                users_without_email += 1
                 continue
 
             app_user = AppUser(
@@ -669,12 +652,6 @@ class JiraConnector(BaseConnector):
     async def _detect_and_handle_deletions(self, last_sync_time: int) -> int:
         """
         Detect and handle deleted issues using Jira Audit API.
-        
-        Args:
-            last_sync_time: Last sync timestamp in milliseconds
-            
-        Returns:
-            Count of deleted issues processed
         """
         try:
             self.logger.info("🔍 Checking for deleted issues via Audit API...")
@@ -691,11 +668,9 @@ class JiraConnector(BaseConnector):
             deleted_issue_keys = await self._fetch_deleted_issues_from_audit(from_date, to_date)
             
             if not deleted_issue_keys:
-                self.logger.info("ℹ️ No deleted issues found in audit log")
+                self.logger.info("No deleted issues found in audit log")
                 return 0
-            
-            self.logger.info(f"📋 Found {len(deleted_issue_keys)} deleted issues: {deleted_issue_keys}")
-            
+                        
             # Handle each deletion
             deleted_count = 0
             for issue_key in deleted_issue_keys:
@@ -710,7 +685,6 @@ class JiraConnector(BaseConnector):
             
         except Exception as e:
             self.logger.error(f"Error detecting deletions: {e}", exc_info=True)
-            # Don't fail entire sync if deletion detection fails
             return 0
 
     async def _fetch_deleted_issues_from_audit(
@@ -720,17 +694,10 @@ class JiraConnector(BaseConnector):
     ) -> List[str]:
         """
         Fetch deleted issue keys from Jira Audit API.
-        
-        Args:
-            from_date: Start date in ISO format (e.g., "2025-12-09T10:00:00.000Z")
-            to_date: End date in ISO format
-            
-        Returns:
-            List of deleted issue keys (e.g., ["PA-450", "PROJ-123"])
         """
         deleted_issue_keys = []
         offset = 0
-        limit = 1000  # Max per request
+        limit = 1000
         
         while True:
             try:
@@ -759,7 +726,7 @@ class JiraConnector(BaseConnector):
                     
                     # Check if this is an issue deletion
                     if type_name == "ISSUE_DELETE":
-                        issue_key = object_item.get("name")  # e.g., "PA-450"
+                        issue_key = object_item.get("name")  
                         if issue_key:
                             deleted_issue_keys.append(issue_key)
                             self.logger.debug(f"🗑️ Audit: Issue {issue_key} deleted at {record.get('created')}")
@@ -780,30 +747,24 @@ class JiraConnector(BaseConnector):
     async def _handle_deleted_issue(self, issue_key: str) -> None:
         """
         Handle deletion of an issue and its related entities (comments, attachments).
-        
-        Args:
-            issue_key: Issue key (e.g., "PA-450")
         """
         try:
             self.logger.info(f"🗑️ Handling deletion of issue {issue_key}")
-            
-            # Try to fetch issue details to get the actual issue ID
-            # Note: This will fail with 404 if truly deleted, but worth trying
-            # in case it was moved or the audit record is stale
+        
             issue_id = None
             try:
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_issue(issueIdOrKey=issue_key)
+
                 if response.status == HTTP_STATUS_OK:
                     self.logger.warning(f"Issue {issue_key} still exists in Jira (not deleted, maybe moved?)")
-                    return  # Don't delete if it still exists
+                    return 
+                
             except Exception:
-                # Expected - issue is deleted (404)
                 pass
             
             async with self.data_store_provider.transaction() as tx_store:
-                # Fetch ALL records ONCE to avoid multiple database calls
-                # This is shared between finding the issue and finding its children
+
                 all_status_values = [status.value for status in IndexingStatus]
                 
                 all_records = await tx_store.get_records_by_status(
@@ -817,6 +778,7 @@ class JiraConnector(BaseConnector):
                 issue_record = None
                 for record in all_records:
                     if record.record_type == RecordType.TICKET:
+
                         # Check if weburl contains the issue key
                         if hasattr(record, 'weburl') and record.weburl and f"/browse/{issue_key}" in record.weburl:
                             issue_record = record
@@ -835,7 +797,7 @@ class JiraConnector(BaseConnector):
                     issue_id, 
                     RecordType.TICKET, 
                     tx_store,
-                    all_records  # ✅ Pass cached records
+                    all_records
                 )
                 
                 # 2. Delete child comments (pass cached records to avoid refetch)
@@ -843,7 +805,7 @@ class JiraConnector(BaseConnector):
                     issue_id, 
                     RecordType.COMMENT, 
                     tx_store,
-                    all_records  # ✅ Pass cached records
+                    all_records
                 )
                 
                 # 3. Delete child attachments (pass cached records to avoid refetch)
@@ -851,7 +813,7 @@ class JiraConnector(BaseConnector):
                     issue_id, 
                     RecordType.FILE, 
                     tx_store,
-                    all_records  # ✅ Pass cached records
+                    all_records
                 )
                                 
                 # 4. Delete the issue itself and all its edges
@@ -862,13 +824,12 @@ class JiraConnector(BaseConnector):
                 )
                 
                 self.logger.info(
-                    f"✅ Deleted issue {issue_key} and its children "
+                    f"Deleted issue {issue_key} and its children "
                     f"({subtask_count} sub-tasks, {comment_count} comments, {attachment_count} attachments)"
                 )
                 
         except Exception as e:
             self.logger.error(f"Error handling deleted issue {issue_key}: {e}", exc_info=True)
-            # Don't raise - continue processing other deletions
 
     async def _delete_issue_children(
         self, 
@@ -879,15 +840,6 @@ class JiraConnector(BaseConnector):
     ) -> int:
         """
         Delete all child records (sub-tasks, comments, or attachments) for a deleted issue.
-        
-        Args:
-            parent_issue_id: External issue ID
-            child_type: RecordType.TICKET (sub-tasks), RecordType.COMMENT, or RecordType.FILE
-            tx_store: Transaction store
-            cached_records: Optional pre-fetched records to avoid database query
-            
-        Returns:
-            Count of deleted child records
         """
         try:
             deleted_count = 0
@@ -931,7 +883,6 @@ class JiraConnector(BaseConnector):
                             tx_store,
                             cached_records
                         )
-                        # Note: No need to recursively delete sub-sub-tasks as Jira doesn't support them
                     
                     # Delete record and all its edges (indexer cleanup handled automatically)
                     await tx_store.arango_service.delete_records_and_relations(
@@ -948,27 +899,65 @@ class JiraConnector(BaseConnector):
             self.logger.error(f"Error deleting {child_type_name}s for issue {parent_issue_id}: {e}")
             return 0
 
+    async def _fetch_application_roles_to_groups_mapping(self) -> Dict[str, List[Dict[str, str]]]:
+        """
+        Fetch all application roles and their associated groups.
+        """
+        if hasattr(self, '_app_roles_cache') and self._app_roles_cache:
+            return self._app_roles_cache
+        
+        mapping: Dict[str, List[Dict[str, str]]] = {}
+        
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_all_application_roles()
+            
+            if response.status != HTTP_STATUS_OK:
+                self.logger.warning(f"Failed to fetch application roles: {response.text()}")
+                return {}
+            
+            roles_data = response.json()
+            
+            for role in roles_data:
+                role_key = role.get("key") 
+                group_details = role.get("groupDetails", [])
+                
+                if role_key and group_details:
+                    mapping[role_key] = [
+                        {"groupId": g.get("groupId"), "name": g.get("name")}
+                        for g in group_details
+                        if g.get("groupId")
+                    ]
+                    self.logger.debug(f"ApplicationRole '{role_key}' → {len(mapping[role_key])} groups")
+            
+            # Cache the result
+            self._app_roles_cache = mapping
+            self.logger.info(f"Fetched {len(mapping)} application roles with group mappings")
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching application roles: {e}", exc_info=True)
+        
+        return mapping
+
     async def _fetch_project_permission_scheme(
         self, 
-        project_key: str
+        project_key: str,
+        app_roles_mapping: Dict[str, List[Dict[str, str]]] = None
     ) -> List[Permission]:
         """
         Fetch permission holders for a project from its Permission Scheme.
-        
-        This is the correct way to determine who can access a Jira project.
-        Jira uses Permission Schemes (not Project Roles) to define access.
-        
-        Permission Schemes grant permissions like BROWSE_PROJECTS to:
-        - Groups (e.g., "jira-software-users")
-        - Application Roles (e.g., "jira-software")
-        - Specific Users
-        - Anyone (all authenticated users)
-        
-        Args:
-            project_key: Jira project key (e.g., "PA", "QUES")
             
-        Returns:
-            List of Permission objects for entities that can access this project
+        Permission Schemes grant permissions (like BROWSE_PROJECTS) through different holder types:
+        - group: Direct group permissions (e.g., "jira-software-users")
+        - applicationRole: Product access (e.g., "jira-software") - resolved to associated groups
+        - user: Individual user permissions (by accountId/email)
+        - anyone: All authenticated users (org-level access)
+        - projectRole: Project-specific roles (e.g., "Administrators", "Developers") inside that user or groups in role
+        - projectLead: The project's designated lead user
+        - sd.customer.portal.only: JSM portal customers (external users)
+        - groupCustomField/userCustomField: Dynamic permissions based on issue fields
+        
+        Returns list of Permission objects linking entities (User/Group/Role/Org) to project access.
         """
         permissions: List[Permission] = []
         
@@ -987,8 +976,6 @@ class JiraConnector(BaseConnector):
             
             scheme_data = scheme_response.json()
             scheme_id = scheme_data.get("id")
-            scheme_name = scheme_data.get("name", "Unknown")
-            self.logger.debug(f"Project {project_key} uses permission scheme: {scheme_name} (ID: {scheme_id})")
             
             # Step 2: Get all permission grants in this scheme
             grants_response = await datasource.get_permission_scheme_grants(
@@ -1004,10 +991,9 @@ class JiraConnector(BaseConnector):
             permission_grants = grants_data.get("permissions", [])
             
             # Step 3: Filter for BROWSE_PROJECTS permission (determines who can see the project)
-            # BROWSE_PROJECTS is the key permission for viewing projects and issues
             relevant_permission_types = ["BROWSE_PROJECTS"]
             
-            seen_holders = set()  # To avoid duplicates
+            seen_holders = set() 
             
             for grant in permission_grants:
                 permission_name = grant.get("permission")
@@ -1017,93 +1003,111 @@ class JiraConnector(BaseConnector):
                 
                 holder = grant.get("holder", {})
                 holder_type = holder.get("type")
-                holder_param = holder.get("parameter")
+                holder_param = holder.get("parameter") 
+                holder_value = holder.get("value")    
                 
                 # Create unique key for deduplication
-                holder_key = f"{holder_type}:{holder_param}"
+                holder_key = f"{holder_type}:{holder_value or holder_param}"
                 if holder_key in seen_holders:
                     continue
                 seen_holders.add(holder_key)
                 
                 # Process different holder types and create Permission objects
-                if holder_type == "group" and holder_param:
+                if holder_type == "group" and holder_value:
                     # Group has BROWSE_PROJECTS permission
                     permissions.append(Permission(
                         entity_type=EntityType.GROUP,
-                        external_id=holder_param,  # Group name acts as external ID
+                        external_id=holder_value,  # UUID matches group's source_user_group_id
                         type=PermissionType.READ
                     ))
-                    self.logger.debug(f"  {project_key}: BROWSE → group '{holder_param}'")
                 
                 elif holder_type == "applicationRole":
-                    # Application role grants access to licensed users
-                    # If no parameter: ALL licensed Jira users (common in Jira Free)
-                    # If parameter: specific role like "jira-software"
-                    if holder_param:
-                        role_name = holder_param
-                    else:
-                        role_name = "all_licensed_users"  # No param = all Jira users
+                    # Resolve applicationRole to its associated groups for proper permission matching
+                    role_key = holder_param 
                     
-                    permissions.append(Permission(
-                        entity_type=EntityType.ORG,
-                        external_id=role_name,
-                        type=PermissionType.READ
-                    ))
-                    self.logger.debug(f"  {project_key}: BROWSE → applicationRole '{role_name}' (org-level)")
+                    if role_key and app_roles_mapping and role_key in app_roles_mapping:
+                        # Resolve to groups - each group in the role gets permission
+                        role_groups = app_roles_mapping[role_key]
+                        for group_info in role_groups:
+                            group_id = group_info.get("groupId")
+                            group_name = group_info.get("name")
+                            
+                            if group_id:
+                                # Avoid duplicate if this group was already added directly
+                                group_key = f"group:{group_id}"
+                                if group_key not in seen_holders:
+                                    seen_holders.add(group_key)
+                                    permissions.append(Permission(
+                                        entity_type=EntityType.GROUP,
+                                        external_id=group_id,
+                                        type=PermissionType.READ
+                                    ))
+                    else:
+                        # Fallback: No mapping found or no role_key - treat as org-level handle any logged in user condition
+                        fallback_name = role_key or "all_licensed_users"
+                        permissions.append(Permission(
+                            entity_type=EntityType.ORG,
+                            external_id=fallback_name,
+                            type=PermissionType.READ
+                        ))
                 
                 elif holder_type == "user" and holder_param:
                     # Specific user has access
-                    permissions.append(Permission(
-                        entity_type=EntityType.USER,
-                        external_id=holder_param,  # accountId
-                        type=PermissionType.READ
-                    ))
-                    self.logger.debug(f"  {project_key}: BROWSE → user '{holder_param}'")
+                    user_data = holder.get("user", {})
+                    user_email = user_data.get("emailAddress")
+                    user_name = user_data.get("displayName", holder_param)
+                    
+                    if user_email:
+                        permissions.append(Permission(
+                            entity_type=EntityType.USER,
+                            email=user_email, 
+                            type=PermissionType.READ
+                        ))
+                    else:
+                        self.logger.warning(f"  {project_key}: User permission skipped - no email for accountId '{holder_param}'")
                 
                 elif holder_type == "anyone":
-                    # All authenticated users have access
-                    # Treat as ORG-level permission
+                    # All authenticated users have access handle public condition
                     permissions.append(Permission(
                         entity_type=EntityType.ORG,
                         external_id="anyone_authenticated",
                         type=PermissionType.READ
                     ))
-                    self.logger.debug(f"  {project_key}: BROWSE → anyone (all authenticated)")
                 
                 elif holder_type == "projectRole":
-                    # Project role has access (e.g., Administrators, Service Desk Team)
-                    # Get the role details from the expanded response
                     project_role = holder.get("projectRole", {})
                     role_name = project_role.get("name", f"Role_{holder_param}")
                     role_id = holder_param or project_role.get("id")
                     
-                    # Skip app-only roles
                     if role_name == "atlassian-addons-project-access":
-                        self.logger.debug(f"  {project_key}: Skipping app-only role '{role_name}'")
                         continue
                     
-                    # Store as ROLE permission - will be resolved via project role sync
                     permissions.append(Permission(
                         entity_type=EntityType.ROLE,
-                        external_id=f"{project_key}_{role_id}",  # Unique per project
+                        external_id=f"{project_key}_{role_id}", 
                         type=PermissionType.READ
                     ))
-                    self.logger.debug(f"  {project_key}: BROWSE → projectRole '{role_name}'")
                 
                 elif holder_type == "sd.customer.portal.only":
                     # JSM Service Desk customers (portal access)
-                    # These are external customers who can only access via the portal
+                    # These are external customers who only access via the service desk portal
+                    # They don't have internal Jira accounts we sync, so skip this permission
+                    # Their access is limited to their own tickets through the portal UI
+                    self.logger.debug(f"  {project_key}: Skipping JSM portal customers (external users, not synced)")
+                
+                elif holder_type == "projectLead":
                     permissions.append(Permission(
-                        entity_type=EntityType.ORG,
-                        external_id="jsm_portal_customers",
+                        entity_type=EntityType.ROLE,
+                        external_id=f"{project_key}_projectLead",
                         type=PermissionType.READ
                     ))
-                    self.logger.debug(f"  {project_key}: BROWSE → JSM portal customers")
                 
-                # Note: "reporter", "assignee", "projectLead" are issue-level permissions,
-                # not project-level. They're handled at the issue/record level.
+                elif holder_type in ("groupCustomField", "userCustomField"):
+                    continue
+                
+                else:
+                    self.logger.warning(f"  {project_key}: Unknown holder type '{holder_type}' with param '{holder_param}' - skipping")
             
-            self.logger.info(f"Project {project_key}: found {len(permissions)} permission grants from scheme")
             return permissions
             
         except Exception as e:
@@ -1111,9 +1115,6 @@ class JiraConnector(BaseConnector):
             return []
 
     async def _sync_user_groups(self, org_id: str, jira_users: List[AppUser]) -> None:
-        """
-        Sync Jira user groups and their members.
-        """
         try:
             self.logger.info("Starting Jira user group synchronization")
             
@@ -1129,7 +1130,6 @@ class JiraConnector(BaseConnector):
             user_by_email = {user.email.lower(): user for user in jira_users if user.email}
             
             user_groups_batch = []
-            total_memberships = 0
             
             for group in groups:
                 try:
@@ -1165,7 +1165,6 @@ class JiraConnector(BaseConnector):
                     
                     # Add group to batch (with or without members)
                     user_groups_batch.append((user_group, app_users))
-                    total_memberships += len(app_users)
                     
                     if app_users:
                         self.logger.debug(f"Group {group_name}: {len(app_users)} members")
@@ -1179,13 +1178,11 @@ class JiraConnector(BaseConnector):
             # Save all groups in one batch
             if user_groups_batch:
                 await self.data_entities_processor.on_new_user_groups(user_groups_batch)
-                self.logger.info(f"✅ Synced {len(user_groups_batch)} groups with {total_memberships} total memberships")
             else:
                 self.logger.info("No groups with valid members to sync")
                 
         except Exception as e:
-            self.logger.error(f"Error syncing user groups: {e}", exc_info=True)
-            # Don't raise - group sync failure shouldn't stop the entire sync
+            self.logger.error(f"Error syncing user groups: {e}")
 
     async def _fetch_groups(self) -> List[Dict[str, Any]]:
         """
@@ -1196,7 +1193,7 @@ class JiraConnector(BaseConnector):
         
         groups: List[Dict[str, Any]] = []
         start_at = 0
-        max_results = 50  # Jira API default
+        max_results = 50 
         
         while True:
             try:
@@ -1251,8 +1248,8 @@ class JiraConnector(BaseConnector):
             try:
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_users_from_group(
-                    groupname=group_name,  # Use groupname instead of groupId
-                    includeInactiveUsers=False,  # Only active users
+                    groupname=group_name,
+                    includeInactiveUsers=False,
                     startAt=start_at,
                     maxResults=max_results
                 )
@@ -1290,8 +1287,213 @@ class JiraConnector(BaseConnector):
         
         return member_emails
 
-    async def _fetch_projects(self) -> List[Tuple[RecordGroup, List[Permission]]]:
-        """Fetch all projects with pagination using DataSource"""
+    async def _sync_project_roles(
+        self, 
+        project_keys: List[str], 
+        jira_users: List[AppUser]
+    ) -> None:
+        """
+        Sync project roles as AppRole entities.
+        """
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+        
+        self.logger.info(f"Syncing project roles for {len(project_keys)} projects...")
+        
+        # Build email -> AppUser lookup for fast member resolution
+        user_by_email: Dict[str, AppUser] = {
+            user.email.lower(): user 
+            for user in jira_users 
+            if user.email
+        }
+        
+        # Also build accountId -> AppUser lookup
+        user_by_account_id: Dict[str, AppUser] = {
+            user.source_user_id: user 
+            for user in jira_users 
+            if user.source_user_id
+        }
+        
+        roles_to_sync: List[Tuple[AppRole, List[AppUser]]] = []
+        total_roles = 0
+        total_members = 0
+        
+        for project_key in project_keys:
+            try:
+                # Step 1: Get all project roles for this project
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_project_roles(projectIdOrKey=project_key)
+                
+                if response.status != HTTP_STATUS_OK:
+                    self.logger.warning(f"Failed to fetch roles for project {project_key}: {response.status}")
+                    continue
+                
+                roles_dict = response.json()
+                
+                if not roles_dict:
+                    self.logger.debug(f"No roles found for project {project_key}")
+                    continue
+                
+                # Step 2: For each role, fetch role details including actors
+                for role_name, role_url in roles_dict.items():
+                    try:
+                        # Skip app-only roles
+                        if role_name == "atlassian-addons-project-access":
+                            continue
+                        
+                        # Extract role ID from URL
+                        role_id = role_url.rstrip('/').split('/')[-1]
+                        
+                        # Fetch role details with actors
+                        role_datasource = await self._get_fresh_datasource()
+                        role_response = await role_datasource.get_project_role(
+                            projectIdOrKey=project_key,
+                            id=int(role_id),
+                            excludeInactiveUsers=True
+                        )
+                        
+                        if role_response.status != HTTP_STATUS_OK:
+                            self.logger.warning(f"  {project_key}: Failed to fetch role {role_name}: {role_response.status}")
+                            continue
+                        
+                        role_data = role_response.json()
+                        actors = role_data.get("actors", [])
+                        
+                        # Build AppRole with external_id matching Permission format
+                        app_role = AppRole(
+                            app_name=Connectors.JIRA,
+                            source_role_id=f"{project_key}_{role_id}",
+                            name=f"{project_key} - {role_name}",
+                        )
+                        
+                        # Step 3: Extract member users from actors
+                        member_users: List[AppUser] = []
+                        
+                        for actor in actors:
+                            actor_type = actor.get("type", "")
+                            
+                            if actor_type == "atlassian-user-role-actor":
+                                # Direct user actor
+                                actor_user = actor.get("actorUser", {})
+                                account_id = actor_user.get("accountId")
+                                email = actor_user.get("emailAddress")
+                                
+                                # Try to find user by accountId first, then by email
+                                user = None
+                                if account_id:
+                                    user = user_by_account_id.get(account_id)
+                                if not user and email:
+                                    user = user_by_email.get(email.lower())
+                                
+                                if user:
+                                    member_users.append(user)
+                                else:
+                                    self.logger.debug(
+                                        f"  {project_key}/{role_name}: User not found - "
+                                        f"accountId={account_id}, email={email}"
+                                    )
+                            
+                            elif actor_type == "atlassian-group-role-actor":
+                                # Group actor - get group members
+                                group_name = actor.get("name") or actor.get("displayName")
+                                self.logger.debug(
+                                    f"  {project_key}/{role_name}: Group actor '{group_name}' "
+                                    f"(members handled via group sync)"
+                                )
+                        
+                        roles_to_sync.append((app_role, member_users))
+                        total_roles += 1
+                        total_members += len(member_users)
+                        
+                    except Exception as role_error:
+                        self.logger.error(
+                            f"  {project_key}: Error processing role {role_name}: {role_error}"
+                        )
+                        continue
+                        
+            except Exception as project_error:
+                self.logger.error(f"Error syncing roles for project {project_key}: {project_error}")
+                continue
+        
+        # Step 4: Sync all roles in batch
+        if roles_to_sync:
+            await self.data_entities_processor.on_new_app_roles(roles_to_sync)
+            self.logger.info(
+                f"Synced {total_roles} project roles with {total_members} direct user members"
+            )
+        else:
+            self.logger.info("No project roles to sync")
+
+    async def _sync_project_lead_roles(
+        self,
+        raw_projects: List[Dict[str, Any]],
+        jira_users: List[AppUser]
+    ) -> None:
+        """
+        Sync project lead as AppRole for each project.
+        """
+        
+        # Build accountId -> AppUser lookup
+        user_by_account_id: Dict[str, AppUser] = {
+            user.source_user_id: user 
+            for user in jira_users 
+            if user.source_user_id
+        }
+        
+        lead_roles_to_sync: List[Tuple[AppRole, List[AppUser]]] = []
+        total_leads = 0
+        
+        # Iterate through raw project data already fetched with lead 
+        for project in raw_projects:
+            try:
+                project_key = project.get("key")
+                lead_data = project.get("lead")
+                
+                if not lead_data:
+                    self.logger.debug(f"No lead for project {project_key}")
+                    continue
+                
+                lead_account_id = lead_data.get("accountId")
+                lead_display_name = lead_data.get("displayName", "Unknown")
+                
+                if not lead_account_id:
+                    self.logger.warning(f"No accountId for project lead in {project_key}")
+                    continue
+                
+                # Find the lead user in synced users
+                lead_user = user_by_account_id.get(lead_account_id)
+                
+                if not lead_user:
+                    self.logger.warning(f"Project lead {lead_display_name} not found in synced users for {project_key}")
+                    continue
+                
+                # Create AppRole for project lead
+                app_role = AppRole(
+                    app_name=Connectors.JIRA,
+                    source_role_id=f"{project_key}_projectLead",
+                    name=f"{project_key} - Project Lead"
+                )
+                
+                # Add lead as the only member
+                lead_roles_to_sync.append((app_role, [lead_user]))
+                total_leads += 1
+                
+                
+            except Exception as lead_error:
+                self.logger.error(f"Error processing lead for project {project.get('key')}: {lead_error}")
+                continue
+        
+        # Sync all project lead roles in batch
+        if lead_roles_to_sync:
+            await self.data_entities_processor.on_new_app_roles(lead_roles_to_sync)
+            self.logger.info(f"Synced {total_leads} project lead roles")
+        else:
+            self.logger.info("No project leads to sync")
+
+    async def _fetch_projects(self) -> Tuple[List[Tuple[RecordGroup, List[Permission]]], List[Dict[str, Any]]]:
+        """
+        Fetch all projects with pagination using DataSource. Returns (record_groups, raw_projects).
+        """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
@@ -1304,7 +1506,7 @@ class JiraConnector(BaseConnector):
             response = await datasource.search_projects(
                 maxResults=DEFAULT_MAX_RESULTS,
                 startAt=start_at,
-                expand=["description", "url", "permissions", "issueTypes"]
+                expand=["description", "url", "permissions", "issueTypes", "lead"]
             )
 
             if response.status != HTTP_STATUS_OK:
@@ -1328,6 +1530,9 @@ class JiraConnector(BaseConnector):
             if is_last or (total > 0 and start_at >= total):
                 break
 
+        # Fetch application roles → groups mapping once (cached)
+        app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+        
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
         for project in projects:
             project_id = project.get("id")
@@ -1352,16 +1557,15 @@ class JiraConnector(BaseConnector):
                 web_url=project.get("url"),
             )
             
-            # Fetch project permissions from Permission Scheme
             # This determines which groups/users can access the project
-            project_permissions = await self._fetch_project_permission_scheme(project_key)
+            project_permissions = await self._fetch_project_permission_scheme(project_key, app_roles_mapping)
             
             record_groups.append((record_group, project_permissions))
             
             if project_permissions:
                 self.logger.info(f"Project {project_key}: {len(project_permissions)} permission grants from scheme")
 
-        return record_groups
+        return record_groups, projects
 
     async def _fetch_issues(
         self,
@@ -1411,7 +1615,6 @@ class JiraConnector(BaseConnector):
         elif last_sync_time:
             buffer_minutes = JQL_TIME_BUFFER_MINUTES
             modified_after = last_sync_time - (buffer_minutes * 60 * 1000)
-            self.logger.info(f"Incremental sync: fetching issues modified after checkpoint with {buffer_minutes}min buffer")
         else:
             self.logger.info("Full sync: fetching all issues (no filter, first time)")
 
@@ -1442,7 +1645,6 @@ class JiraConnector(BaseConnector):
             page_count += 1
 
             try:
-                # Use POST version of enhanced search API to avoid unbounded query restrictions
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.search_and_reconsile_issues_using_jql_post(
                     jql=jql,
@@ -1508,7 +1710,10 @@ class JiraConnector(BaseConnector):
         tx_store,
         org_id: str
     ) -> List[Tuple[Record, List[Permission]]]:
-        """Build issue records with permissions from raw issue data, respecting Jira hierarchy"""
+        
+        """
+        Build issue records with permissions from raw issue data, respecting Jira hierarchy
+        """
         all_records: List[Tuple[Record, List[Permission]]] = []
         epic_groups: List[Tuple[RecordGroup, List[Permission]]] = []
         
@@ -1543,7 +1748,6 @@ class JiraConnector(BaseConnector):
             is_subtask = hierarchy_level == -1
 
             # Build record name with issue type for better searchability
-            # Format: "[Bug] Issue summary" or "[Story] Issue summary"
             if issue_type:
                 issue_name = f"[{issue_type}] {issue_summary}"
             else:
@@ -1641,8 +1845,6 @@ class JiraConnector(BaseConnector):
                 # Sub-task → has parent Record (creates PARENT_CHILD edge in recordRelations)
                 parent_record_id = parent_external_id
                 parent_record_type = RecordType.TICKET
-                # Sub-tasks inherit group membership from their parent
-                # For now, keep them in project level (could be enhanced to find parent's group)
                 external_record_group_id = project_id
                 record_group_type = RecordGroupType.JIRA_PROJECT
 
@@ -1692,8 +1894,8 @@ class JiraConnector(BaseConnector):
                         issue_id,
                         issue_key,
                         permissions,
-                        external_record_group_id,  # Pass issue's group (Epic or Project)
-                        record_group_type,  # Pass issue's group type
+                        external_record_group_id,
+                        record_group_type,
                         org_id,
                         user_by_account_id,
                         tx_store
@@ -1728,7 +1930,6 @@ class JiraConnector(BaseConnector):
 
         # Create Epic RecordGroups first (so they exist when stories try to link)
         if epic_groups:
-            self.logger.info(f"Creating {len(epic_groups)} Epic RecordGroups")
             await self.data_entities_processor.on_new_record_groups(epic_groups)
 
         return all_records
@@ -1753,7 +1954,6 @@ class JiraConnector(BaseConnector):
             if not self.data_source:
                 raise ValueError("DataSource not initialized")
 
-            # Use DataSource to fetch comments
             start_at = 0
             all_comments = []
 
@@ -1842,7 +2042,7 @@ class JiraConnector(BaseConnector):
                     external_record_id=f"comment_{comment_id}",
                     parent_external_record_id=issue_id,
                     parent_record_type=RecordType.TICKET,
-                    external_record_group_id=parent_record_group_id,  # Inherit from parent issue
+                    external_record_group_id=parent_record_group_id, 
                     connector_name=Connectors.JIRA,
                     origin=OriginTypes.CONNECTOR,
                     version=version,
@@ -1856,7 +2056,6 @@ class JiraConnector(BaseConnector):
                 )
 
                 # Set indexing status based on filter
-                # is_enabled() defaults to True if filter not configured
                 if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS):
                     comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
@@ -1906,9 +2105,7 @@ class JiraConnector(BaseConnector):
             
             if not attachments:
                 return []
-            
-            self.logger.info(f"Processing {len(attachments)} attachments for issue {issue_key}")
-            
+                        
             # Use the user-facing site URL for weburl construction
             atlassian_domain = self.site_url if self.site_url else ""
             
@@ -1927,7 +2124,7 @@ class JiraConnector(BaseConnector):
                 filename = attachment.get("filename", "unknown")
                 file_size = attachment.get("size", 0)
                 mime_type = attachment.get("mimeType", MimeTypes.UNKNOWN.value)
-                content_url = attachment.get("content")  # Download URL
+                content_url = attachment.get("content")
                 
                 # Parse timestamps
                 created_str = attachment.get("created")
@@ -1991,7 +2188,9 @@ class JiraConnector(BaseConnector):
             return []
 
     def _get_current_filter_values(self) -> Dict[str, Any]:
-        """Get current filter values for storage in sync point"""
+        """
+        Get current filter values for storage in sync point
+        """
         filter_values = {}
         
         if self.sync_filters:
@@ -2018,14 +2217,15 @@ class JiraConnector(BaseConnector):
         return filter_values
     
     def _have_filters_changed(self, sync_point_data: Optional[Dict[str, Any]]) -> bool:
-        """Check if current filters differ from stored filters in sync point"""
+        """
+        Check if current filters differ from stored filters in sync point
+        """
         if not sync_point_data:
-            return False  # No previous sync point, not a change
+            return False  
         
         stored_filters = sync_point_data.get("filters", {})
         current_filters = self._get_current_filter_values()
         
-        # Compare filter values
         if stored_filters != current_filters:
             self.logger.info(f"Filter change detected: {stored_filters} -> {current_filters}")
             return True
@@ -2040,13 +2240,6 @@ class JiraConnector(BaseConnector):
         """
         Build simple permissions list for an issue.
         Creator and assignee get OWNER permission.
-
-        Args:
-            creator_email: Issue creator email
-            assignee_email: Issue assignee email
-
-        Returns:
-            List of Permission objects
         """
         permissions: List[Permission] = []
         processed_emails: set = set()
@@ -2690,7 +2883,6 @@ class JiraConnector(BaseConnector):
                 # Determine filename from record name
                 filename = record.record_name if hasattr(record, 'record_name') else f"attachment_{attachment_id}"
                 
-                # Safely encode filename for Content-Disposition header
                 # Replace non-ASCII characters to avoid latin-1 encoding errors
                 from urllib.parse import quote
                 safe_filename = filename.encode('ascii', 'ignore').decode('ascii') or f"attachment_{attachment_id}"
