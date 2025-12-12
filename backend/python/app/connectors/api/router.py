@@ -71,7 +71,6 @@ from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesPa
 from app.services.featureflag.config.config import CONFIG
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
-from app.utils.llm import get_llm
 from app.utils.logger import create_logger
 from app.utils.oauth_config import get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -465,8 +464,6 @@ async def download_file(
 
         payload = signed_url_handler.validate_token(token)
         user_id = payload.user_id
-        user = await arango_service.get_user_by_user_id(user_id)
-        user_email = user.get("email")
 
         # Verify file_id matches the token
         if payload.record_id != record_id:
@@ -560,7 +557,7 @@ async def download_file(
 
                     return StreamingResponse(
                         file_stream(), media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", headers=headers
-                    )                           
+                    )
 
                 if mime_type == "application/vnd.google-apps.document":
                     logger.info("🚀 Processing Google Docs")
@@ -607,7 +604,7 @@ async def download_file(
 
                     return StreamingResponse(
                         file_stream(), media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers=headers
-                    )                                        
+                    )
 
                 if mime_type == "application/vnd.google-apps.spreadsheet":
                     logger.info("🚀 Processing Google Sheets")
@@ -654,7 +651,7 @@ async def download_file(
 
                     return StreamingResponse(
                         file_stream(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers
-                    )                                        
+                    )
 
                 # Enhanced logging for regular file download
                 logger.info(f"Starting binary file download for file_id: {file_id}")
