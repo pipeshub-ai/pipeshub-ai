@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from logging import Logger
 from typing import Any, Callable, Dict, List, Optional
 
-
 from aiolimiter import AsyncLimiter
 from kiota_abstractions.base_request_configuration import RequestConfiguration
 from kiota_abstractions.method import Method
