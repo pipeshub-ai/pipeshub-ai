@@ -714,8 +714,9 @@ class SharePointConnector(BaseConnector):
             #             await asyncio.sleep(0.1)
 
             # Process pages
-            self.logger.info(f"\n\n\n\n\nProcessing pages for site: {site_name}\n\n\n\n\n")
+            self.logger.info(f"Processing pages for site: {site_name}")
             async for record, permissions, record_update in self._process_site_pages(site_id, site_name):
+                self.logger.info(f"\n\n\n\nPage record_update: is_new={record_update.is_new}, is_updated={record_update.is_updated}, content_changed={record_update.content_changed}")
                 if record_update.is_deleted:
                     await self._handle_record_updates(record_update)
                     continue
@@ -1386,7 +1387,6 @@ class SharePointConnector(BaseConnector):
 
             async with self.rate_limiter:
                 try:
-                    # Expand createdBy to ensure we get the author details
                     pages_response = await self._safe_api_call(
                         self.client.sites.by_site_id(encoded_site_id).pages.get()
                     )
@@ -1413,8 +1413,7 @@ class SharePointConnector(BaseConnector):
                         self.logger.debug(f"Skipping page with missing ID in site {site_id}")
                         continue
 
-                    # --- 1. FILTER: SYSTEM ACCOUNT / TEMPLATES ---
-                    # Check the 'created_by' field to skip System Account pages
+                    # Check the 'created_by' field to skip System Account created pages
                     is_system_page = False
                     created_by = getattr(page, 'created_by', None)
 
@@ -1427,14 +1426,10 @@ class SharePointConnector(BaseConnector):
                         if display_name == 'system account':
                             is_system_page = True
 
-                    # Optional: Check for specific Page Layouts that imply templates
-                    # page_layout = getattr(page, 'page_layout', None)
-                    # if page_layout == 'Home' and display_name == 'system account': ...
-
                     if is_system_page:
                         self.logger.info(f"⏭️ Skipping System Account/Template page: '{page_name}'")
                         continue
-                    # ---------------------------------------------
+
 
                     existing_record = None
                     # Get existing record for change detection
@@ -1513,7 +1508,6 @@ class SharePointConnector(BaseConnector):
                 record_type=RecordType.SHAREPOINT_PAGE,
                 record_status=ProgressStatus.NOT_STARTED if not existing_record else existing_record.record_status,
                 record_group_type=RecordGroupType.SHAREPOINT_SITE,
-                parent_record_type=RecordType.SHAREPOINT_DOCUMENT_LIBRARY,
                 external_record_id=page_id,
                 external_revision_id=getattr(page, 'e_tag', None),
                 version=0 if not existing_record else existing_record.version + 1,
@@ -1524,7 +1518,6 @@ class SharePointConnector(BaseConnector):
                 source_created_at=created_at,
                 source_updated_at=updated_at,
                 weburl=getattr(page, 'web_url', None),
-                parent_external_record_id=site_id,
                 external_record_group_id=site_id,
                 mime_type=MimeTypes.HTML.value,
                 inherit_permissions=True,
@@ -2547,12 +2540,12 @@ class SharePointConnector(BaseConnector):
                 self.logger.error(f"❌ Error syncing users: {user_error}")
 
             # # Step 2: Sync user groups
-            # self.logger.info("Syncing SharePoint groups...")
-            # try:
-            #     await self._sync_user_groups()
-            #     self.logger.info("✅ Successfully synced SharePoint groups")
-            # except Exception as group_error:
-            #     self.logger.error(f"❌ Error syncing groups: {group_error}")
+            self.logger.info("Syncing SharePoint groups...")
+            try:
+                await self._sync_user_groups()
+                self.logger.info("✅ Successfully synced SharePoint groups")
+            except Exception as group_error:
+                self.logger.error(f"❌ Error syncing groups: {group_error}")
 
             # Step 3: Discover and sync sites
             sites = await self._get_all_sites()
@@ -2719,30 +2712,11 @@ class SharePointConnector(BaseConnector):
             site_info = await self.client.sites.by_site_id(site_id).get()
             site_url = site_info.web_url
 
-            parsed_url = urlparse(site_url)
-            hostname = parsed_url.netloc
-
             # 2. Get Token for SharePoint Scope
-            scope = f"https://{hostname}/.default"
-
-            if self.certificate_path:
-                credential = CertificateCredential(
-                    tenant_id=self.tenant_id,
-                    client_id=self.client_id,
-                    certificate_path=self.certificate_path
-                )
-            else:
-                credential = ClientSecretCredential(
-                    tenant_id=self.tenant_id,
-                    client_id=self.client_id,
-                    client_secret=self.client_secret
-                )
-
-            async with credential:
-                token_result = await credential.get_token(scope)
-
-            access_token = token_result.token
-
+            access_token = await self._get_sharepoint_access_token()
+            if not access_token:
+                self.logger.error(f"Failed to obtain SharePoint access token for page {page_id}")
+                return None
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json;odata=verbose"
@@ -2764,7 +2738,7 @@ class SharePointConnector(BaseConnector):
                     self.logger.warning(f"❌ Page not found via GetFileById: {page_id}")
                     return None
 
-                if resp.status_code != HttpStatusCode.OK.value:
+                if resp.status_code != HTTPStatus.OK.value:
                     self.logger.error(f"❌ API Error: {resp.status_code} - {resp.text}")
                     return None
 
@@ -2801,7 +2775,7 @@ class SharePointConnector(BaseConnector):
 
                         img_resp = await http_client.get(image_api_url, headers=headers)
 
-                        if img_resp.status_code == HttpStatusCode.OK.value:
+                        if img_resp.status_code == HTTPStatus.OK.value:
                             content_type = img_resp.headers.get('Content-Type', 'image/jpeg')
                             b64_str = base64.b64encode(img_resp.content).decode('utf-8')
                             img['src'] = f"data:{content_type};base64,{b64_str}"
@@ -2809,7 +2783,6 @@ class SharePointConnector(BaseConnector):
                         self.logger.warning(f"Failed to process image {src}: {img_error}")
 
                 # --- 4b. PROCESS DYNAMIC WEB PARTS (Lists, Docs, Events) ---
-                # Must happen BEFORE stripping attributes (needs data-sp-webpartdata)
                 webparts = soup.find_all("div", attrs={"data-sp-webpartdata": True})
 
                 for wp in webparts:
@@ -2835,7 +2808,7 @@ class SharePointConnector(BaseConnector):
                             list_api_url = f"{site_url}/_api/web/lists(guid'{list_id}')/items"
                             list_resp = await http_client.get(list_api_url, headers=headers, timeout=10)
 
-                            if list_resp.status_code == HttpStatusCode.OK.value:
+                            if list_resp.status_code == HTTPStatus.OK.value:
                                 items = list_resp.json().get('d', {}).get('results', [])
 
                                 if items:
@@ -2859,18 +2832,13 @@ class SharePointConnector(BaseConnector):
                     except Exception as wp_error:
                         self.logger.warning(f"Failed to process web part: {wp_error}")
 
-                # =====================================================
-                # 5. AGGRESSIVE HTML CLEANUP (NEW!)
-                # =====================================================
+                # HTML cleanup - remove unnecessary attributes and clean up structure
                 cleaned_html = clean_html_output(soup, logger=self.logger)
 
                 return cleaned_html
 
         except Exception as e:
-            self.logger.error(f"Failed to process SharePoint page {page_id}: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return None
+            self.logger.error(f"Failed to process SharePoint page {page_id}: {e}", exc_info=True)
 
     # Utility methods
     async def handle_webhook_notification(self, notification: Dict) -> None:
