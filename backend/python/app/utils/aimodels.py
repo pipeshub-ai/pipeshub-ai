@@ -224,10 +224,16 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
 
+        check_embedding_ctx_length = True
+        base_url = configuration['endpoint']
+        providers_to_skip_check = ("google", "cohere", "voyage")
+        check_embedding_ctx_length = not any(p in base_url for p in providers_to_skip_check)
+
         return OpenAIEmbeddings(
             model=model_name,
             api_key=configuration['apiKey'],
-            base_url=configuration['endpoint'],
+            base_url=base_url,
+            check_embedding_ctx_length=check_embedding_ctx_length
         )
 
     elif provider == EmbeddingProvider.TOGETHER.value:
