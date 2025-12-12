@@ -214,17 +214,10 @@ async def execute_tool_calls(
     if not tools:
         raise ValueError("Tools are required")
 
-    llm_to_pass = get_llm_to_pass(llm)
-
-    if hasattr(llm_to_pass, "first"):
-        print(f"llm_to_pass  if     : {type(llm_to_pass.first)}")
-        llm_to_pass = bind_tools_for_llm(llm_to_pass.first, tools,llm)
-    else:
-        print(f"llm_to_pass: {type(llm)}")
-        llm_to_pass = bind_tools_for_llm(llm, tools,llm)
-
-
-
+    llm_to_pass = bind_tools_for_llm(llm, tools)
+    if not llm_to_pass:
+        llm_to_pass = _apply_structured_output(llm)
+   
     hops = 0
     tools_executed = False
     tool_args = []
@@ -234,7 +227,7 @@ async def execute_tool_calls(
         try:
             # Measure LLM invocation latency
             ai = None
-            async for event in call_aiter_llm_stream(llm_to_pass, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk):
+            async for event in call_aiter_llm_stream(llm_to_pass, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk, original_llm=llm):
                 if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
                     return
@@ -925,9 +918,9 @@ async def handle_json_mode(
 
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
-        llm_to_pass = get_llm_to_pass(llm)
+        llm_with_structured_output = _apply_structured_output(llm)
 
-        async for token in call_aiter_llm_stream(llm_to_pass, messages,final_results,records,target_words_per_chunk):
+        async for token in call_aiter_llm_stream(llm_with_structured_output, messages,final_results,records,target_words_per_chunk):
             yield token
     except Exception as exc:
         yield {
@@ -1210,7 +1203,6 @@ def _initialize_answer_parser_regex() -> Tuple[re.Pattern, re.Pattern, re.Patter
     word_iter = re.compile(r'\S+').finditer
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
 
-
 async def call_aiter_llm_stream(
     llm,
     messages,
@@ -1219,6 +1211,7 @@ async def call_aiter_llm_stream(
     target_words_per_chunk=1,
     reflection_retry_count=0,
     max_reflection_retries=MAX_REFLECTION_RETRIES_DEFAULT,
+    original_llm=None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
     state = AnswerParserState()
@@ -1248,7 +1241,6 @@ async def call_aiter_llm_stream(
                 }
 
             continue
-
 
         state.full_json_buf += token
         # Look for the start of the "answer" field
@@ -1384,6 +1376,8 @@ async def call_aiter_llm_stream(
 
                 updated_messages.append(reflection_message)
 
+                if original_llm:
+                    llm = _apply_structured_output(original_llm)
                 async for event in call_aiter_llm_stream(
                     llm,
                     updated_messages,
@@ -1392,6 +1386,7 @@ async def call_aiter_llm_stream(
                     target_words_per_chunk,
                     reflection_retry_count + 1,
                     max_reflection_retries,
+                    original_llm=original_llm,
                 ):
                     yield event
                 return
@@ -1438,7 +1433,7 @@ async def call_aiter_llm_stream(
         yield {"event": "error","data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
         return
 
-def bind_tools_for_llm(llm_to_pass, tools: List[object],llm: BaseChatModel) -> BaseChatModel:
+def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|False:
     """
     Bind tools to the LLM, handling provider-specific quirks.
     """
@@ -1461,15 +1456,20 @@ def bind_tools_for_llm(llm_to_pass, tools: List[object],llm: BaseChatModel) -> B
                 formatted_tools.append(tool_dict)
 
             logger.info("tools for Bedrock, bind successfully")
-            return llm_to_pass.bind(tools=formatted_tools)
+            try:
+                return llm.bind(tools=formatted_tools)
+            except Exception:
+                return False
     except ImportError:
         pass
     except (TypeError, AttributeError, KeyError) as e:
         # Fallback if conversion fails
         logger.warning(f"Failed to format tools for Bedrock: {e}")
         pass
-
-    return llm_to_pass.bind_tools(tools)
+    try:
+        return llm.bind_tools(tools)
+    except Exception:
+        return False
 
 def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
     additional_kwargs = {
@@ -1493,14 +1493,4 @@ def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
 
     return llm
 
-def get_llm_to_pass(llm: BaseChatModel) -> BaseChatModel|Runnable:
-    llm_with_structured_output = None
-    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
-        if isinstance(llm, ChatAnthropic):
-            if "opus-4-1" in llm.model or "opus-4-5" in llm.model or "haiku-4-5" in llm.model or "sonnet-4-5" in llm.model:
-                llm_with_structured_output = _apply_structured_output(llm)
-        else:
-            llm_with_structured_output = _apply_structured_output(llm)
 
-    llm_to_pass = llm if llm_with_structured_output is None else llm_with_structured_output
-    return llm_to_pass
