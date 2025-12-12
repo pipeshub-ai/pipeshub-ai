@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import os
 import re
 import tempfile
@@ -12,13 +13,13 @@ from enum import Enum
 from http import HTTPStatus
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, quote, unquote
-from bs4 import BeautifulSoup, Comment
+from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
 import httpx
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import CertificateCredential, ClientSecretCredential
+from bs4 import BeautifulSoup, Comment
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from msgraph import GraphServiceClient
@@ -57,6 +58,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_role_to_permission_type,
 )
+from app.connectors.sources.microsoft.sharepoint_online.utils import clean_html_output
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -77,7 +79,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # A composite site ID has the format: "hostname,site-id,web-id"
 COMPOSITE_SITE_ID_COMMA_COUNT = 2
 COMPOSITE_SITE_ID_PARTS_COUNT = 3
-
 
 class SharePointRecordType(Enum):
     """Extended record types for SharePoint"""
@@ -1416,16 +1417,16 @@ class SharePointConnector(BaseConnector):
                     # Check the 'created_by' field to skip System Account pages
                     is_system_page = False
                     created_by = getattr(page, 'created_by', None)
-                    
+
                     if created_by:
                         # Check User Display Name
                         user_identity = getattr(created_by, 'user', None)
                         display_name = getattr(user_identity, 'display_name', '').lower() if user_identity else ''
-                        
+
                         # "System Account" is the standard display name for internal SharePoint operations
                         if display_name == 'system account':
                             is_system_page = True
-                    
+
                     # Optional: Check for specific Page Layouts that imply templates
                     # page_layout = getattr(page, 'page_layout', None)
                     # if page_layout == 'Home' and display_name == 'system account': ...
@@ -1434,7 +1435,7 @@ class SharePointConnector(BaseConnector):
                         self.logger.info(f"⏭️ Skipping System Account/Template page: '{page_name}'")
                         continue
                     # ---------------------------------------------
-                        
+
                     existing_record = None
                     # Get existing record for change detection
                     async with self.data_store_provider.transaction() as tx_store:
@@ -1442,7 +1443,7 @@ class SharePointConnector(BaseConnector):
                             connector_name=self.connector_name,
                             external_id=page_id
                         )
-                    
+
                     is_new = existing_record is None
                     is_updated = False
                     metadata_changed = False
@@ -1453,7 +1454,7 @@ class SharePointConnector(BaseConnector):
                         is_updated = True  # Placeholder logic - need to compare timestamps or content hashes
                         content_changed = True  # Placeholder logic - If a page is coming in it means it has been updated - will implement full logic later
 
-                        
+
                     page_record = await self._create_page_record(page, site_id, site_name, existing_record)
                     if page_record:
                         permissions = await self._get_page_permissions(site_id, page.id)
@@ -2680,13 +2681,11 @@ class SharePointConnector(BaseConnector):
 
             elif record.record_type == RecordType.SHAREPOINT_PAGE:
                 self.logger.info("streaming sharepoint page")
-                # Fetch page content via Graph API
                 site_id = record.external_record_group_id
                 page_id = record.external_record_id
-                
+
                 page_content = await self._get_page_content(site_id, page_id)
-                print(" !!!!!!!!!!!!! page content:", page_content)
-                
+
                 if not page_content:
                     raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Page not found or access denied")
 
@@ -2713,19 +2712,19 @@ class SharePointConnector(BaseConnector):
     async def _get_page_content(self, site_id: str, page_id: str) -> str:
         """
         Fetches SharePoint page content via REST API using the page's UniqueId (GUID).
-        Parses dynamic content (Web Parts) and downloads images.
+        Parses dynamic content (Web Parts), downloads images, and performs aggressive cleanup.
         """
         try:
             # 1. Resolve Site URL via Graph
             site_info = await self.client.sites.by_site_id(site_id).get()
             site_url = site_info.web_url
-            
+
             parsed_url = urlparse(site_url)
             hostname = parsed_url.netloc
-            
+
             # 2. Get Token for SharePoint Scope
             scope = f"https://{hostname}/.default"
-            
+
             if self.certificate_path:
                 credential = CertificateCredential(
                     tenant_id=self.tenant_id,
@@ -2741,7 +2740,7 @@ class SharePointConnector(BaseConnector):
 
             async with credential:
                 token_result = await credential.get_token(scope)
-            
+
             access_token = token_result.token
 
             headers = {
@@ -2751,41 +2750,39 @@ class SharePointConnector(BaseConnector):
 
             # 3. Fetch Page Content
             api_url = f"{site_url}/_api/web/GetFileById('{page_id}')/ListItemAllFields"
-            
+
             self.logger.info(f"Fetching page content from: {api_url}")
-            
-            params = { "$select": "CanvasContent1,Title" }
+
+            params = {"$select": "CanvasContent1,Title"}
 
             timeout_config = httpx.Timeout(30.0, connect=10.0)
 
             async with httpx.AsyncClient(timeout=timeout_config) as http_client:
                 resp = await http_client.get(api_url, headers=headers, params=params)
-                
-                if resp.status_code == 404:
+
+                if resp.status_code == HttpStatusCode.NOT_FOUND.value:
                     self.logger.warning(f"❌ Page not found via GetFileById: {page_id}")
                     return None
-                
-                if resp.status_code != 200:
+
+                if resp.status_code != HttpStatusCode.OK.value:
                     self.logger.error(f"❌ API Error: {resp.status_code} - {resp.text}")
                     return None
 
                 data = resp.json()
                 item = data.get('d', {})
                 raw_html = item.get('CanvasContent1', '')
-                
-                # --- GRACEFUL EMPTY HANDLE ---
+
                 if not raw_html:
-                    self.logger.warning(f"⚠️ Page found but CanvasContent1 is empty: {page_id}. Returning empty content.")
-                    # Return an empty HTML structure or just an empty string depending on your UI needs
+                    self.logger.warning(f"⚠️ Page found but CanvasContent1 is empty: {page_id}")
                     return "<div></div>"
 
-                # 4. Clean HTML & Embed Images
+                # 4. Parse HTML
                 soup = BeautifulSoup(raw_html, "html.parser")
 
                 # Remove unwanted tags
                 for tag in soup(['script', 'style', 'meta', 'link', 'noscript']):
                     tag.decompose()
-                
+
                 # Remove comments
                 for c in soup.find_all(string=lambda text: isinstance(text, Comment)):
                     c.extract()
@@ -2804,88 +2801,76 @@ class SharePointConnector(BaseConnector):
 
                         img_resp = await http_client.get(image_api_url, headers=headers)
 
-                        if img_resp.status_code == 200:
+                        if img_resp.status_code == HttpStatusCode.OK.value:
                             content_type = img_resp.headers.get('Content-Type', 'image/jpeg')
                             b64_str = base64.b64encode(img_resp.content).decode('utf-8')
                             img['src'] = f"data:{content_type};base64,{b64_str}"
-                            
-                            attrs_to_remove = ['data-sp-prop-name', 'data-sp-original-src', 'aria-label']
-                            for attr in attrs_to_remove:
-                                if attr in img.attrs: del img[attr]
                     except Exception as img_error:
                         self.logger.warning(f"Failed to process image {src}: {img_error}")
 
                 # --- 4b. PROCESS DYNAMIC WEB PARTS (Lists, Docs, Events) ---
+                # Must happen BEFORE stripping attributes (needs data-sp-webpartdata)
                 webparts = soup.find_all("div", attrs={"data-sp-webpartdata": True})
 
                 for wp in webparts:
                     try:
                         wp_data = json.loads(wp["data-sp-webpartdata"])
                         props = wp_data.get("properties", {})
-                        
-                        # Look for list ID (Universal Detector)
+
                         list_id = props.get("selectedListId")
-                        
+
                         if list_id:
-                            # 1. Determine Title
                             searchable = wp_data.get("serverProcessedContent", {}).get("searchablePlainTexts", {})
                             list_title = (
-                                searchable.get("listTitle") or 
-                                searchable.get("title") or 
+                                searchable.get("listTitle") or
+                                searchable.get("title") or
                                 searchable.get("displayTitle") or
-                                props.get("webPartTitle") or 
-                                wp_data.get("title") or 
+                                props.get("webPartTitle") or
+                                wp_data.get("title") or
                                 "Embedded List"
                             )
 
                             self.logger.info(f"Found WebPart: '{list_title}' (ID: {list_id})")
 
-                            # 2. Async Fetch Items
-                            # Construct list API URL using the same site_url resolved earlier
                             list_api_url = f"{site_url}/_api/web/lists(guid'{list_id}')/items"
-                            
-                            # Fetch items (awaiting the async call)
                             list_resp = await http_client.get(list_api_url, headers=headers, timeout=10)
-                            
-                            if list_resp.status_code == 200:
+
+                            if list_resp.status_code == HttpStatusCode.OK.value:
                                 items = list_resp.json().get('d', {}).get('results', [])
-                                
+
                                 if items:
-                                    # 3. Generate HTML Table
                                     table_html = f"<h3>{list_title}</h3><table border='1' style='border-collapse: collapse; width: 100%;'><thead><tr><th style='padding: 8px;'>Title</th><th style='padding: 8px;'>Info</th></tr></thead><tbody>"
-                                    
+
                                     for row_item in items:
-                                        # Heuristics for display text
                                         text_main = row_item.get('Title') or row_item.get('FileLeafRef') or "Untitled"
                                         text_sub = row_item.get('Description') or row_item.get('EventDate') or row_item.get('Created') or ""
-                                        
                                         table_html += f"<tr><td style='padding: 8px;'>{text_main}</td><td style='padding: 8px;'>{text_sub}</td></tr>"
-                                    
-                                    table_html += "</tbody></table><hr/>"
-                                    
-                                    # 4. Inject into DOM
+
+                                    table_html += "</tbody></table>"
+
                                     new_tag = soup.new_tag("div")
-                                    new_tag.attrs['class'] = 'extracted-dynamic-data'
                                     new_tag.append(BeautifulSoup(table_html, 'html.parser'))
-                                    
-                                    # Clear the original webpart div and replace with table
+
                                     wp.clear()
                                     wp.append(new_tag)
                             else:
                                 self.logger.warning(f"⚠️ Failed to fetch list items for {list_title}: {list_resp.status_code}")
 
                     except Exception as wp_error:
-                        # Log but continue - don't fail the whole page render for one bad web part
                         self.logger.warning(f"Failed to process web part: {wp_error}")
 
-                return str(soup)
+                # =====================================================
+                # 5. AGGRESSIVE HTML CLEANUP (NEW!)
+                # =====================================================
+                cleaned_html = clean_html_output(soup, logger=self.logger)
+
+                return cleaned_html
 
         except Exception as e:
             self.logger.error(f"Failed to process SharePoint page {page_id}: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
             return None
-
 
     # Utility methods
     async def handle_webhook_notification(self, notification: Dict) -> None:
