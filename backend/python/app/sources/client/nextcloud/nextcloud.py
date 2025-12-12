@@ -119,7 +119,6 @@ class NextcloudClient(IClient):
             if not config:
                 raise ValueError("Failed to get Nextcloud connector configuration")
 
-            logger.debug(f"Loaded Nextcloud config structure: {list(config.keys())}")
 
             # 2. Extract credentials - check multiple possible locations
             auth_config = config.get("auth", {}) or {}
@@ -133,13 +132,11 @@ class NextcloudClient(IClient):
             )
 
             if not base_url:
-                logger.error(f"Configuration structure: auth={list(auth_config.keys())}, credentials={list(credentials_config.keys())}")
+                logger.error("Nextcloud 'baseUrl' is missing. Checked 'auth', 'credentials', and root configuration.")
                 raise ValueError("Nextcloud 'baseUrl' is required in configuration")
 
             # Clean up base_url
             base_url = base_url.rstrip('/')
-            logger.info(f"Using Nextcloud base URL: {base_url}")
-
             # 3. Determine Auth Type
             auth_type = auth_config.get("authType", "BASIC_AUTH")
             logger.debug(f"Using auth type: {auth_type}")
@@ -155,7 +152,7 @@ class NextcloudClient(IClient):
                     logger.error("Missing username or password in configuration")
                     raise ValueError("Username and Password required for BASIC_AUTH type")
 
-                logger.info(f"Creating Basic Auth client for user: {username}")
+                logger.info("Creating Basic Auth client")
                 client = NextcloudRESTClientViaUsernamePassword(base_url, username, password)
 
             elif auth_type == "BEARER_TOKEN":
