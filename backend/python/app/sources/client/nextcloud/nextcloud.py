@@ -139,7 +139,6 @@ class NextcloudClient(IClient):
             base_url = base_url.rstrip('/')
             # 3. Determine Auth Type
             auth_type = auth_config.get("authType", "BASIC_AUTH")
-            logger.debug(f"Using auth type: {auth_type}")
 
             client = None
 
