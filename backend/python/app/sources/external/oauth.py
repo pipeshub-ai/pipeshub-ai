@@ -1,20 +1,20 @@
+import base64
 import os
 import secrets
-import base64
+import threading
 import time
 import webbrowser
-import threading
-import requests
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlencode, parse_qs, urlparse
-from typing import Optional, List, Dict, Any
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, urlencode, urlparse
 
+import requests
 
 # --- 1. The Generic Client (Reusable Library Code) ---
 
 class GenericOAuth2Client:
     """Generic OAuth2 client that can be used with any OAuth2 provider.
-    
+
     Supports both "header" (Basic Auth) and "body" (POST body) authentication methods
     for token exchange, making it compatible with various OAuth providers like:
     - Bitbucket, Zoom, Google (header method)
@@ -41,11 +41,11 @@ class GenericOAuth2Client:
 
     def get_authorization_url(self, state: str, scopes: Optional[List[str]] = None) -> str:
         """Generates the URL to open in the browser.
-        
+
         Args:
             state: Security state parameter for CSRF protection
             scopes: Optional list of OAuth scopes to request
-            
+
         Returns:
             Complete authorization URL with all parameters
         """
@@ -63,13 +63,13 @@ class GenericOAuth2Client:
 
     def exchange_code_for_token(self, code: str) -> Dict[str, Any]:
         """Exchanges the temporary authorization code for a permanent access token.
-        
+
         Args:
             code: Authorization code received from OAuth callback
-            
+
         Returns:
             Dictionary containing token response (access_token, refresh_token, etc.)
-            
+
         Raises:
             Exception: If token exchange fails
         """
@@ -82,13 +82,13 @@ class GenericOAuth2Client:
 
     def refresh_token(self, refresh_token: str) -> Dict[str, Any]:
         """Refreshes an expired access token using a refresh token.
-        
+
         Args:
             refresh_token: Refresh token obtained from initial token exchange
-            
+
         Returns:
             Dictionary containing new token response
-            
+
         Raises:
             Exception: If token refresh fails
         """
@@ -100,13 +100,13 @@ class GenericOAuth2Client:
 
     def _make_token_request(self, data: Dict[str, str]) -> Dict[str, Any]:
         """Internal helper to handle Header vs Body authentication.
-        
+
         Args:
             data: Token request data dictionary
-            
+
         Returns:
             JSON response from token endpoint
-            
+
         Raises:
             Exception: If token request fails
         """
@@ -114,7 +114,7 @@ class GenericOAuth2Client:
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
         }
-        
+
         if self.auth_method == "header":
             # "Basic Auth" (Used by Bitbucket, Zoom, Google)
             creds = f"{self.client_id}:{self.client_secret}"
@@ -172,10 +172,10 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
 
 def start_server(port: int = 8080) -> HTTPServer:
     """Start a local HTTP server to handle OAuth callbacks.
-    
+
     Args:
         port: Port number for the local server (default: 8080)
-        
+
     Returns:
         HTTPServer instance
     """
@@ -188,8 +188,8 @@ def start_server(port: int = 8080) -> HTTPServer:
 
 def reset_auth_result():
     """Reset the shared auth_result dictionary for a new OAuth flow."""
-    global auth_result
-    auth_result = {"code": None, "state": None, "error": None}
+    auth_result.clear()
+    auth_result.update({"code": None, "state": None, "error": None})
 
 
 def perform_oauth_flow(
@@ -205,7 +205,7 @@ def perform_oauth_flow(
     timeout: int = 60,
 ) -> Dict[str, Any]:
     """Perform complete OAuth2 flow and return access token.
-    
+
     This is a convenience function that handles the entire OAuth flow:
     1. Initialize client
     2. Generate authorization URL
@@ -213,7 +213,7 @@ def perform_oauth_flow(
     4. Open browser
     5. Wait for callback
     6. Exchange code for token
-    
+
     Args:
         client_id: OAuth client ID
         client_secret: OAuth client secret
@@ -225,10 +225,10 @@ def perform_oauth_flow(
         auth_method: Authentication method - "header" or "body" (default: "header")
         port: Local server port (default: 8080)
         timeout: Maximum seconds to wait for callback (default: 60)
-        
+
     Returns:
         Dictionary containing token response from OAuth provider
-        
+
     Raises:
         Exception: If OAuth flow fails or times out
     """
@@ -287,7 +287,7 @@ def perform_oauth_flow(
 
 def main():
     """Standalone execution example for generic OAuth2 flow.
-    
+
     Reads configuration from environment variables:
     - OAUTH_CLIENT_ID: OAuth client ID
     - OAUTH_CLIENT_SECRET: OAuth client secret
@@ -304,19 +304,19 @@ def main():
     auth_url = os.getenv("OAUTH_AUTH_URL")
     token_url = os.getenv("OAUTH_TOKEN_URL")
     redirect_uri = os.getenv("OAUTH_REDIRECT_URI", "http://localhost:8080/callback")
-    
+
     # Parse scopes from environment variable
     scopes_str = os.getenv("OAUTH_SCOPES", "")
     scope_delimiter = os.getenv("OAUTH_SCOPE_DELIMITER", " ")
     scopes = [s.strip() for s in scopes_str.split(scope_delimiter)] if scopes_str else None
-    
+
     auth_method = os.getenv("OAUTH_AUTH_METHOD", "header")
 
     if not client_id or not client_secret:
         print("❌ Error: Missing Required Environment Variables")
         print("   Please set OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET")
         return
-    
+
     if not auth_url or not token_url:
         print("❌ Error: Missing OAuth Endpoints")
         print("   Please set OAUTH_AUTH_URL and OAUTH_TOKEN_URL")
