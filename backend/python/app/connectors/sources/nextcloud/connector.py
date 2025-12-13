@@ -1565,7 +1565,8 @@ class NextcloudConnector(BaseConnector):
                     user_with_permission.source_user_id,
                     user_with_permission.email,
                     file_record.external_record_group_id,
-                    temp_cache
+                    user_root_path=None,
+                    path_to_external_id=temp_cache
                 )
 
                 if record_update and record_update.record:
