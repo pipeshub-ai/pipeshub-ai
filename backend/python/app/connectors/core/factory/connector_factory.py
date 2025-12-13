@@ -34,6 +34,7 @@ from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
+from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.servicenow.servicenow.connector import (
     ServiceNowConnector,
 )
@@ -55,6 +56,7 @@ class ConnectorFactory:
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
         "bookstack": BookStackConnector,
+        "nextcloud": NextcloudConnector,
     }
 
     # Beta connector definitions - single source of truth

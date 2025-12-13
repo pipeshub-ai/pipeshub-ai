@@ -2153,6 +2153,47 @@ class NextcloudDataSource:
         )
         return await self._client.execute(req)
 
+    async def get_activities(
+        self,
+        activity_filter: str = "all",
+        since: Optional[int] = None,
+        limit: Optional[int] = None,
+        sort: Optional[str] = None,
+        object_type: Optional[str] = None,
+        object_id: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """
+        Get activity stream.
+        Ref: https://github.com/nextcloud/activity/blob/master/docs/endpoint-v2.md
+        Args:
+            activity_filter: The stream filter (e.g. 'all', 'self', 'by'). Default 'all'.
+            since: The integer ID of the last activity seen.
+            limit: How many activities to return (Default 50).
+            sort: 'asc' or 'desc'. (Default 'desc' per docs, but 'asc' is better for sync).
+            object_type: Filter by object type (e.g. 'files').
+                         Note: Docs say this requires specific filters.
+            object_id: Filter by object ID.
+        """
+        params = {}
+        if since is not None:
+            params['since'] = str(since)
+        if limit is not None:
+            params['limit'] = str(limit)
+        if sort:
+            params['sort'] = sort
+        if object_type:
+            params['object_type'] = object_type
+        if object_id:
+            params['object_id'] = object_id
+
+        return await self._ocs_request(
+            'GET',
+            f'/ocs/v2.php/apps/activity/api/v2/activity/{activity_filter}',
+            params=params,
+            headers=headers
+        )
+
     # Internal WebDAV helpers
     def _build_webdav_url(self, user_id: str, path: str) -> str:
         """Constructs the full WebDAV URL."""
