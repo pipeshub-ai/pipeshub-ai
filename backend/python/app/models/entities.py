@@ -41,6 +41,7 @@ class RecordType(str, Enum):
     INLINE_COMMENT = "INLINE_COMMENT"
     CONFLUENCE_PAGE = "CONFLUENCE_PAGE"
     CONFLUENCE_BLOGPOST = "CONFLUENCE_BLOGPOST"
+    SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_LIST_ITEM = "SHAREPOINT_LIST_ITEM"
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
@@ -626,6 +627,12 @@ class SharePointDocumentLibraryRecord(Record):
 
 class SharePointPageRecord(Record):
     """Record class for SharePoint pages"""
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+        }
 
     def to_kafka_record(self) -> Dict:
         return {

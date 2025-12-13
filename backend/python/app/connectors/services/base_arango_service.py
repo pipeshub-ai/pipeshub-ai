@@ -3509,13 +3509,13 @@ class BaseArangoService:
 
                     // Second hop: group -> recordgroup
                     FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
-                        FILTER groupToRecordGroupEdge.type == "GROUP" or groupToRecordGroupEdge.type == "ROLE"
 
                         // Third hop: recordgroup -> record
                         FOR rec, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
                             FILTER rec._id == record_from
+
                             // The role is on the final edge from the record group to the record
-                            RETURN recordGroupToRecordEdge.role
+                            RETURN groupToRecordGroupEdge.role
             )
 
             LET nested_record_group_permission = FIRST(
@@ -3526,7 +3526,6 @@ class BaseArangoService:
 
                 // Second hop: group -> recordgroup1
                 FOR recordGroup1, groupToRg1Edge IN 1..1 ANY group._id @@permission
-                    FILTER groupToRg1Edge.type == "GROUP" or groupToRg1Edge.type == "ROLE"
 
                 // Third hop: recordgroup1 -> recordgroup2
                 FOR recordGroup2, rg1ToRg2Edge IN 1..1 INBOUND recordGroup1._id @@inherit_permissions
@@ -3536,7 +3535,7 @@ class BaseArangoService:
                 FOR rec, rg2ToRecordEdge IN 1..1 INBOUND recordGroup2._id @@inherit_permissions
                     FILTER rec._id == record_from
                     // The role is on the final edge from the record group (rg2) to the record
-                    RETURN rg2ToRecordEdge.role
+                    RETURN groupToRg1Edge.role
             )
 
             LET direct_user_record_group_permission = FIRST(
@@ -3552,7 +3551,7 @@ class BaseArangoService:
                         FILTER IS_SAME_COLLECTION("records", record)
 
                         LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
-                        RETURN finalEdge.role
+                        RETURN userToRgEdge.role
             )
 
             // 3. Check domain/organization permissions
@@ -3598,7 +3597,6 @@ class BaseArangoService:
 
                     // Org -> record_group permission
                     FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id @@permission
-                        FILTER orgToRgEdge.type == "ORG"
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
                         // Record group -> nested record groups (0 to 2 levels) -> record
@@ -3607,7 +3605,7 @@ class BaseArangoService:
                             FILTER IS_SAME_COLLECTION("records", record)
 
                             LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
-                            RETURN finalEdge.role
+                            RETURN orgToRgEdge.role
             )
 
             // 5. Check Drive-level access (if enabled)
