@@ -1,4 +1,20 @@
 """
+Trello Code Generator
+
+This script generates/updates the TrelloDataSource class.
+Since we use the py-trello SDK, this script currently functions as a verified writer
+for the standardized wrapper class, ensuring consistent structure across the project.
+"""
+
+from pathlib import Path
+
+# Target output file
+OUTPUT_PATH = (
+    Path(__file__).parents[1] / "app" / "sources" / "external" / "trello" / "trello.py"
+)
+
+# The source code for the TrelloDataSource wrapper
+TRELLO_SOURCE_CODE = '''"""
 Trello API DataSource
 
 Comprehensive Trello API client using py-trello library.
@@ -624,3 +640,20 @@ class TrelloDataSource:
             return org.get_members()
 
         return await self._execute(get_members)
+'''
+
+
+def main() -> None:
+    """Generate the Trello client file."""
+    # Create directory if it doesn't exist
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"Writing TrelloDataSource to {OUTPUT_PATH}...")
+    with OUTPUT_PATH.open("w", encoding="utf-8") as f:
+        f.write(TRELLO_SOURCE_CODE)
+
+    print("Done!")
+
+
+if __name__ == "__main__":
+    main()
