@@ -1,32 +1,36 @@
 #!/usr/bin/env python3
 """
-FINAL ZOOM UNIFIED DATASOURCE GENERATOR
----------------------------------------
+FINAL ZOOM UNIFIED DATASOURCE GENERATOR (Rishabh-Approved)
+----------------------------------------------------------
 
-Guaranteed-correct version:
-- Sanitizes ALL parameter names (from → from_, in → in_, type → type_, etc)
-- Sanitizes ALL path placeholders
-- Generates valid f-strings
-- Generates valid method signatures
-- No duplicate params (timeout only once)
-- No "self missing"
-- No invalid Python syntax
-"""
-"""
-How to run the Zoom code generator:
+✔ No CLI arguments required
+✔ Run generator using:  python zoom.py
+✔ Auto-detects:
+      - zoom_specs/ folder
+      - output/zoom/ folder
+✔ Never overwrites external runtime code
+✔ Writes ONLY into local staging folder:
+      backend/python/code-generator/output/zoom/
 
-    python backend/python/code-generator/zoom.py \\
-        --spec-dir backend/python/code-generator/zoom_specs \\
-        --out-dir backend/python/app/sources/external/zoom \\
-        --overwrite
+✔ Generates:
+      - zoom.py
+      - example.py
+      - example_build_from_services.py
 """
 
-import argparse
 import json
-import os
 import re
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import List
+
+# ------------------------------------------------------------
+# AUTO-DETECTED DIRECTORIES
+# ------------------------------------------------------------
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+SPEC_DIR = SCRIPT_DIR / "zoom_specs"
+OUTPUT_DIR = SCRIPT_DIR / "output" / "zoom"
+
 
 # ------------------------------------------------------------
 # UTILITIES
@@ -45,19 +49,15 @@ def sanitize_param(name: str) -> str:
     if not name:
         return "param"
 
-    # Replace invalid chars
     s = re.sub(r"[^0-9a-zA-Z_]", "_", name)
 
-    # No leading digits
-    if s[0].isdigit():
+    if s and s[0].isdigit():
         s = "_" + s
 
-    # Collapse ____
     s = re.sub(r"_+", "_", s).strip("_")
 
-    # Handle Python keywords
     if s in PYTHON_KEYWORDS:
-        s = s + "_"
+        s += "_"
 
     return s or "param"
 
@@ -70,11 +70,10 @@ def snake(name: str) -> str:
     s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)
     s = s.replace("-", "_")
     s = re.sub(r"[^0-9a-zA-Z_]", "_", s)
-    s = re.sub(r"_+", "_", s)
-    s = s.lower().strip("_")
-    if s[0].isdigit():
+    s = re.sub(r"_+", "_", s).lower().strip("_")
+    if s and s[0].isdigit():
         s = "_" + s
-    return s
+    return s or "method"
 
 
 def load_json(p: Path):
@@ -118,76 +117,139 @@ METHOD_TEMPLATE = '''
 '''
 
 
+# ------------------------------------------------------------
+# EXAMPLE.PY (OAuth Manual Flow)
+# ------------------------------------------------------------
+
 EXAMPLE_TEMPLATE = '''"""
-Example usage of the ZoomDataSource with S2S OAuth.
+ZoomDataSource Example (OAuth Authorization Code Flow)
 
-How to run this example:
+HOW TO RUN THIS EXAMPLE:
 
-    python backend/python/app/sources/external/zoom/example.py
+1) From the repository root, run:
+       python backend/python/code-generator/zoom.py
 
-How to run the Zoom code generator:
+   This generates files into:
+       backend/python/code-generator/output/zoom/
 
-    python backend/python/code-generator/zoom.py \\
-        --spec-dir backend/python/code-generator/zoom_specs \\
-        --out-dir backend/python/app/sources/external/zoom \\
-        --overwrite
+2) Copy the generated files into the external runtime folder:
+       cp backend/python/code-generator/output/zoom/* \
+          backend/python/app/sources/external/zoom/
+
+3) Move into the external Zoom folder:
+       cd backend/python/app/sources/external/zoom
+
+4) Run the example:
+       python example.py
+
+   - A browser window will open
+   - Login and authorize the Zoom OAuth app
+   - Zoom will redirect to http://localhost:8080/callback
+     (the page may show an error — this is OK)
+   - Copy the `code=` value from the browser URL
+   - Paste it into the terminal when prompted
+
+This example demonstrates:
+- OAuth Authorization Code flow
+- Token exchange
+- Calling real Zoom APIs (users, groups, chat, account)
+- Graceful handling of feature-gated APIs
 """
 
-import sys, os, asyncio
+import os
+import sys
+import asyncio
+import webbrowser
+from urllib.parse import urlencode
 
-# Adjust sys.path for local development
+# -------------------------------------------------
+# Ensure repo root + backend/python are importable
+# -------------------------------------------------
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../.."))
 APP = os.path.join(ROOT, "backend", "python")
 
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
 if APP not in sys.path:
     sys.path.insert(0, APP)
 
 from backend.python.app.sources.client.zoom.zoom import (
     ZoomClient,
-    ZoomServerToServerConfig,
+    ZoomOAuthConfig,
 )
 from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
 
+AUTH_URL = "https://zoom.us/oauth/authorize"
 
-async def main():
 
-    ACCOUNT_ID = os.getenv("ZOOM_ACCOUNT_ID")
+async def main() -> None:
     CLIENT_ID = os.getenv("ZOOM_CLIENT_ID")
     CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET")
+    REDIRECT_URI = os.getenv("ZOOM_REDIRECT_URI", "http://localhost:8080/callback")
 
-    if not ACCOUNT_ID or not CLIENT_ID or not CLIENT_SECRET:
-        raise Exception("Missing S2S Zoom credentials in env variables")
+    if not CLIENT_ID or not CLIENT_SECRET:
+        raise RuntimeError("Set ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET")
 
-    # Build Zoom client using S2S OAuth
     wrapper = ZoomClient.build_with_config(
-        ZoomServerToServerConfig(
-            account_id=ACCOUNT_ID,
+        ZoomOAuthConfig(
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
+            redirect_uri=REDIRECT_URI,
         )
     )
 
-    # Extract REST client
-    rest_client = wrapper.get_client()
+    rest = wrapper.get_client()
+    ds = ZoomDataSource(rest)
 
-    # Build datasource
-    ds = ZoomDataSource(rest_client)
+    params = {
+        "client_id": CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": REDIRECT_URI,
+    }
 
-    print("Calling Zoom API with S2S OAuth token generation...")
-
-    # First API call triggers token generation automatically
-    resp = await ds.users()
-
-    print("\\n🔹 Raw Response Object:")
-    print(resp)
+    url = f"{AUTH_URL}?{urlencode(params)}"
+    print("Open this URL & authorize:\\n", url)
 
     try:
-        print("\\n🔹 Parsed JSON from response:")
-        print(resp.json())
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+    code = input("\\nPaste the ?code= value here: ").strip()
+    if not code:
+        raise RuntimeError("No authorization code provided")
+
+    await rest.exchange_code_for_token(code)
+
+    print("\\nCalling users() ...")
+    try:
+        r = await ds.users()
+        print(r.json())
     except Exception as e:
-        print("Could not parse JSON:", e)
+        print("users() failed:", e)
+
+    print("\\nCalling groups() ...")
+    try:
+        r = await ds.groups()
+        print(r.json())
+    except Exception as e:
+        print("groups() failed:", e)
+
+    print("\\nCalling get_chat_sessions() ...")
+    try:
+        r = await ds.get_chat_sessions()
+        print(r.json())
+    except Exception as e:
+        print("get_chat_sessions() failed:", e)
+
+    print("\\nCalling get_a_billing_account() ...")
+    try:
+        r = await ds.get_a_billing_account()
+        print(r.json())
+    except Exception as e:
+        print("get_a_billing_account() failed:", e)
 
 
 if __name__ == "__main__":
@@ -195,30 +257,61 @@ if __name__ == "__main__":
 '''
 
 
+
+# ------------------------------------------------------------
+# BFS TEMPLATE (Slack/Notion Style)
+# ------------------------------------------------------------
+
 BFS_TEMPLATE = '''"""
-Build from services example
+Build-from-services example for Zoom
 """
 
-import sys, os, asyncio, logging
-
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../.."))
-APP = os.path.join(ROOT, "backend", "python")
-if ROOT not in sys.path: sys.path.insert(0, ROOT)
-if APP not in sys.path: sys.path.insert(0, APP)
+import asyncio
+import logging
 
 from backend.python.app.sources.client.zoom.zoom import ZoomClient
 from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
 from backend.python.app.config.configuration_service import ConfigurationService
+from backend.python.app.config.providers.etcd.etcd3_encrypted_store import (
+    Etcd3EncryptedKeyValueStore,
+)
 
 
-async def main():
-    logger = logging.getLogger("zoom")
-    cs = ConfigurationService()
-    client = await ZoomClient.build_from_services(logger, cs)
-    rc = client.get_client()
-    ds = ZoomDataSource(rc)
+async def main() -> None:
+    # Set up logging
+    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO)
 
-    print([m for m in dir(ds) if not m.startswith("_")][:100])
+    # Create ETCD store
+    etcd_store = Etcd3EncryptedKeyValueStore(logger=logger)
+
+    # Create configuration service
+    config_service = ConfigurationService(
+        logger=logger,
+        key_value_store=etcd_store,
+    )
+
+    # Build Zoom client using configuration service
+    try:
+        zoom_client = await ZoomClient.build_from_services(
+            logger=logger,
+            config_service=config_service,
+        )
+        print("✅ Zoom client created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create Zoom client: {e}")
+        print(f"❌ Error creating Zoom client: {e}")
+        return
+
+    # Create data source
+    zoom_data_source = ZoomDataSource(zoom_client)
+
+    # Test a simple API call (sanity check)
+    try:
+        response = await zoom_data_source.users()
+        print(f"✅ Users response: {response}")
+    except Exception as e:
+        print(f"❌ Error calling users API: {e}")
 
 
 if __name__ == "__main__":
@@ -227,31 +320,33 @@ if __name__ == "__main__":
 
 
 # ------------------------------------------------------------
-# GENERATOR
+# GENERATOR LOGIC
 # ------------------------------------------------------------
 
-def generate(spec_dir: Path, out_dir: Path, overwrite: bool = False):
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / "zoom.py"
+def generate(overwrite: bool = True):
+    """
+    Generates Zoom datasource + examples into OUTPUT_DIR.
+    """
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    if out_file.exists() and not overwrite:
-        print("zoom.py exists, use --overwrite")
+    main_file = OUTPUT_DIR / "zoom.py"
+
+    if main_file.exists() and not overwrite:
+        print("zoom.py exists. Use overwrite=True to regenerate.")
         return
 
-    # Load all JSON specs
+    # Load specs
     specs = []
-    for f in sorted(spec_dir.glob("*.json")):
+    for f in sorted(SPEC_DIR.glob("*.json")):
         try:
-            j = load_json(f)
-            specs.append(j)
-        except:
+            specs.append(load_json(f))
+        except Exception:
             print(f"Skipping bad JSON: {f}")
 
     endpoints = []
 
-    # Extract endpoints
     for spec in specs:
-        paths = spec.get("paths", {})
+        paths = spec.get("paths", {}) or {}
         for raw_path, verbs in paths.items():
             if not isinstance(verbs, dict):
                 continue
@@ -268,17 +363,17 @@ def generate(spec_dir: Path, out_dir: Path, overwrite: bool = False):
                 })
 
     used = set()
-    lines = [HEADER, CLASS_HEADER]
+    lines: List[str] = [HEADER, CLASS_HEADER]
 
-    # Generate each method
+    # Generate all Python methods
     for ep in endpoints:
 
         op = ep["operationId"]
-        summary = ep["summary"].replace('"', "'")
+        summary = (ep["summary"] or "").replace('"', "'")
         raw_path = ep["path"]
         verb = ep["verb"]
 
-        # ---- METHOD NAME ----
+        # Create method name
         base = snake(op if op else f"{verb}_{raw_path}")
         name = base
         i = 1
@@ -287,17 +382,13 @@ def generate(spec_dir: Path, out_dir: Path, overwrite: bool = False):
             i += 1
         used.add(name)
 
-        # ---- PARAMS ----
-        path_placeholders = re.findall(r"{([^}]+)}", raw_path)
-
+        # Params
+        path_ph = re.findall(r"{([^}]+)}", raw_path)
         params = []
         param_map = []
         seen = set()
 
-        spec_params = ep["params"]
-
-        # normal parameters
-        for p in spec_params:
+        for p in ep["params"]:
             if not isinstance(p, dict):
                 continue
             pname = p.get("name")
@@ -312,12 +403,11 @@ def generate(spec_dir: Path, out_dir: Path, overwrite: bool = False):
                 safe = f"{safe}_{idx}"
 
             seen.add(safe)
-
             params.append(f"{safe}: Optional[Any] = None")
             param_map.append(f"'{pname}': {safe}")
 
-        # ensure path placeholders exist as params
-        for ph in path_placeholders:
+        # Add missing path variables
+        for ph in path_ph:
             safe = sanitize_param(ph)
             if safe not in seen:
                 seen.add(safe)
@@ -327,53 +417,46 @@ def generate(spec_dir: Path, out_dir: Path, overwrite: bool = False):
         # Add timeout
         params.append("timeout: Optional[int] = None")
 
-        # ---- PATH SANITIZATION ----
-        def repl(m):
-            ph = m.group(1)
-            return "{" + sanitize_param(ph) + "}"
+        # Replace path placeholders
+        sanitized_path = re.sub(
+            r"{([^}]+)}",
+            lambda m: "{" + sanitize_param(m.group(1)) + "}",
+            raw_path
+        )
 
-        sanitized_path = re.sub(r"{([^}]+)}", repl, raw_path)
+        body_note = (
+            "        # This endpoint accepts a request body.\n        body = None"
+            if ep["body"] else
+            "        body = None"
+        )
 
-        # ---- BODY NOTE ----
-        body_note = "        # This endpoint accepts a request body.\n        body = None" if ep["body"] else "        body = None"
-
-        # ---- RENDER ----
         method_src = METHOD_TEMPLATE.format(
             method=name,
-            args=", " + ", ".join(params),
+            args=", " + ", ".join(params) if params else "",
             op=op or "<none>",
             verb=verb,
             raw_path=raw_path,
             sanitized_path=sanitized_path,
             summary=summary,
             params_dict="{ " + ", ".join(param_map) + " }",
-            body_note=body_note
+            body_note=body_note,
         )
 
         lines.append(method_src)
 
-    # WRITE FILES
-    out_file.write_text("\n".join(lines), encoding="utf-8")
-    (out_dir / "example.py").write_text(EXAMPLE_TEMPLATE, encoding="utf-8")
-    (out_dir / "example_build_from_services.py").write_text(BFS_TEMPLATE, encoding="utf-8")
+    # Write output files
+    main_file.write_text("\n".join(lines), encoding="utf-8")
+    (OUTPUT_DIR / "example.py").write_text(EXAMPLE_TEMPLATE, encoding="utf-8")
+    (OUTPUT_DIR / "example_build_from_services.py").write_text(BFS_TEMPLATE, encoding="utf-8")
 
-    print(f"Generated zoom.py with {len(endpoints)} endpoints")
-    print("Generated example.py + example_build_from_services.py")
+    print(f"✅ Generated zoom.py with {len(endpoints)} endpoints")
+    print(f"📄 Example files written to {OUTPUT_DIR}")
+    print("⚠️ Manually copy files to backend/python/app/sources/external/zoom/")
 
 
 # ------------------------------------------------------------
-# CLI
+# ENTRYPOINT — JUST run:  python zoom.py
 # ------------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--spec-dir", required=True)
-    parser.add_argument("--out-dir", required=True)
-    parser.add_argument("--overwrite", action="store_true")
-    args = parser.parse_args()
-
-    generate(Path(args.spec_dir), Path(args.out_dir), overwrite=args.overwrite)
-
 
 if __name__ == "__main__":
-    main()
+    generate(overwrite=True)

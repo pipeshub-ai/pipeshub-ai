@@ -1,73 +1,131 @@
 """
-Example usage of the ZoomDataSource with S2S OAuth.
+ZoomDataSource Example (OAuth Authorization Code Flow)
 
-How to run this example:
+HOW TO RUN THIS EXAMPLE:
 
-    python backend/python/app/sources/external/zoom/example.py
+1) From the repository root, run:
+       python backend/python/code-generator/zoom.py
 
-How to run the Zoom code generator:
+   This generates files into:
+       backend/python/code-generator/output/zoom/
 
-    python backend/python/code-generator/zoom.py \
-        --spec-dir backend/python/code-generator/zoom_specs \
-        --out-dir backend/python/app/sources/external/zoom \
-        --overwrite
+2) Copy the generated files into the external runtime folder:
+       cp backend/python/code-generator/output/zoom/*           backend/python/app/sources/external/zoom/
+
+3) Move into the external Zoom folder:
+       cd backend/python/app/sources/external/zoom
+
+4) Run the example:
+       python example.py
+
+   - A browser window will open
+   - Login and authorize the Zoom OAuth app
+   - Zoom will redirect to http://localhost:8080/callback
+     (the page may show an error — this is OK)
+   - Copy the `code=` value from the browser URL
+   - Paste it into the terminal when prompted
+
+This example demonstrates:
+- OAuth Authorization Code flow
+- Token exchange
+- Calling real Zoom APIs (users, groups, chat, account)
+- Graceful handling of feature-gated APIs
 """
 
-import sys, os, asyncio
+import os
+import sys
+import asyncio
+import webbrowser
+from urllib.parse import urlencode
 
-# Adjust sys.path for local development
+# -------------------------------------------------
+# Ensure repo root + backend/python are importable
+# -------------------------------------------------
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../.."))
 APP = os.path.join(ROOT, "backend", "python")
 
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
 if APP not in sys.path:
     sys.path.insert(0, APP)
 
 from backend.python.app.sources.client.zoom.zoom import (
     ZoomClient,
-    ZoomServerToServerConfig,
+    ZoomOAuthConfig,
 )
 from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
 
+AUTH_URL = "https://zoom.us/oauth/authorize"
 
-async def main():
 
-    ACCOUNT_ID = os.getenv("ZOOM_ACCOUNT_ID")
+async def main() -> None:
     CLIENT_ID = os.getenv("ZOOM_CLIENT_ID")
     CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET")
+    REDIRECT_URI = os.getenv("ZOOM_REDIRECT_URI", "http://localhost:8080/callback")
 
-    if not ACCOUNT_ID or not CLIENT_ID or not CLIENT_SECRET:
-        raise Exception("Missing S2S Zoom credentials in env variables")
+    if not CLIENT_ID or not CLIENT_SECRET:
+        raise RuntimeError("Set ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET")
 
-    # Build Zoom client using S2S OAuth
     wrapper = ZoomClient.build_with_config(
-        ZoomServerToServerConfig(
-            account_id=ACCOUNT_ID,
+        ZoomOAuthConfig(
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
+            redirect_uri=REDIRECT_URI,
         )
     )
 
-    # Extract REST client
-    rest_client = wrapper.get_client()
+    rest = wrapper.get_client()
+    ds = ZoomDataSource(rest)
 
-    # Build datasource
-    ds = ZoomDataSource(rest_client)
+    params = {
+        "client_id": CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": REDIRECT_URI,
+    }
 
-    print("Calling Zoom API with S2S OAuth token generation...")
-
-    # First API call triggers token generation automatically
-    resp = await ds.users()
-
-    print("\n🔹 Raw Response Object:")
-    print(resp)
+    url = f"{AUTH_URL}?{urlencode(params)}"
+    print("Open this URL & authorize:\n", url)
 
     try:
-        print("\n🔹 Parsed JSON from response:")
-        print(resp.json())
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+    code = input("\nPaste the ?code= value here: ").strip()
+    if not code:
+        raise RuntimeError("No authorization code provided")
+
+    await rest.exchange_code_for_token(code)
+
+    print("\nCalling users() ...")
+    try:
+        r = await ds.users()
+        print(r.json())
     except Exception as e:
-        print("Could not parse JSON:", e)
+        print("users() failed:", e)
+
+    print("\nCalling groups() ...")
+    try:
+        r = await ds.groups()
+        print(r.json())
+    except Exception as e:
+        print("groups() failed:", e)
+
+    print("\nCalling get_chat_sessions() ...")
+    try:
+        r = await ds.get_chat_sessions()
+        print(r.json())
+    except Exception as e:
+        print("get_chat_sessions() failed:", e)
+
+    print("\nCalling get_a_billing_account() ...")
+    try:
+        r = await ds.get_a_billing_account()
+        print(r.json())
+    except Exception as e:
+        print("get_a_billing_account() failed:", e)
 
 
 if __name__ == "__main__":

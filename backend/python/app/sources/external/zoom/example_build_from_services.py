@@ -1,27 +1,53 @@
 """
-Build from services example
+Build-from-services example for Zoom
 """
 
-import sys, os, asyncio, logging
-
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../.."))
-APP = os.path.join(ROOT, "backend", "python")
-if ROOT not in sys.path: sys.path.insert(0, ROOT)
-if APP not in sys.path: sys.path.insert(0, APP)
+import asyncio
+import logging
 
 from backend.python.app.sources.client.zoom.zoom import ZoomClient
 from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
 from backend.python.app.config.configuration_service import ConfigurationService
+from backend.python.app.config.providers.etcd.etcd3_encrypted_store import (
+    Etcd3EncryptedKeyValueStore,
+)
 
 
-async def main():
-    logger = logging.getLogger("zoom")
-    cs = ConfigurationService()
-    client = await ZoomClient.build_from_services(logger, cs)
-    rc = client.get_client()
-    ds = ZoomDataSource(rc)
+async def main() -> None:
+    # Set up logging
+    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO)
 
-    print([m for m in dir(ds) if not m.startswith("_")][:100])
+    # Create ETCD store
+    etcd_store = Etcd3EncryptedKeyValueStore(logger=logger)
+
+    # Create configuration service
+    config_service = ConfigurationService(
+        logger=logger,
+        key_value_store=etcd_store,
+    )
+
+    # Build Zoom client using configuration service
+    try:
+        zoom_client = await ZoomClient.build_from_services(
+            logger=logger,
+            config_service=config_service,
+        )
+        print("✅ Zoom client created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create Zoom client: {e}")
+        print(f"❌ Error creating Zoom client: {e}")
+        return
+
+    # Create data source
+    zoom_data_source = ZoomDataSource(zoom_client)
+
+    # Test a simple API call (sanity check)
+    try:
+        response = await zoom_data_source.users()
+        print(f"✅ Users response: {response}")
+    except Exception as e:
+        print(f"❌ Error calling users API: {e}")
 
 
 if __name__ == "__main__":
