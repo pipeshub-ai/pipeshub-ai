@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
@@ -186,7 +187,6 @@ def parse_webdav_propfind_response(xml_response: bytes) -> List[Dict]:
 
     except ET.ParseError as e:
         error_context = xml_response[:500].decode('utf-8', errors='replace') if xml_response else 'empty'
-        import logging
         logger = logging.getLogger(__name__)
         logger.error(
             f"Failed to parse WebDAV XML response: {e}. "
@@ -196,7 +196,6 @@ def parse_webdav_propfind_response(xml_response: bytes) -> List[Dict]:
         # Return empty list to allow sync to continue for other files
         return []
     except Exception as e:
-        import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Unexpected error parsing WebDAV response: {e}", exc_info=True)
         return []
@@ -240,7 +239,6 @@ def parse_share_response(response_body: bytes) -> List[Dict]:
                 try:
                     share['share_type'] = int(share_item['share_type'])
                 except (ValueError, TypeError):
-                    import logging
                     logger = logging.getLogger(__name__)
                     logger.debug(
                         f"Invalid share_type value: {share_item.get('share_type')}, "
@@ -280,7 +278,6 @@ def parse_share_response(response_body: bytes) -> List[Dict]:
 
     except json.JSONDecodeError as e:
         error_context = response_body[:500].decode('utf-8', errors='replace') if response_body else 'empty'
-        import logging
         logger = logging.getLogger(__name__)
         logger.error(
             f"Failed to parse OCS share response as JSON: {e}. "
@@ -289,7 +286,6 @@ def parse_share_response(response_body: bytes) -> List[Dict]:
         )
         return []
     except Exception as e:
-        import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Unexpected error parsing share response: {e}", exc_info=True)
         return []
