@@ -3,13 +3,13 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Dict, Optional, Union
 
 from backend.python.app.config.configuration_service import ConfigurationService
 from backend.python.app.sources.client.http.http_client import HTTPClient
 from backend.python.app.sources.client.http.http_request import HTTPRequest
+from backend.python.app.sources.client.http.http_response import HTTPResponse
 from backend.python.app.sources.client.iclient import IClient
-
 
 # ======================================================================
 # Standard Zoom Response Wrapper
@@ -18,11 +18,11 @@ from backend.python.app.sources.client.iclient import IClient
 @dataclass
 class ZoomResponse:
     success: bool
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[Dict[str, object]] = None
     error: Optional[str] = None
     message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> Dict[str, object]:
         return asdict(self)
 
     def to_json(self) -> str:
@@ -103,7 +103,7 @@ class ZoomRESTClientViaServerToServer(HTTPClient):
         params=None,
         body=None,
         timeout=None,
-    ) -> Any:
+    ) -> HTTPResponse:
         req = HTTPRequest(
             method=method,
             url=url,
@@ -139,7 +139,7 @@ class ZoomRESTClientViaToken(HTTPClient):
         params=None,
         body=None,
         timeout=None,
-    ) -> Any:
+    ) -> HTTPResponse:
         req = HTTPRequest(
             method=method,
             url=url,
@@ -184,7 +184,7 @@ class ZoomRESTClientViaAuthorizationCode(HTTPClient):
     def get_base_url(self) -> str:
         return self.base_url
 
-    async def exchange_code_for_token(self, code: str) -> Dict[str, Any]:
+    async def exchange_code_for_token(self, code: str) -> Dict[str, object]:
         cred = f"{self.client_id}:{self.client_secret}"
         encoded = base64.b64encode(cred.encode()).decode()
 
@@ -221,7 +221,7 @@ class ZoomRESTClientViaAuthorizationCode(HTTPClient):
         self.headers["Authorization"] = f"Bearer {access}"
         return data
 
-    async def refresh_access_token(self) -> Dict[str, Any]:
+    async def refresh_access_token(self) -> Dict[str, object]:
         if not self.refresh_token:
             raise RuntimeError("No refresh token available")
 
@@ -268,7 +268,7 @@ class ZoomRESTClientViaAuthorizationCode(HTTPClient):
         params=None,
         body=None,
         timeout=None,
-    ) -> Any:
+    ) -> HTTPResponse:
         req = HTTPRequest(
             method=method,
             url=url,
