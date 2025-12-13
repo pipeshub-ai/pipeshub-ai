@@ -5,12 +5,12 @@ Build-from-services example for Zoom
 import asyncio
 import logging
 
-from backend.python.app.sources.client.zoom.zoom import ZoomClient
-from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
 from backend.python.app.config.configuration_service import ConfigurationService
 from backend.python.app.config.providers.etcd.etcd3_encrypted_store import (
     Etcd3EncryptedKeyValueStore,
 )
+from backend.python.app.sources.client.zoom.zoom import ZoomClient
+from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
 
 
 async def main() -> None:

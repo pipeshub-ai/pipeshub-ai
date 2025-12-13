@@ -32,9 +32,11 @@ This example demonstrates:
 - Graceful handling of feature-gated APIs
 """
 
+# ruff: noqa: E402
+
+import asyncio
 import os
 import sys
-import asyncio
 import webbrowser
 from urllib.parse import urlencode
 

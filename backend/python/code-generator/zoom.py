@@ -155,7 +155,7 @@ This example demonstrates:
 - Calling real Zoom APIs (users, groups, chat, account)
 - Graceful handling of feature-gated APIs
 """
-
+# ruff: noqa: E402
 import os
 import sys
 import asyncio
@@ -265,6 +265,7 @@ if __name__ == "__main__":
 BFS_TEMPLATE = '''"""
 Build-from-services example for Zoom
 """
+
 
 import asyncio
 import logging
