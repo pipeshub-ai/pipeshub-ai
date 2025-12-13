@@ -3,8 +3,8 @@ import os
 from enum import Enum
 from typing import Any, Dict
 
-from langchain.chat_models.base import BaseChatModel
 from langchain_core.embeddings.embeddings import Embeddings
+from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,
@@ -59,7 +59,7 @@ class LLMProvider(Enum):
     VERTEX_AI = "vertexAI"
     XAI = "xai"
 
-MAX_OUTPUT_TOKENS = 16000
+MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
 
 def get_default_embedding_model() -> Embeddings:
@@ -237,7 +237,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
         )
 
     elif provider == EmbeddingProvider.TOGETHER.value:
-        from langchain_together import TogetherEmbeddings
+        from app.utils.custom_embeddings import TogetherEmbeddings
 
         return TogetherEmbeddings(
             model=model_name,
@@ -395,7 +395,6 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
 
     elif provider == LLMProvider.COHERE.value:
         from langchain_cohere import ChatCohere
-
         return ChatCohere(
                 model=model_name,
                 temperature=0.2,
@@ -479,7 +478,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
             )
 
     elif provider == LLMProvider.TOGETHER.value:
-        from langchain_together import ChatTogether
+        from app.utils.custom_chat_model import ChatTogether
 
         return ChatTogether(
                 model=model_name,
