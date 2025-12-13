@@ -10,6 +10,7 @@ from backend.python.app.sources.client.http.http_client import HTTPClient
 from backend.python.app.sources.client.http.http_request import HTTPRequest
 from backend.python.app.sources.client.iclient import IClient
 
+
 # ======================================================================
 # Standard Zoom Response Wrapper
 # ======================================================================
@@ -59,9 +60,6 @@ class ZoomRESTClientViaServerToServer(HTTPClient):
         return self.base_url
 
     async def _get_access_token(self) -> str:
-        """
-        Explicitly fetch access token using HTTPClient.execute().
-        """
         if self.access_token:
             return self.access_token
 
@@ -88,11 +86,7 @@ class ZoomRESTClientViaServerToServer(HTTPClient):
         )
 
         resp = await self.execute(req)
-
-        try:
-            data = resp.json() if hasattr(resp, "json") else resp.response.json()
-        except Exception as e:
-            raise RuntimeError(f"Failed to parse token response: {e}")
+        data = resp.json() if hasattr(resp, "json") else resp.response.json()
 
         token = data.get("access_token")
         if not token:
@@ -102,7 +96,14 @@ class ZoomRESTClientViaServerToServer(HTTPClient):
         self.headers["Authorization"] = f"Bearer {token}"
         return token
 
-    async def request(self, method: str, url: str, params=None, body=None, timeout=None):
+    async def request(
+        self,
+        method: str,
+        url: str,
+        params=None,
+        body=None,
+        timeout=None,
+    ) -> Any:
         req = HTTPRequest(
             method=method,
             url=url,
@@ -131,7 +132,14 @@ class ZoomRESTClientViaToken(HTTPClient):
     def get_base_url(self) -> str:
         return self.base_url
 
-    async def request(self, method: str, url: str, params=None, body=None, timeout=None):
+    async def request(
+        self,
+        method: str,
+        url: str,
+        params=None,
+        body=None,
+        timeout=None,
+    ) -> Any:
         req = HTTPRequest(
             method=method,
             url=url,
@@ -150,9 +158,7 @@ class ZoomRESTClientViaToken(HTTPClient):
 class ZoomRESTClientViaAuthorizationCode(HTTPClient):
     """
     OAuth Authorization Code client.
-    Token helper. Must be called explicitly by setup/example code.
-    Not invoked automatically during API requests.
-
+    Token helper must be invoked explicitly by setup code.
     """
 
     def __init__(
@@ -161,7 +167,7 @@ class ZoomRESTClientViaAuthorizationCode(HTTPClient):
         client_secret: str,
         redirect_uri: str,
         base_url: str = "https://api.zoom.us/v2",
-    ):
+    ) -> None:
         super().__init__(token="", token_type="Bearer")
 
         self.client_id = client_id
@@ -255,7 +261,14 @@ class ZoomRESTClientViaAuthorizationCode(HTTPClient):
         self.headers["Authorization"] = f"Bearer {access}"
         return data
 
-    async def request(self, method: str, url: str, params=None, body=None, timeout=None):
+    async def request(
+        self,
+        method: str,
+        url: str,
+        params=None,
+        body=None,
+        timeout=None,
+    ) -> Any:
         req = HTTPRequest(
             method=method,
             url=url,
@@ -278,7 +291,7 @@ class ZoomServerToServerConfig:
     client_secret: str
     base_url: str = "https://api.zoom.us/v2"
 
-    def create_client(self):
+    def create_client(self) -> ZoomRESTClientViaServerToServer:
         return ZoomRESTClientViaServerToServer(
             self.account_id,
             self.client_id,
@@ -292,7 +305,7 @@ class ZoomTokenConfig:
     base_url: str
     token: str
 
-    def create_client(self):
+    def create_client(self) -> ZoomRESTClientViaToken:
         return ZoomRESTClientViaToken(self.base_url, self.token)
 
 
@@ -303,7 +316,7 @@ class ZoomOAuthConfig:
     redirect_uri: str = "http://localhost:8080/callback"
     base_url: str = "https://api.zoom.us/v2"
 
-    def create_client(self):
+    def create_client(self) -> ZoomRESTClientViaAuthorizationCode:
         return ZoomRESTClientViaAuthorizationCode(
             self.client_id,
             self.client_secret,
@@ -327,15 +340,19 @@ class ZoomClient(IClient):
     def __init__(self, client: ClientType) -> None:
         self.client = client
 
-    def get_client(self):
+    def get_client(self) -> ClientType:
         return self.client
 
     @classmethod
-    def build_with_config(cls, config):
+    def build_with_config(cls, config) -> "ZoomClient":
         return cls(config.create_client())
 
     @classmethod
-    async def build_from_services(cls, logger: logging.Logger, config_service: ConfigurationService):
+    async def build_from_services(
+        cls,
+        logger: logging.Logger,
+        config_service: ConfigurationService,
+    ) -> "ZoomClient":
         conf = await config_service.get_config("/services/connectors/zoom/config") or {}
         auth = conf.get("auth", {})
         base_url = auth.get("baseUrl", "https://api.zoom.us/v2")
