@@ -5,17 +5,26 @@ Bitbucket API Usage Examples
 
 This example demonstrates how to use the Bitbucket DataSource to interact with
 the Bitbucket Cloud API (v2.0), covering:
-- Authentication (Basic Auth with App Password)
+- Authentication (OAuth2, Bearer Token, or Basic Auth with App Password)
 - Initializing the Client and DataSource
 - Fetching User Details
 - Listing Workspaces and Repositories
 - Fetching Commits, Pull Requests, and Issues
 
 Prerequisites:
+For OAuth2:
+1. Create a Bitbucket OAuth consumer at https://bitbucket.org/account/settings/app-passwords/
+2. Set BITBUCKET_CLIENT_ID and BITBUCKET_CLIENT_SECRET environment variables
+3. The OAuth flow will automatically open a browser for authorization
+
+For Bearer Token:
+1. Set BITBUCKET_TOKEN environment variable with your access token
+
+For Basic Auth:
 1. Log in to Bitbucket.
 2. Go to Personal Settings -> App Passwords.
 3. Create an App Password with permissions (Read: Account, Workspace, Repositories, Pull Requests, Issues).
-4. Set the environment variables below (BITBUCKET_USERNAME, BITBUCKET_PASSWORD).
+4. Set BITBUCKET_USERNAME and BITBUCKET_PASSWORD environment variables.
 """
 
 import asyncio
@@ -31,12 +40,20 @@ from app.sources.external.bitbucket.bitbucket import (
     BitbucketDataSource,
     BitbucketResponse,
 )
+from app.sources.external.utils.oauth import perform_oauth_flow
 
 # --- Configuration ---
-# Variables integrated from your request
+# OAuth2 credentials (highest priority)
+CLIENT_ID = os.getenv("BITBUCKET_CLIENT_ID")
+CLIENT_SECRET = os.getenv("BITBUCKET_CLIENT_SECRET")
+
+# Bearer Token (second priority)
+TOKEN = os.getenv("BITBUCKET_TOKEN")
+
+# Basic Auth credentials (lowest priority)
 USERNAME = os.getenv("BITBUCKET_USERNAME")
 PASSWORD = os.getenv("BITBUCKET_PASSWORD")
-TOKEN = os.getenv("BITBUCKET_TOKEN")
+
 BASE_URL = os.getenv("BITBUCKET_BASE_URL", "https://api.bitbucket.org/2.0")
 
 def print_section(title: str):
@@ -67,19 +84,56 @@ async def main() -> None:
     # 1. Initialize Client
     print_section("Initializing Bitbucket Client")
 
-    # Logic to choose between Token or Username/Password
-    if TOKEN:
+    # Determine authentication method (priority: OAuth > TOKEN > USERNAME/PASSWORD)
+    config = None
+    
+    if CLIENT_ID and CLIENT_SECRET:
+        # OAuth2 authentication (highest priority)
+        print("ℹ️  Using OAuth2 authentication")
+        try:
+            print("Starting OAuth flow...")
+            token_response = perform_oauth_flow(
+                client_id=CLIENT_ID,
+                client_secret=CLIENT_SECRET,
+                auth_endpoint="https://bitbucket.org/site/oauth2/authorize",
+                token_endpoint="https://bitbucket.org/site/oauth2/access_token",
+                redirect_uri="http://localhost:8080/callback",
+                scopes=["repository", "account"],
+                scope_delimiter=" ",
+                auth_method="header",
+            )
+            
+            # Extract access token from response
+            access_token = token_response.get("access_token")
+            if not access_token:
+                raise Exception("No access_token found in OAuth response")
+            
+            config = BitbucketTokenConfig(token=access_token, base_url=BASE_URL)
+            print("✅ OAuth authentication successful")
+        except Exception as e:
+            print(f"❌ OAuth flow failed: {e}")
+            print("⚠️  Falling back to other authentication methods...")
+            # Continue to check other auth methods
+    
+    if config is None and TOKEN:
+        # Bearer Token authentication (second priority)
         print("ℹ️  Using Bearer Token authentication")
         config = BitbucketTokenConfig(token=TOKEN, base_url=BASE_URL)
-    elif USERNAME and PASSWORD:
+    elif config is None and USERNAME and PASSWORD:
+        # Basic Auth authentication (lowest priority)
         print("ℹ️  Using Basic Auth (Username/Password) authentication")
         config = BitbucketBasicAuthConfig(
             username=USERNAME,
             password=PASSWORD,
             base_url=BASE_URL
         )
-    else:
-        print("⚠️  Please set BITBUCKET_USERNAME and BITBUCKET_PASSWORD (or BITBUCKET_TOKEN) environment variables.")
+    
+    if config is None:
+        print("⚠️  No valid authentication method found.")
+        print("   Please set one of the following:")
+        print("   - BITBUCKET_CLIENT_ID and BITBUCKET_CLIENT_SECRET (for OAuth2)")
+        print("   - BITBUCKET_TOKEN (for Bearer Token)")
+        print("   - BITBUCKET_USERNAME and BITBUCKET_PASSWORD (for Basic Auth)")
         return
 
     client = BitbucketClient.build_with_config(config)
