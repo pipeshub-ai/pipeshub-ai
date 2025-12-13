@@ -7,8 +7,10 @@ import asyncio
 import os
 import sys
 import time
+from typing import Tuple
 
 from arango import ArangoClient
+from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
@@ -23,6 +25,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, "../../../../"))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+
 NEXTCLOUD_CONFIG = {
     "base_url": "http://localhost:8080",
     "username": "NC_Admin",
@@ -34,7 +37,7 @@ NEXTCLOUD_CONFIG = {
 ORG_ID = "68d28814cdabcc98a3e02605"
 
 
-async def setup_services():
+async def setup_services() -> Tuple[Logger, InMemoryKeyValueStore, ConfigurationService, BaseArangoService, ArangoDataStore]:
     """Initialize all required services"""
     logger = create_logger("nextcloud_connector")
 
@@ -54,7 +57,7 @@ async def setup_services():
     return logger, key_value_store, config_service, arango_service, data_store_provider
 
 
-async def create_test_users(arango_service, logger):
+async def create_test_users(arango_service: BaseArangoService, logger: Logger) -> None:
     """Create test organization and user in ArangoDB"""
     current_time = int(time.time())
 
@@ -89,7 +92,7 @@ async def create_test_users(arango_service, logger):
     logger.info(f"✅ Created test user: {user_email}")
 
 
-async def setup_nextcloud_config(key_value_store, logger):
+async def setup_nextcloud_config(key_value_store: InMemoryKeyValueStore, logger: Logger) -> None:
     """Setup Nextcloud configuration"""
     if NEXTCLOUD_CONFIG["use_token"] and NEXTCLOUD_CONFIG["token"]:
         logger.info("🔐 Using Bearer Token authentication")
@@ -119,7 +122,7 @@ async def setup_nextcloud_config(key_value_store, logger):
     logger.info("✅ Config stored at: /services/connectors/nextcloud/config")
 
 
-async def test_full_sync():
+async def test_full_sync() -> None:
     """Run full sync - let the connector framework handle app registration"""
     logger, key_value_store, config_service, arango_service, data_store_provider = await setup_services()
     connector = None
@@ -182,7 +185,7 @@ async def test_full_sync():
             await connector.cleanup()
 
 
-async def test_connection_only():
+async def test_connection_only() -> None:
     """Quick test to just verify connection to Nextcloud"""
     logger, key_value_store, config_service, arango_service, data_store_provider = await setup_services()
     connector = None

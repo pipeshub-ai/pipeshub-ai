@@ -58,7 +58,9 @@ from app.sources.external.nextcloud.nextcloud import NextcloudDataSource
 from app.utils.streaming import stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-
+NEXTCLOUD_PERM_MASK_ALL = 31
+HTTP_STATUS_OK = 200
+HTTP_STATUS_MULTIPLE_CHOICES = 300
 # Helper functions
 def get_parent_path_from_path(path: str) -> Optional[str]:
     """Extracts the parent path from a file/folder path."""
@@ -261,7 +263,7 @@ def parse_share_response(response_body: bytes) -> List[Dict]:
             if 'permissions' in share_item:
                 try:
                     perm_value = int(share_item['permissions'])
-                    if 0 <= perm_value <= 31:
+                    if 0 <= perm_value <= NEXTCLOUD_PERM_MASK_ALL:
                         share['permissions'] = perm_value
                     else:
                         share['permissions'] = 1
@@ -306,7 +308,7 @@ def nextcloud_permissions_to_permission_type(permissions: int) -> PermissionType
     - 16: SHARE
     - 31: ALL (typically OWNER/ADMIN)
     """
-    if permissions == 31:
+    if permissions == NEXTCLOUD_PERM_MASK_ALL:
         return PermissionType.OWNER
     elif permissions & 8 or permissions & 2:
         return PermissionType.WRITE
@@ -353,10 +355,10 @@ def is_response_successful(response) -> bool:
         return response.success
 
     if hasattr(response, 'status'):
-        return 200 <= response.status < 300
+        return HTTP_STATUS_OK <= response.status < HTTP_STATUS_MULTIPLE_CHOICES
 
     if hasattr(response, 'status_code'):
-        return 200 <= response.status_code < 300
+        return HTTP_STATUS_OK <= response.status_code < HTTP_STATUS_MULTIPLE_CHOICES
 
     return False
 
