@@ -4101,6 +4101,10 @@ class BaseArangoService:
                 extension = file_record.get("extension", "")
                 mime_type = file_record.get("mimeType", "")
 
+            # Fallback: check if mimeType is in the record itself (for WebpageRecord, CommentRecord, etc.)
+            if not mime_type and record.get("mimeType"):
+                mime_type = record.get("mimeType")
+
             endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
