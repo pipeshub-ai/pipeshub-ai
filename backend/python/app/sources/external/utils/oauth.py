@@ -73,7 +73,7 @@ class GenericOAuth2Client:
             Dictionary containing token response (access_token, refresh_token, etc.)
 
         Raises:
-            Exception: If token exchange fails
+            requests.exceptions.RequestException: If token exchange fails
         """
         data = {
             "grant_type": "authorization_code",
@@ -92,7 +92,7 @@ class GenericOAuth2Client:
             Dictionary containing new token response
 
         Raises:
-            Exception: If token refresh fails
+            requests.exceptions.RequestException: If token refresh fails
         """
         data = {
             "grant_type": "refresh_token",
@@ -110,7 +110,7 @@ class GenericOAuth2Client:
             JSON response from token endpoint
 
         Raises:
-            Exception: If token request fails
+            requests.exceptions.RequestException: If token request fails
         """
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
@@ -127,18 +127,36 @@ class GenericOAuth2Client:
             data["client_id"] = self.client_id
             data["client_secret"] = self.client_secret
 
-        response = requests.post(self.token_endpoint, data=data, headers=headers)
-
         try:
+            response = requests.post(self.token_endpoint, data=data, headers=headers)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as e:
-            raise Exception(f"Token Request Failed: {e}\nResponse: {response.text}")
+            # HTTPError means we got a response, so we can safely access response.text
+            error_msg = f"Token Request Failed: {e}"
+            if hasattr(e.response, 'text') and e.response.text:
+                error_msg += f"\nResponse: {e.response.text}"
+            raise requests.exceptions.HTTPError(error_msg) from e
+        except requests.exceptions.RequestException as e:
+            # Other RequestExceptions (ConnectionError, Timeout, etc.) don't have a response
+            raise requests.exceptions.RequestException(
+                f"Token Request Failed: {e}"
+            ) from e
 
 
 # --- 2. The Universal Callback Handler ---
-# Stores results in a simple shared container
-auth_result = {"code": None, "state": None, "error": None}
+
+class OAuthHTTPServer(HTTPServer):
+    """Custom HTTPServer that encapsulates OAuth callback state.
+    
+    This class stores the authentication result state, making it thread-safe
+    and allowing multiple concurrent OAuth flows without race conditions.
+    """
+    
+    def __init__(self, server_address, RequestHandlerClass):
+        super().__init__(server_address, RequestHandlerClass)
+        # Initialize state for this server instance
+        self.auth_result = {"code": None, "state": None, "error": None}
 
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
@@ -146,6 +164,8 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         """Handle GET requests from OAuth provider redirect."""
+        # Access state from the server instance
+        auth_result = self.server.auth_result
         query = parse_qs(urlparse(self.path).query)
 
         if "code" in query:
@@ -172,26 +192,20 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
 
 # --- 3. Utilities ---
 
-def start_server(port: int = 8080) -> HTTPServer:
+def start_server(port: int = 8080) -> OAuthHTTPServer:
     """Start a local HTTP server to handle OAuth callbacks.
 
     Args:
         port: Port number for the local server (default: 8080)
 
     Returns:
-        HTTPServer instance
+        OAuthHTTPServer instance with encapsulated auth state
     """
-    server = HTTPServer(("localhost", port), OAuthCallbackHandler)
+    server = OAuthHTTPServer(("localhost", port), OAuthCallbackHandler)
     thread = threading.Thread(target=server.handle_request)
     thread.daemon = True
     thread.start()
     return server
-
-
-def reset_auth_result():
-    """Reset the shared auth_result dictionary for a new OAuth flow."""
-    auth_result.clear()
-    auth_result.update({"code": None, "state": None, "error": None})
 
 
 def perform_oauth_flow(
@@ -232,11 +246,10 @@ def perform_oauth_flow(
         Dictionary containing token response from OAuth provider
 
     Raises:
-        Exception: If OAuth flow fails or times out
+        ValueError: If authorization fails or state mismatch occurs
+        TimeoutError: If callback is not received within timeout period
+        requests.exceptions.RequestException: If token exchange fails
     """
-    # Reset auth result for new flow
-    reset_auth_result()
-
     # Initialize client
     client = GenericOAuth2Client(
         client_id=client_id,
@@ -252,37 +265,41 @@ def perform_oauth_flow(
     state = secrets.token_urlsafe(32)
 
     # Start server & open browser
-    start_server(port)
+    # Each server instance has its own isolated auth_result state
+    server = start_server(port)
     auth_url = client.get_authorization_url(state=state, scopes=scopes)
 
     print(f"Opening Browser: {auth_url}")
     webbrowser.open(auth_url)
 
     # Wait for callback
+    # Access state from the server instance (thread-safe)
     print("Waiting for callback...")
     for _ in range(timeout * 2):  # Check every 0.5 seconds
-        if auth_result["code"] or auth_result["error"]:
+        if server.auth_result["code"] or server.auth_result["error"]:
             break
         time.sleep(0.5)
 
     # Verify & Exchange
-    if auth_result["error"]:
-        raise Exception(f"Authorization Failed: {auth_result['error']}")
-    elif not auth_result["code"]:
-        raise Exception("Timeout: No callback received within the timeout period.")
-    elif auth_result["state"] != state:
+    if server.auth_result["error"]:
+        raise ValueError(f"Authorization Failed: {server.auth_result['error']}")
+    elif not server.auth_result["code"]:
+        raise TimeoutError("Timeout: No callback received within the timeout period.")
+    elif server.auth_result["state"] != state:
         # CRITICAL SECURITY CHECK
-        raise Exception(
-            f"SECURITY ALERT: State mismatch! Expected {state}, got {auth_result['state']}"
+        raise ValueError(
+            f"SECURITY ALERT: State mismatch! Expected {state}, got {server.auth_result['state']}"
         )
     else:
         print("✅ Authorization Code Received. Exchanging for Token...")
         try:
-            token_response = client.exchange_code_for_token(code=auth_result["code"])
+            token_response = client.exchange_code_for_token(code=server.auth_result["code"])
             print("🎉 SUCCESS! Token obtained.")
             return token_response
-        except Exception as e:
-            raise Exception(f"Token Exchange Failed: {e}")
+        except requests.exceptions.RequestException as e:
+            raise requests.exceptions.RequestException(
+                f"Token Exchange Failed: {e}"
+            ) from e
 
 
 # --- 4. Main Execution (Configuration & Logic) ---
@@ -337,7 +354,6 @@ def main():
         )
 
         print("\n🎉 SUCCESS! Token Response:")
-        print(token_response)
         print("\n💡 You can now use the 'access_token' from the response above.")
     except Exception as e:
         print(f"❌ OAuth Flow Failed: {e}")

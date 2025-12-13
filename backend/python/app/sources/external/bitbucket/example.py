@@ -40,7 +40,7 @@ from app.sources.external.bitbucket.bitbucket import (
     BitbucketDataSource,
     BitbucketResponse,
 )
-from app.sources.external.oauth import perform_oauth_flow
+from app.sources.external.utils.oauth import perform_oauth_flow
 
 # --- Configuration ---
 # OAuth2 credentials (highest priority)
