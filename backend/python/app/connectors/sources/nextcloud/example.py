@@ -7,10 +7,10 @@ import asyncio
 import os
 import sys
 import time
+from logging import Logger
 from typing import Tuple
 
 from arango import ArangoClient
-from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
