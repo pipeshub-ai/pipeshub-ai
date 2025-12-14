@@ -67,7 +67,7 @@ class AppGroups(Enum):
     SERVICENOW = "Servicenow"
     WEB = "Web"
     BOOKSTACK = "BookStack"
-    NEXTCLOUD = "NEXTCLOUD"
+    NEXTCLOUD = "Nextcloud"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
