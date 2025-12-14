@@ -1,17 +1,18 @@
 """
 AUTO-GENERATED ZOOM DATASOURCE — DO NOT MODIFY MANUALLY
 """
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
+
 from backend.python.app.sources.client.iclient import IClient
 
 
 class ZoomDataSource:
-    def __init__(self, client: IClient, base_url: str = "https://api.zoom.us/v2"):
+    def __init__(self, client: IClient, base_url: str = "https://api.zoom.us/v2") -> None:
         self._rest = client
         self._base_url = base_url.rstrip("/")
 
 
-    async def get_account_lock_settings(self, accountId: Optional[Any] = None, option: Optional[Any] = None, custom_query_fields: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_account_lock_settings(self, accountId: Optional[object] = None, option: Optional[object] = None, custom_query_fields: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getAccountLockSettings
         method: GET
@@ -27,7 +28,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_locked_settings(self, accountId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_locked_settings(self, accountId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateLockedSettings
         method: PATCH
@@ -44,7 +45,7 @@ class ZoomDataSource:
         )
 
 
-    async def account_managed_domain(self, accountId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def account_managed_domain(self, accountId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: accountManagedDomain
         method: GET
@@ -60,7 +61,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_the_account_owner(self, accountId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_the_account_owner(self, accountId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateTheAccountOwner
         method: PUT
@@ -77,7 +78,7 @@ class ZoomDataSource:
         )
 
 
-    async def account_settings(self, accountId: Optional[Any] = None, option: Optional[Any] = None, custom_query_fields: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def account_settings(self, accountId: Optional[object] = None, option: Optional[object] = None, custom_query_fields: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: accountSettings
         method: GET
@@ -93,7 +94,7 @@ class ZoomDataSource:
         )
 
 
-    async def account_settings_update(self, accountId: Optional[Any] = None, option: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def account_settings_update(self, accountId: Optional[object] = None, option: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: accountSettingsUpdate
         method: PATCH
@@ -110,7 +111,7 @@ class ZoomDataSource:
         )
 
 
-    async def account_settings_registration(self, accountId: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def account_settings_registration(self, accountId: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: accountSettingsRegistration
         method: GET
@@ -126,7 +127,7 @@ class ZoomDataSource:
         )
 
 
-    async def account_settings_registration_update(self, accountId: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def account_settings_registration_update(self, accountId: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: accountSettingsRegistrationUpdate
         method: PATCH
@@ -143,7 +144,7 @@ class ZoomDataSource:
         )
 
 
-    async def upload_vb(self, accountId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def upload_vb(self, accountId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: uploadVB
         method: POST
@@ -160,7 +161,7 @@ class ZoomDataSource:
         )
 
 
-    async def del_vb(self, accountId: Optional[Any] = None, file_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def del_vb(self, accountId: Optional[object] = None, file_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delVB
         method: DELETE
@@ -176,7 +177,7 @@ class ZoomDataSource:
         )
 
 
-    async def account_trusted_domain(self, accountId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def account_trusted_domain(self, accountId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: accountTrustedDomain
         method: GET
@@ -192,7 +193,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_chat(self, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_chat(self, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardChat
         method: GET
@@ -208,7 +209,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_client_feedback(self, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_client_feedback(self, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardClientFeedback
         method: GET
@@ -224,7 +225,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_client_feedback_detail(self, feedbackId: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_client_feedback_detail(self, feedbackId: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardClientFeedbackDetail
         method: GET
@@ -240,7 +241,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_meeting_satisfaction(self, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_meeting_satisfaction(self, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listMeetingSatisfaction
         method: GET
@@ -256,7 +257,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_client_versions(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_client_versions(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getClientVersions
         method: GET
@@ -272,7 +273,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_crc(self, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_crc(self, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardCRC
         method: GET
@@ -288,7 +289,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_issue_zoom_room(self, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_issue_zoom_room(self, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardIssueZoomRoom
         method: GET
@@ -304,7 +305,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_issue_detail_zoom_room(self, zoomroomId: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_issue_detail_zoom_room(self, zoomroomId: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardIssueDetailZoomRoom
         method: GET
@@ -320,7 +321,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_meetings(self, type_: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, group_id: Optional[Any] = None, group_include_participant: Optional[Any] = None, include_fields: Optional[Any] = None, query_date_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_meetings(self, type_: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, group_id: Optional[object] = None, group_include_participant: Optional[object] = None, include_fields: Optional[object] = None, query_date_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardMeetings
         method: GET
@@ -336,7 +337,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_meeting_detail(self, meetingId: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_meeting_detail(self, meetingId: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardMeetingDetail
         method: GET
@@ -352,7 +353,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_meeting_participants(self, meetingId: Optional[Any] = None, type_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, include_fields: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_meeting_participants(self, meetingId: Optional[object] = None, type_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, include_fields: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardMeetingParticipants
         method: GET
@@ -368,7 +369,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_meeting_participants_qos(self, meetingId: Optional[Any] = None, type_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_meeting_participants_qos(self, meetingId: Optional[object] = None, type_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardMeetingParticipantsQOS
         method: GET
@@ -384,7 +385,7 @@ class ZoomDataSource:
         )
 
 
-    async def participant_feedback(self, meetingId: Optional[Any] = None, type_: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def participant_feedback(self, meetingId: Optional[object] = None, type_: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: participantFeedback
         method: GET
@@ -400,7 +401,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_meeting_participant_share(self, meetingId: Optional[Any] = None, type_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_meeting_participant_share(self, meetingId: Optional[object] = None, type_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardMeetingParticipantShare
         method: GET
@@ -416,7 +417,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_meeting_participant_qos(self, meetingId: Optional[Any] = None, participantId: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_meeting_participant_qos(self, meetingId: Optional[object] = None, participantId: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardMeetingParticipantQOS
         method: GET
@@ -432,7 +433,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_quality(self, from_: Optional[Any] = None, to: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_quality(self, from_: Optional[object] = None, to: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardQuality
         method: GET
@@ -448,7 +449,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_webinars(self, type_: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, group_id: Optional[Any] = None, group_include_participant: Optional[Any] = None, query_date_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_webinars(self, type_: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, group_id: Optional[object] = None, group_include_participant: Optional[object] = None, query_date_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardWebinars
         method: GET
@@ -464,7 +465,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_webinar_detail(self, webinarId: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_webinar_detail(self, webinarId: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardWebinarDetail
         method: GET
@@ -480,7 +481,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_webinar_participants(self, webinarId: Optional[Any] = None, type_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, include_fields: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_webinar_participants(self, webinarId: Optional[object] = None, type_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, include_fields: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardWebinarParticipants
         method: GET
@@ -496,7 +497,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_webinar_participants_qos(self, webinarId: Optional[Any] = None, type_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_webinar_participants_qos(self, webinarId: Optional[object] = None, type_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardWebinarParticipantsQOS
         method: GET
@@ -512,7 +513,7 @@ class ZoomDataSource:
         )
 
 
-    async def participant_webinar_feedback(self, type_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def participant_webinar_feedback(self, type_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: participantWebinarFeedback
         method: GET
@@ -528,7 +529,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_webinar_participant_share(self, webinarId: Optional[Any] = None, type_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_webinar_participant_share(self, webinarId: Optional[object] = None, type_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardWebinarParticipantShare
         method: GET
@@ -544,7 +545,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_webinar_participant_qos(self, webinarId: Optional[Any] = None, participantId: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_webinar_participant_qos(self, webinarId: Optional[object] = None, participantId: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardWebinarParticipantQOS
         method: GET
@@ -560,7 +561,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_zoom_rooms(self, page_size: Optional[Any] = None, page_number: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_zoom_rooms(self, page_size: Optional[object] = None, page_number: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardZoomRooms
         method: GET
@@ -576,7 +577,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_zoom_room_issue(self, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_zoom_room_issue(self, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardZoomRoomIssue
         method: GET
@@ -592,7 +593,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_zoom_room(self, zoomroomId: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_zoom_room(self, zoomroomId: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardZoomRoom
         method: GET
@@ -608,7 +609,7 @@ class ZoomDataSource:
         )
 
 
-    async def downloadfilesfrom_data_request(self, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def downloadfilesfrom_data_request(self, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DownloadfilesfromDataRequest
         method: GET
@@ -624,7 +625,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_data_requests_history(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_data_requests_history(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetDataRequestsHistory
         method: GET
@@ -640,7 +641,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_data_access_request(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_data_access_request(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: CreateDataAccessRequest
         method: POST
@@ -657,12 +658,12 @@ class ZoomDataSource:
         )
 
 
-    async def get_downloadable_filesfor_data_request(self, requestId: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_downloadable_filesfor_data_request(self, requestId: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetDownloadableFilesforDataRequest
         method: GET
         path: /data_requests/requests/{requestId}
-        summary: List downloadable files for export data request 
+        summary: List downloadable files for export data request
         """
         endpoint = f"{self._base_url}/data_requests/requests/{requestId}"
         params = { 'requestId': requestId, 'next_page_token': next_page_token, 'page_size': page_size }
@@ -673,7 +674,7 @@ class ZoomDataSource:
         )
 
 
-    async def cancel_data_request(self, requestId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def cancel_data_request(self, requestId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: CancelDataRequest
         method: DELETE
@@ -689,7 +690,7 @@ class ZoomDataSource:
         )
 
 
-    async def information_barriers_list(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def information_barriers_list(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: InformationBarriersList
         method: GET
@@ -705,7 +706,7 @@ class ZoomDataSource:
         )
 
 
-    async def information_barriers_create(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def information_barriers_create(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: InformationBarriersCreate
         method: POST
@@ -722,7 +723,7 @@ class ZoomDataSource:
         )
 
 
-    async def information_barriers_get(self, policyId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def information_barriers_get(self, policyId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: InformationBarriersGet
         method: GET
@@ -738,7 +739,7 @@ class ZoomDataSource:
         )
 
 
-    async def information_barriers_delete(self, policyId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def information_barriers_delete(self, policyId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: InformationBarriersDelete
         method: DELETE
@@ -754,7 +755,7 @@ class ZoomDataSource:
         )
 
 
-    async def information_barriers_update(self, policyId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def information_barriers_update(self, policyId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: InformationBarriersUpdate
         method: PATCH
@@ -771,7 +772,7 @@ class ZoomDataSource:
         )
 
 
-    async def roles(self, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def roles(self, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: roles
         method: GET
@@ -787,7 +788,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_role(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_role(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createRole
         method: POST
@@ -804,7 +805,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_role_information(self, roleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_role_information(self, roleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getRoleInformation
         method: GET
@@ -820,7 +821,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_role(self, roleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_role(self, roleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteRole
         method: DELETE
@@ -836,7 +837,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_role(self, roleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_role(self, roleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateRole
         method: PATCH
@@ -853,7 +854,7 @@ class ZoomDataSource:
         )
 
 
-    async def role_members(self, roleId: Optional[Any] = None, page_count: Optional[Any] = None, page_number: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def role_members(self, roleId: Optional[object] = None, page_count: Optional[object] = None, page_number: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: roleMembers
         method: GET
@@ -869,7 +870,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_role_members(self, roleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_role_members(self, roleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddRoleMembers
         method: POST
@@ -886,7 +887,7 @@ class ZoomDataSource:
         )
 
 
-    async def role_member_delete(self, roleId: Optional[Any] = None, memberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def role_member_delete(self, roleId: Optional[object] = None, memberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: roleMemberDelete
         method: DELETE
@@ -902,7 +903,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_account_surveys(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_account_surveys(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getAccountSurveys
         method: GET
@@ -918,7 +919,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_survey_info(self, surveyId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_survey_info(self, surveyId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getSurveyInfo
         method: GET
@@ -934,7 +935,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_survey_answers(self, surveyId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, instance_id: Optional[Any] = None, submit_time_start: Optional[Any] = None, submit_time_end: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_survey_answers(self, surveyId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, instance_id: Optional[object] = None, submit_time_start: Optional[object] = None, submit_time_end: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getSurveyAnswers
         method: GET
@@ -950,7 +951,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_survey_instances_info(self, surveyId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, instance_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_survey_instances_info(self, surveyId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, instance_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getSurveyInstancesInfo
         method: GET
@@ -966,7 +967,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_ai_cconversationarchives(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_ai_cconversationarchives(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetAICconversationarchives
         method: GET
@@ -982,7 +983,7 @@ class ZoomDataSource:
         )
 
 
-    async def listacl(self, calId: Optional[Any] = None, maxResults: Optional[Any] = None, showDeleted: Optional[Any] = None, pageToken: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def listacl(self, calId: Optional[object] = None, maxResults: Optional[object] = None, showDeleted: Optional[object] = None, pageToken: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Listacl
         method: GET
@@ -998,7 +999,7 @@ class ZoomDataSource:
         )
 
 
-    async def insertacl(self, calId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def insertacl(self, calId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Insertacl
         method: POST
@@ -1015,7 +1016,7 @@ class ZoomDataSource:
         )
 
 
-    async def getacl(self, calId: Optional[Any] = None, aclId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getacl(self, calId: Optional[object] = None, aclId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getacl
         method: GET
@@ -1031,7 +1032,7 @@ class ZoomDataSource:
         )
 
 
-    async def deleteacl(self, calId: Optional[Any] = None, aclId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deleteacl(self, calId: Optional[object] = None, aclId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deleteacl
         method: DELETE
@@ -1047,7 +1048,7 @@ class ZoomDataSource:
         )
 
 
-    async def patchacl(self, calId: Optional[Any] = None, aclId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def patchacl(self, calId: Optional[object] = None, aclId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Patchacl
         method: PATCH
@@ -1064,7 +1065,7 @@ class ZoomDataSource:
         )
 
 
-    async def listcalendar_list(self, userIdentifier: Optional[Any] = None, maxResults: Optional[Any] = None, minAccessRole: Optional[Any] = None, pageToken: Optional[Any] = None, showDeleted: Optional[Any] = None, showHidden: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def listcalendar_list(self, userIdentifier: Optional[object] = None, maxResults: Optional[object] = None, minAccessRole: Optional[object] = None, pageToken: Optional[object] = None, showDeleted: Optional[object] = None, showHidden: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListcalendarList
         method: GET
@@ -1080,7 +1081,7 @@ class ZoomDataSource:
         )
 
 
-    async def insertcalendar_list(self, userIdentifier: Optional[Any] = None, colorRgbFormat: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def insertcalendar_list(self, userIdentifier: Optional[object] = None, colorRgbFormat: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: InsertcalendarList
         method: POST
@@ -1097,7 +1098,7 @@ class ZoomDataSource:
         )
 
 
-    async def getcalendar_list(self, userIdentifier: Optional[Any] = None, calendarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getcalendar_list(self, userIdentifier: Optional[object] = None, calendarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetcalendarList
         method: GET
@@ -1113,7 +1114,7 @@ class ZoomDataSource:
         )
 
 
-    async def deletecalendar_list(self, userIdentifier: Optional[Any] = None, calendarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deletecalendar_list(self, userIdentifier: Optional[object] = None, calendarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeletecalendarList
         method: DELETE
@@ -1129,7 +1130,7 @@ class ZoomDataSource:
         )
 
 
-    async def patchcalendar_list(self, userIdentifier: Optional[Any] = None, calendarId: Optional[Any] = None, colorRgbFormat: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def patchcalendar_list(self, userIdentifier: Optional[object] = None, calendarId: Optional[object] = None, colorRgbFormat: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: PatchcalendarList
         method: PATCH
@@ -1146,7 +1147,7 @@ class ZoomDataSource:
         )
 
 
-    async def insertcalendar(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def insertcalendar(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Insertcalendar
         method: POST
@@ -1163,7 +1164,7 @@ class ZoomDataSource:
         )
 
 
-    async def getcalendar(self, calId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getcalendar(self, calId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getcalendar
         method: GET
@@ -1179,7 +1180,7 @@ class ZoomDataSource:
         )
 
 
-    async def deletecalendar(self, calId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deletecalendar(self, calId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deletecalendar
         method: DELETE
@@ -1195,7 +1196,7 @@ class ZoomDataSource:
         )
 
 
-    async def patchcalendar(self, calId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def patchcalendar(self, calId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Patchcalendar
         method: PATCH
@@ -1212,7 +1213,7 @@ class ZoomDataSource:
         )
 
 
-    async def getcolor(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getcolor(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getcolor
         method: GET
@@ -1228,7 +1229,7 @@ class ZoomDataSource:
         )
 
 
-    async def listevent(self, calId: Optional[Any] = None, maxResults: Optional[Any] = None, orderBy: Optional[Any] = None, showDeleted: Optional[Any] = None, singleEvents: Optional[Any] = None, pageToken: Optional[Any] = None, timeMax: Optional[Any] = None, timeMin: Optional[Any] = None, timeZone: Optional[Any] = None, syncToken: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def listevent(self, calId: Optional[object] = None, maxResults: Optional[object] = None, orderBy: Optional[object] = None, showDeleted: Optional[object] = None, singleEvents: Optional[object] = None, pageToken: Optional[object] = None, timeMax: Optional[object] = None, timeMin: Optional[object] = None, timeZone: Optional[object] = None, syncToken: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Listevent
         method: GET
@@ -1244,7 +1245,7 @@ class ZoomDataSource:
         )
 
 
-    async def insertevent(self, calId: Optional[Any] = None, sendUpdates: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def insertevent(self, calId: Optional[object] = None, sendUpdates: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Insertevent
         method: POST
@@ -1261,7 +1262,7 @@ class ZoomDataSource:
         )
 
 
-    async def importevent(self, calId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def importevent(self, calId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Importevent
         method: POST
@@ -1278,7 +1279,7 @@ class ZoomDataSource:
         )
 
 
-    async def quickaddevent(self, calId: Optional[Any] = None, text: Optional[Any] = None, sendUpdates: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def quickaddevent(self, calId: Optional[object] = None, text: Optional[object] = None, sendUpdates: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Quickaddevent
         method: POST
@@ -1295,7 +1296,7 @@ class ZoomDataSource:
         )
 
 
-    async def getevent(self, calId: Optional[Any] = None, eventId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getevent(self, calId: Optional[object] = None, eventId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getevent
         method: GET
@@ -1311,7 +1312,7 @@ class ZoomDataSource:
         )
 
 
-    async def deleteevent(self, calId: Optional[Any] = None, eventId: Optional[Any] = None, sendUpdates: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deleteevent(self, calId: Optional[object] = None, eventId: Optional[object] = None, sendUpdates: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deleteevent
         method: DELETE
@@ -1327,7 +1328,7 @@ class ZoomDataSource:
         )
 
 
-    async def patchevent(self, calId: Optional[Any] = None, eventId: Optional[Any] = None, sendUpdates: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def patchevent(self, calId: Optional[object] = None, eventId: Optional[object] = None, sendUpdates: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Patchevent
         method: PATCH
@@ -1344,7 +1345,7 @@ class ZoomDataSource:
         )
 
 
-    async def instanceevent(self, calId: Optional[Any] = None, eventId: Optional[Any] = None, maxResults: Optional[Any] = None, showDeleted: Optional[Any] = None, pageToken: Optional[Any] = None, timeMax: Optional[Any] = None, timeMin: Optional[Any] = None, timeZone: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def instanceevent(self, calId: Optional[object] = None, eventId: Optional[object] = None, maxResults: Optional[object] = None, showDeleted: Optional[object] = None, pageToken: Optional[object] = None, timeMax: Optional[object] = None, timeMin: Optional[object] = None, timeZone: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Instanceevent
         method: GET
@@ -1360,7 +1361,7 @@ class ZoomDataSource:
         )
 
 
-    async def moveevent(self, calId: Optional[Any] = None, eventId: Optional[Any] = None, destination: Optional[Any] = None, sendUpdates: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def moveevent(self, calId: Optional[object] = None, eventId: Optional[object] = None, destination: Optional[object] = None, sendUpdates: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Moveevent
         method: POST
@@ -1376,7 +1377,7 @@ class ZoomDataSource:
         )
 
 
-    async def queryfreebusy(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def queryfreebusy(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Queryfreebusy
         method: POST
@@ -1393,7 +1394,7 @@ class ZoomDataSource:
         )
 
 
-    async def listsettings(self, userIdentifier: Optional[Any] = None, maxResults: Optional[Any] = None, pageToken: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def listsettings(self, userIdentifier: Optional[object] = None, maxResults: Optional[object] = None, pageToken: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Listsettings
         method: GET
@@ -1409,7 +1410,7 @@ class ZoomDataSource:
         )
 
 
-    async def getsetting(self, userIdentifier: Optional[Any] = None, settingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getsetting(self, userIdentifier: Optional[object] = None, settingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getsetting
         method: GET
@@ -1425,12 +1426,12 @@ class ZoomDataSource:
         )
 
 
-    async def patchsetting(self, userIdentifier: Optional[Any] = None, settingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def patchsetting(self, userIdentifier: Optional[object] = None, settingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Patchsetting
         method: PATCH
         path: /calendars/users/{userIdentifier}/settings/{settingId}
-        summary: Patch the specified user calendar settings of the authenticated user 
+        summary: Patch the specified user calendar settings of the authenticated user
         """
         endpoint = f"{self._base_url}/calendars/users/{userIdentifier}/settings/{settingId}"
         params = { 'userIdentifier': userIdentifier, 'settingId': settingId }
@@ -1442,7 +1443,7 @@ class ZoomDataSource:
         )
 
 
-    async def send_chatbot(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def send_chatbot(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: sendChatbot
         method: POST
@@ -1459,7 +1460,7 @@ class ZoomDataSource:
         )
 
 
-    async def edit_chatbot_message(self, message_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def edit_chatbot_message(self, message_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: editChatbotMessage
         method: PUT
@@ -1476,7 +1477,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_chatbot_message(self, message_id: Optional[Any] = None, account_id: Optional[Any] = None, user_jid: Optional[Any] = None, robot_jid: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_chatbot_message(self, message_id: Optional[object] = None, account_id: Optional[object] = None, user_jid: Optional[object] = None, robot_jid: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteAChatbotMessage
         method: DELETE
@@ -1492,7 +1493,7 @@ class ZoomDataSource:
         )
 
 
-    async def unfurling_link(self, userId: Optional[Any] = None, triggerId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unfurling_link(self, userId: Optional[object] = None, triggerId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unfurlingLink
         method: POST
@@ -1509,7 +1510,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_clip_collaborators(self, clipId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_clip_collaborators(self, clipId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetClipCollaborators
         method: GET
@@ -1525,7 +1526,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_collaborator(self, clipId: Optional[Any] = None, user_key: Optional[Any] = None, channel_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_collaborator(self, clipId: Optional[object] = None, user_key: Optional[object] = None, channel_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteCollaborator
         method: DELETE
@@ -1541,7 +1542,7 @@ class ZoomDataSource:
         )
 
 
-    async def listclipcomments(self, clipId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def listclipcomments(self, clipId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Listclipcomments
         method: GET
@@ -1557,7 +1558,7 @@ class ZoomDataSource:
         )
 
 
-    async def deleteacomment(self, clipId: Optional[Any] = None, commentId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deleteacomment(self, clipId: Optional[object] = None, commentId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deleteacomment
         method: DELETE
@@ -1573,7 +1574,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_clip_by_id(self, clipId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_clip_by_id(self, clipId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetClipById
         method: GET
@@ -1589,7 +1590,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_clip(self, clipId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_clip(self, clipId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteClip
         method: DELETE
@@ -1605,7 +1606,7 @@ class ZoomDataSource:
         )
 
 
-    async def transferclipsowner(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def transferclipsowner(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Transferclipsowner
         method: POST
@@ -1622,7 +1623,7 @@ class ZoomDataSource:
         )
 
 
-    async def transfertaskstatuscheck(self, taskId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def transfertaskstatuscheck(self, taskId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Transfertaskstatuscheck
         method: GET
@@ -1638,7 +1639,7 @@ class ZoomDataSource:
         )
 
 
-    async def upload_clip_file(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def upload_clip_file(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UploadClipFile
         method: POST
@@ -1655,7 +1656,7 @@ class ZoomDataSource:
         )
 
 
-    async def upload_iq_multipart_clip_file(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def upload_iq_multipart_clip_file(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UploadIqMultipartClipFile
         method: POST
@@ -1672,7 +1673,7 @@ class ZoomDataSource:
         )
 
 
-    async def initiate_and_complete_a_clip_multipart_upload(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def initiate_and_complete_a_clip_multipart_upload(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: InitiateAndCompleteAClipMultipartUpload.
         method: POST
@@ -1689,7 +1690,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user_clips(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, user_id: Optional[Any] = None, search_key: Optional[Any] = None, date_filter_type: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user_clips(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, user_id: Optional[object] = None, search_key: Optional[object] = None, date_filter_type: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetUserClips
         method: GET
@@ -1705,7 +1706,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_cisco_polycom_room_account_setting(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_cisco_polycom_room_account_setting(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCiscoPolycomRoomAccountSetting
         method: GET
@@ -1721,7 +1722,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_cisco_polycom_room_account_setting(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_cisco_polycom_room_account_setting(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateCiscoPolycomRoomAccountSetting
         method: PATCH
@@ -1738,7 +1739,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_list_api_connectors(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_list_api_connectors(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetListAPIConnectors
         method: GET
@@ -1754,7 +1755,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_api_connector(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_api_connector(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: CreateAPIConnector
         method: POST
@@ -1771,7 +1772,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_api_connector(self, connectorId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_api_connector(self, connectorId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetAPIConnector
         method: GET
@@ -1787,7 +1788,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_api_connector(self, connectorId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_api_connector(self, connectorId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteAPIConnector
         method: DELETE
@@ -1803,7 +1804,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_api_connector(self, connectorId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_api_connector(self, connectorId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAPIConnector
         method: PATCH
@@ -1820,7 +1821,7 @@ class ZoomDataSource:
         )
 
 
-    async def getan_api_connector_sprivatekey(self, connectorId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getan_api_connector_sprivatekey(self, connectorId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetanAPIConnector'sprivatekey
         method: GET
@@ -1836,7 +1837,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_api_connector_private_key(self, connectorId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_api_connector_private_key(self, connectorId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAPIConnectorPrivateKey
         method: PATCH
@@ -1852,7 +1853,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_managed_rooms(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_managed_rooms(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListManagedRooms
         method: GET
@@ -1868,7 +1869,7 @@ class ZoomDataSource:
         )
 
 
-    async def createa_managed_room(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def createa_managed_room(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: CreateaManagedRoom
         method: POST
@@ -1885,7 +1886,7 @@ class ZoomDataSource:
         )
 
 
-    async def geta_managed_room(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def geta_managed_room(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetaManagedRoom
         method: GET
@@ -1901,7 +1902,7 @@ class ZoomDataSource:
         )
 
 
-    async def deleteamanagedroom(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deleteamanagedroom(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deleteamanagedroom
         method: DELETE
@@ -1917,7 +1918,7 @@ class ZoomDataSource:
         )
 
 
-    async def updatea_managed_room(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def updatea_managed_room(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateaManagedRoom
         method: PATCH
@@ -1934,7 +1935,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_participant_identifier_code(self, expires_in: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_participant_identifier_code(self, expires_in: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_participant_identifier_code
         method: GET
@@ -1950,7 +1951,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_room_templates(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_room_templates(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListRoomTemplates
         method: GET
@@ -1966,7 +1967,7 @@ class ZoomDataSource:
         )
 
 
-    async def createa_room_template(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def createa_room_template(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: CreateaRoomTemplate
         method: POST
@@ -1983,7 +1984,7 @@ class ZoomDataSource:
         )
 
 
-    async def geta_room_template(self, templateId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def geta_room_template(self, templateId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetaRoomTemplate
         method: GET
@@ -1999,7 +2000,7 @@ class ZoomDataSource:
         )
 
 
-    async def deletearoomtemplate(self, templateId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deletearoomtemplate(self, templateId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deletearoomtemplate
         method: DELETE
@@ -2015,7 +2016,7 @@ class ZoomDataSource:
         )
 
 
-    async def updatea_room_template(self, templateId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def updatea_room_template(self, templateId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateaRoomTemplate
         method: PATCH
@@ -2032,7 +2033,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_draft_emails(self, email: Optional[Any] = None, includeSpamTrash: Optional[Any] = None, maxResults: Optional[Any] = None, pageToken: Optional[Any] = None, q: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_draft_emails(self, email: Optional[object] = None, includeSpamTrash: Optional[object] = None, maxResults: Optional[object] = None, pageToken: Optional[object] = None, q: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: list_draft_emails
         method: GET
@@ -2048,7 +2049,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_draft_email(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_draft_email(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: create_draft_email
         method: POST
@@ -2065,7 +2066,7 @@ class ZoomDataSource:
         )
 
 
-    async def send_draft_email(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def send_draft_email(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: send_draft_email
         method: POST
@@ -2082,7 +2083,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_draft_email(self, email: Optional[Any] = None, draftId: Optional[Any] = None, format: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_draft_email(self, email: Optional[object] = None, draftId: Optional[object] = None, format: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_draft_email
         method: GET
@@ -2098,7 +2099,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_draft_email(self, email: Optional[Any] = None, draftId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_draft_email(self, email: Optional[object] = None, draftId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: update_draft_email
         method: PUT
@@ -2115,7 +2116,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_draft_email(self, email: Optional[Any] = None, draftId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_draft_email(self, email: Optional[object] = None, draftId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delete_draft_email
         method: DELETE
@@ -2131,7 +2132,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_mailbox_history(self, email: Optional[Any] = None, maxResults: Optional[Any] = None, pageToken: Optional[Any] = None, startHistoryId: Optional[Any] = None, historyTypes: Optional[Any] = None, excludeHistoryTypes: Optional[Any] = None, labelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_mailbox_history(self, email: Optional[object] = None, maxResults: Optional[object] = None, pageToken: Optional[object] = None, startHistoryId: Optional[object] = None, historyTypes: Optional[object] = None, excludeHistoryTypes: Optional[object] = None, labelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: list_mailbox_history
         method: GET
@@ -2147,7 +2148,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_labels_in_mailbox(self, email: Optional[Any] = None, format: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_labels_in_mailbox(self, email: Optional[object] = None, format: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: list_labels_in_mailbox
         method: GET
@@ -2163,7 +2164,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_label_in_mailbox(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_label_in_mailbox(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: create_label_in_mailbox
         method: POST
@@ -2180,7 +2181,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_label_in_mailbox(self, email: Optional[Any] = None, labelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_label_in_mailbox(self, email: Optional[object] = None, labelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_label_in_mailbox
         method: GET
@@ -2196,7 +2197,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_label_in_mailbox(self, email: Optional[Any] = None, labelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_label_in_mailbox(self, email: Optional[object] = None, labelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: update_label_in_mailbox
         method: PUT
@@ -2213,7 +2214,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_label_from_mailbox(self, email: Optional[Any] = None, labelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_label_from_mailbox(self, email: Optional[object] = None, labelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delete_label_from_mailbox
         method: DELETE
@@ -2229,7 +2230,7 @@ class ZoomDataSource:
         )
 
 
-    async def patch_label_in_mailbox(self, email: Optional[Any] = None, labelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def patch_label_in_mailbox(self, email: Optional[object] = None, labelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: patch_label_in_mailbox
         method: PATCH
@@ -2246,7 +2247,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_mailbox_profile(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_mailbox_profile(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_mailbox_profile
         method: GET
@@ -2262,7 +2263,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_emails(self, email: Optional[Any] = None, maxResults: Optional[Any] = None, pageToken: Optional[Any] = None, labelIds: Optional[Any] = None, q: Optional[Any] = None, includeSpamTrash: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_emails(self, email: Optional[object] = None, maxResults: Optional[object] = None, pageToken: Optional[object] = None, labelIds: Optional[object] = None, q: Optional[object] = None, includeSpamTrash: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: list_emails
         method: GET
@@ -2278,7 +2279,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_email(self, email: Optional[Any] = None, deleted: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_email(self, email: Optional[object] = None, deleted: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: create_email
         method: POST
@@ -2295,7 +2296,7 @@ class ZoomDataSource:
         )
 
 
-    async def batch_delete_emails(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def batch_delete_emails(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: batch_delete_emails
         method: POST
@@ -2312,7 +2313,7 @@ class ZoomDataSource:
         )
 
 
-    async def batch_modify_emails(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def batch_modify_emails(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: batch_modify_emails
         method: POST
@@ -2329,7 +2330,7 @@ class ZoomDataSource:
         )
 
 
-    async def send_email(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def send_email(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: send_email
         method: POST
@@ -2346,7 +2347,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_email(self, email: Optional[Any] = None, messageId: Optional[Any] = None, format: Optional[Any] = None, metadataHeaders: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_email(self, email: Optional[object] = None, messageId: Optional[object] = None, format: Optional[object] = None, metadataHeaders: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_email
         method: GET
@@ -2362,7 +2363,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_email(self, email: Optional[Any] = None, messageId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_email(self, email: Optional[object] = None, messageId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delete_email
         method: DELETE
@@ -2378,7 +2379,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_email(self, email: Optional[Any] = None, messageId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_email(self, email: Optional[object] = None, messageId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: update_email
         method: POST
@@ -2395,7 +2396,7 @@ class ZoomDataSource:
         )
 
 
-    async def trash_email(self, email: Optional[Any] = None, messageId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def trash_email(self, email: Optional[object] = None, messageId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: trash_email
         method: POST
@@ -2411,7 +2412,7 @@ class ZoomDataSource:
         )
 
 
-    async def untrash_email(self, email: Optional[Any] = None, messageId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def untrash_email(self, email: Optional[object] = None, messageId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: untrash_email
         method: POST
@@ -2427,7 +2428,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_email_attachment(self, email: Optional[Any] = None, messageId: Optional[Any] = None, attachmentId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_email_attachment(self, email: Optional[object] = None, messageId: Optional[object] = None, attachmentId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_email_attachment
         method: GET
@@ -2443,7 +2444,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_mail_vacation_response_setting(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_mail_vacation_response_setting(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_mail_vacation_response_setting
         method: GET
@@ -2459,7 +2460,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_mailbox_vacation_response_setting(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_mailbox_vacation_response_setting(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: update_mailbox_vacation_response_setting
         method: PUT
@@ -2476,7 +2477,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_mailbox_delegates(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_mailbox_delegates(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: list_mailbox_delegates
         method: GET
@@ -2492,7 +2493,7 @@ class ZoomDataSource:
         )
 
 
-    async def grant_mailbox_delegate(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def grant_mailbox_delegate(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: grant_mailbox_delegate
         method: POST
@@ -2509,7 +2510,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_mailbox_delegate(self, email: Optional[Any] = None, delegateEmail: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_mailbox_delegate(self, email: Optional[object] = None, delegateEmail: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_mailbox_delegate
         method: GET
@@ -2525,7 +2526,7 @@ class ZoomDataSource:
         )
 
 
-    async def revoke_mailbox_delegate(self, email: Optional[Any] = None, delegateEmail: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def revoke_mailbox_delegate(self, email: Optional[object] = None, delegateEmail: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: revoke_mailbox_delegate
         method: DELETE
@@ -2541,7 +2542,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_email_filters(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_email_filters(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: list_email_filters
         method: GET
@@ -2557,7 +2558,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_email_filter(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_email_filter(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: create_email_filter
         method: POST
@@ -2574,7 +2575,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_email_filter(self, email: Optional[Any] = None, filterId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_email_filter(self, email: Optional[object] = None, filterId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_email_filter
         method: GET
@@ -2590,7 +2591,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_email_filter(self, email: Optional[Any] = None, filterId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_email_filter(self, email: Optional[object] = None, filterId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delete_email_filter
         method: DELETE
@@ -2606,7 +2607,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_email_threads(self, email: Optional[Any] = None, includeSpamTrash: Optional[Any] = None, labelIds: Optional[Any] = None, maxResults: Optional[Any] = None, pageToken: Optional[Any] = None, q: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_email_threads(self, email: Optional[object] = None, includeSpamTrash: Optional[object] = None, labelIds: Optional[object] = None, maxResults: Optional[object] = None, pageToken: Optional[object] = None, q: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: list_email_threads
         method: GET
@@ -2622,7 +2623,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_email_thread(self, email: Optional[Any] = None, threadId: Optional[Any] = None, format: Optional[Any] = None, metadataHeaders: Optional[Any] = None, maxResults: Optional[Any] = None, pageToken: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_email_thread(self, email: Optional[object] = None, threadId: Optional[object] = None, format: Optional[object] = None, metadataHeaders: Optional[object] = None, maxResults: Optional[object] = None, pageToken: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_email_thread
         method: GET
@@ -2638,7 +2639,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_email_thread(self, email: Optional[Any] = None, threadId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_email_thread(self, email: Optional[object] = None, threadId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delete_email_thread
         method: DELETE
@@ -2654,7 +2655,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_email_thread(self, email: Optional[Any] = None, threadId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_email_thread(self, email: Optional[object] = None, threadId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: update_email_thread
         method: POST
@@ -2671,7 +2672,7 @@ class ZoomDataSource:
         )
 
 
-    async def trash_email_thread(self, email: Optional[Any] = None, threadId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def trash_email_thread(self, email: Optional[object] = None, threadId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: trash_email_thread
         method: POST
@@ -2687,7 +2688,7 @@ class ZoomDataSource:
         )
 
 
-    async def untrash_email_thread(self, email: Optional[Any] = None, threadId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def untrash_email_thread(self, email: Optional[object] = None, threadId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: untrash_email_thread
         method: POST
@@ -2703,7 +2704,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_archived_files(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, query_date_type: Optional[Any] = None, group_id: Optional[Any] = None, group_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_archived_files(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, query_date_type: Optional[object] = None, group_id: Optional[object] = None, group_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listArchivedFiles
         method: GET
@@ -2719,7 +2720,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_archived_file_statistics(self, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_archived_file_statistics(self, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getArchivedFileStatistics
         method: GET
@@ -2735,7 +2736,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_archived_file(self, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_archived_file(self, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateArchivedFile
         method: PATCH
@@ -2752,7 +2753,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_archived_files(self, meetingUUID: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_archived_files(self, meetingUUID: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getArchivedFiles
         method: GET
@@ -2768,7 +2769,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_archived_files(self, meetingUUID: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_archived_files(self, meetingUUID: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteArchivedFiles
         method: DELETE
@@ -2784,7 +2785,7 @@ class ZoomDataSource:
         )
 
 
-    async def recording_get(self, meetingId: Optional[Any] = None, include_fields: Optional[Any] = None, ttl: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def recording_get(self, meetingId: Optional[object] = None, include_fields: Optional[object] = None, ttl: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: recordingGet
         method: GET
@@ -2800,7 +2801,7 @@ class ZoomDataSource:
         )
 
 
-    async def recording_delete(self, meetingId: Optional[Any] = None, action: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def recording_delete(self, meetingId: Optional[object] = None, action: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: recordingDelete
         method: DELETE
@@ -2816,7 +2817,7 @@ class ZoomDataSource:
         )
 
 
-    async def analytics_details(self, meetingId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def analytics_details(self, meetingId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: analytics_details
         method: GET
@@ -2832,7 +2833,7 @@ class ZoomDataSource:
         )
 
 
-    async def analytics_summary(self, meetingId: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def analytics_summary(self, meetingId: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: analytics_summary
         method: GET
@@ -2848,7 +2849,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_recording_registrants(self, meetingId: Optional[Any] = None, status: Optional[Any] = None, page_size: Optional[Any] = None, page_number: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_recording_registrants(self, meetingId: Optional[object] = None, status: Optional[object] = None, page_size: Optional[object] = None, page_number: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingRecordingRegistrants
         method: GET
@@ -2864,7 +2865,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_recording_registrant_create(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_recording_registrant_create(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingRecordingRegistrantCreate
         method: POST
@@ -2881,7 +2882,7 @@ class ZoomDataSource:
         )
 
 
-    async def recording_registrants_questions_get(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def recording_registrants_questions_get(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: recordingRegistrantsQuestionsGet
         method: GET
@@ -2897,7 +2898,7 @@ class ZoomDataSource:
         )
 
 
-    async def recording_registrant_question_update(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def recording_registrant_question_update(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: recordingRegistrantQuestionUpdate
         method: PATCH
@@ -2914,7 +2915,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_recording_registrant_status(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_recording_registrant_status(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingRecordingRegistrantStatus
         method: PUT
@@ -2931,7 +2932,7 @@ class ZoomDataSource:
         )
 
 
-    async def recording_setting_update(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def recording_setting_update(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: recordingSettingUpdate
         method: GET
@@ -2947,7 +2948,7 @@ class ZoomDataSource:
         )
 
 
-    async def recording_settings_update(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def recording_settings_update(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: recordingSettingsUpdate
         method: PATCH
@@ -2964,7 +2965,7 @@ class ZoomDataSource:
         )
 
 
-    async def recording_delete_one(self, meetingId: Optional[Any] = None, recordingId: Optional[Any] = None, action: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def recording_delete_one(self, meetingId: Optional[object] = None, recordingId: Optional[object] = None, action: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: recordingDeleteOne
         method: DELETE
@@ -2980,7 +2981,7 @@ class ZoomDataSource:
         )
 
 
-    async def recording_status_update_one(self, meetingId: Optional[Any] = None, recordingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def recording_status_update_one(self, meetingId: Optional[object] = None, recordingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: recordingStatusUpdateOne
         method: PUT
@@ -2997,7 +2998,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_meeting_transcript(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_meeting_transcript(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetMeetingTranscript
         method: GET
@@ -3013,7 +3014,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_meeting_transcript(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_meeting_transcript(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteMeetingTranscript
         method: DELETE
@@ -3029,7 +3030,7 @@ class ZoomDataSource:
         )
 
 
-    async def recording_status_update(self, meetingUUID: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def recording_status_update(self, meetingUUID: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: recordingStatusUpdate
         method: PUT
@@ -3046,7 +3047,7 @@ class ZoomDataSource:
         )
 
 
-    async def recordings_list(self, userId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, mc: Optional[Any] = None, trash: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, trash_type: Optional[Any] = None, meeting_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def recordings_list(self, userId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, mc: Optional[object] = None, trash: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, trash_type: Optional[object] = None, meeting_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: recordingsList
         method: GET
@@ -3062,7 +3063,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_devices(self, search_text: Optional[Any] = None, platform_os: Optional[Any] = None, is_enrolled_in_zdm: Optional[Any] = None, device_type: Optional[Any] = None, device_vendor: Optional[Any] = None, device_model: Optional[Any] = None, device_status: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_devices(self, search_text: Optional[object] = None, platform_os: Optional[object] = None, is_enrolled_in_zdm: Optional[object] = None, device_type: Optional[object] = None, device_vendor: Optional[object] = None, device_model: Optional[object] = None, device_status: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listDevices
         method: GET
@@ -3078,7 +3079,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_device(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_device(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addDevice
         method: POST
@@ -3095,7 +3096,7 @@ class ZoomDataSource:
         )
 
 
-    async def getzdmgroupinfo(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getzdmgroupinfo(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getzdmgroupinfo
         method: GET
@@ -3111,7 +3112,7 @@ class ZoomDataSource:
         )
 
 
-    async def assigndevicetoauser_commonarea(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assigndevicetoauser_commonarea(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Assigndevicetoauser/commonarea
         method: POST
@@ -3128,7 +3129,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zpa_device_list_profile_setting_ofa_user(self, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zpa_device_list_profile_setting_ofa_user(self, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetZpaDeviceListProfileSettingOfaUser
         method: GET
@@ -3144,7 +3145,7 @@ class ZoomDataSource:
         )
 
 
-    async def upgrade_zpas_app(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def upgrade_zpas_app(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpgradeZpas/app
         method: POST
@@ -3161,7 +3162,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_zpa_device_by_vendor_and_mac_address(self, vendor: Optional[Any] = None, macAddress: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_zpa_device_by_vendor_and_mac_address(self, vendor: Optional[object] = None, macAddress: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteZpaDeviceByVendorAndMacAddress
         method: DELETE
@@ -3177,7 +3178,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zpa_versioninfo(self, zdmGroupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zpa_versioninfo(self, zdmGroupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetZpaVersioninfo
         method: GET
@@ -3193,7 +3194,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_device(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_device(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getDevice
         method: GET
@@ -3209,7 +3210,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_device(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_device(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteDevice
         method: DELETE
@@ -3225,12 +3226,12 @@ class ZoomDataSource:
         )
 
 
-    async def update_device(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_device(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateDevice
         method: PATCH
         path: /devices/{deviceId}
-        summary: Change device 
+        summary: Change device
         """
         endpoint = f"{self._base_url}/devices/{deviceId}"
         params = { 'deviceId': deviceId }
@@ -3242,7 +3243,7 @@ class ZoomDataSource:
         )
 
 
-    async def assgin_group(self, deviceId: Optional[Any] = None, group_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assgin_group(self, deviceId: Optional[object] = None, group_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assginGroup
         method: PATCH
@@ -3258,7 +3259,7 @@ class ZoomDataSource:
         )
 
 
-    async def change_device_association(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def change_device_association(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: changeDeviceAssociation
         method: PATCH
@@ -3275,7 +3276,7 @@ class ZoomDataSource:
         )
 
 
-    async def device_list(self, page_size: Optional[Any] = None, page_number: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def device_list(self, page_size: Optional[object] = None, page_number: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deviceList
         method: GET
@@ -3291,7 +3292,7 @@ class ZoomDataSource:
         )
 
 
-    async def device_create(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def device_create(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deviceCreate
         method: POST
@@ -3308,7 +3309,7 @@ class ZoomDataSource:
         )
 
 
-    async def device_delete(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def device_delete(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deviceDelete
         method: DELETE
@@ -3324,7 +3325,7 @@ class ZoomDataSource:
         )
 
 
-    async def device_update(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def device_update(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deviceUpdate
         method: PATCH
@@ -3341,7 +3342,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_meeting_chat_message_by_id(self, meetingId: Optional[Any] = None, messageId: Optional[Any] = None, file_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_meeting_chat_message_by_id(self, meetingId: Optional[object] = None, messageId: Optional[object] = None, file_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteMeetingChatMessageById
         method: DELETE
@@ -3357,7 +3358,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_meeting_chat_message_by_id(self, meetingId: Optional[Any] = None, messageId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_meeting_chat_message_by_id(self, meetingId: Optional[object] = None, messageId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateMeetingChatMessageById
         method: PATCH
@@ -3374,7 +3375,7 @@ class ZoomDataSource:
         )
 
 
-    async def in_meeting_control(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def in_meeting_control(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: inMeetingControl
         method: PATCH
@@ -3391,7 +3392,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_rtms_status_update(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_rtms_status_update(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingRTMSStatusUpdate
         method: PATCH
@@ -3408,7 +3409,7 @@ class ZoomDataSource:
         )
 
 
-    async def listmeetingsummaries(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def listmeetingsummaries(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Listmeetingsummaries
         method: GET
@@ -3424,7 +3425,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting(self, meetingId: Optional[Any] = None, occurrence_id: Optional[Any] = None, show_previous_occurrences: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting(self, meetingId: Optional[object] = None, occurrence_id: Optional[object] = None, show_previous_occurrences: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meeting
         method: GET
@@ -3440,7 +3441,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_delete(self, meetingId: Optional[Any] = None, occurrence_id: Optional[Any] = None, schedule_for_reminder: Optional[Any] = None, cancel_meeting_reminder: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_delete(self, meetingId: Optional[object] = None, occurrence_id: Optional[object] = None, schedule_for_reminder: Optional[object] = None, cancel_meeting_reminder: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingDelete
         method: DELETE
@@ -3456,7 +3457,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_update(self, meetingId: Optional[Any] = None, occurrence_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_update(self, meetingId: Optional[object] = None, occurrence_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingUpdate
         method: PATCH
@@ -3473,7 +3474,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_batch_polls(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_batch_polls(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createBatchPolls
         method: POST
@@ -3490,7 +3491,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_batch_registrants(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_batch_registrants(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addBatchRegistrants
         method: POST
@@ -3507,7 +3508,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_invitation(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_invitation(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingInvitation
         method: GET
@@ -3523,7 +3524,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_invite_links_create(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_invite_links_create(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingInviteLinksCreate
         method: POST
@@ -3540,7 +3541,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_live_streaming_join_token(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_live_streaming_join_token(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingLiveStreamingJoinToken
         method: GET
@@ -3556,7 +3557,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_local_archiving_archive_token(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_local_archiving_archive_token(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingLocalArchivingArchiveToken
         method: GET
@@ -3572,7 +3573,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_local_recording_join_token(self, meetingId: Optional[Any] = None, bypass_waiting_room: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_local_recording_join_token(self, meetingId: Optional[object] = None, bypass_waiting_room: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingLocalRecordingJoinToken
         method: GET
@@ -3588,7 +3589,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_meeting_live_stream_details(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_meeting_live_stream_details(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getMeetingLiveStreamDetails
         method: GET
@@ -3604,7 +3605,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_live_stream_update(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_live_stream_update(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingLiveStreamUpdate
         method: PATCH
@@ -3621,7 +3622,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_live_stream_status_update(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_live_stream_status_update(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingLiveStreamStatusUpdate
         method: PATCH
@@ -3638,7 +3639,7 @@ class ZoomDataSource:
         )
 
 
-    async def getameetingsummary(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getameetingsummary(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getameetingsummary
         method: GET
@@ -3654,7 +3655,7 @@ class ZoomDataSource:
         )
 
 
-    async def deletemeetingorwebinarsummary(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deletemeetingorwebinarsummary(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deletemeetingorwebinarsummary
         method: DELETE
@@ -3670,7 +3671,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_app_add(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_app_add(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingAppAdd
         method: POST
@@ -3686,7 +3687,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_app_delete(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_app_delete(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingAppDelete
         method: DELETE
@@ -3702,7 +3703,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_polls(self, meetingId: Optional[Any] = None, anonymous: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_polls(self, meetingId: Optional[object] = None, anonymous: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingPolls
         method: GET
@@ -3718,7 +3719,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_poll_create(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_poll_create(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingPollCreate
         method: POST
@@ -3735,7 +3736,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_poll_get(self, meetingId: Optional[Any] = None, pollId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_poll_get(self, meetingId: Optional[object] = None, pollId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingPollGet
         method: GET
@@ -3751,7 +3752,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_poll_update(self, meetingId: Optional[Any] = None, pollId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_poll_update(self, meetingId: Optional[object] = None, pollId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingPollUpdate
         method: PUT
@@ -3768,7 +3769,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_poll_delete(self, meetingId: Optional[Any] = None, pollId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_poll_delete(self, meetingId: Optional[object] = None, pollId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingPollDelete
         method: DELETE
@@ -3784,7 +3785,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_registrants(self, meetingId: Optional[Any] = None, occurrence_id: Optional[Any] = None, status: Optional[Any] = None, page_size: Optional[Any] = None, page_number: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_registrants(self, meetingId: Optional[object] = None, occurrence_id: Optional[object] = None, status: Optional[object] = None, page_size: Optional[object] = None, page_number: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingRegistrants
         method: GET
@@ -3800,7 +3801,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_registrant_create(self, meetingId: Optional[Any] = None, occurrence_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_registrant_create(self, meetingId: Optional[object] = None, occurrence_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingRegistrantCreate
         method: POST
@@ -3817,12 +3818,12 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_registrants_questions_get(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_registrants_questions_get(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingRegistrantsQuestionsGet
         method: GET
         path: /meetings/{meetingId}/registrants/questions
-        summary: List registration questions 
+        summary: List registration questions
         """
         endpoint = f"{self._base_url}/meetings/{meetingId}/registrants/questions"
         params = { 'meetingId': meetingId }
@@ -3833,7 +3834,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_registrant_question_update(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_registrant_question_update(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingRegistrantQuestionUpdate
         method: PATCH
@@ -3850,7 +3851,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_registrant_status(self, meetingId: Optional[Any] = None, occurrence_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_registrant_status(self, meetingId: Optional[object] = None, occurrence_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingRegistrantStatus
         method: PUT
@@ -3867,7 +3868,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_registrant_get(self, meetingId: Optional[Any] = None, registrantId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_registrant_get(self, meetingId: Optional[object] = None, registrantId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingRegistrantGet
         method: GET
@@ -3883,7 +3884,7 @@ class ZoomDataSource:
         )
 
 
-    async def meetingregistrantdelete(self, meetingId: Optional[Any] = None, registrantId: Optional[Any] = None, occurrence_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meetingregistrantdelete(self, meetingId: Optional[object] = None, registrantId: Optional[object] = None, occurrence_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingregistrantdelete
         method: DELETE
@@ -3899,7 +3900,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_sip_dialing_with_passcode(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_sip_dialing_with_passcode(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getSipDialingWithPasscode
         method: POST
@@ -3916,7 +3917,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_status(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_status(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingStatus
         method: PUT
@@ -3933,7 +3934,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_survey_get(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_survey_get(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingSurveyGet
         method: GET
@@ -3949,7 +3950,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_survey_delete(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_survey_delete(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingSurveyDelete
         method: DELETE
@@ -3965,7 +3966,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_survey_update(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_survey_update(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingSurveyUpdate
         method: PATCH
@@ -3982,7 +3983,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_token(self, meetingId: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_token(self, meetingId: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingToken
         method: GET
@@ -3998,7 +3999,7 @@ class ZoomDataSource:
         )
 
 
-    async def past_meeting_details(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def past_meeting_details(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: pastMeetingDetails
         method: GET
@@ -4014,7 +4015,7 @@ class ZoomDataSource:
         )
 
 
-    async def past_meetings(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def past_meetings(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: pastMeetings
         method: GET
@@ -4030,7 +4031,7 @@ class ZoomDataSource:
         )
 
 
-    async def past_meeting_participants(self, meetingId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def past_meeting_participants(self, meetingId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: pastMeetingParticipants
         method: GET
@@ -4046,7 +4047,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_past_meeting_polls(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_past_meeting_polls(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPastMeetingPolls
         method: GET
@@ -4062,7 +4063,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_past_meeting_qa(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_past_meeting_qa(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPastMeetingQA
         method: GET
@@ -4078,7 +4079,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_meeting_templates(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_meeting_templates(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listMeetingTemplates
         method: GET
@@ -4094,7 +4095,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_template_create(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_template_create(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingTemplateCreate
         method: POST
@@ -4111,7 +4112,7 @@ class ZoomDataSource:
         )
 
 
-    async def meetings(self, userId: Optional[Any] = None, type_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, page_number: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, timezone: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meetings(self, userId: Optional[object] = None, type_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, page_number: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, timezone: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetings
         method: GET
@@ -4127,7 +4128,7 @@ class ZoomDataSource:
         )
 
 
-    async def meeting_create(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def meeting_create(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: meetingCreate
         method: POST
@@ -4144,7 +4145,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_upcoming_meeting(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_upcoming_meeting(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listUpcomingMeeting
         method: GET
@@ -4160,7 +4161,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_pa_cs(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_pa_cs(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userPACs
         method: GET
@@ -4176,7 +4177,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_sign_in_sign_out_activities(self, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_sign_in_sign_out_activities(self, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportSignInSignOutActivities
         method: GET
@@ -4192,7 +4193,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_billing_report(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_billing_report(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getBillingReport
         method: GET
@@ -4208,7 +4209,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_billing_invoices_reports(self, billing_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_billing_invoices_reports(self, billing_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getBillingInvoicesReports
         method: GET
@@ -4224,7 +4225,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_cloud_recording(self, from_: Optional[Any] = None, to: Optional[Any] = None, group_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_cloud_recording(self, from_: Optional[object] = None, to: Optional[object] = None, group_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportCloudRecording
         method: GET
@@ -4240,7 +4241,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_daily(self, year: Optional[Any] = None, month: Optional[Any] = None, group_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_daily(self, year: Optional[object] = None, month: Optional[object] = None, group_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportDaily
         method: GET
@@ -4256,7 +4257,7 @@ class ZoomDataSource:
         )
 
 
-    async def gethistorymeetingandwebinarlist(self, from_: Optional[Any] = None, to: Optional[Any] = None, date_type: Optional[Any] = None, meeting_type: Optional[Any] = None, report_type: Optional[Any] = None, search_key: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, group_id: Optional[Any] = None, meeting_feature: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def gethistorymeetingandwebinarlist(self, from_: Optional[object] = None, to: Optional[object] = None, date_type: Optional[object] = None, meeting_type: Optional[object] = None, report_type: Optional[object] = None, search_key: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, group_id: Optional[object] = None, meeting_feature: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Gethistorymeetingandwebinarlist
         method: GET
@@ -4272,7 +4273,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_meetingactivitylogs(self, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, meeting_number: Optional[Any] = None, search_key: Optional[Any] = None, activity_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_meetingactivitylogs(self, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, meeting_number: Optional[object] = None, search_key: Optional[object] = None, activity_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportMeetingactivitylogs
         method: GET
@@ -4288,7 +4289,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_meeting_details(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_meeting_details(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportMeetingDetails
         method: GET
@@ -4304,7 +4305,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_meeting_participants(self, meetingId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, include_fields: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_meeting_participants(self, meetingId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, include_fields: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportMeetingParticipants
         method: GET
@@ -4320,7 +4321,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_meeting_polls(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_meeting_polls(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportMeetingPolls
         method: GET
@@ -4336,7 +4337,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_meeting_qa(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_meeting_qa(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportMeetingQA
         method: GET
@@ -4352,7 +4353,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_meeting_survey(self, meetingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_meeting_survey(self, meetingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportMeetingSurvey
         method: GET
@@ -4368,7 +4369,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_operation_logs(self, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, category_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_operation_logs(self, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, category_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportOperationLogs
         method: GET
@@ -4384,7 +4385,7 @@ class ZoomDataSource:
         )
 
 
-    async def getremotesupportreport(self, from_: Optional[Any] = None, to: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getremotesupportreport(self, from_: Optional[object] = None, to: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getremotesupportreport
         method: GET
@@ -4400,7 +4401,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_telephone(self, type_: Optional[Any] = None, query_date_type: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, page_number: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_telephone(self, type_: Optional[object] = None, query_date_type: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, page_number: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportTelephone
         method: GET
@@ -4416,7 +4417,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_upcoming_events(self, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, type_: Optional[Any] = None, group_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_upcoming_events(self, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, type_: Optional[object] = None, group_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportUpcomingEvents
         method: GET
@@ -4432,7 +4433,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_users(self, type_: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, page_number: Optional[Any] = None, next_page_token: Optional[Any] = None, group_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_users(self, type_: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, page_number: Optional[object] = None, next_page_token: Optional[object] = None, group_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportUsers
         method: GET
@@ -4448,7 +4449,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_meetings(self, userId: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_meetings(self, userId: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportMeetings
         method: GET
@@ -4464,7 +4465,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_webinar_details(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_webinar_details(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportWebinarDetails
         method: GET
@@ -4480,7 +4481,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_webinar_participants(self, webinarId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, include_fields: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_webinar_participants(self, webinarId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, include_fields: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportWebinarParticipants
         method: GET
@@ -4496,7 +4497,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_webinar_polls(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_webinar_polls(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportWebinarPolls
         method: GET
@@ -4512,7 +4513,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_webinar_qa(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_webinar_qa(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportWebinarQA
         method: GET
@@ -4528,7 +4529,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_webinar_survey(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_webinar_survey(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportWebinarSurvey
         method: GET
@@ -4544,7 +4545,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_sip_phone_phones(self, search_key: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_sip_phone_phones(self, search_key: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListSIPPhonePhones
         method: GET
@@ -4560,7 +4561,7 @@ class ZoomDataSource:
         )
 
 
-    async def enable_sip_phone_phones(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def enable_sip_phone_phones(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: EnableSIPPhonePhones
         method: POST
@@ -4577,7 +4578,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_sip_phone_phones(self, phoneId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_sip_phone_phones(self, phoneId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteSIPPhonePhones
         method: DELETE
@@ -4593,7 +4594,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_sip_phone_phones(self, phoneId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_sip_phone_phones(self, phoneId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateSIPPhonePhones
         method: PATCH
@@ -4610,7 +4611,7 @@ class ZoomDataSource:
         )
 
 
-    async def tsp(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def tsp(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: tsp
         method: GET
@@ -4626,7 +4627,7 @@ class ZoomDataSource:
         )
 
 
-    async def tsp_update(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def tsp_update(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: tspUpdate
         method: PATCH
@@ -4643,7 +4644,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_ts_ps(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_ts_ps(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userTSPs
         method: GET
@@ -4659,7 +4660,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_tsp_create(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_tsp_create(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userTSPCreate
         method: POST
@@ -4676,7 +4677,7 @@ class ZoomDataSource:
         )
 
 
-    async def tsp_url_update(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def tsp_url_update(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: tspUrlUpdate
         method: PATCH
@@ -4693,7 +4694,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_tsp(self, userId: Optional[Any] = None, tspId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_tsp(self, userId: Optional[object] = None, tspId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userTSP
         method: GET
@@ -4709,7 +4710,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_tsp_delete(self, userId: Optional[Any] = None, tspId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_tsp_delete(self, userId: Optional[object] = None, tspId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userTSPDelete
         method: DELETE
@@ -4725,7 +4726,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_tsp_update(self, userId: Optional[Any] = None, tspId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_tsp_update(self, userId: Optional[object] = None, tspId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userTSPUpdate
         method: PATCH
@@ -4742,7 +4743,7 @@ class ZoomDataSource:
         )
 
 
-    async def trackingfield_list(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def trackingfield_list(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: trackingfieldList
         method: GET
@@ -4758,7 +4759,7 @@ class ZoomDataSource:
         )
 
 
-    async def trackingfield_create(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def trackingfield_create(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: trackingfieldCreate
         method: POST
@@ -4775,7 +4776,7 @@ class ZoomDataSource:
         )
 
 
-    async def trackingfield_get(self, fieldId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def trackingfield_get(self, fieldId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: trackingfieldGet
         method: GET
@@ -4791,7 +4792,7 @@ class ZoomDataSource:
         )
 
 
-    async def trackingfield_delete(self, fieldId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def trackingfield_delete(self, fieldId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: trackingfieldDelete
         method: DELETE
@@ -4807,7 +4808,7 @@ class ZoomDataSource:
         )
 
 
-    async def trackingfield_update(self, fieldId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def trackingfield_update(self, fieldId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: trackingfieldUpdate
         method: PATCH
@@ -4824,7 +4825,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_webinar_chat_message_by_id(self, webinarId: Optional[Any] = None, messageId: Optional[Any] = None, file_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_webinar_chat_message_by_id(self, webinarId: Optional[object] = None, messageId: Optional[object] = None, file_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteWebinarChatMessageById
         method: DELETE
@@ -4840,7 +4841,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_absentees(self, webinarId: Optional[Any] = None, occurrence_id: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_absentees(self, webinarId: Optional[object] = None, occurrence_id: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarAbsentees
         method: GET
@@ -4856,7 +4857,7 @@ class ZoomDataSource:
         )
 
 
-    async def past_webinars(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def past_webinars(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: pastWebinars
         method: GET
@@ -4872,7 +4873,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_webinar_participants(self, webinarId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_webinar_participants(self, webinarId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listWebinarParticipants
         method: GET
@@ -4888,7 +4889,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_past_webinar_poll_results(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_past_webinar_poll_results(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPastWebinarPollResults
         method: GET
@@ -4904,7 +4905,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_past_webinar_qa(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_past_webinar_qa(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPastWebinarQA
         method: GET
@@ -4920,7 +4921,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_webinar_templates(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_webinar_templates(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listWebinarTemplates
         method: GET
@@ -4936,7 +4937,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_template_create(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_template_create(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarTemplateCreate
         method: POST
@@ -4953,7 +4954,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinars(self, userId: Optional[Any] = None, type_: Optional[Any] = None, page_size: Optional[Any] = None, page_number: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinars(self, userId: Optional[object] = None, type_: Optional[object] = None, page_size: Optional[object] = None, page_number: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinars
         method: GET
@@ -4969,7 +4970,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_create(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_create(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarCreate
         method: POST
@@ -4986,7 +4987,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar(self, webinarId: Optional[Any] = None, occurrence_id: Optional[Any] = None, show_previous_occurrences: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar(self, webinarId: Optional[object] = None, occurrence_id: Optional[object] = None, show_previous_occurrences: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinar
         method: GET
@@ -5002,7 +5003,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_delete(self, webinarId: Optional[Any] = None, occurrence_id: Optional[Any] = None, cancel_webinar_reminder: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_delete(self, webinarId: Optional[object] = None, occurrence_id: Optional[object] = None, cancel_webinar_reminder: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarDelete
         method: DELETE
@@ -5018,7 +5019,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_update(self, webinarId: Optional[Any] = None, occurrence_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_update(self, webinarId: Optional[object] = None, occurrence_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarUpdate
         method: PATCH
@@ -5035,7 +5036,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_batch_webinar_registrants(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_batch_webinar_registrants(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addBatchWebinarRegistrants
         method: POST
@@ -5052,7 +5053,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_webinar_branding(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_webinar_branding(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getWebinarBranding
         method: GET
@@ -5068,7 +5069,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_webinar_branding_name_tag(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_webinar_branding_name_tag(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createWebinarBrandingNameTag
         method: POST
@@ -5085,7 +5086,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_webinar_branding_name_tag(self, webinarId: Optional[Any] = None, name_tag_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_webinar_branding_name_tag(self, webinarId: Optional[object] = None, name_tag_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteWebinarBrandingNameTag
         method: DELETE
@@ -5101,7 +5102,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_webinar_branding_name_tag(self, webinarId: Optional[Any] = None, nameTagId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_webinar_branding_name_tag(self, webinarId: Optional[object] = None, nameTagId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateWebinarBrandingNameTag
         method: PATCH
@@ -5118,7 +5119,7 @@ class ZoomDataSource:
         )
 
 
-    async def upload_webinar_branding_vb(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def upload_webinar_branding_vb(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: uploadWebinarBrandingVB
         method: POST
@@ -5135,7 +5136,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_webinar_branding_vb(self, webinarId: Optional[Any] = None, ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_webinar_branding_vb(self, webinarId: Optional[object] = None, ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteWebinarBrandingVB
         method: DELETE
@@ -5151,7 +5152,7 @@ class ZoomDataSource:
         )
 
 
-    async def set_webinar_branding_vb(self, webinarId: Optional[Any] = None, id: Optional[Any] = None, set_default_for_all_panelists: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def set_webinar_branding_vb(self, webinarId: Optional[object] = None, id: Optional[object] = None, set_default_for_all_panelists: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: setWebinarBrandingVB
         method: PATCH
@@ -5167,7 +5168,7 @@ class ZoomDataSource:
         )
 
 
-    async def upload_webinar_branding_wallpaper(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def upload_webinar_branding_wallpaper(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: uploadWebinarBrandingWallpaper
         method: POST
@@ -5184,7 +5185,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_webinar_branding_wallpaper(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_webinar_branding_wallpaper(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteWebinarBrandingWallpaper
         method: DELETE
@@ -5200,7 +5201,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_invite_links_create(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_invite_links_create(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarInviteLinksCreate
         method: POST
@@ -5217,7 +5218,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_live_streaming_join_token(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_live_streaming_join_token(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarLiveStreamingJoinToken
         method: GET
@@ -5233,7 +5234,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_local_archiving_archive_token(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_local_archiving_archive_token(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarLocalArchivingArchiveToken
         method: GET
@@ -5249,7 +5250,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_local_recording_join_token(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_local_recording_join_token(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarLocalRecordingJoinToken
         method: GET
@@ -5265,7 +5266,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_webinar_live_stream_details(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_webinar_live_stream_details(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getWebinarLiveStreamDetails
         method: GET
@@ -5281,7 +5282,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_live_stream_update(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_live_stream_update(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarLiveStreamUpdate
         method: PATCH
@@ -5298,7 +5299,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_live_stream_status_update(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_live_stream_status_update(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarLiveStreamStatusUpdate
         method: PATCH
@@ -5315,7 +5316,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_panelists(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_panelists(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarPanelists
         method: GET
@@ -5331,7 +5332,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_panelist_create(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_panelist_create(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarPanelistCreate
         method: POST
@@ -5348,7 +5349,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_panelists_delete(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_panelists_delete(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarPanelistsDelete
         method: DELETE
@@ -5364,7 +5365,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_panelist_delete(self, webinarId: Optional[Any] = None, panelistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_panelist_delete(self, webinarId: Optional[object] = None, panelistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarPanelistDelete
         method: DELETE
@@ -5380,12 +5381,12 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_polls(self, webinarId: Optional[Any] = None, anonymous: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_polls(self, webinarId: Optional[object] = None, anonymous: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarPolls
         method: GET
         path: /webinars/{webinarId}/polls
-        summary: List a webinar's polls 
+        summary: List a webinar's polls
         """
         endpoint = f"{self._base_url}/webinars/{webinarId}/polls"
         params = { 'webinarId': webinarId, 'anonymous': anonymous }
@@ -5396,7 +5397,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_poll_create(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_poll_create(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarPollCreate
         method: POST
@@ -5413,7 +5414,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_poll_get(self, webinarId: Optional[Any] = None, pollId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_poll_get(self, webinarId: Optional[object] = None, pollId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarPollGet
         method: GET
@@ -5429,7 +5430,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_poll_update(self, webinarId: Optional[Any] = None, pollId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_poll_update(self, webinarId: Optional[object] = None, pollId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarPollUpdate
         method: PUT
@@ -5446,7 +5447,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_poll_delete(self, webinarId: Optional[Any] = None, pollId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_poll_delete(self, webinarId: Optional[object] = None, pollId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarPollDelete
         method: DELETE
@@ -5462,7 +5463,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_registrants(self, webinarId: Optional[Any] = None, occurrence_id: Optional[Any] = None, status: Optional[Any] = None, tracking_source_id: Optional[Any] = None, page_size: Optional[Any] = None, page_number: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_registrants(self, webinarId: Optional[object] = None, occurrence_id: Optional[object] = None, status: Optional[object] = None, tracking_source_id: Optional[object] = None, page_size: Optional[object] = None, page_number: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarRegistrants
         method: GET
@@ -5478,7 +5479,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_registrant_create(self, webinarId: Optional[Any] = None, occurrence_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_registrant_create(self, webinarId: Optional[object] = None, occurrence_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarRegistrantCreate
         method: POST
@@ -5495,7 +5496,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_registrants_questions_get(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_registrants_questions_get(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarRegistrantsQuestionsGet
         method: GET
@@ -5511,7 +5512,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_registrant_question_update(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_registrant_question_update(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarRegistrantQuestionUpdate
         method: PATCH
@@ -5528,7 +5529,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_registrant_status(self, webinarId: Optional[Any] = None, occurrence_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_registrant_status(self, webinarId: Optional[object] = None, occurrence_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarRegistrantStatus
         method: PUT
@@ -5545,7 +5546,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_registrant_get(self, webinarId: Optional[Any] = None, registrantId: Optional[Any] = None, occurrence_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_registrant_get(self, webinarId: Optional[object] = None, registrantId: Optional[object] = None, occurrence_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarRegistrantGet
         method: GET
@@ -5561,7 +5562,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_webinar_registrant(self, webinarId: Optional[Any] = None, registrantId: Optional[Any] = None, occurrence_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_webinar_registrant(self, webinarId: Optional[object] = None, registrantId: Optional[object] = None, occurrence_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteWebinarRegistrant
         method: DELETE
@@ -5577,7 +5578,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_webinar_sip_dialing_with_passcode(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_webinar_sip_dialing_with_passcode(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getWebinarSipDialingWithPasscode
         method: POST
@@ -5594,7 +5595,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_status(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_status(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarStatus
         method: PUT
@@ -5611,7 +5612,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_survey_get(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_survey_get(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarSurveyGet
         method: GET
@@ -5627,7 +5628,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_survey_delete(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_survey_delete(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarSurveyDelete
         method: DELETE
@@ -5643,7 +5644,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_survey_update(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_survey_update(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarSurveyUpdate
         method: PATCH
@@ -5660,7 +5661,7 @@ class ZoomDataSource:
         )
 
 
-    async def webinar_token(self, webinarId: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def webinar_token(self, webinarId: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: webinarToken
         method: GET
@@ -5676,7 +5677,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_tracking_sources(self, webinarId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_tracking_sources(self, webinarId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getTrackingSources
         method: GET
@@ -5692,7 +5693,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_zoom_phone_account_settings(self, setting_types: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_zoom_phone_account_settings(self, setting_types: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listZoomPhoneAccountSettings
         method: GET
@@ -5708,7 +5709,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_customize_outbound_caller_numbers(self, selected: Optional[Any] = None, site_id: Optional[Any] = None, extension_type: Optional[Any] = None, keyword: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_customize_outbound_caller_numbers(self, selected: Optional[object] = None, site_id: Optional[object] = None, extension_type: Optional[object] = None, keyword: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCustomizeOutboundCallerNumbers
         method: GET
@@ -5724,7 +5725,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_outbound_caller_numbers(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_outbound_caller_numbers(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addOutboundCallerNumbers
         method: POST
@@ -5741,7 +5742,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_outbound_caller_numbers(self, customize_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_outbound_caller_numbers(self, customize_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteOutboundCallerNumbers
         method: DELETE
@@ -5757,7 +5758,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_alert_settings_with_paging_query(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, module: Optional[Any] = None, rule: Optional[Any] = None, status: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_alert_settings_with_paging_query(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, module: Optional[object] = None, rule: Optional[object] = None, status: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListAlertSettingsWithPagingQuery
         method: GET
@@ -5773,7 +5774,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_an_alert_setting(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_an_alert_setting(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddAnAlertSetting
         method: POST
@@ -5790,7 +5791,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_alert_setting_details(self, alertSettingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_alert_setting_details(self, alertSettingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetAlertSettingDetails
         method: GET
@@ -5806,7 +5807,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_an_alert_setting(self, alertSettingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_an_alert_setting(self, alertSettingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteAnAlertSetting
         method: DELETE
@@ -5822,7 +5823,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_an_alert_setting(self, alertSettingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_an_alert_setting(self, alertSettingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAnAlertSetting
         method: PATCH
@@ -5839,7 +5840,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_audio_item(self, audioId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_audio_item(self, audioId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetAudioItem
         method: GET
@@ -5855,7 +5856,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_audio_item(self, audioId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_audio_item(self, audioId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteAudioItem
         method: DELETE
@@ -5871,7 +5872,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_audio_item(self, audioId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_audio_item(self, audioId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAudioItem
         method: PATCH
@@ -5888,7 +5889,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_audio_items(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_audio_items(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListAudioItems
         method: GET
@@ -5904,7 +5905,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_an_audio(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_an_audio(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddAnAudio
         method: POST
@@ -5921,7 +5922,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_audio_item(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_audio_item(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddAudioItem
         method: POST
@@ -5938,7 +5939,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_auto_receptionists(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_auto_receptionists(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listAutoReceptionists
         method: GET
@@ -5954,7 +5955,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_auto_receptionist(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_auto_receptionist(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addAutoReceptionist
         method: POST
@@ -5971,7 +5972,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_auto_receptionist_detail(self, autoReceptionistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_auto_receptionist_detail(self, autoReceptionistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getAutoReceptionistDetail
         method: GET
@@ -5987,7 +5988,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_auto_receptionist(self, autoReceptionistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_auto_receptionist(self, autoReceptionistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteAutoReceptionist
         method: DELETE
@@ -6003,7 +6004,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_auto_receptionist(self, autoReceptionistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_auto_receptionist(self, autoReceptionistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateAutoReceptionist
         method: PATCH
@@ -6020,7 +6021,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_phone_numbers_auto_receptionist(self, autoReceptionistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_phone_numbers_auto_receptionist(self, autoReceptionistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assignPhoneNumbersAutoReceptionist
         method: POST
@@ -6037,7 +6038,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_all_phone_nums_auto_receptionist(self, autoReceptionistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_all_phone_nums_auto_receptionist(self, autoReceptionistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignAllPhoneNumsAutoReceptionist
         method: DELETE
@@ -6053,7 +6054,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_a_phone_num_auto_receptionist(self, autoReceptionistId: Optional[Any] = None, phoneNumberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_a_phone_num_auto_receptionist(self, autoReceptionistId: Optional[object] = None, phoneNumberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignAPhoneNumAutoReceptionist
         method: DELETE
@@ -6069,7 +6070,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_auto_receptionists_policy(self, autoReceptionistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_auto_receptionists_policy(self, autoReceptionistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getAutoReceptionistsPolicy
         method: GET
@@ -6085,7 +6086,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_auto_receptionist_policy(self, autoReceptionistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_auto_receptionist_policy(self, autoReceptionistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateAutoReceptionistPolicy
         method: PATCH
@@ -6102,7 +6103,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_policy(self, autoReceptionistId: Optional[Any] = None, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_policy(self, autoReceptionistId: Optional[object] = None, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddPolicy
         method: POST
@@ -6119,7 +6120,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_policy(self, autoReceptionistId: Optional[Any] = None, policyType: Optional[Any] = None, shared_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_policy(self, autoReceptionistId: Optional[object] = None, policyType: Optional[object] = None, shared_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeletePolicy
         method: DELETE
@@ -6135,7 +6136,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_policy(self, autoReceptionistId: Optional[Any] = None, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_policy(self, autoReceptionistId: Optional[object] = None, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updatePolicy
         method: PATCH
@@ -6152,7 +6153,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_billing_account(self, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_billing_account(self, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listBillingAccount
         method: GET
@@ -6168,7 +6169,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_billing_account(self, billingAccountId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_billing_account(self, billingAccountId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetABillingAccount
         method: GET
@@ -6184,7 +6185,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_blocked_list(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_blocked_list(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listBlockedList
         method: GET
@@ -6200,7 +6201,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_anumber_to_blocked_list(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_anumber_to_blocked_list(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addAnumberToBlockedList
         method: POST
@@ -6217,7 +6218,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_blocked_list(self, blockedListId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_blocked_list(self, blockedListId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getABlockedList
         method: GET
@@ -6233,7 +6234,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_blocked_list(self, blockedListId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_blocked_list(self, blockedListId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteABlockedList
         method: DELETE
@@ -6249,7 +6250,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_blocked_list(self, blockedListId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_blocked_list(self, blockedListId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateBlockedList
         method: PATCH
@@ -6266,7 +6267,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_call_handling(self, extensionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_call_handling(self, extensionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCallHandling
         method: GET
@@ -6282,7 +6283,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_call_handling(self, extensionId: Optional[Any] = None, settingType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_call_handling(self, extensionId: Optional[object] = None, settingType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addCallHandling
         method: POST
@@ -6299,7 +6300,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_call_handling(self, extensionId: Optional[Any] = None, settingType: Optional[Any] = None, call_forwarding_id: Optional[Any] = None, holiday_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_call_handling(self, extensionId: Optional[object] = None, settingType: Optional[object] = None, call_forwarding_id: Optional[object] = None, holiday_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteCallHandling
         method: DELETE
@@ -6315,7 +6316,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_call_handling(self, extensionId: Optional[Any] = None, settingType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_call_handling(self, extensionId: Optional[object] = None, settingType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateCallHandling
         method: PATCH
@@ -6332,7 +6333,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_call_element(self, callElementId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_call_element(self, callElementId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCallElement
         method: GET
@@ -6348,7 +6349,7 @@ class ZoomDataSource:
         )
 
 
-    async def account_call_history(self, page_size: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, next_page_token: Optional[Any] = None, keyword: Optional[Any] = None, directions: Optional[Any] = None, connect_types: Optional[Any] = None, number_types: Optional[Any] = None, call_types: Optional[Any] = None, extension_types: Optional[Any] = None, call_results: Optional[Any] = None, group_ids: Optional[Any] = None, site_ids: Optional[Any] = None, department: Optional[Any] = None, cost_center: Optional[Any] = None, time_type: Optional[Any] = None, recording_status: Optional[Any] = None, with_voicemail: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def account_call_history(self, page_size: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, next_page_token: Optional[object] = None, keyword: Optional[object] = None, directions: Optional[object] = None, connect_types: Optional[object] = None, number_types: Optional[object] = None, call_types: Optional[object] = None, extension_types: Optional[object] = None, call_results: Optional[object] = None, group_ids: Optional[object] = None, site_ids: Optional[object] = None, department: Optional[object] = None, cost_center: Optional[object] = None, time_type: Optional[object] = None, recording_status: Optional[object] = None, with_voicemail: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: accountCallHistory
         method: GET
@@ -6364,7 +6365,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_call_path(self, callHistoryUuid: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_call_path(self, callHistoryUuid: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCallPath
         method: GET
@@ -6380,7 +6381,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_client_code_to_call_history(self, callLogId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_client_code_to_call_history(self, callLogId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addClientCodeToCallHistory
         method: PATCH
@@ -6397,7 +6398,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_call_history_detail(self, callHistoryId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_call_history_detail(self, callHistoryId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCallHistoryDetail
         method: GET
@@ -6413,7 +6414,7 @@ class ZoomDataSource:
         )
 
 
-    async def account_call_logs(self, page_size: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, type_: Optional[Any] = None, next_page_token: Optional[Any] = None, path: Optional[Any] = None, time_type: Optional[Any] = None, site_id: Optional[Any] = None, charged_call_logs: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def account_call_logs(self, page_size: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, type_: Optional[object] = None, next_page_token: Optional[object] = None, path: Optional[object] = None, time_type: Optional[object] = None, site_id: Optional[object] = None, charged_call_logs: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: accountCallLogs
         method: GET
@@ -6429,7 +6430,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_call_log_details(self, callLogId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_call_log_details(self, callLogId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCallLogDetails
         method: GET
@@ -6445,7 +6446,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_client_code_to_call_log(self, callLogId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_client_code_to_call_log(self, callLogId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addClientCodeToCallLog
         method: PUT
@@ -6462,7 +6463,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user_ai_call_summary(self, userId: Optional[Any] = None, aiCallSummaryId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user_ai_call_summary(self, userId: Optional[object] = None, aiCallSummaryId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getUserAICallSummary
         method: GET
@@ -6478,7 +6479,7 @@ class ZoomDataSource:
         )
 
 
-    async def phone_user_call_history(self, userId: Optional[Any] = None, page_size: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, next_page_token: Optional[Any] = None, keyword: Optional[Any] = None, directions: Optional[Any] = None, connect_types: Optional[Any] = None, number_types: Optional[Any] = None, call_types: Optional[Any] = None, extension_types: Optional[Any] = None, call_results: Optional[Any] = None, group_ids: Optional[Any] = None, site_ids: Optional[Any] = None, department: Optional[Any] = None, cost_center: Optional[Any] = None, time_type: Optional[Any] = None, recording_status: Optional[Any] = None, with_voicemail: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def phone_user_call_history(self, userId: Optional[object] = None, page_size: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, next_page_token: Optional[object] = None, keyword: Optional[object] = None, directions: Optional[object] = None, connect_types: Optional[object] = None, number_types: Optional[object] = None, call_types: Optional[object] = None, extension_types: Optional[object] = None, call_results: Optional[object] = None, group_ids: Optional[object] = None, site_ids: Optional[object] = None, department: Optional[object] = None, cost_center: Optional[object] = None, time_type: Optional[object] = None, recording_status: Optional[object] = None, with_voicemail: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: phoneUserCallHistory
         method: GET
@@ -6494,7 +6495,7 @@ class ZoomDataSource:
         )
 
 
-    async def sync_user_call_history(self, userId: Optional[Any] = None, sync_type: Optional[Any] = None, count: Optional[Any] = None, sync_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def sync_user_call_history(self, userId: Optional[object] = None, sync_type: Optional[object] = None, count: Optional[object] = None, sync_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: syncUserCallHistory
         method: GET
@@ -6510,7 +6511,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_user_call_history(self, userId: Optional[Any] = None, callLogId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_user_call_history(self, userId: Optional[object] = None, callLogId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteUserCallHistory
         method: DELETE
@@ -6526,7 +6527,7 @@ class ZoomDataSource:
         )
 
 
-    async def phone_user_call_logs(self, userId: Optional[Any] = None, page_size: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, type_: Optional[Any] = None, next_page_token: Optional[Any] = None, phone_number: Optional[Any] = None, time_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def phone_user_call_logs(self, userId: Optional[object] = None, page_size: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, type_: Optional[object] = None, next_page_token: Optional[object] = None, phone_number: Optional[object] = None, time_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: phoneUserCallLogs
         method: GET
@@ -6542,7 +6543,7 @@ class ZoomDataSource:
         )
 
 
-    async def sync_user_call_logs(self, userId: Optional[Any] = None, sync_type: Optional[Any] = None, count: Optional[Any] = None, sync_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def sync_user_call_logs(self, userId: Optional[object] = None, sync_type: Optional[object] = None, count: Optional[object] = None, sync_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: syncUserCallLogs
         method: GET
@@ -6558,7 +6559,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_call_log(self, userId: Optional[Any] = None, callLogId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_call_log(self, userId: Optional[object] = None, callLogId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteCallLog
         method: DELETE
@@ -6574,7 +6575,7 @@ class ZoomDataSource:
         )
 
 
-    async def callqueueanalytics(self, page_size: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, next_page_token: Optional[Any] = None, site_id: Optional[Any] = None, call_queue_ext_ids: Optional[Any] = None, department: Optional[Any] = None, cost_center: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def callqueueanalytics(self, page_size: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, next_page_token: Optional[object] = None, site_id: Optional[object] = None, call_queue_ext_ids: Optional[object] = None, department: Optional[object] = None, cost_center: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: callqueueanalytics
         method: GET
@@ -6590,7 +6591,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_call_queues(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, site_id: Optional[Any] = None, cost_center: Optional[Any] = None, department: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_call_queues(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, site_id: Optional[object] = None, cost_center: Optional[object] = None, department: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCallQueues
         method: GET
@@ -6606,7 +6607,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_call_queue(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_call_queue(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createCallQueue
         method: POST
@@ -6623,7 +6624,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_call_queue(self, callQueueId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_call_queue(self, callQueueId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getACallQueue
         method: GET
@@ -6639,7 +6640,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_call_queue(self, callQueueId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_call_queue(self, callQueueId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteACallQueue
         method: DELETE
@@ -6655,7 +6656,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_call_queue(self, callQueueId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_call_queue(self, callQueueId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateCallQueue
         method: PATCH
@@ -6672,7 +6673,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_call_queue_members(self, callQueueId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_call_queue_members(self, callQueueId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCallQueueMembers
         method: GET
@@ -6688,7 +6689,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_members_to_call_queue(self, callQueueId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_members_to_call_queue(self, callQueueId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addMembersToCallQueue
         method: POST
@@ -6705,7 +6706,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_all_members(self, callQueueId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_all_members(self, callQueueId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignAllMembers
         method: DELETE
@@ -6721,7 +6722,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_member_from_call_queue(self, callQueueId: Optional[Any] = None, memberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_member_from_call_queue(self, callQueueId: Optional[object] = None, memberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignMemberFromCallQueue
         method: DELETE
@@ -6737,7 +6738,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_phone_to_call_queue(self, callQueueId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_phone_to_call_queue(self, callQueueId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assignPhoneToCallQueue
         method: POST
@@ -6754,7 +6755,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_a_phone_num_call_queue(self, callQueueId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_a_phone_num_call_queue(self, callQueueId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignAPhoneNumCallQueue
         method: DELETE
@@ -6770,7 +6771,7 @@ class ZoomDataSource:
         )
 
 
-    async def un_assign_phone_num_call_queue(self, callQueueId: Optional[Any] = None, phoneNumberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def un_assign_phone_num_call_queue(self, callQueueId: Optional[object] = None, phoneNumberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unAssignPhoneNumCallQueue
         method: DELETE
@@ -6786,7 +6787,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_cq_policy_sub_setting(self, callQueueId: Optional[Any] = None, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_cq_policy_sub_setting(self, callQueueId: Optional[object] = None, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addCQPolicySubSetting
         method: POST
@@ -6803,7 +6804,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_cq_policy_sub_setting(self, callQueueId: Optional[Any] = None, policyType: Optional[Any] = None, shared_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_cq_policy_sub_setting(self, callQueueId: Optional[object] = None, policyType: Optional[object] = None, shared_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: removeCQPolicySubSetting
         method: DELETE
@@ -6819,7 +6820,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_cq_policy_sub_setting(self, callQueueId: Optional[Any] = None, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_cq_policy_sub_setting(self, callQueueId: Optional[object] = None, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateCQPolicySubSetting
         method: PATCH
@@ -6836,7 +6837,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_call_queue_recordings(self, callQueueId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_call_queue_recordings(self, callQueueId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCallQueueRecordings
         method: GET
@@ -6852,7 +6853,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_cr_phone_numbers(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, assigned_status: Optional[Any] = None, sub_account_id: Optional[Any] = None, keyword: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_cr_phone_numbers(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, assigned_status: Optional[object] = None, sub_account_id: Optional[object] = None, keyword: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCRPhoneNumbers
         method: GET
@@ -6868,7 +6869,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_cr_phone_numbers(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_cr_phone_numbers(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createCRPhoneNumbers
         method: POST
@@ -6885,7 +6886,7 @@ class ZoomDataSource:
         )
 
 
-    async def active_cr_phone_numbers(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def active_cr_phone_numbers(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: activeCRPhoneNumbers
         method: PATCH
@@ -6902,7 +6903,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_cr_phone_number(self, number: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_cr_phone_number(self, number: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteCRPhoneNumber
         method: DELETE
@@ -6918,7 +6919,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_common_areas(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_common_areas(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCommonAreas
         method: GET
@@ -6934,7 +6935,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_common_area(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_common_area(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addCommonArea
         method: POST
@@ -6951,7 +6952,7 @@ class ZoomDataSource:
         )
 
 
-    async def generateactivationcodesforcommonareas(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def generateactivationcodesforcommonareas(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Generateactivationcodesforcommonareas
         method: POST
@@ -6968,7 +6969,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_activation_codes(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_activation_codes(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listActivationCodes
         method: GET
@@ -6984,7 +6985,7 @@ class ZoomDataSource:
         )
 
 
-    async def apply_templateto_common_areas(self, templateId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def apply_templateto_common_areas(self, templateId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ApplyTemplatetoCommonAreas
         method: POST
@@ -7001,7 +7002,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_common_area(self, commonAreaId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_common_area(self, commonAreaId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getACommonArea
         method: GET
@@ -7017,7 +7018,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_common_area(self, commonAreaId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_common_area(self, commonAreaId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteCommonArea
         method: DELETE
@@ -7033,7 +7034,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_common_area(self, commonAreaId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_common_area(self, commonAreaId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateCommonArea
         method: PATCH
@@ -7050,7 +7051,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_calling_plans_to_common_area(self, commonAreaId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_calling_plans_to_common_area(self, commonAreaId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assignCallingPlansToCommonArea
         method: POST
@@ -7067,7 +7068,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_calling_plans_from_common_area(self, commonAreaId: Optional[Any] = None, type_: Optional[Any] = None, billing_account_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_calling_plans_from_common_area(self, commonAreaId: Optional[object] = None, type_: Optional[object] = None, billing_account_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignCallingPlansFromCommonArea
         method: DELETE
@@ -7083,7 +7084,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_phone_numbers_to_common_area(self, commonAreaId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_phone_numbers_to_common_area(self, commonAreaId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assignPhoneNumbersToCommonArea
         method: POST
@@ -7100,7 +7101,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_phone_numbers_from_common_area(self, commonAreaId: Optional[Any] = None, phoneNumberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_phone_numbers_from_common_area(self, commonAreaId: Optional[object] = None, phoneNumberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignPhoneNumbersFromCommonArea
         method: DELETE
@@ -7116,7 +7117,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_common_area_pin_code(self, commonAreaId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_common_area_pin_code(self, commonAreaId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateCommonAreaPinCode
         method: PATCH
@@ -7133,7 +7134,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_common_area_settings(self, commonAreaId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_common_area_settings(self, commonAreaId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCommonAreaSettings
         method: GET
@@ -7149,7 +7150,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_common_area_setting(self, commonAreaId: Optional[Any] = None, settingType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_common_area_setting(self, commonAreaId: Optional[object] = None, settingType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddCommonAreaSetting
         method: POST
@@ -7166,7 +7167,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_common_area_setting(self, commonAreaId: Optional[Any] = None, settingType: Optional[Any] = None, device_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_common_area_setting(self, commonAreaId: Optional[object] = None, settingType: Optional[object] = None, device_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteCommonAreaSetting
         method: DELETE
@@ -7182,7 +7183,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_common_area_setting(self, commonAreaId: Optional[Any] = None, settingType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_common_area_setting(self, commonAreaId: Optional[object] = None, settingType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateCommonAreaSetting
         method: PATCH
@@ -7199,7 +7200,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_call_logs_metrics(self, from_: Optional[Any] = None, to: Optional[Any] = None, site_id: Optional[Any] = None, quality_type: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_call_logs_metrics(self, from_: Optional[object] = None, to: Optional[object] = None, site_id: Optional[object] = None, quality_type: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCallLogsMetrics
         method: GET
@@ -7215,7 +7216,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_call_qo_s(self, callId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_call_qo_s(self, callId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCallQoS
         method: GET
@@ -7231,7 +7232,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_call_log_metrics_details(self, call_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_call_log_metrics_details(self, call_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCallLogMetricsDetails
         method: GET
@@ -7247,7 +7248,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_user_default_emergency_address(self, status: Optional[Any] = None, site_id: Optional[Any] = None, keyword: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_user_default_emergency_address(self, status: Optional[object] = None, site_id: Optional[object] = None, keyword: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listUserDefaultEmergencyAddress
         method: GET
@@ -7263,7 +7264,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_user_detectable_personal_location(self, status: Optional[Any] = None, site_id: Optional[Any] = None, keyword: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_user_detectable_personal_location(self, status: Optional[object] = None, site_id: Optional[object] = None, keyword: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listUserDetectablePersonalLocation
         method: GET
@@ -7279,7 +7280,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_user_location_sharing_permission(self, site_id: Optional[Any] = None, keyword: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_user_location_sharing_permission(self, site_id: Optional[object] = None, keyword: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listUserLocationSharingPermission
         method: GET
@@ -7295,7 +7296,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_user_nomadic_emergency_services(self, status: Optional[Any] = None, site_id: Optional[Any] = None, keyword: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_user_nomadic_emergency_services(self, status: Optional[object] = None, site_id: Optional[object] = None, keyword: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listUserNomadicEmergencyServices
         method: GET
@@ -7311,7 +7312,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_phone_realtimelocation(self, location_type: Optional[Any] = None, site_id: Optional[Any] = None, keyword: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_phone_realtimelocation(self, location_type: Optional[object] = None, site_id: Optional[object] = None, keyword: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPhoneRealtimelocation
         method: GET
@@ -7327,7 +7328,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_user_realtime_location(self, location_type: Optional[Any] = None, site_id: Optional[Any] = None, keyword: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_user_realtime_location(self, location_type: Optional[object] = None, site_id: Optional[object] = None, keyword: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listUserRealtimeLocation
         method: GET
@@ -7343,7 +7344,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_tracked_locations(self, type_: Optional[Any] = None, site_id: Optional[Any] = None, location_type: Optional[Any] = None, keyword: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_tracked_locations(self, type_: Optional[object] = None, site_id: Optional[object] = None, location_type: Optional[object] = None, keyword: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listTrackedLocations
         method: GET
@@ -7359,7 +7360,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_past_call_metrics(self, from_: Optional[Any] = None, to: Optional[Any] = None, phone_number: Optional[Any] = None, extension_number: Optional[Any] = None, quality_type: Optional[Any] = None, department: Optional[Any] = None, cost_center: Optional[Any] = None, directions: Optional[Any] = None, durations: Optional[Any] = None, site_id: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_past_call_metrics(self, from_: Optional[object] = None, to: Optional[object] = None, phone_number: Optional[object] = None, extension_number: Optional[object] = None, quality_type: Optional[object] = None, department: Optional[object] = None, cost_center: Optional[object] = None, directions: Optional[object] = None, durations: Optional[object] = None, site_id: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPastCallMetrics
         method: GET
@@ -7375,7 +7376,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_device_line_key_setting(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_device_line_key_setting(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listDeviceLineKeySetting
         method: GET
@@ -7391,7 +7392,7 @@ class ZoomDataSource:
         )
 
 
-    async def batch_update_device_line_key_setting(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def batch_update_device_line_key_setting(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: batchUpdateDeviceLineKeySetting
         method: PATCH
@@ -7408,7 +7409,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_users_from_directory(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, in_directory: Optional[Any] = None, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_users_from_directory(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, in_directory: Optional[object] = None, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListUsersFromDirectory
         method: GET
@@ -7424,7 +7425,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_users_to_directory(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_users_to_directory(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddUsersToDirectory
         method: POST
@@ -7441,7 +7442,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_users_from_directory(self, site_id: Optional[Any] = None, extension_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_users_from_directory(self, site_id: Optional[object] = None, extension_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteUsersFromDirectory
         method: DELETE
@@ -7457,7 +7458,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_users_from_directory_by_site(self, siteId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, in_directory: Optional[Any] = None, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_users_from_directory_by_site(self, siteId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, in_directory: Optional[object] = None, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListUsersFromDirectoryBySite
         method: GET
@@ -7473,7 +7474,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_users_to_directory_by_site(self, siteId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_users_to_directory_by_site(self, siteId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddUsersToDirectoryBySite
         method: POST
@@ -7490,7 +7491,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_users_from_directory_by_site(self, siteId: Optional[Any] = None, site_id: Optional[Any] = None, extension_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_users_from_directory_by_site(self, siteId: Optional[object] = None, site_id: Optional[object] = None, extension_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteUsersFromDirectoryBySite
         method: DELETE
@@ -7506,7 +7507,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_emergency_addresses(self, site_id: Optional[Any] = None, user_id: Optional[Any] = None, level: Optional[Any] = None, status: Optional[Any] = None, address_keyword: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_emergency_addresses(self, site_id: Optional[object] = None, user_id: Optional[object] = None, level: Optional[object] = None, status: Optional[object] = None, address_keyword: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listEmergencyAddresses
         method: GET
@@ -7522,7 +7523,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_emergency_address(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_emergency_address(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addEmergencyAddress
         method: POST
@@ -7539,7 +7540,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_emergency_address(self, emergencyAddressId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_emergency_address(self, emergencyAddressId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getEmergencyAddress
         method: GET
@@ -7555,7 +7556,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_emergency_address(self, emergencyAddressId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_emergency_address(self, emergencyAddressId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteEmergencyAddress
         method: DELETE
@@ -7571,7 +7572,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_emergency_address(self, emergencyAddressId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_emergency_address(self, emergencyAddressId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateEmergencyAddress
         method: PATCH
@@ -7588,7 +7589,7 @@ class ZoomDataSource:
         )
 
 
-    async def batch_add_locations(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def batch_add_locations(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: batchAddLocations
         method: POST
@@ -7605,7 +7606,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_locations(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_locations(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listLocations
         method: GET
@@ -7621,7 +7622,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_location(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_location(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addLocation
         method: POST
@@ -7638,7 +7639,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_location(self, locationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_location(self, locationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getLocation
         method: GET
@@ -7654,7 +7655,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_location(self, locationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_location(self, locationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteLocation
         method: DELETE
@@ -7670,7 +7671,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_location(self, locationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_location(self, locationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateLocation
         method: PATCH
@@ -7687,7 +7688,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_external_contacts(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_external_contacts(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listExternalContacts
         method: GET
@@ -7703,7 +7704,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_external_contact(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_external_contact(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addExternalContact
         method: POST
@@ -7720,7 +7721,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_external_contact(self, externalContactId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_external_contact(self, externalContactId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getAExternalContact
         method: GET
@@ -7736,7 +7737,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_external_contact(self, externalContactId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_external_contact(self, externalContactId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteAExternalContact
         method: DELETE
@@ -7752,7 +7753,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_external_contact(self, externalContactId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_external_contact(self, externalContactId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateExternalContact
         method: PATCH
@@ -7769,7 +7770,7 @@ class ZoomDataSource:
         )
 
 
-    async def getuser_sfaxlogs(self, extensionId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, sender_number: Optional[Any] = None, receiver_number: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getuser_sfaxlogs(self, extensionId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, sender_number: Optional[object] = None, receiver_number: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getuser'sfaxlogs
         method: GET
@@ -7785,7 +7786,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_account_s_fax_logs(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, site_id: Optional[Any] = None, sender_number: Optional[Any] = None, receiver_number: Optional[Any] = None, extension_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_account_s_fax_logs(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, site_id: Optional[object] = None, sender_number: Optional[object] = None, receiver_number: Optional[object] = None, extension_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetAccount'sFaxLogs
         method: GET
@@ -7801,7 +7802,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_fax_log_details(self, faxLogId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_fax_log_details(self, faxLogId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetFaxLogDetails
         method: GET
@@ -7817,7 +7818,7 @@ class ZoomDataSource:
         )
 
 
-    async def downloadfaxfile(self, faxLogId: Optional[Any] = None, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def downloadfaxfile(self, faxLogId: Optional[object] = None, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Downloadfaxfile
         method: GET
@@ -7833,7 +7834,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_firmware_rules(self, site_id: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_firmware_rules(self, site_id: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListFirmwareRules
         method: GET
@@ -7849,7 +7850,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_firmware_rule(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_firmware_rule(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddFirmwareRule
         method: POST
@@ -7866,7 +7867,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_firmware_rule_detail(self, ruleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_firmware_rule_detail(self, ruleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetFirmwareRuleDetail
         method: GET
@@ -7882,7 +7883,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_firmware_update_rule(self, ruleId: Optional[Any] = None, restart_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_firmware_update_rule(self, ruleId: Optional[object] = None, restart_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteFirmwareUpdateRule
         method: DELETE
@@ -7898,7 +7899,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_firmware_rule(self, ruleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_firmware_rule(self, ruleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateFirmwareRule
         method: PATCH
@@ -7915,7 +7916,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_firmwares(self, is_update: Optional[Any] = None, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_firmwares(self, is_update: Optional[object] = None, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListFirmwares
         method: GET
@@ -7931,7 +7932,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_gcp(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_gcp(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listGCP
         method: GET
@@ -7947,7 +7948,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_gcp(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_gcp(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addGCP
         method: POST
@@ -7964,7 +7965,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_gcp(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_gcp(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetGCP
         method: GET
@@ -7980,7 +7981,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_gcp(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_gcp(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteGCP
         method: DELETE
@@ -7996,7 +7997,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_gcp(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_gcp(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateGCP
         method: PATCH
@@ -8013,7 +8014,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_gcp_members(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, groupId: Optional[Any] = None, site_id: Optional[Any] = None, extension_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_gcp_members(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, groupId: Optional[object] = None, site_id: Optional[object] = None, extension_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listGCPMembers
         method: GET
@@ -8029,7 +8030,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_gcp_members(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_gcp_members(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addGCPMembers
         method: POST
@@ -8046,7 +8047,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_gcp_members(self, groupId: Optional[Any] = None, extensionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_gcp_members(self, groupId: Optional[object] = None, extensionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: removeGCPMembers
         method: DELETE
@@ -8062,7 +8063,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_group_policy_details(self, groupId: Optional[Any] = None, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_group_policy_details(self, groupId: Optional[object] = None, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetGroupPolicyDetails
         method: GET
@@ -8078,7 +8079,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_group_policy(self, groupId: Optional[Any] = None, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_group_policy(self, groupId: Optional[object] = None, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateGroupPolicy
         method: PATCH
@@ -8095,7 +8096,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_group_phone_settings(self, groupId: Optional[Any] = None, setting_types: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_group_phone_settings(self, groupId: Optional[object] = None, setting_types: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getGroupPhoneSettings
         method: GET
@@ -8111,7 +8112,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_auto_receptionist_ivr(self, autoReceptionistId: Optional[Any] = None, hours_type: Optional[Any] = None, holiday_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_auto_receptionist_ivr(self, autoReceptionistId: Optional[object] = None, hours_type: Optional[object] = None, holiday_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getAutoReceptionistIVR
         method: GET
@@ -8127,7 +8128,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_auto_receptionist_ivr(self, autoReceptionistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_auto_receptionist_ivr(self, autoReceptionistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateAutoReceptionistIVR
         method: PATCH
@@ -8144,7 +8145,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_extension_level_inbound_block_rules(self, extensionId: Optional[Any] = None, keyword: Optional[Any] = None, match_type: Optional[Any] = None, type_: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_extension_level_inbound_block_rules(self, extensionId: Optional[object] = None, keyword: Optional[object] = None, match_type: Optional[object] = None, type_: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListExtensionLevelInboundBlockRules
         method: GET
@@ -8160,7 +8161,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_extensiont_level_inbound_block_rules(self, extensionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_extensiont_level_inbound_block_rules(self, extensionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddExtensiontLevelInboundBlockRules
         method: POST
@@ -8177,7 +8178,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_extensiont_level_inbound_block_rules(self, extensionId: Optional[Any] = None, blocked_rule_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_extensiont_level_inbound_block_rules(self, extensionId: Optional[object] = None, blocked_rule_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteExtensiontLevelInboundBlockRules
         method: DELETE
@@ -8193,7 +8194,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_account_level_inbound_blocked_statistics(self, keyword: Optional[Any] = None, match_type: Optional[Any] = None, type_: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_account_level_inbound_blocked_statistics(self, keyword: Optional[object] = None, match_type: Optional[object] = None, type_: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListAccountLevelInboundBlockedStatistics
         method: GET
@@ -8209,7 +8210,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_account_level_inbound_blocked_statistics(self, blocked_statistic_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_account_level_inbound_blocked_statistics(self, blocked_statistic_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteAccountLevelInboundBlockedStatistics
         method: DELETE
@@ -8225,7 +8226,7 @@ class ZoomDataSource:
         )
 
 
-    async def mark_phone_number_as_blocked_for_all_extensions(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def mark_phone_number_as_blocked_for_all_extensions(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: MarkPhoneNumberAsBlockedForAllExtensions
         method: PATCH
@@ -8242,7 +8243,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_account_level_inbound_block_rules(self, keyword: Optional[Any] = None, match_type: Optional[Any] = None, type_: Optional[Any] = None, status: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_account_level_inbound_block_rules(self, keyword: Optional[object] = None, match_type: Optional[object] = None, type_: Optional[object] = None, status: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListAccountLevelInboundBlockRules
         method: GET
@@ -8258,7 +8259,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_account_level_inbound_block_rules(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_account_level_inbound_block_rules(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddAccountLevelInboundBlockRules
         method: POST
@@ -8275,7 +8276,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_account_level_inbound_block_rules(self, blocked_rule_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_account_level_inbound_block_rules(self, blocked_rule_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteAccountLevelInboundBlockRules
         method: DELETE
@@ -8291,7 +8292,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_account_level_inbound_block_rule(self, blockedRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_account_level_inbound_block_rule(self, blockedRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAccountLevelInboundBlockRule
         method: PATCH
@@ -8308,7 +8309,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_line_key_setting(self, extensionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_line_key_setting(self, extensionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listLineKeySetting
         method: GET
@@ -8324,7 +8325,7 @@ class ZoomDataSource:
         )
 
 
-    async def batch_update_line_key_setting(self, extensionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def batch_update_line_key_setting(self, extensionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: BatchUpdateLineKeySetting
         method: PATCH
@@ -8341,7 +8342,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_line_key(self, extensionId: Optional[Any] = None, lineKeyId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_line_key(self, extensionId: Optional[object] = None, lineKeyId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteLineKey
         method: DELETE
@@ -8357,7 +8358,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_monitoring_group(self, type_: Optional[Any] = None, site_id: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_monitoring_group(self, type_: Optional[object] = None, site_id: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listMonitoringGroup
         method: GET
@@ -8373,7 +8374,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_monitoring_group(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_monitoring_group(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createMonitoringGroup
         method: POST
@@ -8390,7 +8391,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_monitoring_group_by_id(self, monitoringGroupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_monitoring_group_by_id(self, monitoringGroupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getMonitoringGroupById
         method: GET
@@ -8406,7 +8407,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_monitoring_group(self, monitoringGroupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_monitoring_group(self, monitoringGroupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteMonitoringGroup
         method: DELETE
@@ -8422,7 +8423,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_monitoring_group(self, monitoringGroupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_monitoring_group(self, monitoringGroupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateMonitoringGroup
         method: PATCH
@@ -8439,7 +8440,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_members(self, monitoringGroupId: Optional[Any] = None, member_type: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_members(self, monitoringGroupId: Optional[object] = None, member_type: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listMembers
         method: GET
@@ -8455,7 +8456,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_members(self, monitoringGroupId: Optional[Any] = None, member_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_members(self, monitoringGroupId: Optional[object] = None, member_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addMembers
         method: POST
@@ -8472,7 +8473,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_members(self, monitoringGroupId: Optional[Any] = None, member_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_members(self, monitoringGroupId: Optional[object] = None, member_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: removeMembers
         method: DELETE
@@ -8488,7 +8489,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_member(self, monitoringGroupId: Optional[Any] = None, memberExtensionId: Optional[Any] = None, member_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_member(self, monitoringGroupId: Optional[object] = None, memberExtensionId: Optional[object] = None, member_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: removeMember
         method: DELETE
@@ -8504,7 +8505,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_common_area_outbound_calling_countries_and_regions(self, commonAreaId: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_common_area_outbound_calling_countries_and_regions(self, commonAreaId: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetCommonAreaOutboundCallingCountriesAndRegions
         method: GET
@@ -8520,7 +8521,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_common_area_outbound_calling_countries_or_regions(self, commonAreaId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_common_area_outbound_calling_countries_or_regions(self, commonAreaId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateCommonAreaOutboundCallingCountriesOrRegions
         method: PATCH
@@ -8537,7 +8538,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_common_area_outbound_calling_exception_rule(self, commonAreaId: Optional[Any] = None, country: Optional[Any] = None, keyword: Optional[Any] = None, match_type: Optional[Any] = None, status: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_common_area_outbound_calling_exception_rule(self, commonAreaId: Optional[object] = None, country: Optional[object] = None, keyword: Optional[object] = None, match_type: Optional[object] = None, status: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCommonAreaOutboundCallingExceptionRule
         method: GET
@@ -8553,7 +8554,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_common_area_outbound_calling_exception_rule(self, commonAreaId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_common_area_outbound_calling_exception_rule(self, commonAreaId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddCommonAreaOutboundCallingExceptionRule
         method: POST
@@ -8570,7 +8571,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_common_area_outbound_calling_exception_rule(self, commonAreaId: Optional[Any] = None, exceptionRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_common_area_outbound_calling_exception_rule(self, commonAreaId: Optional[object] = None, exceptionRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteCommonAreaOutboundCallingExceptionRule
         method: DELETE
@@ -8586,7 +8587,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_common_area_outbound_calling_exception_rule(self, commonAreaId: Optional[Any] = None, exceptionRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_common_area_outbound_calling_exception_rule(self, commonAreaId: Optional[object] = None, exceptionRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateCommonAreaOutboundCallingExceptionRule
         method: PATCH
@@ -8603,7 +8604,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_account_outbound_calling_countries_and_regions(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_account_outbound_calling_countries_and_regions(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetAccountOutboundCallingCountriesAndRegions
         method: GET
@@ -8619,7 +8620,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_account_outbound_calling_countries_or_regions(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_account_outbound_calling_countries_or_regions(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAccountOutboundCallingCountriesOrRegions
         method: PATCH
@@ -8636,7 +8637,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_account_outbound_calling_exception_rule(self, country: Optional[Any] = None, keyword: Optional[Any] = None, match_type: Optional[Any] = None, status: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_account_outbound_calling_exception_rule(self, country: Optional[object] = None, keyword: Optional[object] = None, match_type: Optional[object] = None, status: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listAccountOutboundCallingExceptionRule
         method: GET
@@ -8652,7 +8653,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_account_outbound_calling_exception_rule(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_account_outbound_calling_exception_rule(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddAccountOutboundCallingExceptionRule
         method: POST
@@ -8669,7 +8670,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_account_outbound_calling_exception_rule(self, exceptionRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_account_outbound_calling_exception_rule(self, exceptionRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteAccountOutboundCallingExceptionRule
         method: DELETE
@@ -8685,7 +8686,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_account_outbound_calling_exception_rule(self, exceptionRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_account_outbound_calling_exception_rule(self, exceptionRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAccountOutboundCallingExceptionRule
         method: PATCH
@@ -8702,7 +8703,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_site_outbound_calling_countries_and_regions(self, siteId: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_site_outbound_calling_countries_and_regions(self, siteId: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetSiteOutboundCallingCountriesAndRegions
         method: GET
@@ -8718,7 +8719,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_site_outbound_calling_countries_or_regions(self, siteId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_site_outbound_calling_countries_or_regions(self, siteId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateSiteOutboundCallingCountriesOrRegions
         method: PATCH
@@ -8735,7 +8736,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_site_outbound_calling_exception_rule(self, siteId: Optional[Any] = None, country: Optional[Any] = None, keyword: Optional[Any] = None, match_type: Optional[Any] = None, status: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_site_outbound_calling_exception_rule(self, siteId: Optional[object] = None, country: Optional[object] = None, keyword: Optional[object] = None, match_type: Optional[object] = None, status: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listSiteOutboundCallingExceptionRule
         method: GET
@@ -8751,7 +8752,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_site_outbound_calling_exception_rule(self, siteId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_site_outbound_calling_exception_rule(self, siteId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddSiteOutboundCallingExceptionRule
         method: POST
@@ -8768,7 +8769,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_site_outbound_calling_exception_rule(self, siteId: Optional[Any] = None, exceptionRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_site_outbound_calling_exception_rule(self, siteId: Optional[object] = None, exceptionRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteSiteOutboundCallingExceptionRule
         method: DELETE
@@ -8784,7 +8785,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_site_outbound_calling_exception_rule(self, siteId: Optional[Any] = None, exceptionRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_site_outbound_calling_exception_rule(self, siteId: Optional[object] = None, exceptionRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateSiteOutboundCallingExceptionRule
         method: PATCH
@@ -8801,7 +8802,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user_outbound_calling_countries_and_regions(self, userId: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user_outbound_calling_countries_and_regions(self, userId: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetUserOutboundCallingCountriesAndRegions
         method: GET
@@ -8817,7 +8818,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_user_outbound_calling_countries_or_regions(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_user_outbound_calling_countries_or_regions(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateUserOutboundCallingCountriesOrRegions
         method: PATCH
@@ -8834,7 +8835,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_user_outbound_calling_exception_rule(self, userId: Optional[Any] = None, country: Optional[Any] = None, keyword: Optional[Any] = None, match_type: Optional[Any] = None, status: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_user_outbound_calling_exception_rule(self, userId: Optional[object] = None, country: Optional[object] = None, keyword: Optional[object] = None, match_type: Optional[object] = None, status: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listUserOutboundCallingExceptionRule
         method: GET
@@ -8850,7 +8851,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_user_outbound_calling_exception_rule(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_user_outbound_calling_exception_rule(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddUserOutboundCallingExceptionRule
         method: POST
@@ -8867,7 +8868,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_user_outbound_calling_exception_rule(self, userId: Optional[Any] = None, exceptionRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_user_outbound_calling_exception_rule(self, userId: Optional[object] = None, exceptionRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteUserOutboundCallingExceptionRule
         method: DELETE
@@ -8883,7 +8884,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_user_outbound_calling_exception_rule(self, userId: Optional[Any] = None, exceptionRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_user_outbound_calling_exception_rule(self, userId: Optional[object] = None, exceptionRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateUserOutboundCallingExceptionRule
         method: PATCH
@@ -8900,7 +8901,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_phone_devices(self, type_: Optional[Any] = None, assignee_type: Optional[Any] = None, device_source: Optional[Any] = None, location_status: Optional[Any] = None, site_id: Optional[Any] = None, device_type: Optional[Any] = None, keyword: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_phone_devices(self, type_: Optional[object] = None, assignee_type: Optional[object] = None, device_source: Optional[object] = None, location_status: Optional[object] = None, site_id: Optional[object] = None, device_type: Optional[object] = None, keyword: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPhoneDevices
         method: GET
@@ -8916,7 +8917,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_phone_device(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_phone_device(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addPhoneDevice
         method: POST
@@ -8933,7 +8934,7 @@ class ZoomDataSource:
         )
 
 
-    async def sync_phone_device(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def sync_phone_device(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: syncPhoneDevice
         method: POST
@@ -8950,7 +8951,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_device(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_device(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getADevice
         method: GET
@@ -8966,7 +8967,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_device(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_device(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteADevice
         method: DELETE
@@ -8982,7 +8983,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_a_device(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_a_device(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateADevice
         method: PATCH
@@ -8999,7 +9000,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_extensions_to_a_device(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_extensions_to_a_device(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addExtensionsToADevice
         method: POST
@@ -9016,7 +9017,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_extension_from_a_device(self, deviceId: Optional[Any] = None, extensionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_extension_from_a_device(self, deviceId: Optional[object] = None, extensionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteExtensionFromADevice
         method: DELETE
@@ -9032,7 +9033,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_provision_template_to_device(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_provision_template_to_device(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateProvisionTemplateToDevice
         method: PUT
@@ -9049,7 +9050,7 @@ class ZoomDataSource:
         )
 
 
-    async def reboot_phone_device(self, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def reboot_phone_device(self, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: rebootPhoneDevice
         method: POST
@@ -9065,7 +9066,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_smartphones(self, site_id: Optional[Any] = None, keyword: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_smartphones(self, site_id: Optional[object] = None, keyword: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListSmartphones
         method: GET
@@ -9081,7 +9082,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_byoc_number(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_byoc_number(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addBYOCNumber
         method: POST
@@ -9098,7 +9099,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_account_phone_numbers(self, next_page_token: Optional[Any] = None, type_: Optional[Any] = None, extension_type: Optional[Any] = None, page_size: Optional[Any] = None, number_type: Optional[Any] = None, pending_numbers: Optional[Any] = None, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_account_phone_numbers(self, next_page_token: Optional[object] = None, type_: Optional[object] = None, extension_type: Optional[object] = None, page_size: Optional[object] = None, number_type: Optional[object] = None, pending_numbers: Optional[object] = None, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listAccountPhoneNumbers
         method: GET
@@ -9114,7 +9115,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_unassigned_phone_numbers(self, phone_numbers: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_unassigned_phone_numbers(self, phone_numbers: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteUnassignedPhoneNumbers
         method: DELETE
@@ -9130,7 +9131,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_site_for_unassigned_phone_numbers(self, siteId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_site_for_unassigned_phone_numbers(self, siteId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateSiteForUnassignedPhoneNumbers
         method: PATCH
@@ -9147,7 +9148,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_phone_number_details(self, phoneNumberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_phone_number_details(self, phoneNumberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getPhoneNumberDetails
         method: GET
@@ -9163,7 +9164,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_phone_number_details(self, phoneNumberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_phone_number_details(self, phoneNumberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updatePhoneNumberDetails
         method: PATCH
@@ -9180,7 +9181,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_phone_number(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_phone_number(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assignPhoneNumber
         method: POST
@@ -9197,7 +9198,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_phone_number(self, userId: Optional[Any] = None, phoneNumberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_phone_number(self, userId: Optional[object] = None, phoneNumberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UnassignPhoneNumber
         method: DELETE
@@ -9213,7 +9214,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_calling_plans(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_calling_plans(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCallingPlans
         method: GET
@@ -9229,7 +9230,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_phone_plans(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_phone_plans(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPhonePlans
         method: GET
@@ -9245,7 +9246,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_phone_roles(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_phone_roles(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListPhoneRoles
         method: GET
@@ -9261,7 +9262,7 @@ class ZoomDataSource:
         )
 
 
-    async def duplicate_phone_role(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def duplicate_phone_role(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DuplicatePhoneRole
         method: POST
@@ -9278,7 +9279,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_role_information_1(self, roleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_role_information_1(self, roleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getRoleInformation
         method: GET
@@ -9294,7 +9295,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_phone_role(self, roleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_phone_role(self, roleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeletePhoneRole
         method: DELETE
@@ -9310,7 +9311,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_phone_role(self, roleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_phone_role(self, roleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdatePhoneRole
         method: PATCH
@@ -9327,7 +9328,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_role_members(self, roleId: Optional[Any] = None, in_role: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_role_members(self, roleId: Optional[object] = None, in_role: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListRoleMembers
         method: GET
@@ -9343,7 +9344,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_role_members_1(self, roleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_role_members_1(self, roleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddRoleMembers
         method: POST
@@ -9360,7 +9361,7 @@ class ZoomDataSource:
         )
 
 
-    async def del_role_members(self, roleId: Optional[Any] = None, user_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def del_role_members(self, roleId: Optional[object] = None, user_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DelRoleMembers
         method: DELETE
@@ -9376,7 +9377,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_phone_role_targets(self, roleId: Optional[Any] = None, is_default: Optional[Any] = None, user_id: Optional[Any] = None, selected: Optional[Any] = None, target_type: Optional[Any] = None, site_id: Optional[Any] = None, keyword: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_phone_role_targets(self, roleId: Optional[object] = None, is_default: Optional[object] = None, user_id: Optional[object] = None, selected: Optional[object] = None, target_type: Optional[object] = None, site_id: Optional[object] = None, keyword: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListPhoneRoleTargets
         method: GET
@@ -9392,7 +9393,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_phone_role_targets(self, roleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_phone_role_targets(self, roleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddPhoneRoleTargets
         method: POST
@@ -9409,7 +9410,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_phone_role_targets(self, roleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_phone_role_targets(self, roleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeletePhoneRoleTargets
         method: DELETE
@@ -9426,7 +9427,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_private_directory_members(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, keyword: Optional[Any] = None, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_private_directory_members(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, keyword: Optional[object] = None, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPrivateDirectoryMembers
         method: GET
@@ -9442,7 +9443,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_members_to_a_private_directory(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_members_to_a_private_directory(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addMembersToAPrivateDirectory
         method: POST
@@ -9459,7 +9460,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_a_member_from_a_private_directory(self, extensionId: Optional[Any] = None, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_a_member_from_a_private_directory(self, extensionId: Optional[object] = None, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: removeAMemberFromAPrivateDirectory
         method: DELETE
@@ -9475,7 +9476,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_a_private_directory_member(self, extensionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_a_private_directory_member(self, extensionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateAPrivateDirectoryMember
         method: PATCH
@@ -9492,7 +9493,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_carrier_peering_phone_numbers(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, phone_number: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_carrier_peering_phone_numbers(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, phone_number: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCarrierPeeringPhoneNumbers
         method: GET
@@ -9508,7 +9509,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_peering_phone_numbers(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, phone_number: Optional[Any] = None, carrier_code: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_peering_phone_numbers(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, phone_number: Optional[object] = None, carrier_code: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPeeringPhoneNumbers
         method: GET
@@ -9524,7 +9525,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_peering_phone_numbers(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_peering_phone_numbers(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addPeeringPhoneNumbers
         method: POST
@@ -9541,7 +9542,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_peering_phone_numbers(self, carrier_code: Optional[Any] = None, phone_numbers: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_peering_phone_numbers(self, carrier_code: Optional[object] = None, phone_numbers: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deletePeeringPhoneNumbers
         method: DELETE
@@ -9557,7 +9558,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_peering_phone_numbers(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_peering_phone_numbers(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updatePeeringPhoneNumbers
         method: PATCH
@@ -9574,7 +9575,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_account_provision_template(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_account_provision_template(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listAccountProvisionTemplate
         method: GET
@@ -9590,7 +9591,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_provision_template(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_provision_template(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addProvisionTemplate
         method: POST
@@ -9607,7 +9608,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_provision_template(self, templateId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_provision_template(self, templateId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetProvisionTemplate
         method: GET
@@ -9623,7 +9624,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_provision_template(self, templateId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_provision_template(self, templateId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteProvisionTemplate
         method: DELETE
@@ -9639,7 +9640,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_provision_template(self, templateId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_provision_template(self, templateId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateProvisionTemplate
         method: PATCH
@@ -9656,7 +9657,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_phone_recordings_by_call_id_or_call_log_id(self, id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_phone_recordings_by_call_id_or_call_log_id(self, id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getPhoneRecordingsByCallIdOrCallLogId
         method: GET
@@ -9672,7 +9673,7 @@ class ZoomDataSource:
         )
 
 
-    async def phone_download_recording_file(self, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def phone_download_recording_file(self, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: phoneDownloadRecordingFile
         method: GET
@@ -9688,7 +9689,7 @@ class ZoomDataSource:
         )
 
 
-    async def phone_download_recording_transcript(self, recordingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def phone_download_recording_transcript(self, recordingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: phoneDownloadRecordingTranscript
         method: GET
@@ -9704,7 +9705,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_phone_recordings(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, owner_type: Optional[Any] = None, recording_type: Optional[Any] = None, site_id: Optional[Any] = None, query_date_type: Optional[Any] = None, group_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_phone_recordings(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, owner_type: Optional[object] = None, recording_type: Optional[object] = None, site_id: Optional[object] = None, query_date_type: Optional[object] = None, group_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getPhoneRecordings
         method: GET
@@ -9720,7 +9721,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_call_recording(self, recordingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_call_recording(self, recordingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteCallRecording
         method: DELETE
@@ -9736,7 +9737,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_auto_delete_field(self, recordingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_auto_delete_field(self, recordingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAutoDeleteField
         method: PATCH
@@ -9753,7 +9754,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_recording_status(self, recordingId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_recording_status(self, recordingId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateRecordingStatus
         method: PUT
@@ -9770,7 +9771,7 @@ class ZoomDataSource:
         )
 
 
-    async def phone_user_recordings(self, userId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def phone_user_recordings(self, userId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: phoneUserRecordings
         method: GET
@@ -9786,7 +9787,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_call_charges_usage_report(self, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, billing_account_id: Optional[Any] = None, show_charges_only: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_call_charges_usage_report(self, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, billing_account_id: Optional[object] = None, show_charges_only: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetCallChargesUsageReport
         method: GET
@@ -9802,7 +9803,7 @@ class ZoomDataSource:
         )
 
 
-    async def getfaxchargesusagereport(self, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, fax_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getfaxchargesusagereport(self, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, fax_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getfaxchargesusagereport
         method: GET
@@ -9818,7 +9819,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_ps_operation_logs(self, from_: Optional[Any] = None, to: Optional[Any] = None, category_type: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_ps_operation_logs(self, from_: Optional[object] = None, to: Optional[object] = None, category_type: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getPSOperationLogs
         method: GET
@@ -9834,7 +9835,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_sms_charges_usage_report(self, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, show_charges_only: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_sms_charges_usage_report(self, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, show_charges_only: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetSMSChargesUsageReport
         method: GET
@@ -9850,7 +9851,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_routing_rule(self, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_routing_rule(self, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listRoutingRule
         method: GET
@@ -9866,7 +9867,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_routing_rule(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_routing_rule(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addRoutingRule
         method: POST
@@ -9883,7 +9884,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_routing_rule(self, routingRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_routing_rule(self, routingRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getRoutingRule
         method: GET
@@ -9899,7 +9900,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_routing_rule(self, routingRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_routing_rule(self, routingRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteRoutingRule
         method: DELETE
@@ -9915,7 +9916,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_routing_rule(self, routingRuleId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_routing_rule(self, routingRuleId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateRoutingRule
         method: PATCH
@@ -9932,7 +9933,7 @@ class ZoomDataSource:
         )
 
 
-    async def post_sms_message(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def post_sms_message(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: postSmsMessage
         method: POST
@@ -9949,7 +9950,7 @@ class ZoomDataSource:
         )
 
 
-    async def account_sms_session(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, session_type: Optional[Any] = None, phone_number: Optional[Any] = None, filter_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def account_sms_session(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, session_type: Optional[object] = None, phone_number: Optional[object] = None, filter_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: accountSmsSession
         method: GET
@@ -9965,7 +9966,7 @@ class ZoomDataSource:
         )
 
 
-    async def sms_session_details(self, sessionId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, sort: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def sms_session_details(self, sessionId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, sort: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: smsSessionDetails
         method: GET
@@ -9981,7 +9982,7 @@ class ZoomDataSource:
         )
 
 
-    async def sms_by_message_id(self, sessionId: Optional[Any] = None, messageId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def sms_by_message_id(self, sessionId: Optional[object] = None, messageId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: smsByMessageId
         method: GET
@@ -9997,7 +9998,7 @@ class ZoomDataSource:
         )
 
 
-    async def sms_session_sync(self, sessionId: Optional[Any] = None, sync_type: Optional[Any] = None, count: Optional[Any] = None, sync_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def sms_session_sync(self, sessionId: Optional[object] = None, sync_type: Optional[object] = None, count: Optional[object] = None, sync_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: smsSessionSync
         method: GET
@@ -10013,7 +10014,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_sms_session(self, userId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, session_type: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, phone_number: Optional[Any] = None, filter_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_sms_session(self, userId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, session_type: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, phone_number: Optional[object] = None, filter_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSmsSession
         method: GET
@@ -10029,7 +10030,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_sms_sessions(self, userId: Optional[Any] = None, sync_type: Optional[Any] = None, sync_token: Optional[Any] = None, count: Optional[Any] = None, session_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_sms_sessions(self, userId: Optional[object] = None, sync_type: Optional[object] = None, sync_token: Optional[object] = None, count: Optional[object] = None, session_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetSmsSessions
         method: GET
@@ -10045,7 +10046,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_account_sms_campaigns(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_account_sms_campaigns(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listAccountSMSCampaigns
         method: GET
@@ -10061,7 +10062,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_sms_campaign(self, smsCampaignId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_sms_campaign(self, smsCampaignId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetSMSCampaign
         method: GET
@@ -10077,7 +10078,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_campaign_phone_numbers(self, smsCampaignId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_campaign_phone_numbers(self, smsCampaignId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assignCampaignPhoneNumbers
         method: POST
@@ -10094,7 +10095,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_number_campaign_opt_status(self, smsCampaignId: Optional[Any] = None, consumer_phone_number: Optional[Any] = None, zoom_phone_user_numbers: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_number_campaign_opt_status(self, smsCampaignId: Optional[object] = None, consumer_phone_number: Optional[object] = None, zoom_phone_user_numbers: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getNumberCampaignOptStatus
         method: GET
@@ -10110,7 +10111,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_number_campaign_opt_status(self, smsCampaignId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_number_campaign_opt_status(self, smsCampaignId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateNumberCampaignOptStatus
         method: PATCH
@@ -10127,7 +10128,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_campaign_phone_number(self, smsCampaignId: Optional[Any] = None, phoneNumberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_campaign_phone_number(self, smsCampaignId: Optional[object] = None, phoneNumberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignCampaignPhoneNumber
         method: DELETE
@@ -10143,7 +10144,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user_number_campaign_opt_status(self, userId: Optional[Any] = None, consumer_phone_numbers: Optional[Any] = None, zoom_phone_user_numbers: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user_number_campaign_opt_status(self, userId: Optional[object] = None, consumer_phone_numbers: Optional[object] = None, zoom_phone_user_numbers: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getUserNumberCampaignOptStatus
         method: GET
@@ -10159,7 +10160,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_setting_templates(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_setting_templates(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listSettingTemplates
         method: GET
@@ -10175,7 +10176,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_setting_template(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_setting_template(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addSettingTemplate
         method: POST
@@ -10192,7 +10193,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_setting_template(self, templateId: Optional[Any] = None, custom_query_fields: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_setting_template(self, templateId: Optional[object] = None, custom_query_fields: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getSettingTemplate
         method: GET
@@ -10208,7 +10209,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_setting_template(self, templateId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_setting_template(self, templateId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateSettingTemplate
         method: PATCH
@@ -10225,7 +10226,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_account_policy_details(self, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_account_policy_details(self, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetAccountPolicyDetails
         method: GET
@@ -10241,7 +10242,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_account_policy(self, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_account_policy(self, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateAccountPolicy
         method: PATCH
@@ -10258,7 +10259,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_ported_numbers(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_ported_numbers(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPortedNumbers
         method: GET
@@ -10274,7 +10275,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_ported_numbers_details(self, orderId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_ported_numbers_details(self, orderId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getPortedNumbersDetails
         method: GET
@@ -10290,7 +10291,7 @@ class ZoomDataSource:
         )
 
 
-    async def phone_setting(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def phone_setting(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: phoneSetting
         method: GET
@@ -10306,7 +10307,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_phone_settings(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_phone_settings(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updatePhoneSettings
         method: PATCH
@@ -10323,7 +10324,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_sip_groups(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_sip_groups(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listSipGroups
         method: GET
@@ -10339,7 +10340,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_byocsip_trunk(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_byocsip_trunk(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listBYOCSIPTrunk
         method: GET
@@ -10355,7 +10356,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_shared_line_appearances(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_shared_line_appearances(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listSharedLineAppearances
         method: GET
@@ -10371,7 +10372,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_shared_line_groups(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_shared_line_groups(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listSharedLineGroups
         method: GET
@@ -10387,7 +10388,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_a_shared_line_group(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_a_shared_line_group(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createASharedLineGroup
         method: POST
@@ -10404,7 +10405,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_shared_line_group(self, sharedLineGroupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_shared_line_group(self, sharedLineGroupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getASharedLineGroup
         method: GET
@@ -10420,7 +10421,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_shared_line_group_policy(self, sharedLineGroupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_shared_line_group_policy(self, sharedLineGroupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getSharedLineGroupPolicy
         method: GET
@@ -10436,7 +10437,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_shared_line_group_policy(self, sharedLineGroupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_shared_line_group_policy(self, sharedLineGroupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateSharedLineGroupPolicy
         method: PATCH
@@ -10453,7 +10454,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_shared_line_group(self, slgId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_shared_line_group(self, slgId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteASharedLineGroup
         method: DELETE
@@ -10469,7 +10470,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_a_shared_line_group(self, slgId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_a_shared_line_group(self, slgId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateASharedLineGroup
         method: PATCH
@@ -10486,7 +10487,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_members_to_shared_line_group(self, slgId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_members_to_shared_line_group(self, slgId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addMembersToSharedLineGroup
         method: POST
@@ -10503,7 +10504,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_members_of_slg(self, slgId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_members_of_slg(self, slgId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteMembersOfSLG
         method: DELETE
@@ -10519,7 +10520,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_member_slg(self, slgId: Optional[Any] = None, memberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_member_slg(self, slgId: Optional[object] = None, memberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteAMemberSLG
         method: DELETE
@@ -10535,7 +10536,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_phone_numbers_slg(self, slgId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_phone_numbers_slg(self, slgId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assignPhoneNumbersSLG
         method: POST
@@ -10552,7 +10553,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_phone_numbers_slg(self, slgId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_phone_numbers_slg(self, slgId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deletePhoneNumbersSLG
         method: DELETE
@@ -10568,7 +10569,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_phone_number_slg(self, slgId: Optional[Any] = None, phoneNumberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_phone_number_slg(self, slgId: Optional[object] = None, phoneNumberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteAPhoneNumberSLG
         method: DELETE
@@ -10584,7 +10585,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_slg_policy_sub_setting(self, slgId: Optional[Any] = None, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_slg_policy_sub_setting(self, slgId: Optional[object] = None, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addSLGPolicySubSetting
         method: POST
@@ -10601,7 +10602,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_slg_policy_sub_setting(self, slgId: Optional[Any] = None, policyType: Optional[Any] = None, shared_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_slg_policy_sub_setting(self, slgId: Optional[object] = None, policyType: Optional[object] = None, shared_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: removeSLGPolicySubSetting
         method: DELETE
@@ -10617,7 +10618,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_slg_policy_sub_setting(self, slgId: Optional[Any] = None, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_slg_policy_sub_setting(self, slgId: Optional[object] = None, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateSLGPolicySubSetting
         method: PATCH
@@ -10634,7 +10635,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_phone_sites(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_phone_sites(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPhoneSites
         method: GET
@@ -10650,7 +10651,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_phone_site(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_phone_site(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createPhoneSite
         method: POST
@@ -10667,7 +10668,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_site(self, siteId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_site(self, siteId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getASite
         method: GET
@@ -10683,7 +10684,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_phone_site(self, siteId: Optional[Any] = None, transfer_site_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_phone_site(self, siteId: Optional[object] = None, transfer_site_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deletePhoneSite
         method: DELETE
@@ -10699,7 +10700,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_site_details(self, siteId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_site_details(self, siteId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateSiteDetails
         method: PATCH
@@ -10716,7 +10717,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_site_customize_outbound_caller_numbers(self, siteId: Optional[Any] = None, selected: Optional[Any] = None, site_id: Optional[Any] = None, extension_type: Optional[Any] = None, keyword: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_site_customize_outbound_caller_numbers(self, siteId: Optional[object] = None, selected: Optional[object] = None, site_id: Optional[object] = None, extension_type: Optional[object] = None, keyword: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listSiteCustomizeOutboundCallerNumbers
         method: GET
@@ -10732,7 +10733,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_site_outbound_caller_numbers(self, siteId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_site_outbound_caller_numbers(self, siteId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addSiteOutboundCallerNumbers
         method: POST
@@ -10749,7 +10750,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_site_outbound_caller_numbers(self, siteId: Optional[Any] = None, customize_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_site_outbound_caller_numbers(self, siteId: Optional[object] = None, customize_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteSiteOutboundCallerNumbers
         method: DELETE
@@ -10765,7 +10766,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_site_setting_for_type(self, siteId: Optional[Any] = None, settingType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_site_setting_for_type(self, siteId: Optional[object] = None, settingType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getSiteSettingForType
         method: GET
@@ -10781,7 +10782,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_site_setting(self, siteId: Optional[Any] = None, settingType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_site_setting(self, siteId: Optional[object] = None, settingType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addSiteSetting
         method: POST
@@ -10798,7 +10799,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_site_setting(self, siteId: Optional[Any] = None, settingType: Optional[Any] = None, device_type: Optional[Any] = None, holiday_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_site_setting(self, siteId: Optional[object] = None, settingType: Optional[object] = None, device_type: Optional[object] = None, holiday_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteSiteSetting
         method: DELETE
@@ -10814,7 +10815,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_site_setting(self, siteId: Optional[Any] = None, settingType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_site_setting(self, siteId: Optional[object] = None, settingType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateSiteSetting
         method: PATCH
@@ -10831,7 +10832,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_phone_users(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, site_id: Optional[Any] = None, calling_type: Optional[Any] = None, status: Optional[Any] = None, department: Optional[Any] = None, cost_center: Optional[Any] = None, keyword: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_phone_users(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, site_id: Optional[object] = None, calling_type: Optional[object] = None, status: Optional[object] = None, department: Optional[object] = None, cost_center: Optional[object] = None, keyword: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listPhoneUsers
         method: GET
@@ -10847,7 +10848,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_users_properties_in_batch(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_users_properties_in_batch(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateUsersPropertiesInBatch
         method: PUT
@@ -10864,7 +10865,7 @@ class ZoomDataSource:
         )
 
 
-    async def batch_add_users(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def batch_add_users(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: batchAddUsers
         method: POST
@@ -10881,7 +10882,7 @@ class ZoomDataSource:
         )
 
 
-    async def phone_user(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def phone_user(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: phoneUser
         method: GET
@@ -10897,7 +10898,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_user_profile(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_user_profile(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateUserProfile
         method: PATCH
@@ -10914,7 +10915,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_calling_plan(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_calling_plan(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateCallingPlan
         method: PUT
@@ -10931,7 +10932,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_calling_plan(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_calling_plan(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assignCallingPlan
         method: POST
@@ -10948,7 +10949,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_calling_plan(self, userId: Optional[Any] = None, planType: Optional[Any] = None, billing_account_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_calling_plan(self, userId: Optional[object] = None, planType: Optional[object] = None, billing_account_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignCallingPlan
         method: DELETE
@@ -10964,7 +10965,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_user_customize_outbound_caller_numbers(self, userId: Optional[Any] = None, selected: Optional[Any] = None, site_id: Optional[Any] = None, extension_type: Optional[Any] = None, keyword: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_user_customize_outbound_caller_numbers(self, userId: Optional[object] = None, selected: Optional[object] = None, site_id: Optional[object] = None, extension_type: Optional[object] = None, keyword: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listUserCustomizeOutboundCallerNumbers
         method: GET
@@ -10980,7 +10981,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_user_outbound_caller_numbers(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_user_outbound_caller_numbers(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addUserOutboundCallerNumbers
         method: POST
@@ -10997,7 +10998,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_user_outbound_caller_numbers(self, userId: Optional[Any] = None, customize_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_user_outbound_caller_numbers(self, userId: Optional[object] = None, customize_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteUserOutboundCallerNumbers
         method: DELETE
@@ -11013,7 +11014,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user_policy_details(self, userId: Optional[Any] = None, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user_policy_details(self, userId: Optional[object] = None, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetUserPolicyDetails
         method: GET
@@ -11029,7 +11030,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_user_policy(self, userId: Optional[Any] = None, policyType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_user_policy(self, userId: Optional[object] = None, policyType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateUserPolicy
         method: PATCH
@@ -11046,7 +11047,7 @@ class ZoomDataSource:
         )
 
 
-    async def phone_user_settings(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def phone_user_settings(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: phoneUserSettings
         method: GET
@@ -11062,7 +11063,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_user_settings(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_user_settings(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateUserSettings
         method: PATCH
@@ -11079,7 +11080,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_user_setting(self, userId: Optional[Any] = None, settingType: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_user_setting(self, userId: Optional[object] = None, settingType: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addUserSetting
         method: POST
@@ -11096,7 +11097,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_user_setting(self, userId: Optional[Any] = None, settingType: Optional[Any] = None, shared_id: Optional[Any] = None, assistant_extension_id: Optional[Any] = None, device_id: Optional[Any] = None, intercom_extension_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_user_setting(self, userId: Optional[object] = None, settingType: Optional[object] = None, shared_id: Optional[object] = None, assistant_extension_id: Optional[object] = None, device_id: Optional[object] = None, intercom_extension_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteUserSetting
         method: DELETE
@@ -11112,7 +11113,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_user_setting(self, settingType: Optional[Any] = None, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_user_setting(self, settingType: Optional[object] = None, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateUserSetting
         method: PATCH
@@ -11129,7 +11130,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_voicemail_details_by_call_id_or_call_log_id(self, userId: Optional[Any] = None, id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_voicemail_details_by_call_id_or_call_log_id(self, userId: Optional[object] = None, id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getVoicemailDetailsByCallIdOrCallLogId
         method: GET
@@ -11145,7 +11146,7 @@ class ZoomDataSource:
         )
 
 
-    async def phone_user_voice_mails(self, userId: Optional[Any] = None, page_size: Optional[Any] = None, status: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, trash: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def phone_user_voice_mails(self, userId: Optional[object] = None, page_size: Optional[object] = None, status: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, trash: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: phoneUserVoiceMails
         method: GET
@@ -11161,7 +11162,7 @@ class ZoomDataSource:
         )
 
 
-    async def account_voice_mails(self, page_size: Optional[Any] = None, status: Optional[Any] = None, site_id: Optional[Any] = None, owner_type: Optional[Any] = None, voicemail_type: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, trashed: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def account_voice_mails(self, page_size: Optional[object] = None, status: Optional[object] = None, site_id: Optional[object] = None, owner_type: Optional[object] = None, voicemail_type: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, trashed: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: accountVoiceMails
         method: GET
@@ -11177,7 +11178,7 @@ class ZoomDataSource:
         )
 
 
-    async def phone_download_voicemail_file(self, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def phone_download_voicemail_file(self, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: phoneDownloadVoicemailFile
         method: GET
@@ -11193,7 +11194,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_voicemail_details(self, voicemailId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_voicemail_details(self, voicemailId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getVoicemailDetails
         method: GET
@@ -11209,7 +11210,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_voicemail(self, voicemailId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_voicemail(self, voicemailId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteVoicemail
         method: DELETE
@@ -11225,7 +11226,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_voicemail_read_status(self, voicemailId: Optional[Any] = None, read_status: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_voicemail_read_status(self, voicemailId: Optional[object] = None, read_status: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateVoicemailReadStatus
         method: PATCH
@@ -11241,7 +11242,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_zoom_rooms(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, site_id: Optional[Any] = None, calling_type: Optional[Any] = None, keyword: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_zoom_rooms(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, site_id: Optional[object] = None, calling_type: Optional[object] = None, keyword: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listZoomRooms
         method: GET
@@ -11257,7 +11258,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_zoom_room(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_zoom_room(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addZoomRoom
         method: POST
@@ -11274,7 +11275,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_unassigned_zoom_rooms(self, keyword: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_unassigned_zoom_rooms(self, keyword: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listUnassignedZoomRooms
         method: GET
@@ -11290,7 +11291,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zoom_room(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zoom_room(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getZoomRoom
         method: GET
@@ -11306,7 +11307,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_zoom_room(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_zoom_room(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: RemoveZoomRoom
         method: DELETE
@@ -11322,7 +11323,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_zoom_room(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_zoom_room(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateZoomRoom
         method: PATCH
@@ -11339,7 +11340,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_calling_plan_to_room(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_calling_plan_to_room(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assignCallingPlanToRoom
         method: POST
@@ -11356,7 +11357,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_calling_plan_from_room(self, roomId: Optional[Any] = None, type_: Optional[Any] = None, billing_account_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_calling_plan_from_room(self, roomId: Optional[object] = None, type_: Optional[object] = None, billing_account_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignCallingPlanFromRoom
         method: DELETE
@@ -11372,7 +11373,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_phone_number_to_zoom_room(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_phone_number_to_zoom_room(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assignPhoneNumberToZoomRoom
         method: POST
@@ -11389,7 +11390,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_phone_number_from_zoom_room(self, roomId: Optional[Any] = None, phoneNumberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_phone_number_from_zoom_room(self, roomId: Optional[object] = None, phoneNumberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UnassignPhoneNumberFromZoomRoom
         method: DELETE
@@ -11405,7 +11406,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_meeting_participants_qos_summary(self, meetingId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_meeting_participants_qos_summary(self, meetingId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardMeetingParticipantsQOSSummary
         method: GET
@@ -11421,7 +11422,7 @@ class ZoomDataSource:
         )
 
 
-    async def dashboard_webinar_participants_qos_summary(self, webinarId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def dashboard_webinar_participants_qos_summary(self, webinarId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: dashboardWebinarParticipantsQOSSummary
         method: GET
@@ -11437,7 +11438,7 @@ class ZoomDataSource:
         )
 
 
-    async def session_users_qos_summary(self, sessionId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def session_users_qos_summary(self, sessionId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: sessionUsersQOSSummary
         method: GET
@@ -11453,7 +11454,7 @@ class ZoomDataSource:
         )
 
 
-    async def config_zoom_room_controller_apps(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def config_zoom_room_controller_apps(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ConfigZoomRoomControllerApps
         method: POST
@@ -11470,12 +11471,12 @@ class ZoomDataSource:
         )
 
 
-    async def invitation_list(self, invite_location_id: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, data_scope: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def invitation_list(self, invite_location_id: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, data_scope: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: invitationList
         method: GET
         path: /visitor/invitation
-        summary: Get a list of visitors by location 
+        summary: Get a list of visitors by location
         """
         endpoint = f"{self._base_url}/visitor/invitation"
         params = { 'invite_location_id': invite_location_id, 'from': from_, 'to': to, 'data_scope': data_scope, 'next_page_token': next_page_token, 'page_size': page_size }
@@ -11486,7 +11487,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_invitation(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_invitation(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createInvitation
         method: POST
@@ -11503,7 +11504,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_invitation(self, invitationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_invitation(self, invitationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getInvitation
         method: GET
@@ -11519,12 +11520,12 @@ class ZoomDataSource:
         )
 
 
-    async def delete_invitation(self, invitationId: Optional[Any] = None, cancel: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_invitation(self, invitationId: Optional[object] = None, cancel: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteInvitation
         method: DELETE
         path: /visitor/invitation/{invitationId}
-        summary: Delete an Invitation 
+        summary: Delete an Invitation
         """
         endpoint = f"{self._base_url}/visitor/invitation/{invitationId}"
         params = { 'invitationId': invitationId, 'cancel': cancel }
@@ -11535,7 +11536,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_invitation(self, invitationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_invitation(self, invitationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateInvitation
         method: PATCH
@@ -11552,7 +11553,7 @@ class ZoomDataSource:
         )
 
 
-    async def checkin_visitor(self, invitationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def checkin_visitor(self, invitationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: checkinVisitor
         method: POST
@@ -11568,7 +11569,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_workspaces(self, location_id: Optional[Any] = None, workspace_name: Optional[Any] = None, workspace_type: Optional[Any] = None, reserve_user: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_workspaces(self, location_id: Optional[object] = None, workspace_name: Optional[object] = None, workspace_type: Optional[object] = None, reserve_user: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listWorkspaces
         method: GET
@@ -11584,7 +11585,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_workspace(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_workspace(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createWorkspace
         method: POST
@@ -11601,7 +11602,7 @@ class ZoomDataSource:
         )
 
 
-    async def getaworkspaceadditionalenhancements(self, from_: Optional[Any] = None, to: Optional[Any] = None, reserve_user: Optional[Any] = None, location_id: Optional[Any] = None, workspace_type: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getaworkspaceadditionalenhancements(self, from_: Optional[object] = None, to: Optional[object] = None, reserve_user: Optional[object] = None, location_id: Optional[object] = None, workspace_type: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getaworkspaceadditionalenhancements
         method: GET
@@ -11617,7 +11618,7 @@ class ZoomDataSource:
         )
 
 
-    async def getallworkspaceassets(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getallworkspaceassets(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getallworkspaceassets
         method: GET
@@ -11633,7 +11634,7 @@ class ZoomDataSource:
         )
 
 
-    async def adda_workspaceasset(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def adda_workspaceasset(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddaWorkspaceasset
         method: POST
@@ -11650,7 +11651,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_workspace_asset(self, assetId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_workspace_asset(self, assetId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_workspace_asset
         method: GET
@@ -11666,7 +11667,7 @@ class ZoomDataSource:
         )
 
 
-    async def deletea_workspaceasset(self, assetId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deletea_workspaceasset(self, assetId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteaWorkspaceasset
         method: DELETE
@@ -11682,7 +11683,7 @@ class ZoomDataSource:
         )
 
 
-    async def patch_workspaceasset(self, assetId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def patch_workspaceasset(self, assetId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: PatchWorkspaceasset
         method: PATCH
@@ -11699,7 +11700,7 @@ class ZoomDataSource:
         )
 
 
-    async def reservation_event(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def reservation_event(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reservationEvent
         method: POST
@@ -11716,7 +11717,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_or_update_a_workspace_floor_map(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_or_update_a_workspace_floor_map(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddOrUpdateAWorkspaceFloorMap
         method: POST
@@ -11733,7 +11734,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_workspace_settings(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_workspace_settings(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateWorkspaceSettings
         method: PATCH
@@ -11750,7 +11751,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_hot_desk_usage(self, location_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_hot_desk_usage(self, location_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getHotDeskUsage
         method: GET
@@ -11766,7 +11767,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_workspace_calendar_free_busy_event(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_workspace_calendar_free_busy_event(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetWorkspaceCalendarFree/BusyEvent
         method: GET
@@ -11782,7 +11783,7 @@ class ZoomDataSource:
         )
 
 
-    async def set_calendar_free_busy_event(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def set_calendar_free_busy_event(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: SetCalendarFree/BusyEvent
         method: POST
@@ -11799,7 +11800,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_list_reservations(self, userId: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_list_reservations(self, userId: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userListReservations
         method: GET
@@ -11815,7 +11816,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_workspace_floor_map(self, locationId: Optional[Any] = None, remove_child: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_workspace_floor_map(self, locationId: Optional[object] = None, remove_child: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteWorkspaceFloorMap
         method: DELETE
@@ -11831,7 +11832,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_workspace(self, workspaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_workspace(self, workspaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getWorkspace
         method: GET
@@ -11847,7 +11848,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_workspace(self, workspaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_workspace(self, workspaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteWorkspace
         method: DELETE
@@ -11863,7 +11864,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_workspace(self, workspaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_workspace(self, workspaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateWorkspace
         method: PATCH
@@ -11880,7 +11881,7 @@ class ZoomDataSource:
         )
 
 
-    async def getadeskassignment(self, workspaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getadeskassignment(self, workspaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getadeskassignment
         method: GET
@@ -11896,7 +11897,7 @@ class ZoomDataSource:
         )
 
 
-    async def set_a_desk_assignment(self, workspaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def set_a_desk_assignment(self, workspaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: setADeskAssignment
         method: PUT
@@ -11913,7 +11914,7 @@ class ZoomDataSource:
         )
 
 
-    async def deleteadeskassignment(self, workspaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deleteadeskassignment(self, workspaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deleteadeskassignment
         method: DELETE
@@ -11929,7 +11930,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_workspace_qr_code(self, workspaceId: Optional[Any] = None, type_: Optional[Any] = None, ttl: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_workspace_qr_code(self, workspaceId: Optional[object] = None, type_: Optional[object] = None, ttl: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getWorkspaceQRCode
         method: GET
@@ -11945,7 +11946,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_reservations(self, workspaceId: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_reservations(self, workspaceId: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listReservations
         method: GET
@@ -11961,7 +11962,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_reservation(self, workspaceId: Optional[Any] = None, check_in: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_reservation(self, workspaceId: Optional[object] = None, check_in: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createReservation
         method: POST
@@ -11978,7 +11979,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_getaworkspacereservationbyreservation_id(self, workspaceId: Optional[Any] = None, reservationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_getaworkspacereservationbyreservation_id(self, workspaceId: Optional[object] = None, reservationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GETGetaworkspacereservationbyreservationID
         method: GET
@@ -11994,7 +11995,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_reservation(self, workspaceId: Optional[Any] = None, reservationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_reservation(self, workspaceId: Optional[object] = None, reservationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteReservation
         method: DELETE
@@ -12010,7 +12011,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_reservation(self, workspaceId: Optional[Any] = None, reservationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_reservation(self, workspaceId: Optional[object] = None, reservationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateReservation
         method: PATCH
@@ -12027,7 +12028,7 @@ class ZoomDataSource:
         )
 
 
-    async def listworkspacereservationquestionnaires(self, workspaceId: Optional[Any] = None, reservationId: Optional[Any] = None, subject: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def listworkspacereservationquestionnaires(self, workspaceId: Optional[object] = None, reservationId: Optional[object] = None, subject: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Listworkspacereservationquestionnaires
         method: GET
@@ -12043,7 +12044,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_zoom_rooms_1(self, status: Optional[Any] = None, tag_ids: Optional[Any] = None, type_: Optional[Any] = None, unassigned_rooms: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, location_id: Optional[Any] = None, query_name: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_zoom_rooms_1(self, status: Optional[object] = None, tag_ids: Optional[object] = None, type_: Optional[object] = None, unassigned_rooms: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, location_id: Optional[object] = None, query_name: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listZoomRooms
         method: GET
@@ -12059,7 +12060,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_a_room(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_a_room(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addARoom
         method: POST
@@ -12076,7 +12077,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_digital_signage_content(self, type_: Optional[Any] = None, folder_id: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_digital_signage_content(self, type_: Optional[object] = None, folder_id: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listDigitalSignageContent
         method: GET
@@ -12092,7 +12093,7 @@ class ZoomDataSource:
         )
 
 
-    async def manage_e911signage(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def manage_e911signage(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: manageE911signage
         method: PATCH
@@ -12109,7 +12110,7 @@ class ZoomDataSource:
         )
 
 
-    async def zoom_rooms_controls(self, id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def zoom_rooms_controls(self, id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ZoomRoomsControls
         method: PATCH
@@ -12126,7 +12127,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zr_settings(self, id: Optional[Any] = None, setting_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zr_settings(self, id: Optional[object] = None, setting_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getZRSettings
         method: GET
@@ -12142,7 +12143,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_zr_settings(self, id: Optional[Any] = None, setting_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_zr_settings(self, id: Optional[object] = None, setting_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateZRSettings
         method: PATCH
@@ -12159,7 +12160,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zr_profile(self, roomId: Optional[Any] = None, regenerate_activation_code: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zr_profile(self, roomId: Optional[object] = None, regenerate_activation_code: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getZRProfile
         method: GET
@@ -12175,7 +12176,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_zoom_room(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_zoom_room(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteAZoomRoom
         method: DELETE
@@ -12191,7 +12192,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_room_profile(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_room_profile(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateRoomProfile
         method: PATCH
@@ -12208,7 +12209,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_room_profiles(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_room_profiles(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getRoomProfiles
         method: GET
@@ -12224,7 +12225,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_room_device_profile(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_room_device_profile(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createRoomDeviceProfile
         method: POST
@@ -12241,7 +12242,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_room_devices(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_room_devices(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getRoomDevices
         method: GET
@@ -12257,7 +12258,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_room_profile(self, roomId: Optional[Any] = None, deviceProfileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_room_profile(self, roomId: Optional[object] = None, deviceProfileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getRoomProfile
         method: GET
@@ -12273,7 +12274,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_room_profile(self, roomId: Optional[Any] = None, deviceProfileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_room_profile(self, roomId: Optional[object] = None, deviceProfileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteRoomProfile
         method: DELETE
@@ -12289,7 +12290,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_device_profile(self, roomId: Optional[Any] = None, deviceProfileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_device_profile(self, roomId: Optional[object] = None, deviceProfileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateDeviceProfile
         method: PATCH
@@ -12306,7 +12307,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_zr_devices(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_zr_devices(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listZRDevices
         method: GET
@@ -12322,7 +12323,7 @@ class ZoomDataSource:
         )
 
 
-    async def change_zr_location(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def change_zr_location(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: changeZRLocation
         method: PUT
@@ -12339,7 +12340,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zr_sensor_data(self, roomId: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, device_id: Optional[Any] = None, sensor_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zr_sensor_data(self, roomId: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, device_id: Optional[object] = None, sensor_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getZRSensorData
         method: GET
@@ -12355,7 +12356,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_webzrc_url(self, roomId: Optional[Any] = None, pre_authenticated_link: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_webzrc_url(self, roomId: Optional[object] = None, pre_authenticated_link: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getWebzrcUrl
         method: GET
@@ -12371,7 +12372,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zr_account_profile(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zr_account_profile(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getZRAccountProfile
         method: GET
@@ -12387,7 +12388,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_zr_acc_profile(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_zr_acc_profile(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateZRAccProfile
         method: PATCH
@@ -12404,7 +12405,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zr_account_settings(self, setting_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zr_account_settings(self, setting_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getZRAccountSettings
         method: GET
@@ -12420,7 +12421,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_zoom_room_acc_settings(self, setting_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_zoom_room_acc_settings(self, setting_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateZoomRoomAccSettings
         method: PATCH
@@ -12437,7 +12438,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_calendar_services(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_calendar_services(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCalendarServices
         method: GET
@@ -12453,7 +12454,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_calendar_service(self, serviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_calendar_service(self, serviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteACalendarService
         method: DELETE
@@ -12469,7 +12470,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_calendar_resources_by_service_id(self, serviceId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_calendar_resources_by_service_id(self, serviceId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCalendarResourcesByServiceId
         method: GET
@@ -12485,7 +12486,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_a_calendar_resource_to_calendar_service(self, serviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_a_calendar_resource_to_calendar_service(self, serviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addACalendarResourceToCalendarService
         method: POST
@@ -12502,7 +12503,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_calendar_resource_by_id(self, serviceId: Optional[Any] = None, resourceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_calendar_resource_by_id(self, serviceId: Optional[object] = None, resourceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCalendarResourceById
         method: GET
@@ -12518,7 +12519,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_calendar_resource(self, serviceId: Optional[Any] = None, resourceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_calendar_resource(self, serviceId: Optional[object] = None, resourceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteACalendarResource
         method: DELETE
@@ -12534,7 +12535,7 @@ class ZoomDataSource:
         )
 
 
-    async def sync_a_calendar_service(self, serviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def sync_a_calendar_service(self, serviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: syncACalendarService
         method: PUT
@@ -12550,7 +12551,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_zoom_roomsbackgroundimagelibrarycontents(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, folder_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_zoom_roomsbackgroundimagelibrarycontents(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, folder_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListZoomRoomsbackgroundimagelibrarycontents
         method: GET
@@ -12566,7 +12567,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zoom_rooms_background_image_library_content(self, contentId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zoom_rooms_background_image_library_content(self, contentId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetZoomRoomsBackgroundImageLibraryContent
         method: GET
@@ -12582,7 +12583,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_zoom_rooms_background_image_library_content(self, contentId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_zoom_rooms_background_image_library_content(self, contentId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteZoomRoomsBackgroundImageLibraryContent
         method: DELETE
@@ -12598,7 +12599,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_default_zoom_rooms_background_image_librarycontents(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_default_zoom_rooms_background_image_librarycontents(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListDefaultZoomRoomsBackgroundImageLibrarycontents
         method: GET
@@ -12614,7 +12615,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_zoom_rooms_background_library_folders(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_zoom_rooms_background_library_folders(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListZoomRoomsBackgroundLibraryFolders
         method: GET
@@ -12630,7 +12631,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_zoom_rooms_background_library_folder(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_zoom_rooms_background_library_folder(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddZoomRoomsBackgroundLibraryFolder
         method: POST
@@ -12647,7 +12648,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zoom_rooms_background_library_folder(self, folderId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zoom_rooms_background_library_folder(self, folderId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetZoomRoomsBackgroundLibraryFolder
         method: GET
@@ -12663,7 +12664,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_zoom_rooms_background_library_folder(self, folderId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_zoom_rooms_background_library_folder(self, folderId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteZoomRoomsBackgroundLibraryFolder
         method: DELETE
@@ -12679,7 +12680,7 @@ class ZoomDataSource:
         )
 
 
-    async def updatea_zoom_rooms_background_library_folder_name(self, folderId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def updatea_zoom_rooms_background_library_folder_name(self, folderId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateaZoomRoomsBackgroundLibraryFolderName
         method: PATCH
@@ -12696,7 +12697,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_listdigitalsignagecontentitems(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_listdigitalsignagecontentitems(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GETListdigitalsignagecontentitems
         method: GET
@@ -12712,7 +12713,7 @@ class ZoomDataSource:
         )
 
 
-    async def addadigitalsignage_url(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def addadigitalsignage_url(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddadigitalsignageURL
         method: POST
@@ -12729,7 +12730,7 @@ class ZoomDataSource:
         )
 
 
-    async def getdigitalsignagecontentitem(self, contentId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getdigitalsignagecontentitem(self, contentId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getdigitalsignagecontentitem
         method: GET
@@ -12745,7 +12746,7 @@ class ZoomDataSource:
         )
 
 
-    async def deleteadigitalsignagecontentitem(self, contentId: Optional[Any] = None, remove_from_library_only: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deleteadigitalsignagecontentitem(self, contentId: Optional[object] = None, remove_from_library_only: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deleteadigitalsignagecontentitem
         method: DELETE
@@ -12761,7 +12762,7 @@ class ZoomDataSource:
         )
 
 
-    async def updateadigitalsignagecontentitemattributes(self, contentId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def updateadigitalsignagecontentitemattributes(self, contentId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Updateadigitalsignagecontentitemattributes
         method: PATCH
@@ -12778,7 +12779,7 @@ class ZoomDataSource:
         )
 
 
-    async def addadigitalsignagecontentfolder(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def addadigitalsignagecontentfolder(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Addadigitalsignagecontentfolder
         method: POST
@@ -12795,7 +12796,7 @@ class ZoomDataSource:
         )
 
 
-    async def getdigitalsignagecontentfolderdetails(self, folderId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getdigitalsignagecontentfolderdetails(self, folderId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getdigitalsignagecontentfolderdetails
         method: GET
@@ -12811,7 +12812,7 @@ class ZoomDataSource:
         )
 
 
-    async def deleteadigitalsignagecontentfolder(self, folderId: Optional[Any] = None, remove_from_library_only: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deleteadigitalsignagecontentfolder(self, folderId: Optional[object] = None, remove_from_library_only: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deleteadigitalsignagecontentfolder
         method: DELETE
@@ -12827,7 +12828,7 @@ class ZoomDataSource:
         )
 
 
-    async def updateadigitalsignagecontentfolder(self, folderId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def updateadigitalsignagecontentfolder(self, folderId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Updateadigitalsignagecontentfolder
         method: PATCH
@@ -12844,7 +12845,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_digital_signagelibraryplaylists(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_digital_signagelibraryplaylists(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListDigitalSignagelibraryplaylists
         method: GET
@@ -12860,7 +12861,7 @@ class ZoomDataSource:
         )
 
 
-    async def adda_digital_signagelibraryplaylist(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def adda_digital_signagelibraryplaylist(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddaDigitalSignagelibraryplaylist
         method: POST
@@ -12877,7 +12878,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_digital_signagelibraryplaylist(self, playlistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_digital_signagelibraryplaylist(self, playlistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetDigitalSignagelibraryplaylist
         method: GET
@@ -12893,7 +12894,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_digital_signagelibraryplaylist(self, playlistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_digital_signagelibraryplaylist(self, playlistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteDigitalSignagelibraryplaylist
         method: DELETE
@@ -12910,7 +12911,7 @@ class ZoomDataSource:
         )
 
 
-    async def updatea_digital_signagelibraryplaylist(self, playlistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def updatea_digital_signagelibraryplaylist(self, playlistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateaDigitalSignagelibraryplaylist
         method: PATCH
@@ -12927,7 +12928,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_digital_signagelibraryplaylistcontentitems(self, playlistId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_digital_signagelibraryplaylistcontentitems(self, playlistId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetDigitalSignagelibraryplaylistcontentitems
         method: GET
@@ -12943,7 +12944,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_digital_signagelibraryplaylistcontentitems(self, playlistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_digital_signagelibraryplaylistcontentitems(self, playlistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateDigitalSignagelibraryplaylistcontentitems
         method: PUT
@@ -12960,7 +12961,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_digital_signagelibraryplaylistpublishedrooms(self, playlistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_digital_signagelibraryplaylistpublishedrooms(self, playlistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListDigitalSignagelibraryplaylistpublishedrooms
         method: GET
@@ -12976,7 +12977,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_digital_signagelibraryplaylistpublishedrooms(self, playlistId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_digital_signagelibraryplaylistpublishedrooms(self, playlistId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateDigitalSignagelibraryplaylistpublishedrooms
         method: PUT
@@ -12993,7 +12994,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_zoom_rooms_background_image_library_content(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_zoom_rooms_background_image_library_content(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateZoomRoomsBackgroundImageLibraryContent
         method: PUT
@@ -13010,7 +13011,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_zoom_rooms_background_image_library_content(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_zoom_rooms_background_image_library_content(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddZoomRoomsBackgroundImageLibraryContent
         method: POST
@@ -13027,7 +13028,7 @@ class ZoomDataSource:
         )
 
 
-    async def updateadigitalsignageimageorvideofile(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def updateadigitalsignageimageorvideofile(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Updateadigitalsignageimageorvideofile
         method: PUT
@@ -13044,12 +13045,12 @@ class ZoomDataSource:
         )
 
 
-    async def adddigitalsignageimageorvideo(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def adddigitalsignageimageorvideo(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Adddigitalsignageimageorvideo
         method: POST
         path: /zrdigitalsignage/files
-        summary: Add a digital signage image or video 
+        summary: Add a digital signage image or video
         """
         endpoint = f"{self._base_url}/zrdigitalsignage/files"
         params = {  }
@@ -13061,7 +13062,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_device_1(self, roomId: Optional[Any] = None, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_device_1(self, roomId: Optional[object] = None, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteDevice
         method: DELETE
@@ -13077,7 +13078,7 @@ class ZoomDataSource:
         )
 
 
-    async def change_zoom_rooms_app_version(self, roomId: Optional[Any] = None, deviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def change_zoom_rooms_app_version(self, roomId: Optional[object] = None, deviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: changeZoomRoomsAppVersion
         method: PUT
@@ -13094,7 +13095,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_zr_locations(self, parent_location_id: Optional[Any] = None, type_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_zr_locations(self, parent_location_id: Optional[object] = None, type_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listZRLocations
         method: GET
@@ -13110,7 +13111,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_azr_location(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_azr_location(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addAZRLocation
         method: POST
@@ -13127,7 +13128,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zr_location_structure(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zr_location_structure(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getZRLocationStructure
         method: GET
@@ -13143,7 +13144,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_zoom_rooms_location_structure(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_zoom_rooms_location_structure(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateZoomRoomsLocationStructure
         method: PUT
@@ -13160,7 +13161,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zr_location_profile(self, locationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zr_location_profile(self, locationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getZRLocationProfile
         method: GET
@@ -13176,7 +13177,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_azr_location(self, locationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_azr_location(self, locationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteAZRLocation
         method: DELETE
@@ -13192,7 +13193,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_zr_location_profile(self, locationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_zr_location_profile(self, locationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateZRLocationProfile
         method: PATCH
@@ -13209,7 +13210,7 @@ class ZoomDataSource:
         )
 
 
-    async def change_parent_location(self, locationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def change_parent_location(self, locationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: changeParentLocation
         method: PUT
@@ -13226,7 +13227,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_zr_location_settings(self, locationId: Optional[Any] = None, setting_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_zr_location_settings(self, locationId: Optional[object] = None, setting_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getZRLocationSettings
         method: GET
@@ -13242,7 +13243,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_zr_location_settings(self, locationId: Optional[Any] = None, setting_type: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_zr_location_settings(self, locationId: Optional[object] = None, setting_type: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateZRLocationSettings
         method: PATCH
@@ -13259,7 +13260,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_tags_to_zoom_rooms_by_location_id(self, locationId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_tags_to_zoom_rooms_by_location_id(self, locationId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AssignTagsToZoomRoomsByLocationID
         method: PATCH
@@ -13276,7 +13277,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_zoom_room_tags(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_zoom_room_tags(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listZoomRoomTags
         method: GET
@@ -13292,7 +13293,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_zoom_room_tag(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_zoom_room_tag(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createZoomRoomTag
         method: POST
@@ -13309,7 +13310,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_zoom_room_tag(self, tagId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_zoom_room_tag(self, tagId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteZoomRoomTag
         method: DELETE
@@ -13325,7 +13326,7 @@ class ZoomDataSource:
         )
 
 
-    async def edit_zoom_room_tag(self, tagId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def edit_zoom_room_tag(self, tagId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: editZoomRoomTag
         method: PATCH
@@ -13342,7 +13343,7 @@ class ZoomDataSource:
         )
 
 
-    async def unassign_zoom_room_tag(self, roomId: Optional[Any] = None, tag_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def unassign_zoom_room_tag(self, roomId: Optional[object] = None, tag_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: unassignZoomRoomTag
         method: DELETE
@@ -13358,7 +13359,7 @@ class ZoomDataSource:
         )
 
 
-    async def assign_tags_to_a_zoom_room(self, roomId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assign_tags_to_a_zoom_room(self, roomId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AssignTagsToAZoomRoom
         method: PATCH
@@ -13375,7 +13376,7 @@ class ZoomDataSource:
         )
 
 
-    async def getroutingresponse(self, formId: Optional[Any] = None, responseId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getroutingresponse(self, formId: Optional[object] = None, responseId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getroutingresponse
         method: GET
@@ -13391,7 +13392,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_analytics(self, to: Optional[Any] = None, from_: Optional[Any] = None, time_zone: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_analytics(self, to: Optional[object] = None, from_: Optional[object] = None, time_zone: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: report_analytics
         method: GET
@@ -13407,7 +13408,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_availability(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_availability(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: list_availability
         method: GET
@@ -13423,7 +13424,7 @@ class ZoomDataSource:
         )
 
 
-    async def insert_availability(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def insert_availability(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: insert_availability
         method: POST
@@ -13440,12 +13441,12 @@ class ZoomDataSource:
         )
 
 
-    async def get_availability(self, availabilityId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_availability(self, availabilityId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_availability
         method: GET
         path: /scheduler/availability/{availabilityId}
-        summary: Get availability 
+        summary: Get availability
         """
         endpoint = f"{self._base_url}/scheduler/availability/{availabilityId}"
         params = { 'availabilityId': availabilityId }
@@ -13456,7 +13457,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_availability(self, availabilityId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_availability(self, availabilityId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delete_availability
         method: DELETE
@@ -13472,7 +13473,7 @@ class ZoomDataSource:
         )
 
 
-    async def patch_availability(self, availabilityId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def patch_availability(self, availabilityId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: patch_availability
         method: PATCH
@@ -13489,7 +13490,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_scheduled_events(self, to: Optional[Any] = None, from_: Optional[Any] = None, page_size: Optional[Any] = None, order_by: Optional[Any] = None, time_zone: Optional[Any] = None, next_page_token: Optional[Any] = None, show_deleted: Optional[Any] = None, event_type: Optional[Any] = None, user_id: Optional[Any] = None, search: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_scheduled_events(self, to: Optional[object] = None, from_: Optional[object] = None, page_size: Optional[object] = None, order_by: Optional[object] = None, time_zone: Optional[object] = None, next_page_token: Optional[object] = None, show_deleted: Optional[object] = None, event_type: Optional[object] = None, user_id: Optional[object] = None, search: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: list_scheduled_events
         method: GET
@@ -13505,12 +13506,12 @@ class ZoomDataSource:
         )
 
 
-    async def get_scheduled_events(self, eventId: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_scheduled_events(self, eventId: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_scheduled_events
         method: GET
         path: /scheduler/events/{eventId}
-        summary: Get scheduled events 
+        summary: Get scheduled events
         """
         endpoint = f"{self._base_url}/scheduler/events/{eventId}"
         params = { 'eventId': eventId, 'user_id': user_id }
@@ -13521,12 +13522,12 @@ class ZoomDataSource:
         )
 
 
-    async def delete_scheduled_events(self, eventId: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_scheduled_events(self, eventId: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delete_scheduled_events
         method: DELETE
         path: /scheduler/events/{eventId}
-        summary: Delete scheduled events 
+        summary: Delete scheduled events
         """
         endpoint = f"{self._base_url}/scheduler/events/{eventId}"
         params = { 'eventId': eventId, 'user_id': user_id }
@@ -13537,7 +13538,7 @@ class ZoomDataSource:
         )
 
 
-    async def patch_scheduled_events(self, eventId: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def patch_scheduled_events(self, eventId: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: patch_scheduled_events
         method: PATCH
@@ -13554,7 +13555,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_scheduled_event_attendee(self, eventId: Optional[Any] = None, attendeeId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_scheduled_event_attendee(self, eventId: Optional[object] = None, attendeeId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_scheduled_event_attendee
         method: GET
@@ -13570,7 +13571,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_schedules(self, to: Optional[Any] = None, from_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, show_deleted: Optional[Any] = None, time_zone: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_schedules(self, to: Optional[object] = None, from_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, show_deleted: Optional[object] = None, time_zone: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: list_schedules
         method: GET
@@ -13586,7 +13587,7 @@ class ZoomDataSource:
         )
 
 
-    async def insert_schedule(self, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def insert_schedule(self, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: insert_schedule
         method: POST
@@ -13603,7 +13604,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_schedule(self, scheduleId: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_schedule(self, scheduleId: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_schedule
         method: GET
@@ -13619,7 +13620,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_schedules(self, scheduleId: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_schedules(self, scheduleId: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delete_schedules
         method: DELETE
@@ -13635,7 +13636,7 @@ class ZoomDataSource:
         )
 
 
-    async def patch_schedule(self, scheduleId: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def patch_schedule(self, scheduleId: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: patch_schedule
         method: PATCH
@@ -13652,7 +13653,7 @@ class ZoomDataSource:
         )
 
 
-    async def single_use_link(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def single_use_link(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: single_use_link
         method: POST
@@ -13669,7 +13670,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_shares(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_shares(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: create_shares
         method: POST
@@ -13686,7 +13687,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: get_user
         method: GET
@@ -13702,7 +13703,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_scim2_list(self, startIndex: Optional[Any] = None, count: Optional[Any] = None, filter: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_scim2_list(self, startIndex: Optional[object] = None, count: Optional[object] = None, filter: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupSCIM2List
         method: GET
@@ -13718,7 +13719,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_scim2_create(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_scim2_create(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupScim2Create
         method: POST
@@ -13735,7 +13736,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_scim2_get(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_scim2_get(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupSCIM2Get
         method: GET
@@ -13751,7 +13752,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_scim2_delete(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_scim2_delete(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupSCIM2Delete
         method: DELETE
@@ -13767,7 +13768,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_scim2_update(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_scim2_update(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupSCIM2Update
         method: PATCH
@@ -13784,7 +13785,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_scim2_list(self, startIndex: Optional[Any] = None, count: Optional[Any] = None, filter: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_scim2_list(self, startIndex: Optional[object] = None, count: Optional[object] = None, filter: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSCIM2List
         method: GET
@@ -13800,7 +13801,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_scim2_create(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_scim2_create(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userScim2Create
         method: POST
@@ -13817,7 +13818,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_scim2_get(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_scim2_get(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSCIM2Get
         method: GET
@@ -13833,7 +13834,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_scim2_update(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_scim2_update(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSCIM2Update
         method: PUT
@@ -13850,7 +13851,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_scim2_delete(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_scim2_delete(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSCIM2Delete
         method: DELETE
@@ -13866,7 +13867,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_adscim2_deactivate(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_adscim2_deactivate(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userADSCIM2Deactivate
         method: PATCH
@@ -13883,7 +13884,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_channel_mention_group(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_channel_mention_group(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getChannelMentionGroup
         method: GET
@@ -13899,7 +13900,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_channel_mention_group(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_channel_mention_group(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createChannelMentionGroup
         method: POST
@@ -13916,7 +13917,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_channel_mention_group(self, channelId: Optional[Any] = None, mentionGroupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_channel_mention_group(self, channelId: Optional[object] = None, mentionGroupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteAChannelMentionGroup
         method: DELETE
@@ -13932,7 +13933,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_channel_mention_group(self, channelId: Optional[Any] = None, mentionGroupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_channel_mention_group(self, channelId: Optional[object] = None, mentionGroupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateChannelMentionGroup
         method: PATCH
@@ -13949,7 +13950,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_the_members_of_mention_group(self, channelId: Optional[Any] = None, mentionGroupId: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_the_members_of_mention_group(self, channelId: Optional[object] = None, mentionGroupId: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listTheMembersOfMentionGroup
         method: GET
@@ -13965,7 +13966,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_a_channel_members_to_mention_group(self, channelId: Optional[Any] = None, mentionGroupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_a_channel_members_to_mention_group(self, channelId: Optional[object] = None, mentionGroupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addAChannelMembersToMentionGroup
         method: POST
@@ -13982,7 +13983,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_channel_mention_group_members(self, channelId: Optional[Any] = None, mentionGroupId: Optional[Any] = None, identifiers: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_channel_mention_group_members(self, channelId: Optional[object] = None, mentionGroupId: Optional[object] = None, identifiers: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: removeChannelMentionGroupMembers
         method: DELETE
@@ -13998,7 +13999,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_all_channel_activity_logs(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, activity_type: Optional[Any] = None, start_date: Optional[Any] = None, end_date: Optional[Any] = None, channel_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_all_channel_activity_logs(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, activity_type: Optional[object] = None, start_date: Optional[object] = None, end_date: Optional[object] = None, channel_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listAllChannelActivityLogs
         method: GET
@@ -14014,7 +14015,7 @@ class ZoomDataSource:
         )
 
 
-    async def perform_operations_on_channels(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def perform_operations_on_channels(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: PerformOperationsOnChannels
         method: PATCH
@@ -14031,7 +14032,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user_level_channel(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user_level_channel(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getUserLevelChannel
         method: GET
@@ -14047,7 +14048,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_user_level_channel(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_user_level_channel(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteUserLevelChannel
         method: DELETE
@@ -14063,7 +14064,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_user_level_channel(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_user_level_channel(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateUserLevelChannel
         method: PATCH
@@ -14080,7 +14081,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_user_level_channel_members(self, channelId: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_user_level_channel_members(self, channelId: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listUserLevelChannelMembers
         method: GET
@@ -14096,7 +14097,7 @@ class ZoomDataSource:
         )
 
 
-    async def invite_user_level_channel_members(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def invite_user_level_channel_members(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: InviteUserLevelChannelMembers
         method: POST
@@ -14113,7 +14114,7 @@ class ZoomDataSource:
         )
 
 
-    async def batch_remove_channel_members(self, channelId: Optional[Any] = None, member_ids: Optional[Any] = None, user_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def batch_remove_channel_members(self, channelId: Optional[object] = None, member_ids: Optional[object] = None, user_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: batchRemoveChannelMembers
         method: DELETE
@@ -14129,7 +14130,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_channel_members_groups(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_channel_members_groups(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listChannelMembersGroups
         method: GET
@@ -14145,7 +14146,7 @@ class ZoomDataSource:
         )
 
 
-    async def invite_channel_members_groups(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def invite_channel_members_groups(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: inviteChannelMembersGroups
         method: POST
@@ -14162,7 +14163,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_a_member_group(self, channelId: Optional[Any] = None, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_a_member_group(self, channelId: Optional[object] = None, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: removeAMemberGroup
         method: DELETE
@@ -14178,7 +14179,7 @@ class ZoomDataSource:
         )
 
 
-    async def join_channel(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def join_channel(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: joinChannel
         method: POST
@@ -14194,7 +14195,7 @@ class ZoomDataSource:
         )
 
 
-    async def leave_channel(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def leave_channel(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: leaveChannel
         method: DELETE
@@ -14210,7 +14211,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_a_user_level_channel_member(self, channelId: Optional[Any] = None, identifier: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_a_user_level_channel_member(self, channelId: Optional[object] = None, identifier: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: removeAUserLevelChannelMember
         method: DELETE
@@ -14226,7 +14227,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_channels(self, userId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_channels(self, userId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getChannels
         method: GET
@@ -14242,7 +14243,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_channel(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_channel(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createChannel
         method: POST
@@ -14259,7 +14260,7 @@ class ZoomDataSource:
         )
 
 
-    async def batch_delete_channels_account_level(self, userId: Optional[Any] = None, channel_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def batch_delete_channels_account_level(self, userId: Optional[object] = None, channel_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: batchDeleteChannelsAccountLevel
         method: DELETE
@@ -14275,7 +14276,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_account_channels(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_account_channels(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getAccountChannels
         method: GET
@@ -14291,7 +14292,7 @@ class ZoomDataSource:
         )
 
 
-    async def search_channels(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def search_channels(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: searchChannels
         method: POST
@@ -14308,7 +14309,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_channel_activity_logs(self, channelId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, activity_type: Optional[Any] = None, start_date: Optional[Any] = None, end_date: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_channel_activity_logs(self, channelId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, activity_type: Optional[object] = None, start_date: Optional[object] = None, end_date: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listChannelActivityLogs
         method: GET
@@ -14324,7 +14325,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_channel_retention(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_channel_retention(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getChannelRetention
         method: GET
@@ -14340,7 +14341,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_channel_retention(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_channel_retention(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateChannelRetention
         method: PATCH
@@ -14357,7 +14358,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_channel(self, channelId: Optional[Any] = None, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_channel(self, channelId: Optional[object] = None, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getChannel
         method: GET
@@ -14373,7 +14374,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_channel(self, channelId: Optional[Any] = None, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_channel(self, channelId: Optional[object] = None, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteChannel
         method: DELETE
@@ -14389,7 +14390,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_channel(self, channelId: Optional[Any] = None, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_channel(self, channelId: Optional[object] = None, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateChannel
         method: PATCH
@@ -14406,7 +14407,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_channel_administrators(self, userId: Optional[Any] = None, channelId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_channel_administrators(self, userId: Optional[object] = None, channelId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listChannelAdministrators
         method: GET
@@ -14422,7 +14423,7 @@ class ZoomDataSource:
         )
 
 
-    async def promote_channel_members_as_admin(self, userId: Optional[Any] = None, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def promote_channel_members_as_admin(self, userId: Optional[object] = None, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: promoteChannelMembersAsAdmin
         method: POST
@@ -14439,7 +14440,7 @@ class ZoomDataSource:
         )
 
 
-    async def batch_demote_channel_administrators(self, userId: Optional[Any] = None, channelId: Optional[Any] = None, admin_ids: Optional[Any] = None, user_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def batch_demote_channel_administrators(self, userId: Optional[object] = None, channelId: Optional[object] = None, admin_ids: Optional[object] = None, user_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: batchDemoteChannelAdministrators
         method: DELETE
@@ -14455,7 +14456,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_channel_members(self, channelId: Optional[Any] = None, userId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_channel_members(self, channelId: Optional[object] = None, userId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listChannelMembers
         method: GET
@@ -14471,7 +14472,7 @@ class ZoomDataSource:
         )
 
 
-    async def invite_channel_members(self, channelId: Optional[Any] = None, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def invite_channel_members(self, channelId: Optional[object] = None, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: inviteChannelMembers
         method: POST
@@ -14488,7 +14489,7 @@ class ZoomDataSource:
         )
 
 
-    async def batch_remove_user_channel_members(self, channelId: Optional[Any] = None, userId: Optional[Any] = None, identifiers: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def batch_remove_user_channel_members(self, channelId: Optional[object] = None, userId: Optional[object] = None, identifiers: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: batchRemoveUserChannelMembers
         method: DELETE
@@ -14504,7 +14505,7 @@ class ZoomDataSource:
         )
 
 
-    async def remove_a_channel_member(self, channelId: Optional[Any] = None, identifier: Optional[Any] = None, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def remove_a_channel_member(self, channelId: Optional[object] = None, identifier: Optional[object] = None, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: removeAChannelMember
         method: DELETE
@@ -14520,7 +14521,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_custom_emojis(self, page_size: Optional[Any] = None, search_key: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_custom_emojis(self, page_size: Optional[object] = None, search_key: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCustomEmojis
         method: GET
@@ -14536,7 +14537,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_a_custom_emoji(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_a_custom_emoji(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addACustomEmoji
         method: POST
@@ -14553,7 +14554,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_custom_emoji(self, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_custom_emoji(self, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteCustomEmoji
         method: DELETE
@@ -14569,7 +14570,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_file_info(self, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_file_info(self, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getFileInfo
         method: GET
@@ -14585,7 +14586,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_chat_file(self, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_chat_file(self, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteChatFile
         method: DELETE
@@ -14601,7 +14602,7 @@ class ZoomDataSource:
         )
 
 
-    async def upload_a_chat_file(self, userId: Optional[Any] = None, postToPersonalChat: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def upload_a_chat_file(self, userId: Optional[object] = None, postToPersonalChat: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: uploadAChatFile
         method: POST
@@ -14618,7 +14619,7 @@ class ZoomDataSource:
         )
 
 
-    async def send_chat_file(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def send_chat_file(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: sendChatFile
         method: POST
@@ -14635,7 +14636,7 @@ class ZoomDataSource:
         )
 
 
-    async def perform_message_of_channel(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def perform_message_of_channel(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: PerformMessageOfChannel
         method: PATCH
@@ -14652,7 +14653,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_channel_pinned_messages(self, channelId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, include_history: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_channel_pinned_messages(self, channelId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, include_history: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listChannelPinnedMessages
         method: GET
@@ -14668,7 +14669,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_forwarded_message(self, forwardId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_forwarded_message(self, forwardId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getForwardedMessage
         method: GET
@@ -14684,7 +14685,7 @@ class ZoomDataSource:
         )
 
 
-    async def fetch_bookmarks(self, to_contact: Optional[Any] = None, to_channel: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def fetch_bookmarks(self, to_contact: Optional[object] = None, to_channel: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: fetchBookmarks
         method: GET
@@ -14700,7 +14701,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_or_remove_a_bookmark(self, message_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_or_remove_a_bookmark(self, message_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addOrRemoveABookmark
         method: PATCH
@@ -14717,7 +14718,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_scheduled_messages(self, to_contact: Optional[Any] = None, to_channel: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_scheduled_messages(self, to_contact: Optional[object] = None, to_channel: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listScheduledMessages
         method: GET
@@ -14733,7 +14734,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_schedule_message(self, draftId: Optional[Any] = None, to_contact: Optional[Any] = None, to_channel: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_schedule_message(self, draftId: Optional[object] = None, to_contact: Optional[object] = None, to_channel: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteScheduleMessage
         method: DELETE
@@ -14749,7 +14750,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_chat_messages(self, userId: Optional[Any] = None, to_contact: Optional[Any] = None, to_channel: Optional[Any] = None, date: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, include_deleted_and_edited_message: Optional[Any] = None, search_type: Optional[Any] = None, search_key: Optional[Any] = None, exclude_child_message: Optional[Any] = None, download_file_formats: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_chat_messages(self, userId: Optional[object] = None, to_contact: Optional[object] = None, to_channel: Optional[object] = None, date: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, include_deleted_and_edited_message: Optional[object] = None, search_type: Optional[object] = None, search_key: Optional[object] = None, exclude_child_message: Optional[object] = None, download_file_formats: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getChatMessages
         method: GET
@@ -14765,7 +14766,7 @@ class ZoomDataSource:
         )
 
 
-    async def senda_chat_message(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def senda_chat_message(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: sendaChatMessage
         method: POST
@@ -14782,7 +14783,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_chat_message(self, userId: Optional[Any] = None, messageId: Optional[Any] = None, to_contact: Optional[Any] = None, to_channel: Optional[Any] = None, download_file_formats: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_chat_message(self, userId: Optional[object] = None, messageId: Optional[object] = None, to_contact: Optional[object] = None, to_channel: Optional[object] = None, download_file_formats: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getChatMessage
         method: GET
@@ -14798,7 +14799,7 @@ class ZoomDataSource:
         )
 
 
-    async def edit_message(self, userId: Optional[Any] = None, messageId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def edit_message(self, userId: Optional[object] = None, messageId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: editMessage
         method: PUT
@@ -14815,7 +14816,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_chat_message(self, userId: Optional[Any] = None, messageId: Optional[Any] = None, to_contact: Optional[Any] = None, to_channel: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_chat_message(self, userId: Optional[object] = None, messageId: Optional[object] = None, to_contact: Optional[object] = None, to_channel: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteChatMessage
         method: DELETE
@@ -14831,7 +14832,7 @@ class ZoomDataSource:
         )
 
 
-    async def react_message(self, userId: Optional[Any] = None, messageId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def react_message(self, userId: Optional[object] = None, messageId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reactMessage
         method: PATCH
@@ -14848,7 +14849,7 @@ class ZoomDataSource:
         )
 
 
-    async def mark_message(self, userId: Optional[Any] = None, messageId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def mark_message(self, userId: Optional[object] = None, messageId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: markMessage
         method: PATCH
@@ -14865,7 +14866,7 @@ class ZoomDataSource:
         )
 
 
-    async def retrieve_thread(self, userId: Optional[Any] = None, messageId: Optional[Any] = None, to_channel: Optional[Any] = None, to_contact: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, limit: Optional[Any] = None, sort: Optional[Any] = None, need_main_message: Optional[Any] = None, need_emoji: Optional[Any] = None, need_attachment: Optional[Any] = None, need_rich_text: Optional[Any] = None, need_at_items: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def retrieve_thread(self, userId: Optional[object] = None, messageId: Optional[object] = None, to_channel: Optional[object] = None, to_contact: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, limit: Optional[object] = None, sort: Optional[object] = None, need_main_message: Optional[object] = None, need_emoji: Optional[object] = None, need_attachment: Optional[object] = None, need_rich_text: Optional[object] = None, need_at_items: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: retrieveThread
         method: GET
@@ -14881,7 +14882,7 @@ class ZoomDataSource:
         )
 
 
-    async def migrate_channel_members(self, channelId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def migrate_channel_members(self, channelId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: MigrateChannelMembers
         method: POST
@@ -14898,7 +14899,7 @@ class ZoomDataSource:
         )
 
 
-    async def migrate_chat_message_reactions(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def migrate_chat_message_reactions(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: MigrateChatMessageReactions
         method: POST
@@ -14915,7 +14916,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_migration_channels_mapping(self, origin_platform: Optional[Any] = None, origin_team_id: Optional[Any] = None, origin_channel_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_migration_channels_mapping(self, origin_platform: Optional[object] = None, origin_team_id: Optional[object] = None, origin_channel_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getMigrationChannelsMapping
         method: GET
@@ -14931,7 +14932,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_migration_users_mapping(self, origin_platform: Optional[Any] = None, origin_team_id: Optional[Any] = None, origin_user_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_migration_users_mapping(self, origin_platform: Optional[object] = None, origin_team_id: Optional[object] = None, origin_user_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getMigrationUsersMapping
         method: GET
@@ -14947,7 +14948,7 @@ class ZoomDataSource:
         )
 
 
-    async def migrate_chat_messages(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def migrate_chat_messages(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: MigrateChatMessages
         method: POST
@@ -14964,7 +14965,7 @@ class ZoomDataSource:
         )
 
 
-    async def migrate_a_chat_channel(self, identifier: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def migrate_a_chat_channel(self, identifier: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: MigrateAChatChannel
         method: POST
@@ -14981,7 +14982,7 @@ class ZoomDataSource:
         )
 
 
-    async def migrate1_1_conversation_or_channel_operations(self, identifier: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def migrate1_1_conversation_or_channel_operations(self, identifier: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Migrate1:1ConversationOrChannelOperations
         method: POST
@@ -14998,7 +14999,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_reminder_for_message(self, messageId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_reminder_for_message(self, messageId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createReminderForMessage
         method: POST
@@ -15015,7 +15016,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_reminder_for_message(self, messageId: Optional[Any] = None, to_contact: Optional[Any] = None, to_channel: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_reminder_for_message(self, messageId: Optional[object] = None, to_contact: Optional[object] = None, to_channel: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteReminderForMessage
         method: DELETE
@@ -15031,7 +15032,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_reminders(self, to_contact: Optional[Any] = None, to_channel: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_reminders(self, to_contact: Optional[object] = None, to_channel: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listReminders
         method: GET
@@ -15047,7 +15048,7 @@ class ZoomDataSource:
         )
 
 
-    async def star_unstar_channel_contact(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def star_unstar_channel_contact(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: starUnstarChannelContact
         method: PATCH
@@ -15064,7 +15065,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_chat_sessions(self, userId: Optional[Any] = None, type_: Optional[Any] = None, search_star: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_chat_sessions(self, userId: Optional[object] = None, type_: Optional[object] = None, search_star: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getChatSessions
         method: GET
@@ -15080,7 +15081,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user_contacts(self, type_: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user_contacts(self, type_: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getUserContacts
         method: GET
@@ -15096,7 +15097,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user_contact(self, identifier: Optional[Any] = None, query_presence_status: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user_contact(self, identifier: Optional[object] = None, query_presence_status: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getUserContact
         method: GET
@@ -15112,7 +15113,7 @@ class ZoomDataSource:
         )
 
 
-    async def search_company_contacts(self, search_key: Optional[Any] = None, query_presence_status: Optional[Any] = None, page_size: Optional[Any] = None, contact_types: Optional[Any] = None, user_status: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def search_company_contacts(self, search_key: Optional[object] = None, query_presence_status: Optional[object] = None, page_size: Optional[object] = None, contact_types: Optional[object] = None, user_status: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: searchCompanyContacts
         method: GET
@@ -15128,7 +15129,7 @@ class ZoomDataSource:
         )
 
 
-    async def sendimmessages(self, chat_user: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def sendimmessages(self, chat_user: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: sendimmessages
         method: POST
@@ -15145,7 +15146,7 @@ class ZoomDataSource:
         )
 
 
-    async def im_groups(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def im_groups(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: imGroups
         method: GET
@@ -15161,7 +15162,7 @@ class ZoomDataSource:
         )
 
 
-    async def im_group_create(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def im_group_create(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: imGroupCreate
         method: POST
@@ -15178,7 +15179,7 @@ class ZoomDataSource:
         )
 
 
-    async def im_group(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def im_group(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: imGroup
         method: GET
@@ -15194,7 +15195,7 @@ class ZoomDataSource:
         )
 
 
-    async def im_group_delete(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def im_group_delete(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: imGroupDelete
         method: DELETE
@@ -15210,7 +15211,7 @@ class ZoomDataSource:
         )
 
 
-    async def im_group_update(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def im_group_update(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: imGroupUpdate
         method: PATCH
@@ -15227,7 +15228,7 @@ class ZoomDataSource:
         )
 
 
-    async def im_group_members(self, groupId: Optional[Any] = None, page_size: Optional[Any] = None, page_number: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def im_group_members(self, groupId: Optional[object] = None, page_size: Optional[object] = None, page_number: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: imGroupMembers
         method: GET
@@ -15243,7 +15244,7 @@ class ZoomDataSource:
         )
 
 
-    async def im_group_members_create(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def im_group_members_create(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: imGroupMembersCreate
         method: POST
@@ -15260,7 +15261,7 @@ class ZoomDataSource:
         )
 
 
-    async def im_group_members_delete(self, groupId: Optional[Any] = None, memberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def im_group_members_delete(self, groupId: Optional[object] = None, memberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: imGroupMembersDelete
         method: DELETE
@@ -15276,7 +15277,7 @@ class ZoomDataSource:
         )
 
 
-    async def send_new_contact_invitation(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def send_new_contact_invitation(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: sendNewContactInvitation
         method: POST
@@ -15293,7 +15294,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_legal_hold_matters(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_legal_hold_matters(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listLegalHoldMatters
         method: GET
@@ -15309,7 +15310,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_legal_hold_matter(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_legal_hold_matter(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addLegalHoldMatter
         method: POST
@@ -15326,7 +15327,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_legal_hold_matters(self, matterId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_legal_hold_matters(self, matterId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteLegalHoldMatters
         method: DELETE
@@ -15342,7 +15343,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_legal_hold_matter(self, matterId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_legal_hold_matter(self, matterId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateLegalHoldMatter
         method: PATCH
@@ -15359,7 +15360,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_legal_hold_files(self, matterId: Optional[Any] = None, identifier: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_legal_hold_files(self, matterId: Optional[object] = None, identifier: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listLegalHoldFiles
         method: GET
@@ -15375,7 +15376,7 @@ class ZoomDataSource:
         )
 
 
-    async def download_legal_hold_files(self, matterId: Optional[Any] = None, file_key: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def download_legal_hold_files(self, matterId: Optional[object] = None, file_key: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: downloadLegalHoldFiles
         method: GET
@@ -15391,7 +15392,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_chat_sessions(self, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_chat_sessions(self, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportChatSessions
         method: GET
@@ -15407,7 +15408,7 @@ class ZoomDataSource:
         )
 
 
-    async def report_chat_messages(self, sessionId: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, include_fields: Optional[Any] = None, include_bot_message: Optional[Any] = None, include_reactions: Optional[Any] = None, query_all_modifications: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def report_chat_messages(self, sessionId: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, include_fields: Optional[object] = None, include_bot_message: Optional[object] = None, include_reactions: Optional[object] = None, query_all_modifications: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: reportChatMessages
         method: GET
@@ -15423,7 +15424,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_shared_spaces(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, user_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_shared_spaces(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, user_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listSharedSpaces
         method: GET
@@ -15439,7 +15440,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_space(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_space(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: createSpace
         method: POST
@@ -15456,7 +15457,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_shared_space(self, spaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_shared_space(self, spaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getASharedSpace
         method: GET
@@ -15472,7 +15473,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_space(self, spaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_space(self, spaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteSpace
         method: DELETE
@@ -15488,7 +15489,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_shared_space_settings(self, spaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_shared_space_settings(self, spaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateSharedSpaceSettings
         method: PATCH
@@ -15505,7 +15506,7 @@ class ZoomDataSource:
         )
 
 
-    async def promote_space_members(self, spaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def promote_space_members(self, spaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: promoteSpaceMembers
         method: POST
@@ -15522,7 +15523,7 @@ class ZoomDataSource:
         )
 
 
-    async def demote_space_admins(self, spaceId: Optional[Any] = None, identifiers: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def demote_space_admins(self, spaceId: Optional[object] = None, identifiers: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: demoteSpaceAdmins
         method: DELETE
@@ -15538,7 +15539,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_shared_space_channels(self, spaceId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_shared_space_channels(self, spaceId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listSharedSpaceChannels
         method: GET
@@ -15554,7 +15555,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_shared_space_channels(self, spaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_shared_space_channels(self, spaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateSharedSpaceChannels
         method: PATCH
@@ -15571,7 +15572,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_shared_space_members(self, spaceId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, role: Optional[Any] = None, status: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_shared_space_members(self, spaceId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, role: Optional[object] = None, status: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listSharedSpaceMembers
         method: GET
@@ -15587,7 +15588,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_space_members(self, spaceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_space_members(self, spaceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: addSpaceMembers
         method: POST
@@ -15604,7 +15605,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_space_members(self, spaceId: Optional[Any] = None, identifiers: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_space_members(self, spaceId: Optional[object] = None, identifiers: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: deleteSpaceMembers
         method: DELETE
@@ -15620,7 +15621,7 @@ class ZoomDataSource:
         )
 
 
-    async def transfer_space_owner(self, spaceId: Optional[Any] = None, identifier: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def transfer_space_owner(self, spaceId: Optional[object] = None, identifier: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: transferSpaceOwner
         method: PATCH
@@ -15636,7 +15637,7 @@ class ZoomDataSource:
         )
 
 
-    async def contact_groups(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def contact_groups(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: contactGroups
         method: GET
@@ -15652,7 +15653,7 @@ class ZoomDataSource:
         )
 
 
-    async def contact_group_create(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def contact_group_create(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: contactGroupCreate
         method: POST
@@ -15669,7 +15670,7 @@ class ZoomDataSource:
         )
 
 
-    async def contact_group(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def contact_group(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: contactGroup
         method: GET
@@ -15685,7 +15686,7 @@ class ZoomDataSource:
         )
 
 
-    async def contact_group_delete(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def contact_group_delete(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: contactGroupDelete
         method: DELETE
@@ -15701,7 +15702,7 @@ class ZoomDataSource:
         )
 
 
-    async def contact_group_update(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def contact_group_update(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: contactGroupUpdate
         method: PATCH
@@ -15718,7 +15719,7 @@ class ZoomDataSource:
         )
 
 
-    async def contact_group_members(self, groupId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def contact_group_members(self, groupId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: contactGroupMembers
         method: GET
@@ -15734,7 +15735,7 @@ class ZoomDataSource:
         )
 
 
-    async def contact_group_member_add(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def contact_group_member_add(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: contactGroupMemberAdd
         method: POST
@@ -15751,7 +15752,7 @@ class ZoomDataSource:
         )
 
 
-    async def contact_group_member_remove(self, groupId: Optional[Any] = None, member_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def contact_group_member_remove(self, groupId: Optional[object] = None, member_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: contactGroupMemberRemove
         method: DELETE
@@ -15767,7 +15768,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_divisions(self, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_divisions(self, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listDivisions
         method: GET
@@ -15783,7 +15784,7 @@ class ZoomDataSource:
         )
 
 
-    async def createadivision(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def createadivision(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Createadivision
         method: POST
@@ -15800,7 +15801,7 @@ class ZoomDataSource:
         )
 
 
-    async def getdivision(self, divisionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getdivision(self, divisionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getdivision
         method: GET
@@ -15816,7 +15817,7 @@ class ZoomDataSource:
         )
 
 
-    async def deletedivision(self, divisionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deletedivision(self, divisionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deletedivision
         method: DELETE
@@ -15832,7 +15833,7 @@ class ZoomDataSource:
         )
 
 
-    async def updateadivision(self, divisionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def updateadivision(self, divisionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Updateadivision
         method: PATCH
@@ -15849,7 +15850,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_division_members(self, divisionId: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_division_members(self, divisionId: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listDivisionMembers
         method: GET
@@ -15865,7 +15866,7 @@ class ZoomDataSource:
         )
 
 
-    async def assigndivision_member(self, divisionId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def assigndivision_member(self, divisionId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: assigndivisionMember
         method: POST
@@ -15882,7 +15883,7 @@ class ZoomDataSource:
         )
 
 
-    async def groups(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def groups(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groups
         method: GET
@@ -15898,7 +15899,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_create(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_create(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupCreate
         method: POST
@@ -15915,7 +15916,7 @@ class ZoomDataSource:
         )
 
 
-    async def group(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: group
         method: GET
@@ -15931,7 +15932,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_delete(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_delete(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupDelete
         method: DELETE
@@ -15947,7 +15948,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_update(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_update(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupUpdate
         method: PATCH
@@ -15964,7 +15965,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_admins(self, groupId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_admins(self, groupId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupAdmins
         method: GET
@@ -15980,7 +15981,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_admins_create(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_admins_create(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupAdminsCreate
         method: POST
@@ -15997,7 +15998,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_admins_delete(self, groupId: Optional[Any] = None, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_admins_delete(self, groupId: Optional[object] = None, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupAdminsDelete
         method: DELETE
@@ -16013,7 +16014,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_channels(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_channels(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupChannels
         method: GET
@@ -16029,7 +16030,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_group_lock_settings(self, groupId: Optional[Any] = None, option: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_group_lock_settings(self, groupId: Optional[object] = None, option: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getGroupLockSettings
         method: GET
@@ -16045,7 +16046,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_locked_settings(self, groupId: Optional[Any] = None, option: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_locked_settings(self, groupId: Optional[object] = None, option: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupLockedSettings
         method: PATCH
@@ -16062,12 +16063,12 @@ class ZoomDataSource:
         )
 
 
-    async def group_members(self, groupId: Optional[Any] = None, page_size: Optional[Any] = None, page_number: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_members(self, groupId: Optional[object] = None, page_size: Optional[object] = None, page_number: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupMembers
         method: GET
         path: /groups/{groupId}/members
-        summary: List group members 
+        summary: List group members
         """
         endpoint = f"{self._base_url}/groups/{groupId}/members"
         params = { 'groupId': groupId, 'page_size': page_size, 'page_number': page_number, 'next_page_token': next_page_token }
@@ -16078,7 +16079,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_members_create(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_members_create(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupMembersCreate
         method: POST
@@ -16095,7 +16096,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_members_delete(self, groupId: Optional[Any] = None, memberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_members_delete(self, groupId: Optional[object] = None, memberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupMembersDelete
         method: DELETE
@@ -16111,7 +16112,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_a_group_member(self, groupId: Optional[Any] = None, memberId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_a_group_member(self, groupId: Optional[object] = None, memberId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateAGroupMember
         method: PATCH
@@ -16128,7 +16129,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_group_settings(self, groupId: Optional[Any] = None, option: Optional[Any] = None, custom_query_fields: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_group_settings(self, groupId: Optional[object] = None, option: Optional[object] = None, custom_query_fields: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getGroupSettings
         method: GET
@@ -16144,7 +16145,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_group_settings(self, groupId: Optional[Any] = None, option: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_group_settings(self, groupId: Optional[object] = None, option: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updateGroupSettings
         method: PATCH
@@ -16161,7 +16162,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_settings_registration(self, groupId: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_settings_registration(self, groupId: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupSettingsRegistration
         method: GET
@@ -16177,7 +16178,7 @@ class ZoomDataSource:
         )
 
 
-    async def group_settings_registration_update(self, groupId: Optional[Any] = None, type_: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def group_settings_registration_update(self, groupId: Optional[object] = None, type_: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: groupSettingsRegistrationUpdate
         method: PATCH
@@ -16194,7 +16195,7 @@ class ZoomDataSource:
         )
 
 
-    async def upload_group_vb(self, groupId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def upload_group_vb(self, groupId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: uploadGroupVB
         method: POST
@@ -16211,7 +16212,7 @@ class ZoomDataSource:
         )
 
 
-    async def del_group_vb(self, groupId: Optional[Any] = None, file_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def del_group_vb(self, groupId: Optional[object] = None, file_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delGroupVB
         method: DELETE
@@ -16227,7 +16228,7 @@ class ZoomDataSource:
         )
 
 
-    async def users(self, status: Optional[Any] = None, page_size: Optional[Any] = None, role_id: Optional[Any] = None, page_number: Optional[Any] = None, include_fields: Optional[Any] = None, next_page_token: Optional[Any] = None, license: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def users(self, status: Optional[object] = None, page_size: Optional[object] = None, role_id: Optional[object] = None, page_number: Optional[object] = None, include_fields: Optional[object] = None, next_page_token: Optional[object] = None, license: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: users
         method: GET
@@ -16243,7 +16244,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_create(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_create(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userCreate
         method: POST
@@ -16260,7 +16261,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_email(self, email: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_email(self, email: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userEmail
         method: GET
@@ -16276,7 +16277,7 @@ class ZoomDataSource:
         )
 
 
-    async def bulk_update_feature(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def bulk_update_feature(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: bulkUpdateFeature
         method: POST
@@ -16293,7 +16294,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_zak(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_zak(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userZak
         method: GET
@@ -16309,7 +16310,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_summary(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_summary(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSummary
         method: GET
@@ -16325,7 +16326,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_vanity_name(self, vanity_name: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_vanity_name(self, vanity_name: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userVanityName
         method: GET
@@ -16341,7 +16342,7 @@ class ZoomDataSource:
         )
 
 
-    async def user(self, userId: Optional[Any] = None, login_type: Optional[Any] = None, encrypted_email: Optional[Any] = None, search_by_unique_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user(self, userId: Optional[object] = None, login_type: Optional[object] = None, encrypted_email: Optional[object] = None, search_by_unique_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: user
         method: GET
@@ -16357,7 +16358,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_delete(self, userId: Optional[Any] = None, encrypted_email: Optional[Any] = None, action: Optional[Any] = None, transfer_email: Optional[Any] = None, transfer_meeting: Optional[Any] = None, transfer_webinar: Optional[Any] = None, transfer_recording: Optional[Any] = None, transfer_whiteboard: Optional[Any] = None, transfer_clipfiles: Optional[Any] = None, transfer_notes: Optional[Any] = None, transfer_visitors: Optional[Any] = None, transfer_docs: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_delete(self, userId: Optional[object] = None, encrypted_email: Optional[object] = None, action: Optional[object] = None, transfer_email: Optional[object] = None, transfer_meeting: Optional[object] = None, transfer_webinar: Optional[object] = None, transfer_recording: Optional[object] = None, transfer_whiteboard: Optional[object] = None, transfer_clipfiles: Optional[object] = None, transfer_notes: Optional[object] = None, transfer_visitors: Optional[object] = None, transfer_docs: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userDelete
         method: DELETE
@@ -16373,7 +16374,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_update(self, userId: Optional[Any] = None, login_type: Optional[Any] = None, remove_tsp_credentials: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_update(self, userId: Optional[object] = None, login_type: Optional[object] = None, remove_tsp_credentials: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userUpdate
         method: PATCH
@@ -16390,7 +16391,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_assistants(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_assistants(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userAssistants
         method: GET
@@ -16406,7 +16407,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_assistant_create(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_assistant_create(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userAssistantCreate
         method: POST
@@ -16423,7 +16424,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_assistants_delete(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_assistants_delete(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userAssistantsDelete
         method: DELETE
@@ -16439,7 +16440,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_assistant_delete(self, userId: Optional[Any] = None, assistantId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_assistant_delete(self, userId: Optional[object] = None, assistantId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userAssistantDelete
         method: DELETE
@@ -16455,7 +16456,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_collaboration_devices(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_collaboration_devices(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: listCollaborationDevices
         method: GET
@@ -16471,7 +16472,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_collaboration_device(self, userId: Optional[Any] = None, collaborationDeviceId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_collaboration_device(self, userId: Optional[object] = None, collaborationDeviceId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getCollaborationDevice
         method: GET
@@ -16487,7 +16488,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_email_update(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_email_update(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userEmailUpdate
         method: PUT
@@ -16504,7 +16505,7 @@ class ZoomDataSource:
         )
 
 
-    async def getmeetingsummarytemplates(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getmeetingsummarytemplates(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getmeetingsummarytemplates
         method: GET
@@ -16520,7 +16521,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user_meeting_templates(self, userId: Optional[Any] = None, meetingTemplateId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user_meeting_templates(self, userId: Optional[object] = None, meetingTemplateId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getUserMeetingTemplates
         method: GET
@@ -16536,7 +16537,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_password(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_password(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userPassword
         method: PUT
@@ -16553,7 +16554,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_permission(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_permission(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userPermission
         method: GET
@@ -16569,7 +16570,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_picture(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_picture(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userPicture
         method: POST
@@ -16586,7 +16587,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_picture_delete(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_picture_delete(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userPictureDelete
         method: DELETE
@@ -16602,7 +16603,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_user_presence_status(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_user_presence_status(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: getUserPresenceStatus
         method: GET
@@ -16618,7 +16619,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_presence_status(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_presence_status(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: updatePresenceStatus
         method: PUT
@@ -16635,7 +16636,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_schedulers(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_schedulers(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSchedulers
         method: GET
@@ -16651,7 +16652,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_schedulers_delete(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_schedulers_delete(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSchedulersDelete
         method: DELETE
@@ -16667,7 +16668,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_scheduler_delete(self, userId: Optional[Any] = None, schedulerId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_scheduler_delete(self, userId: Optional[object] = None, schedulerId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSchedulerDelete
         method: DELETE
@@ -16683,7 +16684,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_settings(self, userId: Optional[Any] = None, login_type: Optional[Any] = None, option: Optional[Any] = None, custom_query_fields: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_settings(self, userId: Optional[object] = None, login_type: Optional[object] = None, option: Optional[object] = None, custom_query_fields: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSettings
         method: GET
@@ -16699,7 +16700,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_settings_update(self, userId: Optional[Any] = None, option: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_settings_update(self, userId: Optional[object] = None, option: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSettingsUpdate
         method: PATCH
@@ -16716,7 +16717,7 @@ class ZoomDataSource:
         )
 
 
-    async def upload_v_buser(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def upload_v_buser(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: uploadVBuser
         method: POST
@@ -16733,7 +16734,7 @@ class ZoomDataSource:
         )
 
 
-    async def del_user_vb(self, userId: Optional[Any] = None, file_ids: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def del_user_vb(self, userId: Optional[object] = None, file_ids: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: delUserVB
         method: DELETE
@@ -16749,7 +16750,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_status(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_status(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userStatus
         method: PUT
@@ -16766,7 +16767,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_token(self, userId: Optional[Any] = None, type_: Optional[Any] = None, ttl: Optional[Any] = None, meeting_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_token(self, userId: Optional[object] = None, type_: Optional[object] = None, ttl: Optional[object] = None, meeting_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userToken
         method: GET
@@ -16782,7 +16783,7 @@ class ZoomDataSource:
         )
 
 
-    async def user_sso_token_delete(self, userId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def user_sso_token_delete(self, userId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: userSSOTokenDelete
         method: DELETE
@@ -16798,7 +16799,7 @@ class ZoomDataSource:
         )
 
 
-    async def createwhiteboardsarchivefiles(self, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def createwhiteboardsarchivefiles(self, page_size: Optional[object] = None, next_page_token: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Createwhiteboardsarchivefiles
         method: GET
@@ -16814,7 +16815,7 @@ class ZoomDataSource:
         )
 
 
-    async def downloadwhiteboardsactivityfile(self, path: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def downloadwhiteboardsactivityfile(self, path: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Downloadwhiteboardsactivityfile
         method: GET
@@ -16830,7 +16831,7 @@ class ZoomDataSource:
         )
 
 
-    async def listwhiteboardsessionsarchivedfiles(self, seesionId: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def listwhiteboardsessionsarchivedfiles(self, seesionId: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Listwhiteboardsessionsarchivedfiles
         method: GET
@@ -16846,7 +16847,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_whiteboard_collaborator(self, whiteboardId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_whiteboard_collaborator(self, whiteboardId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetAWhiteboardCollaborator
         method: GET
@@ -16862,7 +16863,7 @@ class ZoomDataSource:
         )
 
 
-    async def add_a_whiteboard_collaborator(self, whiteboardId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def add_a_whiteboard_collaborator(self, whiteboardId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: AddAWhiteboardCollaborator
         method: POST
@@ -16879,7 +16880,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_a_whiteboard_collaborator(self, whiteboardId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_a_whiteboard_collaborator(self, whiteboardId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAWhiteboardCollaborator
         method: PATCH
@@ -16896,7 +16897,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_whiteboard_collaborator(self, whiteboardId: Optional[Any] = None, collaboratorId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_whiteboard_collaborator(self, whiteboardId: Optional[object] = None, collaboratorId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteAWhiteboardCollaborator
         method: DELETE
@@ -16912,7 +16913,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_whiteboards(self, search_key: Optional[Any] = None, user_id: Optional[Any] = None, date_filter_type: Optional[Any] = None, from_: Optional[Any] = None, to: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, project_id: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_whiteboards(self, search_key: Optional[object] = None, user_id: Optional[object] = None, date_filter_type: Optional[object] = None, from_: Optional[object] = None, to: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, project_id: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListWhiteboards
         method: GET
@@ -16928,7 +16929,7 @@ class ZoomDataSource:
         )
 
 
-    async def new_whiteboard_create(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def new_whiteboard_create(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: newWhiteboardCreate
         method: POST
@@ -16945,7 +16946,7 @@ class ZoomDataSource:
         )
 
 
-    async def get_a_whiteboard(self, whiteboardId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_a_whiteboard(self, whiteboardId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetAWhiteboard
         method: GET
@@ -16961,7 +16962,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_a_whiteboard_metadata(self, whiteboardId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_a_whiteboard_metadata(self, whiteboardId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAWhiteboardMetadata
         method: PUT
@@ -16978,7 +16979,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_a_whiteboard(self, whiteboardId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_a_whiteboard(self, whiteboardId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteAWhiteboard
         method: DELETE
@@ -16994,7 +16995,7 @@ class ZoomDataSource:
         )
 
 
-    async def createwhiteboardsexport(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def createwhiteboardsexport(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Createwhiteboardsexport
         method: POST
@@ -17011,7 +17012,7 @@ class ZoomDataSource:
         )
 
 
-    async def downloadwhiteboardexport(self, taskId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def downloadwhiteboardexport(self, taskId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Downloadwhiteboardexport
         method: GET
@@ -17027,7 +17028,7 @@ class ZoomDataSource:
         )
 
 
-    async def getwhiteboardexportdatagenerationstatus(self, taskId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getwhiteboardexportdatagenerationstatus(self, taskId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getwhiteboardexportdatagenerationstatus
         method: GET
@@ -17043,7 +17044,7 @@ class ZoomDataSource:
         )
 
 
-    async def uploadfileforwhiteboardimport(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def uploadfileforwhiteboardimport(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Uploadfileforwhiteboardimport
         method: POST
@@ -17060,7 +17061,7 @@ class ZoomDataSource:
         )
 
 
-    async def downloadembeddedwhiteboardfile(self, whiteboardId: Optional[Any] = None, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def downloadembeddedwhiteboardfile(self, whiteboardId: Optional[object] = None, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Downloadembeddedwhiteboardfile
         method: GET
@@ -17076,7 +17077,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_whiteboard_import(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_whiteboard_import(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: CreateWhiteboardImport
         method: POST
@@ -17093,12 +17094,12 @@ class ZoomDataSource:
         )
 
 
-    async def get_whiteboardimportstatus(self, taskId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def get_whiteboardimportstatus(self, taskId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: GetWhiteboardimportstatus
         method: GET
         path: /whiteboards/import/{taskId}/status
-        summary: Get whiteboard import status 
+        summary: Get whiteboard import status
         """
         endpoint = f"{self._base_url}/whiteboards/import/{taskId}/status"
         params = { 'taskId': taskId }
@@ -17109,7 +17110,7 @@ class ZoomDataSource:
         )
 
 
-    async def listallprojects(self, search_key: Optional[Any] = None, user_id: Optional[Any] = None, page_size: Optional[Any] = None, next_page_token: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def listallprojects(self, search_key: Optional[object] = None, user_id: Optional[object] = None, page_size: Optional[object] = None, next_page_token: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Listallprojects
         method: GET
@@ -17125,7 +17126,7 @@ class ZoomDataSource:
         )
 
 
-    async def createproject(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def createproject(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Createproject
         method: POST
@@ -17142,7 +17143,7 @@ class ZoomDataSource:
         )
 
 
-    async def getaproject(self, projectId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getaproject(self, projectId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getaproject
         method: GET
@@ -17158,7 +17159,7 @@ class ZoomDataSource:
         )
 
 
-    async def deleteproject(self, projectId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def deleteproject(self, projectId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Deleteproject
         method: DELETE
@@ -17174,7 +17175,7 @@ class ZoomDataSource:
         )
 
 
-    async def updateproject(self, projectId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def updateproject(self, projectId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Updateproject
         method: PATCH
@@ -17191,7 +17192,7 @@ class ZoomDataSource:
         )
 
 
-    async def getcollaboratorsofaproject(self, projectId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getcollaboratorsofaproject(self, projectId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getcollaboratorsofaproject
         method: GET
@@ -17207,7 +17208,7 @@ class ZoomDataSource:
         )
 
 
-    async def shareaprojecttonewusers(self, projectId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def shareaprojecttonewusers(self, projectId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Shareaprojecttonewusers
         method: POST
@@ -17224,7 +17225,7 @@ class ZoomDataSource:
         )
 
 
-    async def updateprojectcollaborators(self, projectId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def updateprojectcollaborators(self, projectId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Updateprojectcollaborators
         method: PATCH
@@ -17241,7 +17242,7 @@ class ZoomDataSource:
         )
 
 
-    async def removethecollaboratorfromaproject(self, projectId: Optional[Any] = None, collaboratorId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def removethecollaboratorfromaproject(self, projectId: Optional[object] = None, collaboratorId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Removethecollaboratorfromaproject
         method: DELETE
@@ -17257,7 +17258,7 @@ class ZoomDataSource:
         )
 
 
-    async def movewhiteboardstoproject(self, projectId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def movewhiteboardstoproject(self, projectId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Movewhiteboardstoproject
         method: POST
@@ -17274,7 +17275,7 @@ class ZoomDataSource:
         )
 
 
-    async def removewhiteboardsfromaproject(self, projectId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def removewhiteboardsfromaproject(self, projectId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Removewhiteboardsfromaproject
         method: DELETE
@@ -17291,7 +17292,7 @@ class ZoomDataSource:
         )
 
 
-    async def update_a_whiteboard_share_setting(self, whiteboardId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def update_a_whiteboard_share_setting(self, whiteboardId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: UpdateAWhiteboardShareSetting
         method: PATCH
@@ -17308,7 +17309,7 @@ class ZoomDataSource:
         )
 
 
-    async def create_doc(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def create_doc(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: CreateDoc
         method: POST
@@ -17325,7 +17326,7 @@ class ZoomDataSource:
         )
 
 
-    async def query_file_metadata(self, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def query_file_metadata(self, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: QueryFileMetadata
         method: GET
@@ -17341,7 +17342,7 @@ class ZoomDataSource:
         )
 
 
-    async def delete_file(self, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def delete_file(self, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: DeleteFile
         method: DELETE
@@ -17357,7 +17358,7 @@ class ZoomDataSource:
         )
 
 
-    async def modify_metadata(self, fileId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def modify_metadata(self, fileId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ModifyMetadata
         method: PATCH
@@ -17374,7 +17375,7 @@ class ZoomDataSource:
         )
 
 
-    async def list_all_children(self, fileId: Optional[Any] = None, next_page_token: Optional[Any] = None, page_size: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def list_all_children(self, fileId: Optional[object] = None, next_page_token: Optional[object] = None, page_size: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: ListAllChildren
         method: GET
@@ -17390,7 +17391,7 @@ class ZoomDataSource:
         )
 
 
-    async def uploadfilefordocsimportorattachments(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def uploadfilefordocsimportorattachments(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Uploadfilefordocsimportorattachments
         method: POST
@@ -17407,7 +17408,7 @@ class ZoomDataSource:
         )
 
 
-    async def createanewfilebyimport(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def createanewfilebyimport(self, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Createanewfilebyimport
         method: POST
@@ -17424,7 +17425,7 @@ class ZoomDataSource:
         )
 
 
-    async def getdocsfileimportstatus(self, importId: Optional[Any] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
+    async def getdocsfileimportstatus(self, importId: Optional[object] = None, timeout: Optional[int] = None) -> Dict[str, object]:
         """
         original_operation_id: Getdocsfileimportstatus
         method: GET

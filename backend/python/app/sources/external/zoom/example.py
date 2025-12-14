@@ -31,9 +31,7 @@ This example demonstrates:
 - Calling real Zoom APIs (users, groups, chat, account)
 - Graceful handling of feature-gated APIs
 """
-
 # ruff: noqa: E402
-
 import asyncio
 import os
 import sys

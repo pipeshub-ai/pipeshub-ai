@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FINAL ZOOM UNIFIED DATASOURCE GENERATOR (Rishabh-Approved)
+FINAL ZOOM UNIFIED DATASOURCE GENERATOR
 ----------------------------------------------------------
 
 ✔ No CLI arguments required
@@ -76,7 +76,7 @@ def snake(name: str) -> str:
     return s or "method"
 
 
-def load_json(p: Path):
+def load_json(p: Path) -> dict:
     with p.open("r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -88,19 +88,20 @@ def load_json(p: Path):
 HEADER = '''"""
 AUTO-GENERATED ZOOM DATASOURCE — DO NOT MODIFY MANUALLY
 """
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
+
 from backend.python.app.sources.client.iclient import IClient
 '''
 
 CLASS_HEADER = '''
 class ZoomDataSource:
-    def __init__(self, client: IClient, base_url: str = "https://api.zoom.us/v2"):
+    def __init__(self, client: IClient, base_url: str = "https://api.zoom.us/v2") -> None:
         self._rest = client
         self._base_url = base_url.rstrip("/")
 '''
 
 METHOD_TEMPLATE = '''
-    async def {method}(self{args}) -> Dict[str, Any]:
+    async def {method}(self{args}) -> Dict[str, object]:
         """
         original_operation_id: {op}
         method: {verb}
@@ -324,7 +325,7 @@ if __name__ == "__main__":
 # GENERATOR LOGIC
 # ------------------------------------------------------------
 
-def generate(overwrite: bool = True):
+def generate(overwrite: bool = True) -> None:
     """
     Generates Zoom datasource + examples into OUTPUT_DIR.
     """
@@ -370,7 +371,7 @@ def generate(overwrite: bool = True):
     for ep in endpoints:
 
         op = ep["operationId"]
-        summary = (ep["summary"] or "").replace('"', "'")
+        summary = (ep["summary"] or "").replace('"', "'").rstrip()
         raw_path = ep["path"]
         verb = ep["verb"]
 
@@ -404,7 +405,7 @@ def generate(overwrite: bool = True):
                 safe = f"{safe}_{idx}"
 
             seen.add(safe)
-            params.append(f"{safe}: Optional[Any] = None")
+            params.append(f"{safe}: Optional[object] = None")
             param_map.append(f"'{pname}': {safe}")
 
         # Add missing path variables
@@ -412,7 +413,7 @@ def generate(overwrite: bool = True):
             safe = sanitize_param(ph)
             if safe not in seen:
                 seen.add(safe)
-                params.append(f"{safe}: Optional[Any] = None")
+                params.append(f"{safe}: Optional[object] = None")
                 param_map.append(f"'{ph}': {safe}")
 
         # Add timeout
