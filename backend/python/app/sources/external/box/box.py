@@ -59,11 +59,13 @@ class BoxDataSource:
         self._box_client = boxClient
         self._client = None
 
-    def _get_client(self) -> BoxClient:
+    async def _get_client(self) -> BoxClient:
         """Get or create Box client."""
-        if self._client is None:
-            self._client = self._box_client.get_client().create_client()
-        return self._client
+        strategy = self._box_client.get_client()
+        try:
+            return strategy.get_box_client()
+        except RuntimeError:
+            return await strategy.create_client()
 
     async def files_get_file_by_id(self, file_id: str, **kwargs) -> BoxResponse:
         """Get file information by ID
@@ -77,7 +79,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'files', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
@@ -105,7 +107,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'files', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
@@ -135,7 +137,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'files', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
@@ -164,7 +166,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'files', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
@@ -193,7 +195,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'files', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
@@ -221,7 +223,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'files', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
@@ -249,7 +251,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'files', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
@@ -278,7 +280,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'files', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
@@ -307,7 +309,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'files', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
@@ -336,7 +338,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'files', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'files' not found")
@@ -364,7 +366,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'folders', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
@@ -376,7 +378,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_folder_by_id(folder_id))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -392,7 +394,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'folders', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
@@ -422,7 +424,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'folders', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
@@ -434,7 +436,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.update_folder_by_id(folder_id, name=name, parent=parent))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -451,7 +453,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'folders', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
@@ -463,7 +465,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.create_folder(name, parent))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -480,7 +482,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'folders', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
@@ -492,7 +494,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_folder_items(folder_id, limit=limit))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -509,7 +511,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'folders', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'folders' not found")
@@ -521,7 +523,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.copy_folder(folder_id, parent))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -534,7 +536,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'users', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
@@ -562,7 +564,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'users', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
@@ -591,7 +593,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'users', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
@@ -620,7 +622,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'users', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
@@ -648,7 +650,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'users', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
@@ -677,7 +679,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'users', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'users' not found")
@@ -689,7 +691,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_users(limit=limit, offset=offset))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -702,7 +704,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'groups', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
@@ -714,7 +716,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_groups())
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -730,7 +732,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'groups', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
@@ -758,7 +760,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'groups', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
@@ -787,7 +789,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'groups', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
@@ -815,7 +817,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'groups', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
@@ -843,10 +845,10 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
-        manager = getattr(client, 'groups', None)
+        client = await self._get_client()
+        manager = getattr(client, 'memberships', None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'groups' not found")
+            return BoxResponse(success=False, error="Manager 'memberships' not found")
 
         try:
             loop = asyncio.get_running_loop()
@@ -855,7 +857,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_group_memberships(group_id))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -872,7 +874,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'groups', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
@@ -901,7 +903,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'groups', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'groups' not found")
@@ -932,8 +934,8 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        client = await self._get_client()
+        manager = getattr(client, 'user_collaborations', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaborations' not found")
 
@@ -944,7 +946,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.create_collaboration(item_id, item_type, accessible_by, role))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -960,8 +962,8 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        client = await self._get_client()
+        manager = getattr(client, 'user_collaborations', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaborations' not found")
 
@@ -972,7 +974,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_collaboration_by_id(collaboration_id))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -989,8 +991,8 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        client = await self._get_client()
+        manager = getattr(client, 'user_collaborations', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaborations' not found")
 
@@ -1001,7 +1003,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.update_collaboration(collaboration_id, role=role))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -1017,8 +1019,8 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        client = await self._get_client()
+        manager = getattr(client, 'user_collaborations', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaborations' not found")
 
@@ -1045,8 +1047,8 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        client = await self._get_client()
+        manager = getattr(client, 'list_collaborations', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaborations' not found")
 
@@ -1057,7 +1059,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_file_collaborations(file_id))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -1073,8 +1075,8 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        client = await self._get_client()
+        manager = getattr(client, 'list_collaborations', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaborations' not found")
 
@@ -1085,7 +1087,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_folder_collaborations(folder_id))
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -1098,8 +1100,8 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
-        manager = getattr(client, 'collaborations', None)
+        client = await self._get_client()
+        manager = getattr(client, 'list_collaborations', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaborations' not found")
 
@@ -1110,7 +1112,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_pending_collaborations())
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -1127,7 +1129,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'shared_links', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shared_links' not found")
@@ -1156,7 +1158,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'shared_links', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shared_links' not found")
@@ -1184,7 +1186,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'shared_links', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shared_links' not found")
@@ -1213,7 +1215,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'shared_links', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shared_links' not found")
@@ -1242,7 +1244,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'comments', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
@@ -1270,7 +1272,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'comments', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
@@ -1299,7 +1301,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'comments', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
@@ -1327,7 +1329,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'comments', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
@@ -1355,7 +1357,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'comments', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
@@ -1384,7 +1386,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'comments', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'comments' not found")
@@ -1414,7 +1416,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'tasks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
@@ -1442,7 +1444,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'tasks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
@@ -1471,7 +1473,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'tasks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
@@ -1499,7 +1501,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'tasks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
@@ -1527,7 +1529,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'tasks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
@@ -1556,7 +1558,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'tasks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
@@ -1584,7 +1586,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'tasks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'tasks' not found")
@@ -1615,7 +1617,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'webhooks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'webhooks' not found")
@@ -1643,7 +1645,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'webhooks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'webhooks' not found")
@@ -1668,7 +1670,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'webhooks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'webhooks' not found")
@@ -1697,7 +1699,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'webhooks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'webhooks' not found")
@@ -1725,7 +1727,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'webhooks', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'webhooks' not found")
@@ -1755,7 +1757,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'web_links', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'web_links' not found")
@@ -1783,7 +1785,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'web_links', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'web_links' not found")
@@ -1812,7 +1814,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'web_links', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'web_links' not found")
@@ -1840,7 +1842,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'web_links', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'web_links' not found")
@@ -1870,7 +1872,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'retention_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'retention_policies' not found")
@@ -1895,7 +1897,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'retention_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'retention_policies' not found")
@@ -1923,7 +1925,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'retention_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'retention_policies' not found")
@@ -1952,7 +1954,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'retention_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'retention_policies' not found")
@@ -1980,7 +1982,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'retention_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'retention_policies' not found")
@@ -2009,7 +2011,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'retention_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'retention_policies' not found")
@@ -2037,7 +2039,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'retention_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'retention_policies' not found")
@@ -2066,7 +2068,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'legal_hold_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
@@ -2091,7 +2093,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'legal_hold_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
@@ -2119,7 +2121,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'legal_hold_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
@@ -2148,7 +2150,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'legal_hold_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
@@ -2176,7 +2178,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'legal_hold_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
@@ -2205,7 +2207,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'legal_hold_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'legal_hold_policies' not found")
@@ -2230,7 +2232,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'classifications', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'classifications' not found")
@@ -2259,7 +2261,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'classifications', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'classifications' not found")
@@ -2288,7 +2290,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'classifications', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'classifications' not found")
@@ -2317,7 +2319,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'classifications', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'classifications' not found")
@@ -2345,7 +2347,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'classifications', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'classifications' not found")
@@ -2370,7 +2372,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'shield_information_barriers', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shield_information_barriers' not found")
@@ -2398,7 +2400,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'shield_information_barriers', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shield_information_barriers' not found")
@@ -2427,7 +2429,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'shield_information_barriers', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shield_information_barriers' not found")
@@ -2456,7 +2458,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'shield_information_barriers', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'shield_information_barriers' not found")
@@ -2485,7 +2487,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'sign_requests', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'sign_requests' not found")
@@ -2510,7 +2512,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'sign_requests', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'sign_requests' not found")
@@ -2538,7 +2540,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'sign_requests', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'sign_requests' not found")
@@ -2566,7 +2568,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'sign_requests', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'sign_requests' not found")
@@ -2594,7 +2596,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'sign_requests', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'sign_requests' not found")
@@ -2619,7 +2621,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'workflows', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'workflows' not found")
@@ -2649,7 +2651,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'workflows', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'workflows' not found")
@@ -2677,7 +2679,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata_templates', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata_templates' not found")
@@ -2706,7 +2708,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata_templates', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata_templates' not found")
@@ -2737,7 +2739,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata_templates', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata_templates' not found")
@@ -2767,7 +2769,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata_templates', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata_templates' not found")
@@ -2796,7 +2798,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata_templates', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata_templates' not found")
@@ -2827,7 +2829,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
@@ -2857,7 +2859,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
@@ -2888,7 +2890,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
@@ -2918,7 +2920,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
@@ -2946,7 +2948,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
@@ -2977,7 +2979,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
@@ -3007,7 +3009,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata' not found")
@@ -3037,7 +3039,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata_cascade_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata_cascade_policies' not found")
@@ -3065,7 +3067,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata_cascade_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata_cascade_policies' not found")
@@ -3093,7 +3095,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata_cascade_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata_cascade_policies' not found")
@@ -3121,7 +3123,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata_cascade_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata_cascade_policies' not found")
@@ -3149,7 +3151,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'metadata_cascade_policies', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'metadata_cascade_policies' not found")
@@ -3178,7 +3180,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'events', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'events' not found")
@@ -3207,7 +3209,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'events', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'events' not found")
@@ -3237,7 +3239,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'enterprise_events', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'enterprise_events' not found")
@@ -3262,7 +3264,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'collections', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collections' not found")
@@ -3290,7 +3292,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'collections', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collections' not found")
@@ -3320,7 +3322,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'collections', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collections' not found")
@@ -3350,7 +3352,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'collections', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collections' not found")
@@ -3375,7 +3377,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'terms_of_service', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'terms_of_service' not found")
@@ -3403,7 +3405,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'terms_of_service', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'terms_of_service' not found")
@@ -3433,7 +3435,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'terms_of_service', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'terms_of_service' not found")
@@ -3461,7 +3463,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'terms_of_service', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'terms_of_service' not found")
@@ -3490,7 +3492,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'terms_of_service', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'terms_of_service' not found")
@@ -3515,7 +3517,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'collaboration_allowlist', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaboration_allowlist' not found")
@@ -3544,7 +3546,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'collaboration_allowlist', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaboration_allowlist' not found")
@@ -3572,7 +3574,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'collaboration_allowlist', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaboration_allowlist' not found")
@@ -3600,7 +3602,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'collaboration_allowlist', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'collaboration_allowlist' not found")
@@ -3641,7 +3643,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'search', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'search' not found")
@@ -3670,7 +3672,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'uploads', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
@@ -3699,7 +3701,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'uploads', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
@@ -3729,7 +3731,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'uploads', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
@@ -3759,7 +3761,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'uploads', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
@@ -3788,7 +3790,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'uploads', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
@@ -3817,7 +3819,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'uploads', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
@@ -3845,7 +3847,7 @@ class BoxDataSource:
         Returns:
             BoxResponse: SDK response
         """
-        client = self._get_client()
+        client = await self._get_client()
         manager = getattr(client, 'uploads', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'uploads' not found")
@@ -3861,9 +3863,9 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    def get_client(self) -> BoxClient:
+    async def get_client(self) -> BoxClient:
         """Get the underlying Box client."""
-        return self._get_client()
+        return await self._get_client()
 
     def get_sdk_info(self) -> Dict[str, Union[int, bool, List[str], Dict[str, int]]]:
         """Get information about the wrapped SDK methods."""
@@ -3901,29 +3903,29 @@ class BoxDataSource:
     async def get_root_folder(self) -> BoxResponse:
         """Get the root folder."""
         try:
-            client = self._get_client()
+            client = await self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: client.folders.get_folder_by_id("0")
             )
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
     async def get_folder_by_id(self, folder_id: str) -> BoxResponse:
         """Get folder by ID."""
         try:
-            client = self._get_client()
+            client = await self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: client.folders.get_folder_by_id(folder_id)
             )
-            return BoxResponse(success=True, data=response)
+            return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
     async def get_file_by_id(self, file_id: str) -> BoxResponse:
         """Get file by ID."""
         try:
-            client = self._get_client()
+            client = await self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: client.files.get_file_by_id(file_id)
             )
@@ -3934,7 +3936,7 @@ class BoxDataSource:
     async def get_current_user(self) -> BoxResponse:
         """Get current authenticated user."""
         try:
-            client = self._get_client()
+            client = await self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: client.users.get_user_me()
             )
@@ -3946,7 +3948,7 @@ class BoxDataSource:
     async def get_enterprise_info(self) -> BoxResponse:
         """Get enterprise information."""
         try:
-            client = self._get_client()
+            client = await self._get_client()
             user = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: client.users.get_user_me()
             )

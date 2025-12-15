@@ -38,6 +38,7 @@ from app.connectors.sources.servicenow.servicenow.connector import (
     ServiceNowConnector,
 )
 from app.connectors.sources.web.connector import WebConnector
+from app.connectors.sources.box.connector import BoxConnector
 
 
 class ConnectorFactory:
@@ -50,6 +51,7 @@ class ConnectorFactory:
         "outlook": OutlookConnector,
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
+        "box": BoxConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
         "servicenow": ServiceNowConnector,
