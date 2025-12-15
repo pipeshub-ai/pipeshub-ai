@@ -1,0 +1,7 @@
+# Gitignore for HubSpot integration
+.env
+hubspot_token.txt
+*.pyc
+__pycache__/
+venv/
+.DS_Store
