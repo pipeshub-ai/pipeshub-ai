@@ -1,5 +1,11 @@
+"""Trello Client with OAuth Authentication.
+
+This module provides OAuth-based authentication for the Trello API
+using the py-trello SDK library.
+"""
+
 import logging
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 from pydantic import BaseModel, Field, SecretStr
 
@@ -15,15 +21,15 @@ from app.sources.client.iclient import IClient
 
 
 class TrelloResponse(BaseModel):
-    """Standardized Trello API response wrapper"""
+    """Standardized Trello API response wrapper."""
 
     success: bool = Field(..., description="Whether the API call was successful")
-    data: Optional[Any] = Field(None, description="Response data from Trello API")
+    data: Optional[object] = Field(None, description="Response data from Trello API")
     error: Optional[str] = Field(None, description="Error message if the call failed")
     message: Optional[str] = Field(None, description="Additional message information")
 
     class Config:
-        """Pydantic configuration"""
+        """Pydantic configuration."""
 
         json_schema_extra = {
             "example": {
@@ -35,37 +41,44 @@ class TrelloResponse(BaseModel):
         }
 
     def to_dict(self) -> Dict[str, object]:
-        """Convert to dictionary for JSON serialization"""
+        """Convert to dictionary for JSON serialization."""
         return self.model_dump()
 
     def to_json(self) -> str:
-        """Convert to JSON string"""
+        """Convert to JSON string."""
         return self.model_dump_json()
 
 
 class TrelloRESTClient:
-    """Trello client via API Key and Token
+    """Trello client via OAuth.
 
     This client wraps the py-trello Python library and provides
-    authentication via API Key and Token.
+    authentication via OAuth (api_key, api_secret, token, token_secret).
 
     Args:
         api_key: API key from Trello Power-Ups admin
-        api_token: Token generated via Trello authorization
+        api_secret: API secret from Trello Power-Ups admin
+        oauth_token: OAuth token obtained after user authorization
+        oauth_token_secret: OAuth token secret obtained after user authorization
     """
 
     def __init__(
         self,
         api_key: str,
-        api_token: str,
+        api_secret: str,
+        oauth_token: str,
+        oauth_token_secret: str,
     ) -> None:
+        """Initialize the Trello client with OAuth credentials."""
         self._client: PyTrelloClient = PyTrelloClient(
             api_key=api_key,
-            token=api_token,
+            api_secret=api_secret,
+            token=oauth_token,
+            token_secret=oauth_token_secret,
         )
 
     def get_trello_client(self) -> PyTrelloClient:
-        """Get the Trello client
+        """Get the Trello client.
 
         Returns:
             PyTrelloClient instance
@@ -73,45 +86,69 @@ class TrelloRESTClient:
         return self._client
 
 
-class TrelloApiKeyConfig(BaseModel):
-    """Configuration for Trello client via API Key and Token
+class TrelloOAuthConfig(BaseModel):
+    """Configuration for Trello client via OAuth.
+
+    OAuth allows multi-user scenarios where each user authorizes
+    the application and receives their own token pair.
 
     Args:
         api_key: API key from Trello Power-Ups admin console
-        api_token: Token generated via Trello authorization flow
+        api_secret: API secret from Trello Power-Ups admin console
+        oauth_token: OAuth token from user authorization flow
+        oauth_token_secret: OAuth token secret from user authorization flow
     """
 
     api_key: SecretStr = Field(..., description="API key from Trello Power-Ups admin")
-    api_token: SecretStr = Field(..., description="Token from Trello authorization")
+    api_secret: SecretStr = Field(
+        ..., description="API secret from Trello Power-Ups admin"
+    )
+    oauth_token: SecretStr = Field(
+        ..., description="OAuth token from user authorization"
+    )
+    oauth_token_secret: SecretStr = Field(
+        ..., description="OAuth token secret from user authorization"
+    )
 
     def create_client(self) -> "TrelloRESTClient":
-        """Create a Trello client with API key and token authentication
+        """Create a Trello client with OAuth authentication.
 
         Returns:
             TrelloRESTClient instance
         """
         return TrelloRESTClient(
             api_key=self.api_key.get_secret_value(),
-            api_token=self.api_token.get_secret_value(),
+            api_secret=self.api_secret.get_secret_value(),
+            oauth_token=self.oauth_token.get_secret_value(),
+            oauth_token_secret=self.oauth_token_secret.get_secret_value(),
         )
 
     def to_dict(self) -> Dict[str, object]:
-        """Convert the configuration to a dictionary"""
+        """Convert the configuration to a dictionary."""
         return self.model_dump()
 
 
 class TrelloClient(IClient):
-    """Builder class for Trello clients with different construction methods
+    """Builder class for Trello clients with OAuth authentication.
 
     This class provides a unified interface for creating Trello clients
-    with API key and token authentication.
+    with OAuth authentication, enabling multi-user scenarios.
+
+    Example:
+        >>> config = TrelloOAuthConfig(
+        ...     api_key="your_key",
+        ...     api_secret="your_secret",
+        ...     oauth_token="user_token",
+        ...     oauth_token_secret="user_token_secret"
+        ... )
+        >>> client = TrelloClient.build_with_config(config)
     """
 
     def __init__(
         self,
         client: TrelloRESTClient,
     ) -> None:
-        """Initialize with a Trello client object
+        """Initialize with a Trello client object.
 
         Args:
             client: Trello REST client instance
@@ -119,7 +156,7 @@ class TrelloClient(IClient):
         self.client = client
 
     def get_client(self) -> TrelloRESTClient:
-        """Return the underlying Trello client object
+        """Return the underlying Trello client object.
 
         Returns:
             Trello REST client instance
@@ -127,7 +164,7 @@ class TrelloClient(IClient):
         return self.client
 
     def get_trello_client(self) -> PyTrelloClient:
-        """Get the py-trello client (SDK instance)
+        """Get the py-trello client (SDK instance).
 
         Returns:
             PyTrelloClient instance
@@ -137,12 +174,12 @@ class TrelloClient(IClient):
     @classmethod
     def build_with_config(
         cls,
-        config: TrelloApiKeyConfig,
+        config: TrelloOAuthConfig,
     ) -> "TrelloClient":
-        """Build TrelloClient with configuration
+        """Build TrelloClient with OAuth configuration.
 
         Args:
-            config: Trello configuration instance (Pydantic model)
+            config: Trello OAuth configuration instance (Pydantic model)
 
         Returns:
             TrelloClient instance
@@ -156,11 +193,11 @@ class TrelloClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
     ) -> "TrelloClient":
-        """Build TrelloClient using configuration service
+        """Build TrelloClient using configuration service.
 
         This method would typically:
         1. Use config_service to get environment-specific settings
-        2. Fetch Trello API credentials from configuration
+        2. Fetch Trello OAuth credentials from configuration
         3. Return appropriate client based on available credentials
 
         Args:
@@ -173,7 +210,7 @@ class TrelloClient(IClient):
         Raises:
             NotImplementedError: This method requires platform-specific implementation
         """
-        # TODO: Implement - fetch config from services
+        # TODO: Implement - fetch OAuth config from services
         logger.warning("TrelloClient.build_from_services not yet implemented")
         raise NotImplementedError(
             "build_from_services requires implementation with actual services"

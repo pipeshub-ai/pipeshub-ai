@@ -1,8 +1,7 @@
-"""
-Example usage of TrelloClient and TrelloDataSource
+"""Example usage of TrelloClient and TrelloDataSource with OAuth.
 
 This demonstrates how to:
-1. Create a Trello client with API key and token authentication
+1. Create a Trello client with OAuth authentication
 2. Initialize the datasource with the client
 3. Make API calls using the datasource methods
 """
@@ -12,8 +11,8 @@ import json
 import os
 
 from app.sources.client.trello.trello import (
-    TrelloApiKeyConfig,
     TrelloClient,
+    TrelloOAuthConfig,
     TrelloResponse,
 )
 from app.sources.external.trello.trello import TrelloDataSource
@@ -46,23 +45,30 @@ def _print_response(title: str, response: TrelloResponse, max_items: int = 10) -
     print(json.dumps(data, indent=2, default=str))
 
 
-async def example_with_api_key() -> None:
-    """Example using API Key and Token authentication"""
-
-    # Get credentials from environment
+async def example_with_oauth() -> None:
+    """Example using OAuth authentication."""
+    # Get OAuth credentials from environment
     api_key = os.getenv("TRELLO_API_KEY")
-    api_token = os.getenv("TRELLO_API_TOKEN")
+    api_secret = os.getenv("TRELLO_API_SECRET")
+    oauth_token = os.getenv("TRELLO_OAUTH_TOKEN")
+    oauth_token_secret = os.getenv("TRELLO_OAUTH_TOKEN_SECRET")
 
     if not api_key:
         raise ValueError("TRELLO_API_KEY is not set")
-    if not api_token:
-        raise ValueError("TRELLO_API_TOKEN is not set")
+    if not api_secret:
+        raise ValueError("TRELLO_API_SECRET is not set")
+    if not oauth_token:
+        raise ValueError("TRELLO_OAUTH_TOKEN is not set")
+    if not oauth_token_secret:
+        raise ValueError("TRELLO_OAUTH_TOKEN_SECRET is not set")
 
-    # Create Trello client with API key config
+    # Create Trello client with OAuth config
     trello_client = TrelloClient.build_with_config(
-        TrelloApiKeyConfig(
+        TrelloOAuthConfig(
             api_key=api_key,
-            api_token=api_token,
+            api_secret=api_secret,
+            oauth_token=oauth_token,
+            oauth_token_secret=oauth_token_secret,
         ),
     )
 
@@ -180,15 +186,15 @@ async def example_with_api_key() -> None:
 
 
 def main() -> None:
-    """Main entry point"""
+    """Main entry point."""
     print("=" * 70)
-    print("Trello API Client Examples")
+    print("Trello API Client Examples (OAuth)")
     print("=" * 70)
 
-    # Run API key authentication example
-    print("\nExample: API Key & Token Authentication")
+    # Run OAuth authentication example
+    print("\nExample: OAuth Authentication")
     print("-" * 70)
-    asyncio.run(example_with_api_key())
+    asyncio.run(example_with_oauth())
 
     print("\n" + "=" * 70)
     print("OK Examples completed")
