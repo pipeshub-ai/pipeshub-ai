@@ -10,8 +10,6 @@ from typing import Any, Dict, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.sources.client.http.http_client import HTTPClient
-from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
 
 
@@ -29,16 +27,15 @@ class TrelloResponse:
         return asdict(self)
 
 
-class TrelloRESTClient(HTTPClient):
-    """Trello REST client via OAuth using direct HTTP calls.
+class TrelloRESTClient:
+    """Trello REST client using API Key + Token authentication.
 
-    This client uses the Trello REST API directly with OAuth credentials.
+    This client uses the Trello REST API directly with API Key and Token.
     No third-party SDK is used.
 
     Args:
         api_key: API key from Trello Power-Ups admin
-        api_secret: API secret from Trello Power-Ups admin
-        oauth_token: OAuth token obtained after user authorization
+        token: Token generated via Trello authorization
     """
 
     TRELLO_API_BASE_URL = "https://api.trello.com/1"
@@ -46,32 +43,41 @@ class TrelloRESTClient(HTTPClient):
     def __init__(
         self,
         api_key: str,
-        api_secret: str,
-        oauth_token: str,
+        token: str,
     ) -> None:
-        """Initialize the Trello client with OAuth credentials."""
-        # Initialize HTTPClient with OAuth token
-        super().__init__(oauth_token, "OAuth")
-
+        """Initialize the Trello client with API Key + Token."""
+        # Initialize HTTPClient base (without auth header - Trello uses query params)
         self.api_key = api_key
-        self.api_secret = api_secret
-        self.oauth_token = oauth_token
+        self.token = token
+        self.timeout = 30.0
+        self.follow_redirects = True
+        self.client = None  # httpx client
 
-        # Update headers for Trello API
-        self.headers.update({
+        # Set headers (no Authorization header - auth is in query params)
+        self.headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-        })
+        }
 
     def get_base_url(self) -> str:
         """Get the Trello API base URL."""
         return self.TRELLO_API_BASE_URL
 
+    async def _ensure_client(self) -> object:
+        """Ensure client is created and available."""
+        import httpx
+
+        if self.client is None:
+            self.client = httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=self.follow_redirects
+            )
+        return self.client
+
     def _build_auth_params(self) -> Dict[str, str]:
         """Build authentication query parameters."""
         return {
             "key": self.api_key,
-            "token": self.oauth_token,
+            "token": self.token,
         }
 
     async def make_request(
@@ -92,6 +98,7 @@ class TrelloRESTClient(HTTPClient):
         Returns:
             TrelloResponse with success status and data or error
         """
+
         url = f"{self.TRELLO_API_BASE_URL}{endpoint}"
 
         # Merge auth params with query params
@@ -99,21 +106,23 @@ class TrelloRESTClient(HTTPClient):
         if query_params:
             params.update(query_params)
 
-        request = HTTPRequest(
-            url=url,
-            method=method,
-            query_params=params,
-            headers={"Content-Type": "application/json"},
-            body=body,
-        )
-
         try:
-            response = await self.execute(request)
+            # Use httpx directly to avoid Pydantic alias issues with HTTPRequest
+            client = await self._ensure_client()
 
-            if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            kwargs: Dict[str, Any] = {
+                "params": params,
+                "headers": self.headers,
+            }
+            if body:
+                kwargs["json"] = body
+
+            response = await client.request(method, url, **kwargs)
+
+            if response.status_code >= HttpStatusCode.BAD_REQUEST.value:
                 return TrelloResponse(
                     success=False,
-                    error=f"HTTP {response.status}: {response.text}",
+                    error=f"HTTP {response.status_code}: {response.text}",
                 )
 
             return TrelloResponse(
@@ -128,32 +137,28 @@ class TrelloRESTClient(HTTPClient):
 
 
 @dataclass
-class TrelloOAuthConfig:
-    """Configuration for Trello client via OAuth.
+class TrelloTokenConfig:
+    """Configuration for Trello client via API Key + Token.
 
-    OAuth allows multi-user scenarios where each user authorizes
-    the application and receives their own token.
+    Simple authentication using API Key and Token from Trello.
 
     Args:
         api_key: API key from Trello Power-Ups admin console
-        api_secret: API secret from Trello Power-Ups admin console
-        oauth_token: OAuth token from user authorization flow
+        token: Token generated via Trello authorization
     """
 
     api_key: str
-    api_secret: str
-    oauth_token: str
+    token: str
 
     def create_client(self) -> "TrelloRESTClient":
-        """Create a Trello client with OAuth authentication.
+        """Create a Trello client with API Key + Token authentication.
 
         Returns:
             TrelloRESTClient instance
         """
         return TrelloRESTClient(
             api_key=self.api_key,
-            api_secret=self.api_secret,
-            oauth_token=self.oauth_token,
+            token=self.token,
         )
 
     def to_dict(self) -> Dict[str, str]:
@@ -162,16 +167,15 @@ class TrelloOAuthConfig:
 
 
 class TrelloClient(IClient):
-    """Builder class for Trello clients with OAuth authentication.
+    """Builder class for Trello clients with API Key + Token authentication.
 
     This class provides a unified interface for creating Trello clients
-    with OAuth authentication, enabling multi-user scenarios.
+    with simple API Key + Token authentication.
 
     Example:
-        >>> config = TrelloOAuthConfig(
+        >>> config = TrelloTokenConfig(
         ...     api_key="your_key",
-        ...     api_secret="your_secret",
-        ...     oauth_token="user_token",
+        ...     token="your_token",
         ... )
         >>> client = TrelloClient.build_with_config(config)
     """
@@ -198,12 +202,12 @@ class TrelloClient(IClient):
     @classmethod
     def build_with_config(
         cls,
-        config: TrelloOAuthConfig,
+        config: TrelloTokenConfig,
     ) -> "TrelloClient":
-        """Build TrelloClient with OAuth configuration.
+        """Build TrelloClient with API Key + Token configuration.
 
         Args:
-            config: Trello OAuth configuration instance
+            config: Trello Token configuration instance
 
         Returns:
             TrelloClient instance
@@ -245,20 +249,18 @@ class TrelloClient(IClient):
 
             credentials_config = config.get("credentials", {}) or {}
 
-            auth_type = auth_config.get("authType", "OAUTH")
+            auth_type = auth_config.get("authType", "API_TOKEN")
 
-            if auth_type == "OAUTH":
+            if auth_type == "API_TOKEN":
                 api_key = credentials_config.get("api_key", "")
-                api_secret = credentials_config.get("api_secret", "")
-                oauth_token = credentials_config.get("oauth_token", "")
+                token = credentials_config.get("token", "")
 
-                if not api_key or not api_secret or not oauth_token:
-                    raise ValueError("API key, secret, and OAuth token required")
+                if not api_key or not token:
+                    raise ValueError("API key and token required")
 
                 client = TrelloRESTClient(
                     api_key=api_key,
-                    api_secret=api_secret,
-                    oauth_token=oauth_token,
+                    token=token,
                 )
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}")

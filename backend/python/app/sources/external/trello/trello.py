@@ -23,15 +23,14 @@ class TrelloDataSource:
     All methods are async and return TrelloResponse objects.
 
     Example:
-        >>> from app.sources.client.trello.trello import TrelloClient, TrelloOAuthConfig
+        >>> from app.sources.client.trello.trello import TrelloClient, TrelloTokenConfig
         >>> from app.sources.external.trello.trello import TrelloDataSource
         >>>
-        >>> # Create client with OAuth credentials
+        >>> # Create client with API Key + Token
         >>> client = TrelloClient.build_with_config(
-        ...     TrelloOAuthConfig(
+        ...     TrelloTokenConfig(
         ...         api_key="your_api_key",
-        ...         api_secret="your_api_secret",
-        ...         oauth_token="your_token",
+        ...         token="your_token",
         ...     )
         ... )
         >>>
