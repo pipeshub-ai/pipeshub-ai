@@ -51,7 +51,6 @@ async def example_with_oauth() -> None:
     api_key = os.getenv("TRELLO_API_KEY")
     api_secret = os.getenv("TRELLO_API_SECRET")
     oauth_token = os.getenv("TRELLO_OAUTH_TOKEN")
-    oauth_token_secret = os.getenv("TRELLO_OAUTH_TOKEN_SECRET")
 
     if not api_key:
         raise ValueError("TRELLO_API_KEY is not set")
@@ -59,8 +58,6 @@ async def example_with_oauth() -> None:
         raise ValueError("TRELLO_API_SECRET is not set")
     if not oauth_token:
         raise ValueError("TRELLO_OAUTH_TOKEN is not set")
-    if not oauth_token_secret:
-        raise ValueError("TRELLO_OAUTH_TOKEN_SECRET is not set")
 
     # Create Trello client with OAuth config
     trello_client = TrelloClient.build_with_config(
@@ -68,7 +65,6 @@ async def example_with_oauth() -> None:
             api_key=api_key,
             api_secret=api_secret,
             oauth_token=oauth_token,
-            oauth_token_secret=oauth_token_secret,
         ),
     )
 
@@ -130,7 +126,7 @@ async def example_with_oauth() -> None:
             create_response = await trello_datasource.create_card(
                 list_id=list_id,
                 name="Test card from API",
-                desc="This card was created via the Trello API using py-trello",
+                desc="This card was created via the Trello API using direct HTTP",
             )
             _print_response("Created card:", create_response)
 
@@ -188,7 +184,7 @@ async def example_with_oauth() -> None:
 def main() -> None:
     """Main entry point."""
     print("=" * 70)
-    print("Trello API Client Examples (OAuth)")
+    print("Trello API Client Examples (OAuth - Direct HTTP)")
     print("=" * 70)
 
     # Run OAuth authentication example
