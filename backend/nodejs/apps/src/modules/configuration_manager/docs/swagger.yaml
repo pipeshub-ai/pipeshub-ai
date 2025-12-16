@@ -1,0 +1,1843 @@
+openapi: 3.0.0
+info:
+  title: Configuration Manager API
+  description: |
+    RESTful API for the Configuration Manager Service - providing system-wide configuration management
+    for storage, authentication, databases, message brokers, AI models, connectors, and platform settings.
+    
+    This service manages encrypted configuration data stored in a key-value store (etcd/Redis) and provides
+    both user-facing and internal service-to-service endpoints.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@yourcompany.com
+
+servers:
+  - url: /api/v1/configurationManager
+    description: Base API URL
+
+tags:
+  - name: Storage Configuration
+    description: Storage backend configuration (S3, Azure Blob, Local)
+  - name: SMTP Configuration
+    description: Email server configuration
+  - name: Authentication Configuration
+    description: Authentication provider configurations (Azure AD, Microsoft, Google, OAuth, SSO)
+  - name: Database Configuration
+    description: Database configurations (MongoDB, ArangoDB, Redis, Qdrant)
+  - name: Platform Settings
+    description: Platform-wide settings including feature flags and upload limits
+  - name: Message Broker Configuration
+    description: Kafka message broker configuration
+  - name: AI Models Configuration
+    description: AI model provider configurations (LLM, Embedding, OCR, etc.)
+  - name: Public URLs
+    description: Frontend and connector public URL management
+  - name: Metrics Collection
+    description: Metrics collection and monitoring configuration
+  - name: Internal Endpoints
+    description: Service-to-service internal endpoints
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User authentication token
+    
+    scopedTokenAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Service-to-service scoped JWT token with specific permissions
+
+  schemas:
+    # Storage Schemas
+    StorageType:
+      type: string
+      enum: [local, s3, azureBlob]
+      description: Type of storage backend
+    
+    S3StorageConfig:
+      type: object
+      required:
+        - storageType
+        - s3AccessKeyId
+        - s3SecretAccessKey
+        - s3Region
+        - s3BucketName
+      properties:
+        storageType:
+          type: string
+          enum: [s3]
+        s3AccessKeyId:
+          type: string
+          description: AWS S3 access key ID
+        s3SecretAccessKey:
+          type: string
+          description: AWS S3 secret access key
+        s3Region:
+          type: string
+          description: AWS S3 region
+          example: us-east-1
+        s3BucketName:
+          type: string
+          description: S3 bucket name
+    
+    AzureBlobStorageConfig:
+      type: object
+      required:
+        - storageType
+        - containerName
+      properties:
+        storageType:
+          type: string
+          enum: [azureBlob]
+        azureBlobConnectionString:
+          type: string
+          description: Azure Blob Storage connection string (Option 1)
+        endpointProtocol:
+          type: string
+          enum: [http, https]
+          default: https
+          description: Endpoint protocol (Option 2)
+        accountName:
+          type: string
+          description: Azure storage account name (Option 2)
+        accountKey:
+          type: string
+          description: Azure storage account key (Option 2)
+        endpointSuffix:
+          type: string
+          default: core.windows.net
+          description: Azure endpoint suffix (Option 2)
+        containerName:
+          type: string
+          description: Azure Blob container name
+      description: |
+        Either provide azureBlobConnectionString OR (accountName + accountKey + endpointSuffix).
+        containerName is always required.
+    
+    LocalStorageConfig:
+      type: object
+      required:
+        - storageType
+      properties:
+        storageType:
+          type: string
+          enum: [local]
+        mountName:
+          type: string
+          default: PipesHub
+          description: Mount point name
+        baseUrl:
+          type: string
+          format: uri
+          description: Base URL for local storage
+    
+    StorageConfigResponse:
+      oneOf:
+        - $ref: '#/components/schemas/S3StorageConfig'
+        - $ref: '#/components/schemas/AzureBlobStorageConfig'
+        - $ref: '#/components/schemas/LocalStorageConfig'
+    
+    # SMTP Schema
+    SMTPConfig:
+      type: object
+      required:
+        - host
+        - port
+        - fromEmail
+      properties:
+        host:
+          type: string
+          description: SMTP server host
+          example: smtp.gmail.com
+        port:
+          type: integer
+          minimum: 1
+          description: SMTP server port
+          example: 587
+        username:
+          type: string
+          description: SMTP authentication username
+        password:
+          type: string
+          description: SMTP authentication password
+        fromEmail:
+          type: string
+          format: email
+          description: Default sender email address
+    
+    # Authentication Schemas
+    AzureADConfig:
+      type: object
+      required:
+        - clientId
+      properties:
+        clientId:
+          type: string
+          description: Azure AD client ID
+        tenantId:
+          type: string
+          default: common
+          description: Azure AD tenant ID
+        authority:
+          type: string
+          format: uri
+          description: Azure AD authority URL (auto-generated)
+          readOnly: true
+    
+    GoogleAuthConfig:
+      type: object
+      required:
+        - clientId
+      properties:
+        clientId:
+          type: string
+          description: Google OAuth client ID
+    
+    OAuthConfig:
+      type: object
+      required:
+        - providerName
+        - clientId
+      properties:
+        providerName:
+          type: string
+          description: OAuth provider name
+        clientId:
+          type: string
+          description: OAuth client ID
+        clientSecret:
+          type: string
+          description: OAuth client secret
+        authorizationUrl:
+          type: string
+          format: uri
+          description: Authorization endpoint URL
+        tokenEndpoint:
+          type: string
+          format: uri
+          description: Token endpoint URL
+        userInfoEndpoint:
+          type: string
+          format: uri
+          description: User info endpoint URL
+        scope:
+          type: string
+          description: OAuth scopes
+          example: openid profile email
+        redirectUri:
+          type: string
+          format: uri
+          description: OAuth redirect URI
+    
+    SSOConfig:
+      type: object
+      required:
+        - entryPoint
+        - certificate
+        - emailKey
+      properties:
+        entryPoint:
+          type: string
+          format: uri
+          description: SAML SSO entry point URL
+        certificate:
+          type: string
+          description: SAML X.509 certificate (PEM format)
+        emailKey:
+          type: string
+          description: SAML attribute key for email
+          example: http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress
+    
+    # Database Schemas
+    MongoDBConfig:
+      type: object
+      required:
+        - uri
+      properties:
+        uri:
+          type: string
+          format: uri
+          description: MongoDB connection URI
+          example: mongodb://localhost:27017
+        db:
+          type: string
+          description: Database name (auto-set)
+          readOnly: true
+    
+    ArangoDBConfig:
+      type: object
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          format: uri
+          description: ArangoDB URL
+          example: http://localhost:8529
+        username:
+          type: string
+          description: ArangoDB username
+        password:
+          type: string
+          description: ArangoDB password
+        db:
+          type: string
+          description: Database name (auto-set)
+          readOnly: true
+    
+    RedisConfig:
+      type: object
+      required:
+        - host
+        - port
+      properties:
+        host:
+          type: string
+          description: Redis host
+          example: localhost
+        port:
+          type: integer
+          minimum: 1
+          description: Redis port
+          example: 6379
+        password:
+          type: string
+          description: Redis password (optional)
+        tls:
+          type: boolean
+          description: Enable TLS connection
+          default: false
+    
+    QdrantConfig:
+      type: object
+      required:
+        - host
+        - port
+      properties:
+        host:
+          type: string
+          description: Qdrant host
+          example: localhost
+        port:
+          type: integer
+          minimum: 1
+          description: Qdrant HTTP port
+          example: 6333
+        grpcPort:
+          type: integer
+          description: Qdrant gRPC port (optional)
+          example: 6334
+        apiKey:
+          type: string
+          description: Qdrant API key (optional, not needed for localhost)
+    
+    # Platform Settings Schemas
+    PlatformSettings:
+      type: object
+      required:
+        - fileUploadMaxSizeBytes
+        - featureFlags
+      properties:
+        fileUploadMaxSizeBytes:
+          type: integer
+          minimum: 1
+          maximum: 1073741824
+          description: Maximum file upload size in bytes (max 1GB)
+          example: 104857600
+        featureFlags:
+          type: object
+          additionalProperties:
+            type: boolean
+          description: Feature flags map
+          example:
+            ENABLE_WORKFLOW_BUILDER: true
+            ENABLE_ADVANCED_ANALYTICS: false
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last update timestamp
+          readOnly: true
+    
+    AvailableFeatureFlags:
+      type: object
+      properties:
+        flags:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              defaultEnabled:
+                type: boolean
+              description:
+                type: string
+    
+    # Kafka Schema
+    KafkaConfig:
+      type: object
+      required:
+        - brokers
+      properties:
+        brokers:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: Kafka broker URLs
+          example: ['kafka://localhost:9092']
+        sasl:
+          type: object
+          description: SASL authentication configuration
+          properties:
+            mechanism:
+              type: string
+              description: SASL mechanism
+              example: PLAIN
+            username:
+              type: string
+              description: SASL username
+            password:
+              type: string
+              description: SASL password
+    
+    # AI Models Schemas
+    ModelType:
+      type: string
+      enum: [llm, embedding, ocr, slm, reasoning, multiModal]
+      description: Type of AI model
+    
+    EmbeddingProvider:
+      type: string
+      enum:
+        - anthropic
+        - bedrock
+        - azureAI
+        - azureOpenAI
+        - cohere
+        - default
+        - fireworks
+        - gemini
+        - huggingFace
+        - jinaAI
+        - mistral
+        - ollama
+        - openAI
+        - openAICompatible
+        - sentenceTransformers
+        - together
+        - vertexAI
+        - voyage
+    
+    LLMProvider:
+      type: string
+      enum:
+        - anthropic
+        - bedrock
+        - azureAI
+        - azureOpenAI
+        - cohere
+        - fireworks
+        - gemini
+        - groq
+        - mistral
+        - ollama
+        - openAI
+        - openAICompatible
+        - together
+        - vertexAI
+        - xai
+    
+    OCRProvider:
+      type: string
+      enum:
+        - azureDI
+        - ocrmypdf
+    
+    ModelConfiguration:
+      type: object
+      properties:
+        model:
+          type: string
+          description: Model name(s) - can be comma-separated for multiple models
+          example: gpt-4o, gpt-4o-mini
+        apiKey:
+          type: string
+          description: API key for the model
+        endpoint:
+          type: string
+          format: uri
+          description: Endpoint URL for the model
+        organizationId:
+          type: string
+          description: Organization ID
+        deploymentName:
+          type: string
+          description: Azure deployment name
+        provider:
+          type: string
+          description: Provider name
+        awsAccessKeyId:
+          type: string
+          description: AWS access key ID (for Bedrock)
+        awsAccessSecretKey:
+          type: string
+          description: AWS secret access key (for Bedrock)
+        region:
+          type: string
+          description: AWS region (for Bedrock)
+        model_kwargs:
+          type: object
+          additionalProperties: true
+          description: Additional model kwargs
+        encode_kwargs:
+          type: object
+          additionalProperties: true
+          description: Additional encoding kwargs
+        cache_folder:
+          type: string
+          description: Cache folder for models
+    
+    AIModelProviderConfig:
+      type: object
+      required:
+        - provider
+        - configuration
+      properties:
+        provider:
+          oneOf:
+            - $ref: '#/components/schemas/EmbeddingProvider'
+            - $ref: '#/components/schemas/LLMProvider'
+            - $ref: '#/components/schemas/OCRProvider'
+        configuration:
+          $ref: '#/components/schemas/ModelConfiguration'
+        isMultimodal:
+          type: boolean
+          default: false
+          description: Whether the model supports multimodal input
+        isReasoning:
+          type: boolean
+          default: false
+          description: Whether the model supports reasoning
+        isDefault:
+          type: boolean
+          default: false
+          description: Whether this should be the default model
+        contextLength:
+          type: integer
+          nullable: true
+          description: Context length for the model
+        modelKey:
+          type: string
+          description: Unique identifier for this model configuration
+          readOnly: true
+    
+    AIModelsConfig:
+      type: object
+      properties:
+        ocr:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        embedding:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        slm:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        llm:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        reasoning:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        multiModal:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+      description: Must have at least one model type configured
+    
+    FlattenedModelInfo:
+      type: object
+      properties:
+        modelType:
+          $ref: '#/components/schemas/ModelType'
+        provider:
+          type: string
+        modelName:
+          type: string
+          description: Individual model name
+        modelKey:
+          type: string
+          description: Configuration identifier
+        isMultimodal:
+          type: boolean
+        isReasoning:
+          type: boolean
+        isDefault:
+          type: boolean
+    
+    # URL Schemas
+    URLConfig:
+      type: object
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Public URL (must include protocol)
+          example: https://example.com
+    
+    # Metrics Schemas
+    MetricsCollectionConfig:
+      type: object
+      properties:
+        enableMetricCollection:
+          type: boolean
+          description: Enable or disable metrics collection
+        pushIntervalMs:
+          type: integer
+          minimum: 1000
+          description: Metrics push interval in milliseconds
+          example: 60000
+        serverUrl:
+          type: string
+          format: uri
+          description: Remote metrics server URL
+    
+    # Common Response Schemas
+    SuccessMessage:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Configuration saved successfully
+        warningMessage:
+          type: string
+          description: Optional warning message
+    
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Error message
+        code:
+          type: integer
+          description: Error code
+        details:
+          type: object
+          description: Additional error details
+
+security:
+  - bearerAuth: []
+
+paths:
+  # Storage Configuration Endpoints
+  /storageConfig:
+    post:
+      tags:
+        - Storage Configuration
+      summary: Create or update storage configuration
+      description: Configure the storage backend (S3, Azure Blob, or Local filesystem)
+      operationId: createStorageConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/S3StorageConfig'
+                - $ref: '#/components/schemas/AzureBlobStorageConfig'
+                - $ref: '#/components/schemas/LocalStorageConfig'
+            examples:
+              s3Example:
+                summary: S3 Configuration
+                value:
+                  storageType: s3
+                  s3AccessKeyId: AKIAIOSFODNN7EXAMPLE
+                  s3SecretAccessKey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  s3Region: us-east-1
+                  s3BucketName: my-bucket
+              azureExample:
+                summary: Azure Blob Configuration
+                value:
+                  storageType: azureBlob
+                  accountName: mystorageaccount
+                  accountKey: base64EncodedKey==
+                  containerName: my-container
+              localExample:
+                summary: Local Storage Configuration
+                value:
+                  storageType: local
+                  mountName: PipesHub
+                  baseUrl: http://localhost:3000
+      responses:
+        '200':
+          description: Storage configuration saved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '400':
+          description: Invalid request or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '500':
+          description: Internal server error
+
+    get:
+      tags:
+        - Storage Configuration
+      summary: Get storage configuration
+      description: Retrieve the current storage configuration
+      operationId: getStorageConfig
+      responses:
+        '200':
+          description: Storage configuration retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorageConfigResponse'
+        '400':
+          description: Storage configuration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  /internal/storageConfig:
+    get:
+      tags:
+        - Internal Endpoints
+      summary: Internal - Get storage configuration
+      description: Service-to-service endpoint for retrieving storage configuration
+      operationId: getStorageConfigInternal
+      security:
+        - scopedTokenAuth: []
+      responses:
+        '200':
+          description: Storage configuration retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorageConfigResponse'
+        '401':
+          description: Unauthorized - Invalid scoped token
+        '500':
+          description: Internal server error
+
+  # SMTP Configuration Endpoints
+  /smtpConfig:
+    post:
+      tags:
+        - SMTP Configuration
+      summary: Create or update SMTP configuration
+      description: Configure the SMTP email server settings
+      operationId: createSMTPConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SMTPConfig'
+            example:
+              host: smtp.gmail.com
+              port: 587
+              username: user@example.com
+              password: app-specific-password
+              fromEmail: noreply@example.com
+      responses:
+        '200':
+          description: SMTP configuration created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '400':
+          description: Invalid configuration
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '500':
+          description: Internal server error
+
+    get:
+      tags:
+        - SMTP Configuration
+      summary: Get SMTP configuration
+      description: Retrieve the current SMTP configuration
+      operationId: getSMTPConfig
+      responses:
+        '200':
+          description: SMTP configuration retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SMTPConfig'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  # Authentication Configuration Endpoints
+  /authConfig/azureAd:
+    post:
+      tags:
+        - Authentication Configuration
+      summary: Set Azure AD authentication configuration
+      description: Configure Azure AD as an authentication provider
+      operationId: setAzureADConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - clientId
+              properties:
+                clientId:
+                  type: string
+                tenantId:
+                  type: string
+                  default: common
+            example:
+              clientId: 12345678-1234-1234-1234-123456789012
+              tenantId: common
+      responses:
+        '200':
+          description: Azure AD config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '400':
+          description: Invalid configuration
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Authentication Configuration
+      summary: Get Azure AD authentication configuration
+      operationId: getAzureADConfig
+      responses:
+        '200':
+          description: Azure AD configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AzureADConfig'
+        '401':
+          description: Unauthorized
+
+  /internal/authConfig/azureAd:
+    get:
+      tags:
+        - Internal Endpoints
+      summary: Internal - Get Azure AD configuration
+      operationId: getAzureADConfigInternal
+      security:
+        - scopedTokenAuth: []
+      responses:
+        '200':
+          description: Azure AD configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AzureADConfig'
+
+  /authConfig/microsoft:
+    post:
+      tags:
+        - Authentication Configuration
+      summary: Set Microsoft authentication configuration
+      operationId: setMicrosoftConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - clientId
+              properties:
+                clientId:
+                  type: string
+                tenantId:
+                  type: string
+                  default: common
+      responses:
+        '200':
+          description: Microsoft Auth config created successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Authentication Configuration
+      summary: Get Microsoft authentication configuration
+      operationId: getMicrosoftConfig
+      responses:
+        '200':
+          description: Microsoft configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AzureADConfig'
+
+  /authConfig/google:
+    post:
+      tags:
+        - Authentication Configuration
+      summary: Set Google authentication configuration
+      operationId: setGoogleConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthConfig'
+      responses:
+        '200':
+          description: Google Auth config created successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Authentication Configuration
+      summary: Get Google authentication configuration
+      operationId: getGoogleConfig
+      responses:
+        '200':
+          description: Google configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleAuthConfig'
+
+  /authConfig/oauth:
+    post:
+      tags:
+        - Authentication Configuration
+      summary: Set generic OAuth configuration
+      operationId: setOAuthConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthConfig'
+      responses:
+        '200':
+          description: OAuth config created successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Authentication Configuration
+      summary: Get OAuth configuration
+      operationId: getOAuthConfig
+      responses:
+        '200':
+          description: OAuth configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthConfig'
+
+  /authConfig/sso:
+    post:
+      tags:
+        - Authentication Configuration
+      summary: Set SAML SSO configuration
+      operationId: setSSOConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SSOConfig'
+      responses:
+        '200':
+          description: SSO config created successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Authentication Configuration
+      summary: Get SAML SSO configuration
+      operationId: getSSOConfig
+      responses:
+        '200':
+          description: SSO configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SSOConfig'
+
+  # Database Configuration Endpoints
+  /mongoDBConfig:
+    post:
+      tags:
+        - Database Configuration
+      summary: Create MongoDB configuration
+      description: |
+        Configure MongoDB connection. Health check is performed before saving.
+      operationId: createMongoDBConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MongoDBConfig'
+            example:
+              uri: mongodb://localhost:27017/mydb
+      responses:
+        '200':
+          description: MongoDB config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '400':
+          description: Invalid configuration or health check failed
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Database Configuration
+      summary: Get MongoDB configuration
+      operationId: getMongoDBConfig
+      responses:
+        '200':
+          description: MongoDB configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MongoDBConfig'
+
+  /arangoDBConfig:
+    post:
+      tags:
+        - Database Configuration
+      summary: Create ArangoDB configuration
+      description: |
+        Configure ArangoDB connection. Health check is performed before saving.
+      operationId: createArangoDBConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArangoDBConfig'
+      responses:
+        '200':
+          description: ArangoDB config created successfully
+        '400':
+          description: Invalid configuration or health check failed
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Database Configuration
+      summary: Get ArangoDB configuration
+      operationId: getArangoDBConfig
+      responses:
+        '200':
+          description: ArangoDB configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArangoDBConfig'
+
+  /redisConfig:
+    post:
+      tags:
+        - Database Configuration
+      summary: Create Redis configuration
+      description: |
+        Configure Redis key-value store. Health check is performed before saving.
+      operationId: createRedisConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedisConfig'
+      responses:
+        '200':
+          description: Redis config created successfully
+        '400':
+          description: Invalid configuration or health check failed
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Database Configuration
+      summary: Get Redis configuration
+      operationId: getRedisConfig
+      responses:
+        '200':
+          description: Redis configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedisConfig'
+
+  /qdrantConfig:
+    post:
+      tags:
+        - Database Configuration
+      summary: Create Qdrant vector database configuration
+      description: |
+        Configure Qdrant vector database. Health check is performed before saving.
+        API key is not required for localhost connections.
+      operationId: createQdrantConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QdrantConfig'
+      responses:
+        '200':
+          description: Qdrant config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '400':
+          description: Invalid configuration or health check failed
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Database Configuration
+      summary: Get Qdrant configuration
+      operationId: getQdrantConfig
+      responses:
+        '200':
+          description: Qdrant configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QdrantConfig'
+
+  # Platform Settings Endpoints
+  /platform/settings:
+    post:
+      tags:
+        - Platform Settings
+      summary: Set platform settings
+      description: Configure platform-wide settings including upload limits and feature flags
+      operationId: setPlatformSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlatformSettings'
+            example:
+              fileUploadMaxSizeBytes: 104857600
+              featureFlags:
+                ENABLE_WORKFLOW_BUILDER: true
+                ENABLE_ADVANCED_ANALYTICS: false
+      responses:
+        '200':
+          description: Platform settings saved successfully
+        '400':
+          description: Invalid settings
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Platform Settings
+      summary: Get platform settings
+      operationId: getPlatformSettings
+      responses:
+        '200':
+          description: Platform settings retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformSettings'
+
+  /platform/feature-flags/available:
+    get:
+      tags:
+        - Platform Settings
+      summary: Get available platform feature flags
+      description: Retrieve the list of all available feature flags with their default values
+      operationId: getAvailableFeatureFlags
+      responses:
+        '200':
+          description: Available feature flags retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableFeatureFlags'
+
+  # Kafka Configuration Endpoints
+  /kafkaConfig:
+    post:
+      tags:
+        - Message Broker Configuration
+      summary: Create Kafka configuration
+      description: |
+        Configure Kafka message broker. Health check is performed before saving.
+        Unreachable brokers will be reported in a warning header.
+      operationId: createKafkaConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KafkaConfig'
+      responses:
+        '200':
+          description: Kafka config created successfully
+          headers:
+            warning:
+              description: Warning message if some brokers are unreachable
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '400':
+          description: Invalid configuration or all brokers unreachable
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+    get:
+      tags:
+        - Message Broker Configuration
+      summary: Get Kafka configuration
+      operationId: getKafkaConfig
+      responses:
+        '200':
+          description: Kafka configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KafkaConfig'
+
+  # AI Models Configuration Endpoints
+  /aiModelsConfig:
+    post:
+      tags:
+        - AI Models Configuration
+      summary: Create AI models configuration
+      description: |
+        Configure AI model providers for LLM, embedding, OCR, etc.
+        Health checks are performed for each model before saving.
+        At least one model type must be configured.
+      operationId: createAIModelsConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIModelsConfig'
+            example:
+              llm:
+                - provider: openAI
+                  configuration:
+                    model: gpt-4o, gpt-4o-mini
+                    apiKey: sk-...
+                  isMultimodal: true
+                  isDefault: true
+                  contextLength: 128000
+              embedding:
+                - provider: openAI
+                  configuration:
+                    model: text-embedding-3-large
+                    apiKey: sk-...
+                  isDefault: true
+      responses:
+        '200':
+          description: AI config created successfully
+        '400':
+          description: Invalid configuration or validation failed
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '500':
+          description: Health check failed or internal error
+
+    get:
+      tags:
+        - AI Models Configuration
+      summary: Get AI models configuration
+      description: Retrieve all configured AI model providers
+      operationId: getAIModelsConfig
+      responses:
+        '200':
+          description: AI models configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelsConfig'
+
+  /ai-models:
+    get:
+      tags:
+        - AI Models Configuration
+      summary: Get all AI model providers
+      description: Retrieve all AI model providers across all types
+      operationId: getAIModelsProviders
+      responses:
+        '200':
+          description: AI models providers retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  models:
+                    $ref: '#/components/schemas/AIModelsConfig'
+                  message:
+                    type: string
+
+  /ai-models/{modelType}:
+    get:
+      tags:
+        - AI Models Configuration
+      summary: Get models by type
+      description: Retrieve all configured models of a specific type
+      operationId: getModelsByType
+      parameters:
+        - name: modelType
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ModelType'
+          example: llm
+      responses:
+        '200':
+          description: Models retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AIModelProviderConfig'
+                  message:
+                    type: string
+        '400':
+          description: Invalid model type
+
+  /ai-models/available/{modelType}:
+    get:
+      tags:
+        - AI Models Configuration
+      summary: Get available models by type (flattened)
+      description: |
+        Retrieve models in flattened format where each individual model
+        (from comma-separated model lists) is returned as a separate entry
+      operationId: getAvailableModelsByType
+      parameters:
+        - name: modelType
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ModelType'
+          example: llm
+      responses:
+        '200':
+          description: Available models retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FlattenedModelInfo'
+                  message:
+                    type: string
+
+  /ai-models/providers:
+    post:
+      tags:
+        - AI Models Configuration
+      summary: Add AI model provider
+      description: |
+        Add a new AI model provider configuration.
+        Health check is performed before saving.
+      operationId: addAIModelProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - modelType
+                - provider
+                - configuration
+              properties:
+                modelType:
+                  $ref: '#/components/schemas/ModelType'
+                provider:
+                  type: string
+                configuration:
+                  $ref: '#/components/schemas/ModelConfiguration'
+                isMultimodal:
+                  type: boolean
+                  default: false
+                isReasoning:
+                  type: boolean
+                  default: false
+                isDefault:
+                  type: boolean
+                  default: false
+                contextLength:
+                  type: integer
+                  nullable: true
+            example:
+              modelType: llm
+              provider: openAI
+              configuration:
+                model: gpt-4o
+                apiKey: sk-...
+              isMultimodal: true
+              isDefault: true
+              contextLength: 128000
+      responses:
+        '200':
+          description: Provider added successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  details:
+                    type: object
+        '400':
+          description: Invalid configuration
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '500':
+          description: Health check failed
+
+  /ai-models/providers/{modelType}/{modelKey}:
+    put:
+      tags:
+        - AI Models Configuration
+      summary: Update AI model provider
+      description: |
+        Update an existing AI model provider configuration.
+        Health check is performed before saving.
+      operationId: updateAIModelProvider
+      parameters:
+        - name: modelType
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ModelType'
+        - name: modelKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique model configuration key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - provider
+                - configuration
+              properties:
+                provider:
+                  type: string
+                configuration:
+                  $ref: '#/components/schemas/ModelConfiguration'
+                isMultimodal:
+                  type: boolean
+                isReasoning:
+                  type: boolean
+                isDefault:
+                  type: boolean
+                contextLength:
+                  type: integer
+                  nullable: true
+      responses:
+        '200':
+          description: Provider updated successfully
+        '400':
+          description: Invalid configuration
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '404':
+          description: Model configuration not found
+        '500':
+          description: Health check failed
+
+    delete:
+      tags:
+        - AI Models Configuration
+      summary: Delete AI model provider
+      description: |
+        Delete an AI model provider configuration.
+        If the deleted model was default, the first remaining model becomes default.
+      operationId: deleteAIModelProvider
+      parameters:
+        - name: modelType
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ModelType'
+        - name: modelKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique model configuration key
+      responses:
+        '200':
+          description: Provider deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  details:
+                    type: object
+        '400':
+          description: Invalid model type
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '404':
+          description: Model configuration not found
+
+  /ai-models/default/{modelType}/{modelKey}:
+    put:
+      tags:
+        - AI Models Configuration
+      summary: Update default AI model
+      description: Set a specific model configuration as the default for its type
+      operationId: updateDefaultAIModel
+      parameters:
+        - name: modelType
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ModelType'
+        - name: modelKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique model configuration key
+      responses:
+        '200':
+          description: Default model updated successfully
+        '400':
+          description: Invalid model type
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '404':
+          description: Model configuration not found
+
+  # Public URLs Endpoints
+  /frontendPublicUrl:
+    get:
+      tags:
+        - Public URLs
+      summary: Get frontend public URL
+      operationId: getFrontendPublicUrl
+      responses:
+        '200':
+          description: Frontend URL retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/URLConfig'
+
+    post:
+      tags:
+        - Public URLs
+      summary: Set frontend public URL
+      description: |
+        Set the public URL for the frontend application.
+        Must include protocol (http:// or https://).
+      operationId: setFrontendPublicUrl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/URLConfig'
+            example:
+              url: https://app.example.com
+      responses:
+        '200':
+          description: Frontend URL saved successfully
+        '400':
+          description: Invalid URL format
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+  /connectorPublicUrl:
+    get:
+      tags:
+        - Public URLs
+      summary: Get connector public URL
+      operationId: getConnectorPublicUrl
+      responses:
+        '200':
+          description: Connector URL retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/URLConfig'
+
+    post:
+      tags:
+        - Public URLs
+      summary: Set connector public URL
+      description: |
+        Set the public URL for the connector service.
+        Must include protocol (http:// or https://).
+        Publishes an event to notify other services of the URL change.
+      operationId: setConnectorPublicUrl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/URLConfig'
+            example:
+              url: https://connectors.example.com
+      responses:
+        '200':
+          description: Connector URL saved successfully
+        '400':
+          description: Invalid URL format
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+  # Metrics Collection Endpoints
+  /metricsCollection/toggle:
+    put:
+      tags:
+        - Metrics Collection
+      summary: Toggle metrics collection
+      description: Enable or disable system-wide metrics collection
+      operationId: toggleMetricsCollection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - enableMetricCollection
+              properties:
+                enableMetricCollection:
+                  type: boolean
+            example:
+              enableMetricCollection: true
+      responses:
+        '200':
+          description: Metrics collection toggled successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+  /metricsCollection:
+    get:
+      tags:
+        - Metrics Collection
+      summary: Get metrics collection configuration
+      operationId: getMetricsCollection
+      responses:
+        '200':
+          description: Metrics collection configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsCollectionConfig'
+
+  /metricsCollection/pushInterval:
+    patch:
+      tags:
+        - Metrics Collection
+      summary: Set metrics collection push interval
+      description: Configure how often metrics are pushed to the remote server (in milliseconds)
+      operationId: setMetricsCollectionPushInterval
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - pushIntervalMs
+              properties:
+                pushIntervalMs:
+                  type: integer
+                  minimum: 1000
+                  description: Push interval in milliseconds
+            example:
+              pushIntervalMs: 60000
+      responses:
+        '200':
+          description: Push interval set successfully
+        '400':
+          description: Invalid interval
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+  /metricsCollection/serverUrl:
+    patch:
+      tags:
+        - Metrics Collection
+      summary: Set metrics collection remote server
+      description: Configure the remote server URL for metrics collection
+      operationId: setMetricsCollectionRemoteServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - serverUrl
+              properties:
+                serverUrl:
+                  type: string
+                  format: uri
+            example:
+              serverUrl: https://metrics.example.com
+      responses:
+        '200':
+          description: Remote server set successfully
+        '400':
+          description: Invalid URL
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
+  # Internal Metrics Collection Endpoint
+  /internal/metricsCollection/toggle:
+    post:
+      tags:
+        - Internal Endpoints
+      summary: Internal - Toggle metrics collection
+      description: Service-to-service endpoint for toggling metrics collection
+      operationId: toggleMetricsCollectionInternal
+      security:
+        - scopedTokenAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - enableMetricCollection
+              properties:
+                enableMetricCollection:
+                  type: boolean
+      responses:
+        '200':
+          description: Metrics collection toggled successfully
+        '401':
+          description: Unauthorized - Invalid scoped token
