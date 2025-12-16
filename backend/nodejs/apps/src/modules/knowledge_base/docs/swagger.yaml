@@ -1,0 +1,2006 @@
+openapi: 3.0.0
+info:
+  title: Knowledge Base Service API
+  description: |
+    RESTful API for the Knowledge Base Service - providing knowledge base management, folder organization,
+    record management, and permission control capabilities with support for file uploads and connector integrations.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@pipeshub.com
+
+servers:
+  - url: /api/v1/knowledgeBase
+    description: Base API URL
+
+tags:
+  - name: Knowledge Bases
+    description: Knowledge base management operations
+  - name: Folders
+    description: Folder organization and management
+  - name: Records
+    description: Record management and operations
+  - name: Permissions
+    description: Permission management for knowledge bases
+  - name: Upload
+    description: File upload operations
+  - name: Connector
+    description: Connector-related operations
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    KnowledgeBase:
+      type: object
+      properties:
+        _key:
+          type: string
+          description: Unique knowledge base identifier
+        name:
+          type: string
+          description: Name of the knowledge base
+        orgId:
+          type: string
+          description: Organization ID
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Creation timestamp (milliseconds since epoch)
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Last update timestamp (milliseconds since epoch)
+        userRole:
+          type: string
+          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+          description: User's role in this knowledge base
+        isDeleted:
+          type: boolean
+          description: Whether the knowledge base is deleted
+          default: false
+      required:
+        - name
+        - orgId
+
+    Folder:
+      type: object
+      properties:
+        _key:
+          type: string
+          description: Unique folder identifier
+        name:
+          type: string
+          description: Name of the folder
+        parentId:
+          type: string
+          description: Parent folder or KB ID
+        kbId:
+          type: string
+          description: Knowledge base ID
+        orgId:
+          type: string
+          description: Organization ID
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Creation timestamp (milliseconds since epoch)
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Last update timestamp (milliseconds since epoch)
+        isDeleted:
+          type: boolean
+          description: Whether the folder is deleted
+          default: false
+      required:
+        - name
+        - kbId
+        - orgId
+
+    Record:
+      type: object
+      properties:
+        _key:
+          type: string
+          description: Unique record identifier
+        recordName:
+          type: string
+          description: Name of the record
+        externalRecordId:
+          type: string
+          description: External storage document ID
+        externalRevisionId:
+          type: string
+          description: External revision ID
+        recordType:
+          type: string
+          enum: [FILE, WEBPAGE, COMMENT, MESSAGE, EMAIL, TICKET, OTHERS]
+          description: Type of the record
+        origin:
+          type: string
+          enum: [UPLOAD, CONNECTOR]
+          description: Origin of the record
+        connectorName:
+          type: string
+          enum: [ONEDRIVE, GOOGLE_DRIVE, CONFLUENCE, JIRA, SLACK, SHAREPOINT ONLINE, GMAIL]
+          description: Name of the connector (if origin is CONNECTOR)
+        orgId:
+          type: string
+          description: Organization ID
+        version:
+          type: integer
+          description: Version number
+          default: 0
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Creation timestamp (milliseconds since epoch)
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Last update timestamp (milliseconds since epoch)
+        lastSyncTimestamp:
+          type: integer
+          format: int64
+          description: Last sync timestamp
+        sourceCreatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Source creation timestamp
+        sourceLastModifiedTimestamp:
+          type: integer
+          format: int64
+          description: Source last modified timestamp
+        lastIndexTimestamp:
+          type: integer
+          format: int64
+          description: Last indexing timestamp
+        lastExtractionTimestamp:
+          type: integer
+          format: int64
+          description: Last extraction timestamp
+        indexingStatus:
+          type: string
+          enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
+          description: Current indexing status
+        isDeleted:
+          type: boolean
+          description: Whether the record is deleted
+          default: false
+        isArchived:
+          type: boolean
+          description: Whether the record is archived
+          default: false
+        isDeletedAtSource:
+          type: boolean
+          description: Whether the record is deleted at source
+          default: false
+        deletedAtSourceTimestamp:
+          type: integer
+          format: int64
+          description: Timestamp when deleted at source
+        deletedByUserId:
+          type: string
+          description: User ID who deleted the record
+        isLatestVersion:
+          type: boolean
+          description: Whether this is the latest version
+          default: false
+        isDirty:
+          type: boolean
+          description: Whether the record needs re-indexing
+          default: false
+        reason:
+          type: string
+          description: Reason for status or failure
+        virtualRecordId:
+          type: string
+          description: Virtual record identifier
+        summaryDocumentId:
+          type: string
+          description: Summary document identifier
+        webUrl:
+          type: string
+          description: Web URL of the record
+        mimeType:
+          type: string
+          description: MIME type of the record
+      required:
+        - recordName
+        - recordType
+        - origin
+        - orgId
+
+    FileRecord:
+      type: object
+      properties:
+        _key:
+          type: string
+          description: Unique file record identifier
+        name:
+          type: string
+          description: Name of the file
+        isFile:
+          type: boolean
+          description: Whether this is a file (true) or folder (false)
+        extension:
+          type: string
+          description: File extension
+        mimeType:
+          type: string
+          description: MIME type
+        sizeInBytes:
+          type: integer
+          format: int64
+          description: File size in bytes
+        webUrl:
+          type: string
+          description: Web URL of the file
+        orgId:
+          type: string
+          description: Organization ID
+      required:
+        - name
+        - isFile
+        - orgId
+
+    Permission:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: User ID
+        teamId:
+          type: string
+          description: Team ID
+        role:
+          type: string
+          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+          description: Permission role
+        kbId:
+          type: string
+          description: Knowledge base ID
+        grantedBy:
+          type: string
+          description: User ID who granted the permission
+        grantedAt:
+          type: integer
+          format: int64
+          description: Timestamp when permission was granted
+
+    PaginationInfo:
+      type: object
+      properties:
+        page:
+          type: integer
+          description: Current page number
+        limit:
+          type: integer
+          description: Items per page
+        totalCount:
+          type: integer
+          description: Total number of items
+        totalPages:
+          type: integer
+          description: Total number of pages
+
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Error message
+        code:
+          type: integer
+          description: Error code
+        details:
+          type: object
+          description: Additional error details
+
+    CreateKBRequest:
+      type: object
+      properties:
+        kbName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Name of the knowledge base
+      required:
+        - kbName
+
+    UpdateKBRequest:
+      type: object
+      properties:
+        kbName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: New name for the knowledge base
+
+    CreateFolderRequest:
+      type: object
+      properties:
+        folderName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Name of the folder
+      required:
+        - folderName
+
+    UpdateFolderRequest:
+      type: object
+      properties:
+        folderName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: New name for the folder
+      required:
+        - folderName
+
+    UpdateRecordRequest:
+      type: object
+      properties:
+        recordName:
+          type: string
+          description: New name for the record
+        file:
+          type: string
+          format: binary
+          description: New file content (optional)
+
+    PermissionRequest:
+      type: object
+      properties:
+        userIds:
+          type: array
+          items:
+            type: string
+          description: Array of user IDs
+        teamIds:
+          type: array
+          items:
+            type: string
+          description: Array of team IDs
+        role:
+          type: string
+          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+          description: Permission role to assign
+      required:
+        - role
+
+    ReindexRequest:
+      type: object
+      properties:
+        app:
+          type: string
+          description: Connector app name to reindex
+      required:
+        - app
+
+    ResyncRequest:
+      type: object
+      properties:
+        connectorName:
+          type: string
+          description: Connector name to resync
+      required:
+        - connectorName
+
+    UploadLimitsResponse:
+      type: object
+      properties:
+        maxFilesPerRequest:
+          type: integer
+          description: Maximum number of files allowed per upload request
+        maxFileSizeBytes:
+          type: integer
+          format: int64
+          description: Maximum file size in bytes
+
+security:
+  - bearerAuth: []
+
+paths:
+  /:
+    post:
+      tags:
+        - Knowledge Bases
+      summary: Create a new knowledge base
+      description: Create a new knowledge base for the organization
+      operationId: createKnowledgeBase
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKBRequest'
+        required: true
+      responses:
+        '200':
+          description: Knowledge base created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBase'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags:
+        - Knowledge Bases
+      summary: List all knowledge bases
+      description: Get a paginated list of all knowledge bases accessible to the user
+      operationId: listKnowledgeBases
+      parameters:
+        - name: page
+          in: query
+          description: Page number (default is 1)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Number of items per page (default is 20, max is 100)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          description: Search term for filtering knowledge bases
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+        - name: permissions
+          in: query
+          description: Filter by user permissions (comma-separated)
+          required: false
+          schema:
+            type: string
+            example: OWNER,WRITER
+        - name: sortBy
+          in: query
+          description: Field to sort by
+          required: false
+          schema:
+            type: string
+            enum: [name, createdAtTimestamp, updatedAtTimestamp, userRole]
+            default: name
+        - name: sortOrder
+          in: query
+          description: Sort order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  knowledgeBases:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/KnowledgeBase'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationInfo'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /records:
+    get:
+      tags:
+        - Records
+      summary: Get all records across knowledge bases
+      description: Get a paginated list of all records accessible to the user across all knowledge bases
+      operationId: getAllRecords
+      parameters:
+        - name: page
+          in: query
+          description: Page number (default is 1)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Number of items per page (default is 20, max is 100)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          description: Search term for filtering records
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+        - name: recordTypes
+          in: query
+          description: Filter by record types (comma-separated)
+          required: false
+          schema:
+            type: string
+            example: FILE,WEBPAGE
+        - name: origins
+          in: query
+          description: Filter by origins (comma-separated)
+          required: false
+          schema:
+            type: string
+            example: UPLOAD,CONNECTOR
+        - name: connectors
+          in: query
+          description: Filter by connector names (comma-separated)
+          required: false
+          schema:
+            type: string
+            example: ONEDRIVE,GOOGLE_DRIVE
+        - name: permissions
+          in: query
+          description: Filter by user permissions (comma-separated)
+          required: false
+          schema:
+            type: string
+            example: OWNER,WRITER
+        - name: indexingStatus
+          in: query
+          description: Filter by indexing status (comma-separated)
+          required: false
+          schema:
+            type: string
+            example: COMPLETED,IN_PROGRESS
+        - name: dateFrom
+          in: query
+          description: Filter records created after this timestamp (milliseconds)
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: dateTo
+          in: query
+          description: Filter records created before this timestamp (milliseconds)
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: sortBy
+          in: query
+          description: Field to sort by
+          required: false
+          schema:
+            type: string
+            enum: [createdAtTimestamp, updatedAtTimestamp, recordName, recordType, origin, indexingStatus]
+            default: createdAtTimestamp
+        - name: sortOrder
+          in: query
+          description: Sort order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: source
+          in: query
+          description: Filter by source type
+          required: false
+          schema:
+            type: string
+            enum: [all, local, connector]
+            default: all
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationInfo'
+                  filters:
+                    type: object
+                    description: Applied and available filters
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /record/{recordId}:
+    get:
+      tags:
+        - Records
+      summary: Get record by ID
+      description: Retrieve a specific record by its ID
+      operationId: getRecordById
+      parameters:
+        - name: recordId
+          in: path
+          description: Record ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Record'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Records
+      summary: Update a record
+      description: Update a record's metadata and optionally upload a new version
+      operationId: updateRecord
+      parameters:
+        - name: recordId
+          in: path
+          description: Record ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: New file content (optional)
+                recordName:
+                  type: string
+                  description: New name for the record
+        required: false
+      responses:
+        '200':
+          description: Record updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  record:
+                    $ref: '#/components/schemas/Record'
+                  fileUploaded:
+                    type: boolean
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Records
+      summary: Delete a record
+      description: Delete a record by its ID
+      operationId: deleteRecord
+      parameters:
+        - name: recordId
+          in: path
+          description: Record ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Record deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '404':
+          description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /stream/record/{recordId}:
+    get:
+      tags:
+        - Records
+      summary: Stream record content
+      description: Stream the content of a record (for file downloads)
+      operationId: getRecordBuffer
+      parameters:
+        - name: recordId
+          in: path
+          description: Record ID
+          required: true
+          schema:
+            type: string
+        - name: convertTo
+          in: query
+          description: Convert file to specified format (optional)
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /reindex/record/{recordId}:
+    post:
+      tags:
+        - Records
+      summary: Reindex a record
+      description: Trigger reindexing for a specific record
+      operationId: reindexRecord
+      parameters:
+        - name: recordId
+          in: path
+          description: Record ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Record reindexing triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '404':
+          description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /stats/{connector}:
+    get:
+      tags:
+        - Connector
+      summary: Get connector statistics
+      description: Get statistics for a specific connector (admin only)
+      operationId: getConnectorStats
+      parameters:
+        - name: connector
+          in: path
+          description: Connector name
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Connector statistics
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - admin access required
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /reindex-all/connector:
+    post:
+      tags:
+        - Connector
+      summary: Reindex all failed records for a connector
+      description: Trigger reindexing for all failed records of a specific connector (admin only)
+      operationId: reindexAllRecords
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReindexRequest'
+        required: true
+      responses:
+        '200':
+          description: Reindexing triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reindexResponse:
+                    type: object
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - admin access required
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /resync/connector:
+    post:
+      tags:
+        - Connector
+      summary: Resync connector records
+      description: Trigger resync for all records of a specific connector (admin only)
+      operationId: resyncConnectorRecords
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResyncRequest'
+        required: true
+      responses:
+        '200':
+          description: Resync triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resyncConnectorResponse:
+                    type: object
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - admin access required
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /limits:
+    get:
+      tags:
+        - Upload
+      summary: Get upload limits
+      description: Get the current upload limits for file uploads
+      operationId: getUploadLimits
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadLimitsResponse'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{kbId}:
+    get:
+      tags:
+        - Knowledge Bases
+      summary: Get knowledge base by ID
+      description: Retrieve a specific knowledge base by its ID
+      operationId: getKnowledgeBase
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBase'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Knowledge Bases
+      summary: Update knowledge base
+      description: Update a knowledge base's metadata
+      operationId: updateKnowledgeBase
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateKBRequest'
+        required: true
+      responses:
+        '200':
+          description: Knowledge base updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBase'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Knowledge Bases
+      summary: Delete knowledge base
+      description: Delete a knowledge base by its ID
+      operationId: deleteKnowledgeBase
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Knowledge base deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '404':
+          description: Knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{kbId}/records:
+    get:
+      tags:
+        - Records
+      summary: Get records for a knowledge base
+      description: Get a paginated list of records in a specific knowledge base
+      operationId: getKBContent
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: Page number (default is 1)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Number of items per page (default is 20, max is 100)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          description: Search term for filtering records
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+        - name: recordTypes
+          in: query
+          description: Filter by record types (comma-separated)
+          required: false
+          schema:
+            type: string
+        - name: origins
+          in: query
+          description: Filter by origins (comma-separated)
+          required: false
+          schema:
+            type: string
+        - name: connectors
+          in: query
+          description: Filter by connector names (comma-separated)
+          required: false
+          schema:
+            type: string
+        - name: indexingStatus
+          in: query
+          description: Filter by indexing status (comma-separated)
+          required: false
+          schema:
+            type: string
+        - name: dateFrom
+          in: query
+          description: Filter records created after this timestamp
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: dateTo
+          in: query
+          description: Filter records created before this timestamp
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: sortBy
+          in: query
+          description: Field to sort by
+          required: false
+          schema:
+            type: string
+            enum: [createdAtTimestamp, updatedAtTimestamp, recordName, recordType, origin, indexingStatus]
+            default: createdAtTimestamp
+        - name: sortOrder
+          in: query
+          description: Sort order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationInfo'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{kbId}/upload:
+    post:
+      tags:
+        - Upload
+      summary: Upload files to knowledge base
+      description: Upload one or more files directly to a knowledge base
+      operationId: uploadRecordsToKB
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: Files to upload (max 1000 files)
+                file_paths:
+                  type: array
+                  items:
+                    type: string
+                  description: Array of file paths (must match files array length)
+                last_modified:
+                  type: array
+                  items:
+                    type: string
+                  description: Array of last modified timestamps (must match files array length)
+                isVersioned:
+                  type: boolean
+                  description: Whether files should be versioned
+                  default: true
+              required:
+                - files
+                - file_paths
+                - last_modified
+        required: true
+      responses:
+        '200':
+          description: Files uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{kbId}/folder:
+    post:
+      tags:
+        - Folders
+      summary: Create a root folder
+      description: Create a new root-level folder in a knowledge base
+      operationId: createRootFolder
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFolderRequest'
+        required: true
+      responses:
+        '200':
+          description: Folder created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Folder'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{kbId}/folder/{folderId}/subfolder:
+    post:
+      tags:
+        - Folders
+      summary: Create a nested subfolder
+      description: Create a new subfolder within an existing folder
+      operationId: createNestedFolder
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+        - name: folderId
+          in: path
+          description: Parent folder ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFolderRequest'
+        required: true
+      responses:
+        '200':
+          description: Subfolder created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Folder'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Folder or knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{kbId}/folder/{folderId}:
+    get:
+      tags:
+        - Folders
+      summary: Get folder contents
+      description: Get the contents of a specific folder
+      operationId: getFolderContents
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+        - name: folderId
+          in: path
+          description: Folder ID
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: Page number (default is 1)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Number of items per page (default is 20, max is 100)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          description: Search term for filtering contents
+          required: false
+          schema:
+            type: string
+        - name: recordTypes
+          in: query
+          description: Filter by record types (comma-separated)
+          required: false
+          schema:
+            type: string
+        - name: sortBy
+          in: query
+          description: Field to sort by
+          required: false
+          schema:
+            type: string
+            default: createdAtTimestamp
+        - name: sortOrder
+          in: query
+          description: Sort order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  contents:
+                    type: array
+                    items:
+                      oneOf:
+                        - $ref: '#/components/schemas/Folder'
+                        - $ref: '#/components/schemas/Record'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationInfo'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Folders
+      summary: Update folder
+      description: Update a folder's metadata
+      operationId: updateFolder
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+        - name: folderId
+          in: path
+          description: Folder ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateFolderRequest'
+        required: true
+      responses:
+        '200':
+          description: Folder updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Folder'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Folders
+      summary: Delete folder
+      description: Delete a folder and its contents
+      operationId: deleteFolder
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+        - name: folderId
+          in: path
+          description: Folder ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Folder deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '404':
+          description: Folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{kbId}/folder/{folderId}/upload:
+    post:
+      tags:
+        - Upload
+      summary: Upload files to folder
+      description: Upload one or more files to a specific folder
+      operationId: uploadRecordsToFolder
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: folderId
+          in: path
+          description: Folder ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: Files to upload (max 1000 files)
+                file_paths:
+                  type: array
+                  items:
+                    type: string
+                  description: Array of file paths (must match files array length)
+                last_modified:
+                  type: array
+                  items:
+                    type: string
+                  description: Array of last modified timestamps (must match files array length)
+                isVersioned:
+                  type: boolean
+                  description: Whether files should be versioned
+                  default: true
+              required:
+                - files
+                - file_paths
+                - last_modified
+        required: true
+      responses:
+        '200':
+          description: Files uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Folder or knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{kbId}/permissions:
+    post:
+      tags:
+        - Permissions
+      summary: Create permissions
+      description: Grant permissions to users or teams for a knowledge base
+      operationId: createKBPermission
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PermissionRequest'
+        required: true
+      responses:
+        '201':
+          description: Permissions created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kbId:
+                    type: string
+                  permissionResult:
+                    type: object
+                    properties:
+                      grantedCount:
+                        type: integer
+                      updatedCount:
+                        type: integer
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - only KB owners can grant permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Knowledge base or users not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags:
+        - Permissions
+      summary: List permissions
+      description: Get all permissions for a knowledge base
+      operationId: listKBPermissions
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kbId:
+                    type: string
+                  permissions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Permission'
+                  totalCount:
+                    type: integer
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - no access to this knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Permissions
+      summary: Update permissions
+      description: Update permissions for users or teams on a knowledge base
+      operationId: updateKBPermission
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PermissionRequest'
+        required: true
+      responses:
+        '200':
+          description: Permissions updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kbId:
+                    type: string
+                  userIds:
+                    type: array
+                    items:
+                      type: string
+                  teamIds:
+                    type: array
+                    items:
+                      type: string
+                  newRole:
+                    type: string
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - only KB owners can update permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Permission not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Permissions
+      summary: Remove permissions
+      description: Remove permissions from users or teams for a knowledge base
+      operationId: removeKBPermission
+      parameters:
+        - name: kbId
+          in: path
+          description: Knowledge base ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Array of user IDs
+                teamIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Array of team IDs
+        required: true
+      responses:
+        '200':
+          description: Permissions removed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kbId:
+                    type: string
+                  userIds:
+                    type: array
+                    items:
+                      type: string
+                  teamIds:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - only KB owners can remove permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Permission not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+

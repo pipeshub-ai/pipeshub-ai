@@ -28,6 +28,7 @@ from app.containers.connector import (
     initialize_enterprise_google_account_services_fn,
     initialize_individual_google_account_services_fn,
 )
+from app.docs.swagger_config import configure_swagger
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -375,12 +376,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 # Create FastAPI app with lifespan
 app = FastAPI(
-    title="Google Drive Sync Service",
-    description="Service for syncing Google Drive content to ArangoDB",
+    title="PipesHub Connector Service",
+    description="Service for syncing content to ArangoDB",
     version="1.0.0",
     lifespan=lifespan,
     dependencies=[Depends(get_initialized_container)],
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
 )
+
+# Configure Swagger UI with custom OpenAPI spec
+configure_swagger(app)
 
 # List of paths to exclude from authentication (public endpoints)
 # All other paths will require authentication by default
@@ -389,6 +396,9 @@ EXCLUDE_PATHS = [
     "/drive/webhook",  # Google Drive webhook (has its own WebhookAuthVerifier)
     "/gmail/webhook",  # Gmail webhook (uses Google Pub/Sub authentication)
     "/admin/webhook",  # Admin webhook (has its own WebhookAuthVerifier)
+    "/docs",  # Swagger UI documentation
+    "/redoc",  # ReDoc documentation
+    "/openapi.json",  # OpenAPI specification
 ]
 
 @app.middleware("http")

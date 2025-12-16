@@ -1,0 +1,1733 @@
+openapi: 3.0.0
+info:
+  title: PipesHub Connector Service API
+  description: |
+    RESTful API for the PipesHub Connector Service - providing knowledge base management,
+    connector integrations (Google Drive, Gmail, OneDrive, Confluence, Jira, Slack, SharePoint),
+    record management, and data synchronization capabilities.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@pipeshub.com
+
+servers:
+  - url: /api/v1
+    description: Base API URL
+
+tags:
+  - name: Knowledge Base
+    description: Knowledge base management operations
+  - name: Records
+    description: Record management and operations
+  - name: Connectors
+    description: Connector configuration and management
+  - name: OAuth
+    description: OAuth authentication flows
+  - name: Streaming
+    description: File streaming and conversion operations
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # Knowledge Base Schemas
+    KnowledgeBase:
+      type: object
+      properties:
+        _key:
+          type: string
+          description: Unique knowledge base identifier
+        name:
+          type: string
+          description: Name of the knowledge base
+        orgId:
+          type: string
+          description: Organization ID
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Creation timestamp
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Last update timestamp
+        isDeleted:
+          type: boolean
+          default: false
+
+    CreateKnowledgeBaseRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Name of the knowledge base
+      required:
+        - name
+
+    CreateKnowledgeBaseResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        knowledgeBase:
+          $ref: '#/components/schemas/KnowledgeBase'
+
+    ListKnowledgeBaseResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        knowledgeBases:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeBase'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+
+    # Folder Schemas
+    Folder:
+      type: object
+      properties:
+        _key:
+          type: string
+          description: Unique folder identifier
+        name:
+          type: string
+          description: Folder name
+        parentId:
+          type: string
+          description: Parent folder or KB ID
+        kbId:
+          type: string
+          description: Knowledge base ID
+        orgId:
+          type: string
+          description: Organization ID
+        createdAtTimestamp:
+          type: integer
+          format: int64
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+        isDeleted:
+          type: boolean
+          default: false
+
+    CreateFolderRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+      required:
+        - name
+
+    CreateFolderResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        folder:
+          $ref: '#/components/schemas/Folder'
+
+    FolderContentsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        contents:
+          type: array
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/Folder'
+              - $ref: '#/components/schemas/Record'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+
+    # Record Schemas
+    Record:
+      type: object
+      properties:
+        _key:
+          type: string
+        recordName:
+          type: string
+        externalRecordId:
+          type: string
+        externalRevisionId:
+          type: string
+        recordType:
+          type: string
+          enum: [FILE, WEBPAGE, COMMENT, MESSAGE, EMAIL, TICKET, OTHERS]
+        origin:
+          type: string
+          enum: [UPLOAD, CONNECTOR]
+        connectorName:
+          type: string
+          enum: [ONEDRIVE, GOOGLE_DRIVE, CONFLUENCE, JIRA, SLACK, SHAREPOINT ONLINE, GMAIL]
+        orgId:
+          type: string
+        version:
+          type: integer
+        createdAtTimestamp:
+          type: integer
+          format: int64
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+        indexingStatus:
+          type: string
+          enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
+        isDeleted:
+          type: boolean
+        isArchived:
+          type: boolean
+        mimeType:
+          type: string
+        webUrl:
+          type: string
+
+    CreateRecordsRequest:
+      type: object
+      properties:
+        records:
+          type: array
+          items:
+            type: object
+        fileRecords:
+          type: array
+          items:
+            type: object
+
+    CreateRecordsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/Record'
+
+    UpdateRecordRequest:
+      type: object
+      properties:
+        updates:
+          type: object
+        fileMetadata:
+          type: object
+
+    UpdateRecordResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        updatedRecord:
+          type: object
+          properties:
+            record:
+              $ref: '#/components/schemas/Record'
+
+    DeleteRecordResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+
+    ListRecordsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/Record'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+        filters:
+          type: object
+
+    UploadRecordsRequest:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            type: object
+            properties:
+              record:
+                $ref: '#/components/schemas/Record'
+              fileRecord:
+                type: object
+              filePath:
+                type: string
+              lastModified:
+                type: integer
+
+    UploadRecordsinKBResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/Record'
+
+    UploadRecordsinFolderResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/Record'
+
+    # Permission Schemas
+    Permission:
+      type: object
+      properties:
+        userId:
+          type: string
+        teamId:
+          type: string
+        role:
+          type: string
+          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+        kbId:
+          type: string
+        grantedBy:
+          type: string
+        grantedAt:
+          type: integer
+          format: int64
+
+    CreatePermissionsRequest:
+      type: object
+      properties:
+        userIds:
+          type: array
+          items:
+            type: string
+        teamIds:
+          type: array
+          items:
+            type: string
+        role:
+          type: string
+          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+      required:
+        - role
+
+    CreatePermissionsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        grantedCount:
+          type: integer
+        updatedCount:
+          type: integer
+
+    ListPermissionsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Permission'
+        totalCount:
+          type: integer
+
+    UpdatePermissionResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        userIds:
+          type: array
+          items:
+            type: string
+        teamIds:
+          type: array
+          items:
+            type: string
+        newRole:
+          type: string
+
+    RemovePermissionResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        userIds:
+          type: array
+          items:
+            type: string
+        teamIds:
+          type: array
+          items:
+            type: string
+
+    # Connector Schemas
+    Connector:
+      type: object
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        icon:
+          type: string
+        category:
+          type: string
+        isActive:
+          type: boolean
+        requiresOAuth:
+          type: boolean
+        supportedFeatures:
+          type: array
+          items:
+            type: string
+
+    ConnectorConfig:
+      type: object
+      properties:
+        appName:
+          type: string
+        config:
+          type: object
+        isActive:
+          type: boolean
+        createdAt:
+          type: integer
+          format: int64
+        updatedAt:
+          type: integer
+          format: int64
+
+    ConnectorConfigSchema:
+      type: object
+      properties:
+        schema:
+          type: object
+          description: JSON Schema for connector configuration
+
+    ConnectorFilters:
+      type: object
+      properties:
+        filters:
+          type: object
+          description: Filter configuration for the connector
+
+    ConnectorStats:
+      type: object
+      properties:
+        totalRecords:
+          type: integer
+        indexedRecords:
+          type: integer
+        failedRecords:
+          type: integer
+        pendingRecords:
+          type: integer
+        lastSyncTimestamp:
+          type: integer
+          format: int64
+
+    # Common Schemas
+    PaginationInfo:
+      type: object
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalCount:
+          type: integer
+        totalPages:
+          type: integer
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          default: false
+        code:
+          type: integer
+        reason:
+          type: string
+        detail:
+          type: string
+
+security:
+  - bearerAuth: []
+
+paths:
+  # Knowledge Base Endpoints
+  /kb/:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Create a new knowledge base
+      description: Create a new knowledge base for the organization
+      operationId: createKnowledgeBase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKnowledgeBaseRequest'
+      responses:
+        '200':
+          description: Knowledge base created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateKnowledgeBaseResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      tags:
+        - Knowledge Base
+      summary: List all knowledge bases
+      description: Get a paginated list of all knowledge bases accessible to the user
+      operationId: listKnowledgeBases
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: permissions
+          in: query
+          description: Comma-separated list of permission roles
+          schema:
+            type: string
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            default: name
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListKnowledgeBaseResponse'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  /kb/{kb_id}:
+    get:
+      tags:
+        - Knowledge Base
+      summary: Get knowledge base by ID
+      operationId: getKnowledgeBase
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  knowledgeBase:
+                    $ref: '#/components/schemas/KnowledgeBase'
+        '403':
+          description: Forbidden
+        '404':
+          description: Knowledge base not found
+
+    put:
+      tags:
+        - Knowledge Base
+      summary: Update knowledge base
+      operationId: updateKnowledgeBase
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                groupName:
+                  type: string
+      responses:
+        '200':
+          description: Knowledge base updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+
+    delete:
+      tags:
+        - Knowledge Base
+      summary: Delete knowledge base
+      operationId: deleteKnowledgeBase
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Knowledge base deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+
+  /kb/{kb_id}/folder:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Create a root folder
+      operationId: createRootFolder
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFolderRequest'
+      responses:
+        '200':
+          description: Folder created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateFolderResponse'
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+
+  /kb/{kb_id}/folder/{folder_id}/subfolder:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Create a nested subfolder
+      operationId: createNestedFolder
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: folder_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFolderRequest'
+      responses:
+        '200':
+          description: Subfolder created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateFolderResponse'
+
+  /kb/{kb_id}/folder/{folder_id}:
+    get:
+      tags:
+        - Knowledge Base
+      summary: Get folder contents
+      operationId: getFolderContents
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: folder_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FolderContentsResponse'
+
+    put:
+      tags:
+        - Knowledge Base
+      summary: Update folder
+      operationId: updateFolder
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: folder_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Folder updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+    delete:
+      tags:
+        - Knowledge Base
+      summary: Delete folder
+      operationId: deleteFolder
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: folder_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Folder deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /kb/{kb_id}/children:
+    get:
+      tags:
+        - Knowledge Base
+      summary: Get KB records
+      operationId: getKBRecords
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: record_types
+          in: query
+          schema:
+            type: string
+        - name: origins
+          in: query
+          schema:
+            type: string
+        - name: connectors
+          in: query
+          schema:
+            type: string
+        - name: indexing_status
+          in: query
+          schema:
+            type: string
+        - name: date_from
+          in: query
+          schema:
+            type: integer
+        - name: date_to
+          in: query
+          schema:
+            type: integer
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            default: createdAtTimestamp
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRecordsResponse'
+
+  /kb/{kb_id}/folder/{folder_id}/children:
+    get:
+      tags:
+        - Knowledge Base
+      summary: Get folder children
+      operationId: getFolderChildren
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: folder_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FolderContentsResponse'
+
+  /kb/{kb_id}/upload:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Upload files to KB
+      operationId: uploadFilesToKB
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRecordsRequest'
+      responses:
+        '200':
+          description: Files uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadRecordsinKBResponse'
+
+  /kb/{kb_id}/folder/{folder_id}/upload:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Upload files to folder
+      operationId: uploadFilesToFolder
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: folder_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRecordsRequest'
+      responses:
+        '200':
+          description: Files uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadRecordsinFolderResponse'
+
+  /kb/{kb_id}/permissions:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Create permissions
+      operationId: createKBPermissions
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePermissionsRequest'
+      responses:
+        '200':
+          description: Permissions created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePermissionsResponse'
+
+    get:
+      tags:
+        - Knowledge Base
+      summary: List permissions
+      operationId: listKBPermissions
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListPermissionsResponse'
+
+    put:
+      tags:
+        - Knowledge Base
+      summary: Update permissions
+      operationId: updateKBPermissions
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePermissionsRequest'
+      responses:
+        '200':
+          description: Permissions updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdatePermissionResponse'
+
+    delete:
+      tags:
+        - Knowledge Base
+      summary: Remove permissions
+      operationId: removeKBPermissions
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userIds:
+                  type: array
+                  items:
+                    type: string
+                teamIds:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Permissions removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemovePermissionResponse'
+
+  # Record Endpoints
+  /records:
+    get:
+      tags:
+        - Records
+      summary: Get all records
+      description: Get all records accessible to the user across all knowledge bases
+      operationId: getAllRecords
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: record_types
+          in: query
+          schema:
+            type: string
+        - name: origins
+          in: query
+          schema:
+            type: string
+        - name: connectors
+          in: query
+          schema:
+            type: string
+        - name: indexing_status
+          in: query
+          schema:
+            type: string
+        - name: permissions
+          in: query
+          schema:
+            type: string
+        - name: date_from
+          in: query
+          schema:
+            type: integer
+        - name: date_to
+          in: query
+          schema:
+            type: integer
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            default: createdAtTimestamp
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: source
+          in: query
+          schema:
+            type: string
+            enum: [all, local, connector]
+            default: all
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRecordsResponse'
+
+  /records/{record_id}:
+    get:
+      tags:
+        - Records
+      summary: Get record by ID
+      operationId: getRecordById
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  record:
+                    $ref: '#/components/schemas/Record'
+
+    put:
+      tags:
+        - Records
+      summary: Update record
+      operationId: updateRecord
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRecordRequest'
+      responses:
+        '200':
+          description: Record updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateRecordResponse'
+
+    delete:
+      tags:
+        - Records
+      summary: Delete record
+      operationId: deleteRecord
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Record deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteRecordResponse'
+
+  /records/{record_id}/reindex:
+    post:
+      tags:
+        - Records
+      summary: Reindex a record
+      operationId: reindexRecord
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reindexing triggered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /records/reindex-failed:
+    post:
+      tags:
+        - Records
+      summary: Reindex all failed records
+      operationId: reindexFailedRecords
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                connector:
+                  type: string
+      responses:
+        '200':
+          description: Reindexing triggered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /stream/record/{record_id}:
+    get:
+      tags:
+        - Streaming
+      summary: Stream record content
+      description: Stream the content of a record for download
+      operationId: streamRecord
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: convertTo
+          in: query
+          description: Convert file to specified format
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  /internal/stream/record/{record_id}/:
+    get:
+      tags:
+        - Streaming
+      summary: Internal stream record
+      description: Internal endpoint for streaming record content
+      operationId: internalStreamRecord
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  /record/buffer/convert:
+    post:
+      tags:
+        - Streaming
+      summary: Convert record buffer
+      description: Convert a record buffer to a different format
+      operationId: convertRecordBuffer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                buffer:
+                  type: string
+                  format: byte
+                convertTo:
+                  type: string
+                mimeType:
+                  type: string
+      responses:
+        '200':
+          description: Conversion successful
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  # Connector Endpoints
+  /connectors:
+    get:
+      tags:
+        - Connectors
+      summary: List all connectors
+      operationId: listConnectors
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connectors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Connector'
+
+  /connectors/active:
+    get:
+      tags:
+        - Connectors
+      summary: List active connectors
+      operationId: listActiveConnectors
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connectors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Connector'
+
+  /connectors/inactive:
+    get:
+      tags:
+        - Connectors
+      summary: List inactive connectors
+      operationId: listInactiveConnectors
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connectors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Connector'
+
+  /connectors/{app_name}:
+    get:
+      tags:
+        - Connectors
+      summary: Get connector by name
+      operationId: getConnector
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Connector'
+
+  /connectors/config/{app_name}:
+    get:
+      tags:
+        - Connectors
+      summary: Get connector configuration
+      operationId: getConnectorConfig
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorConfig'
+
+    put:
+      tags:
+        - Connectors
+      summary: Update connector configuration
+      operationId: updateConnectorConfig
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /connectors/config-schema/{app_name}:
+    get:
+      tags:
+        - Connectors
+      summary: Get connector configuration schema
+      operationId: getConnectorConfigSchema
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorConfigSchema'
+
+  /connectors/schema/{app_name}:
+    get:
+      tags:
+        - Connectors
+      summary: Get connector schema
+      operationId: getConnectorSchema
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /connectors/{app_name}/filters:
+    get:
+      tags:
+        - Connectors
+      summary: Get connector filters
+      operationId: getConnectorFilters
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorFilters'
+
+    post:
+      tags:
+        - Connectors
+      summary: Create connector filters
+      operationId: createConnectorFilters
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Filters created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /connectors/toggle/{app_name}:
+    post:
+      tags:
+        - Connectors
+      summary: Toggle connector active status
+      operationId: toggleConnector
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Connector toggled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /connectors/{app_name}/oauth/authorize:
+    get:
+      tags:
+        - OAuth
+      summary: OAuth authorization
+      description: Initiate OAuth authorization flow for a connector
+      operationId: oauthAuthorize
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: redirect_uri
+          in: query
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to OAuth provider
+        '400':
+          description: Invalid request
+
+  /connectors/{app_name}/oauth/callback:
+    get:
+      tags:
+        - OAuth
+      summary: OAuth callback
+      description: Handle OAuth callback from provider
+      operationId: oauthCallback
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to application
+        '400':
+          description: Invalid callback
+
+  /stats:
+    get:
+      tags:
+        - Records
+      summary: Get connector statistics
+      operationId: getConnectorStats
+      parameters:
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: connector
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStats'
+
+  # Additional Endpoints
+  /{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl:
+    get:
+      tags:
+        - Records
+      summary: Get signed URL for record
+      operationId: getRecordSignedUrl
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: connector
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed URL generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signedUrl:
+                    type: string
+
+  /delete/record/{record_id}:
+    delete:
+      tags:
+        - Records
+      summary: Delete record (legacy endpoint)
+      operationId: deleteRecordLegacy
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Record deleted
+
+  /index/{org_id}/{connector}/record/{record_id}:
+    get:
+      tags:
+        - Records
+      summary: Index record
+      operationId: indexRecord
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: connector
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Indexing triggered
+
