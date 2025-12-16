@@ -1,4 +1,3 @@
-// services/nodejs/apps/src/modules/auth/docs/swagger.ts
 import * as path from 'path';
 import {
   ModuleSwaggerInfo,
