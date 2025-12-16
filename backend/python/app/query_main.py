@@ -19,6 +19,7 @@ from app.api.routes.search import router as search_router
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.query import QueryAppContainer
+from app.docs import register_query_swagger
 from app.health.health import Health
 from app.services.graph_db.arango.config import ArangoConfig
 from app.services.messaging.kafka.utils.utils import KafkaUtils
@@ -207,7 +208,14 @@ app = FastAPI(
     dependencies=[Depends(get_initialized_container)],
 )
 
-EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
+# Register custom swagger documentation
+register_query_swagger(app)
+
+EXCLUDE_PATHS = ["/health",
+    "/docs",        
+    "/redoc",       
+    "/openapi.json"
+    ] 
 
 
 @app.middleware("http")
@@ -318,9 +326,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
-app.include_router(agent_router, prefix="/api/v1/agent")
+app.include_router(agent_router, prefix="/api/v1/agent", include_in_schema=False)  # Hidden from docs
 app.include_router(health_router, prefix="/api/v1")
-app.include_router(tools_router, prefix="/api/v1")
+app.include_router(tools_router, prefix="/api/v1", include_in_schema=False)  # Hidden from docs
 
 
 def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:
