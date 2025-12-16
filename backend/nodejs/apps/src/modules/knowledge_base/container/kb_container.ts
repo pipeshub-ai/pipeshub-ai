@@ -8,8 +8,6 @@ import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { SyncEventProducer } from '../services/sync_events.service';
-import { registerKnowledgeBaseSwagger } from '../docs/swagger';
-import { SwaggerService } from '../../docs/swagger.container';
 const loggerConfig = {
   service: 'Knowledge Base Service',
 };
@@ -21,7 +19,6 @@ export class KnowledgeBaseContainer {
   static async initialize(
     configurationManagerConfig: ConfigurationManagerConfig,
     appConfig: AppConfig,
-    swaggerService?: SwaggerService,
   ): Promise<Container> {
     const container = new Container();
     this.logger.info(' In the init  kb conatiner');
@@ -36,16 +33,6 @@ export class KnowledgeBaseContainer {
     // Initialize and bind services
     await this.initializeServices(container, appConfig);
 
-    // Register Swagger documentation if SwaggerService is provided
-    if (swaggerService) {
-      try {
-        registerKnowledgeBaseSwagger(swaggerService);
-      } catch (error) {
-        this.logger.warn('Failed to register Knowledge Base Swagger documentation', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-      }
-    }
 
     this.instance = container;
     return container;
