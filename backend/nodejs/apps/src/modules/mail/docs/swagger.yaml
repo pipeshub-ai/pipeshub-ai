@@ -1,0 +1,447 @@
+openapi: 3.0.0
+info:
+  title: Mail Service API
+  description: |
+    RESTful API for the Mail Service - providing email sending capabilities with SMTP configuration,
+    support for multiple email templates (OTP, password reset, account creation, invitations, etc.),
+    and dynamic configuration management.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@yourcompany.com
+
+servers:
+  - url: /api/v1/mail
+    description: Base API URL
+
+tags:
+  - name: Email Operations
+    description: Email sending and management operations
+  - name: Configuration
+    description: SMTP configuration management
+
+components:
+  securitySchemes:
+    scopedToken:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: |
+        Scoped JWT token for specific operations. 
+        Format: "Bearer {scoped_token}"
+        Required scopes: 
+        - `mail:send` for sending emails
+        - `fetch:config` for configuration updates
+
+  schemas:
+    MailBody:
+      type: object
+      properties:
+        productName:
+          type: string
+          description: Name of the product sending the email
+          example: "PipesHub"
+        emailTemplateType:
+          type: string
+          enum:
+            - loginWithOTP
+            - resetPassword
+            - accountCreation
+            - appuserInvite
+            - suspiciousLoginAttempt
+          description: Type of email template to use
+          example: "loginWithOTP"
+        isAutoEmail:
+          type: boolean
+          description: Whether this is an automated email
+          default: false
+        fromEmailDomain:
+          type: string
+          format: email
+          description: From email address (optional, uses SMTP config if not provided)
+          example: "noreply@pipeshub.com"
+        sendEmailTo:
+          type: array
+          items:
+            type: string
+            format: email
+          description: List of recipient email addresses
+          example: ["user@example.com", "admin@example.com"]
+        subject:
+          type: string
+          description: Email subject line
+          example: "Your OTP for Login"
+        templateData:
+          type: object
+          description: Dynamic data to populate the email template
+          additionalProperties: true
+          example:
+            otp: "123456"
+            userName: "John Doe"
+            companyName: "PipesHub"
+        sendCcTo:
+          type: array
+          items:
+            type: string
+            format: email
+          description: List of CC recipient email addresses
+          example: ["cc@example.com"]
+        attachments:
+          type: array
+          items:
+            type: object
+            properties:
+              filename:
+                type: string
+                description: Name of the attachment file
+              path:
+                type: string
+                description: Path to the attachment file
+              content:
+                type: string
+                description: Base64 encoded content
+              contentType:
+                type: string
+                description: MIME type of the attachment
+          description: Email attachments
+      required:
+        - emailTemplateType
+        - sendEmailTo
+        - subject
+        - templateData
+
+    SmtpConfig:
+      type: object
+      properties:
+        host:
+          type: string
+          description: SMTP server hostname
+          example: "smtp.gmail.com"
+        port:
+          type: integer
+          description: SMTP server port
+          example: 587
+          default: 587
+        username:
+          type: string
+          description: SMTP authentication username
+          example: "noreply@pipeshub.com"
+        password:
+          type: string
+          format: password
+          description: SMTP authentication password (optional)
+          example: "********"
+        fromEmail:
+          type: string
+          format: email
+          description: Default from email address
+          example: "noreply@pipeshub.com"
+      required:
+        - host
+        - port
+        - fromEmail
+
+    MailInfo:
+      type: object
+      properties:
+        _id:
+          type: string
+          format: ObjectId
+          description: Unique mail record identifier
+        orgId:
+          type: string
+          format: ObjectId
+          description: Organization identifier
+        subject:
+          type: string
+          description: Email subject
+        from:
+          type: string
+          format: email
+          description: Sender email address
+        to:
+          type: array
+          items:
+            type: string
+            format: email
+          description: Recipient email addresses
+        cc:
+          type: array
+          items:
+            type: string
+            format: email
+          description: CC recipient email addresses
+        emailTemplateType:
+          type: string
+          enum:
+            - loginWithOTP
+            - resetPassword
+            - accountCreation
+            - appuserInvite
+            - suspiciousLoginAttempt
+          description: Type of email template used
+        createdAt:
+          type: integer
+          format: int64
+          description: Creation timestamp (milliseconds since epoch)
+        updatedAt:
+          type: integer
+          format: int64
+          description: Last update timestamp (milliseconds since epoch)
+
+    SendEmailResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            status:
+              type: boolean
+              description: Whether the email was sent successfully
+              example: true
+            data:
+              type: string
+              description: Success message
+              example: "Email sent"
+
+    SmtpConfigUpdateResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Success message
+          example: "SMTP configuration updated successfully"
+        smtp:
+          $ref: '#/components/schemas/SmtpConfig'
+
+    EmailTemplateInfo:
+      type: object
+      description: Information about available email templates and their required template data
+      properties:
+        loginWithOTP:
+          type: object
+          description: Template data for OTP login emails
+          properties:
+            otp:
+              type: string
+              description: One-time password
+            userName:
+              type: string
+              description: User's name
+            companyName:
+              type: string
+              description: Company name
+        resetPassword:
+          type: object
+          description: Template data for password reset emails
+          properties:
+            resetLink:
+              type: string
+              description: Password reset link
+            userName:
+              type: string
+              description: User's name
+            companyName:
+              type: string
+              description: Company name
+        accountCreation:
+          type: object
+          description: Template data for account creation emails
+          properties:
+            userName:
+              type: string
+              description: User's name
+            activationLink:
+              type: string
+              description: Account activation link
+            companyName:
+              type: string
+              description: Company name
+        appuserInvite:
+          type: object
+          description: Template data for app user invitation emails
+          properties:
+            inviteLink:
+              type: string
+              description: Invitation link
+            inviterName:
+              type: string
+              description: Name of person sending invite
+            companyName:
+              type: string
+              description: Company name
+        suspiciousLoginAttempt:
+          type: object
+          description: Template data for suspicious login alert emails
+          properties:
+            userName:
+              type: string
+              description: User's name
+            ipAddress:
+              type: string
+              description: IP address of login attempt
+            location:
+              type: string
+              description: Geographic location
+            timestamp:
+              type: string
+              description: Time of login attempt
+
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Error message
+        code:
+          type: integer
+          description: Error code
+        details:
+          type: object
+          description: Additional error details
+
+security:
+  - scopedToken: []
+
+paths:
+  /emails/sendEmail:
+    post:
+      tags:
+        - Email Operations
+      summary: Send an email
+      description: |
+        Send an email using the configured SMTP server with a specified template type.
+        Supports multiple recipients, CC, attachments, and dynamic template data.
+        
+        **Required Scoped Token**: `mail:send`
+        
+        **Available Templates**:
+        - `loginWithOTP` - Login with one-time password
+        - `resetPassword` - Password reset request
+        - `accountCreation` - New account creation
+        - `appuserInvite` - User invitation
+        - `suspiciousLoginAttempt` - Security alert for suspicious login
+      operationId: sendEmail
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailBody'
+            examples:
+              loginWithOTP:
+                summary: Login OTP Email
+                value:
+                  productName: "PipesHub"
+                  emailTemplateType: "loginWithOTP"
+                  sendEmailTo: ["user@example.com"]
+                  subject: "Your OTP for Login"
+                  templateData:
+                    otp: "123456"
+                    userName: "John Doe"
+                    companyName: "PipesHub"
+              resetPassword:
+                summary: Password Reset Email
+                value:
+                  productName: "PipesHub"
+                  emailTemplateType: "resetPassword"
+                  sendEmailTo: ["user@example.com"]
+                  subject: "Reset Your Password"
+                  templateData:
+                    resetLink: "https://pipeshub.com/reset?token=abc123"
+                    userName: "John Doe"
+                    companyName: "PipesHub"
+              appuserInvite:
+                summary: User Invitation Email
+                value:
+                  productName: "PipesHub"
+                  emailTemplateType: "appuserInvite"
+                  sendEmailTo: ["newuser@example.com"]
+                  sendCcTo: ["admin@example.com"]
+                  subject: "You're Invited to Join PipesHub"
+                  templateData:
+                    inviteLink: "https://pipeshub.com/invite?token=xyz789"
+                    inviterName: "Jane Smith"
+                    companyName: "PipesHub"
+      responses:
+        '200':
+          description: Email sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendEmailResponse'
+              example:
+                data:
+                  status: true
+                  data: "Email sent"
+        '400':
+          description: Bad request - Invalid email template type or missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized - Invalid or missing scoped token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Not Found - SMTP configuration not set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error - Failed to send email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /updateSmtpConfig:
+    post:
+      tags:
+        - Configuration
+      summary: Reload SMTP configuration
+      description: |
+        Dynamically reload the SMTP configuration from the application config.
+        This endpoint refreshes the mail service container with updated SMTP settings
+        without requiring a service restart.
+        
+        **Required Scoped Token**: `fetch:config`
+        
+        **Note**: This endpoint does not accept a request body. It reloads the configuration
+        from the application's config file.
+      operationId: updateSmtpConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: SMTP configuration updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmtpConfigUpdateResponse'
+              example:
+                message: "SMTP configuration updated successfully"
+                smtp:
+                  host: "smtp.gmail.com"
+                  port: 587
+                  username: "noreply@pipeshub.com"
+                  fromEmail: "noreply@pipeshub.com"
+        '401':
+          description: Unauthorized - Invalid or missing scoped token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error - Failed to reload configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
