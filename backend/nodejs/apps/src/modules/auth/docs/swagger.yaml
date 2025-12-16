@@ -221,6 +221,7 @@ components:
           description: Current password (required for authenticated password reset)
       required:
         - newPassword
+        - currentPassword
 
     ResetPasswordViaTokenRequest:
       type: object

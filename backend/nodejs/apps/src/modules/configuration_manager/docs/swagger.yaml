@@ -86,35 +86,46 @@ components:
           description: S3 bucket name
     
     AzureBlobStorageConfig:
-      type: object
-      required:
-        - storageType
-        - containerName
-      properties:
-        storageType:
-          type: string
-          enum: [azureBlob]
-        azureBlobConnectionString:
-          type: string
-          description: Azure Blob Storage connection string (Option 1)
-        endpointProtocol:
-          type: string
-          enum: [http, https]
-          default: https
-          description: Endpoint protocol (Option 2)
-        accountName:
-          type: string
-          description: Azure storage account name (Option 2)
-        accountKey:
-          type: string
-          description: Azure storage account key (Option 2)
-        endpointSuffix:
-          type: string
-          default: core.windows.net
-          description: Azure endpoint suffix (Option 2)
-        containerName:
-          type: string
-          description: Azure Blob container name
+      allOf:
+        - type: object
+          required:
+            - storageType
+            - containerName
+          properties:
+            storageType:
+              type: string
+              enum: [azureBlob]
+            containerName:
+              type: string
+              description: Azure Blob container name
+        - oneOf:
+            - type: object
+              required:
+                - azureBlobConnectionString
+              properties:
+                azureBlobConnectionString:
+                  type: string
+                  description: Azure Blob Storage connection string (Option 1)
+            - type: object
+              required:
+                - accountName
+                - accountKey
+              properties:
+                endpointProtocol:
+                  type: string
+                  enum: [http, https]
+                  default: https
+                  description: Endpoint protocol (Option 2)
+                accountName:
+                  type: string
+                  description: Azure storage account name (Option 2)
+                accountKey:
+                  type: string
+                  description: Azure storage account key (Option 2)
+                endpointSuffix:
+                  type: string
+                  default: core.windows.net
+                  description: Azure endpoint suffix (Option 2)
       description: |
         Either provide azureBlobConnectionString OR (accountName + accountKey + endpointSuffix).
         containerName is always required.
@@ -894,10 +905,22 @@ paths:
       responses:
         '200':
           description: Microsoft Auth config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     get:
       tags:
@@ -927,10 +950,22 @@ paths:
       responses:
         '200':
           description: Google Auth config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     get:
       tags:
@@ -960,10 +995,22 @@ paths:
       responses:
         '200':
           description: OAuth config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     get:
       tags:
@@ -993,10 +1040,22 @@ paths:
       responses:
         '200':
           description: SSO config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     get:
       tags:
@@ -1072,10 +1131,22 @@ paths:
       responses:
         '200':
           description: ArangoDB config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
         '400':
           description: Invalid configuration or health check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '403':
           description: Forbidden - Admin access required
 
@@ -1109,10 +1180,22 @@ paths:
       responses:
         '200':
           description: Redis config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
         '400':
           description: Invalid configuration or health check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '403':
           description: Forbidden - Admin access required
 
@@ -1839,5 +1922,20 @@ paths:
       responses:
         '200':
           description: Metrics collection toggled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
         '401':
           description: Unauthorized - Invalid scoped token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
