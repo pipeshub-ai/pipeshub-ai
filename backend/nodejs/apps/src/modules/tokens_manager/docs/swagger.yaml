@@ -1,0 +1,1771 @@
+openapi: 3.0.0
+info:
+  title: Connector Manager Service API
+  description: |
+    RESTful API for Connector Management - managing third-party integrations, OAuth flows,
+    connector lifecycle, record management, file streaming, webhooks, and data synchronization.
+    
+    **Architecture:**
+    This service has a two-tier architecture:
+    
+    1. **Node.js Proxy Layer** (`/api/v1/connectors/*`):
+       - Handles connector lifecycle (list, enable/disable)
+       - Manages OAuth flows (authorize, callback)
+       - Manages connector configuration
+       - Handles filter options
+    
+    2. **Python Backend** (`/api/v1/*` and root level):
+       - Record management (CRUD, reindex)
+       - File streaming and downloads
+       - Statistics and monitoring
+       - Webhooks (root level: `/drive/webhook`, `/gmail/webhook`, `/admin/webhook`)
+       - File conversion utilities
+    
+    **Note:** Check the `servers` section to see which base URL each endpoint uses.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@yourcompany.com
+
+servers:
+  - url: /api/v1/connectors
+    description: Node.js Connector Manager (Proxy Layer) - Handles connector lifecycle, OAuth, configuration
+  - url: /api/v1
+    description: Python Connector Backend (Direct Access) - Handles records, streaming, and file operations
+  - url: ''
+    description: Python Connector Webhooks (Root Level) - Real-time update handlers from third-party services
+
+tags:
+  - name: Core Connectors
+    description: 🟦 Node.js - Core connector discovery and listing operations
+  - name: Configuration
+    description: 🟦 Node.js - Connector configuration and schema management
+  - name: Control
+    description: 🟦 Node.js - Connector lifecycle control (enable/disable)
+  - name: OAuth
+    description: 🟦 Node.js - OAuth 2.0 authorization flow management
+  - name: Filters
+    description: 🟦 Node.js - Connector filter options for data selection
+  - name: Records
+    description: 🐍 Python - Record management operations (list, get, delete, reindex)
+  - name: Statistics
+    description: 🐍 Python - Connector statistics and monitoring
+  - name: Streaming
+    description: 🐍 Python - File streaming and download operations
+  - name: Utilities
+    description: 🐍 Python - Utility operations (file conversion, etc.)
+  - name: Webhooks
+    description: 🐍 Python - Webhook handlers for real-time updates (root level)
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Standard JWT authentication token.
+        Format: "Bearer {jwt_token}"
+    scopedToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Scoped JWT token for internal service-to-service operations.
+        Format: "Bearer {scoped_token}"
+        Required scopes:
+        - `fetch:config` for configuration access
+        - `connector:refreshToken` for token refresh
+
+  schemas:
+    # ==================== CONNECTOR SCHEMAS ====================
+    Connector:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Connector name
+          example: "Drive"
+        appGroupId:
+          type: string
+          description: Application group identifier
+        appGroup:
+          type: string
+          description: Application group name
+        authType:
+          type: string
+          enum: [OAUTH, OAUTH_ADMIN_CONSENT, API_TOKEN, USERNAME_PASSWORD]
+          description: Authentication type required by connector
+        appDescription:
+          type: string
+          description: Description of the connector
+        appCategories:
+          type: array
+          items:
+            type: string
+          description: Categories this connector belongs to
+        supportsRealtime:
+          type: boolean
+          description: Whether connector supports real-time updates via webhooks
+        supportsSync:
+          type: boolean
+          description: Whether connector supports periodic synchronization
+        iconPath:
+          type: string
+          description: Path to connector icon
+          example: "/assets/icons/connectors/drive.svg"
+        isActive:
+          type: boolean
+          description: Whether connector is currently active/enabled
+        isConfigured:
+          type: boolean
+          description: Whether connector has been configured
+        isAuthenticated:
+          type: boolean
+          description: Whether connector has valid authentication credentials
+
+    ConnectorConfig:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Connector name
+        appGroupId:
+          type: string
+        appGroup:
+          type: string
+        authType:
+          type: string
+        appDescription:
+          type: string
+        appCategories:
+          type: array
+          items:
+            type: string
+        supportsRealtime:
+          type: boolean
+        supportsSync:
+          type: boolean
+        iconPath:
+          type: string
+        config:
+          $ref: '#/components/schemas/ConnectorConfigDetails'
+        isActive:
+          type: boolean
+        isConfigured:
+          type: boolean
+        isAuthenticated:
+          type: boolean
+
+    ConnectorConfigDetails:
+      type: object
+      properties:
+        auth:
+          type: object
+          description: Authentication configuration
+          properties:
+            clientId:
+              type: string
+              description: OAuth client ID
+            clientSecret:
+              type: string
+              description: OAuth client secret
+            apiKey:
+              type: string
+              description: API key for API_TOKEN auth type
+            username:
+              type: string
+              description: Username for USERNAME_PASSWORD auth type
+            password:
+              type: string
+              description: Password for USERNAME_PASSWORD auth type
+            authorizeUrl:
+              type: string
+              description: OAuth authorization URL
+            tokenUrl:
+              type: string
+              description: OAuth token exchange URL
+            scopes:
+              type: array
+              items:
+                type: string
+              description: OAuth scopes
+            redirectUri:
+              type: string
+              description: OAuth redirect URI
+        sync:
+          type: object
+          description: Synchronization configuration
+          properties:
+            syncInterval:
+              type: integer
+              description: Sync interval in seconds
+            syncMode:
+              type: string
+              description: Synchronization mode
+            enableRealtime:
+              type: boolean
+              description: Enable real-time updates
+        filters:
+          type: object
+          description: Data filtering configuration
+          properties:
+            values:
+              type: object
+              description: Selected filter values
+
+    ConnectorConfigUpdateRequest:
+      type: object
+      properties:
+        auth:
+          type: object
+          description: Authentication configuration to update
+        sync:
+          type: object
+          description: Synchronization configuration to update
+        filters:
+          type: object
+          description: Filter configuration to update
+        baseUrl:
+          type: string
+          description: Frontend base URL (optional)
+
+    ConnectorSchema:
+      type: object
+      properties:
+        auth:
+          type: object
+          description: Authentication schema definition
+        sync:
+          type: object
+          description: Synchronization schema definition
+        filters:
+          type: object
+          description: Filters schema definition
+
+    OAuthAuthorizationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        authorizationUrl:
+          type: string
+          description: OAuth authorization URL to redirect user to
+          example: "https://accounts.google.com/o/oauth2/v2/auth?client_id=..."
+        state:
+          type: string
+          description: State parameter for CSRF protection
+
+    OAuthCallbackResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        redirectUrl:
+          type: string
+          description: Frontend URL to redirect to after OAuth completion
+        error:
+          type: string
+          description: Error code if OAuth failed
+
+    FilterOptions:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              email:
+                type: string
+        sites:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              url:
+                type: string
+        drives:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+
+    FilterSelections:
+      type: object
+      properties:
+        filters:
+          type: object
+          description: Filter selections
+          properties:
+            selectedUsers:
+              type: array
+              items:
+                type: string
+            selectedSites:
+              type: array
+              items:
+                type: string
+            selectedDrives:
+              type: array
+              items:
+                type: string
+            includeShared:
+              type: boolean
+            dateRange:
+              type: object
+              properties:
+                from:
+                  type: string
+                  format: date-time
+                to:
+                  type: string
+                  format: date-time
+
+    # ==================== RECORD SCHEMAS ====================
+    Record:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: Record unique identifier
+        _key:
+          type: string
+          description: Record key
+        recordName:
+          type: string
+          description: Name of the record
+        recordType:
+          type: string
+          enum: [FILE, FOLDER, EMAIL, MESSAGE, CALENDAR_EVENT, TASK, NOTE]
+          description: Type of record
+        connector:
+          type: string
+          description: Source connector name
+        origin:
+          type: string
+          enum: [CONNECTOR, UPLOAD]
+          description: Record origin
+        indexingStatus:
+          type: string
+          enum: [PENDING, INDEXED, FAILED, PROCESSING]
+          description: Indexing status
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Creation timestamp in milliseconds
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Last update timestamp in milliseconds
+        externalRecordId:
+          type: string
+          description: External ID from source system
+        mimeType:
+          type: string
+          description: MIME type of the record
+        size:
+          type: integer
+          format: int64
+          description: Size in bytes
+        permission:
+          type: string
+          description: User permission level
+
+    RecordsListResponse:
+      type: object
+      properties:
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/Record'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
+        filters:
+          type: object
+          properties:
+            applied:
+              type: object
+            available:
+              type: object
+
+    RecordDetailResponse:
+      type: object
+      properties:
+        recordDetails:
+          $ref: '#/components/schemas/Record'
+        accessDetails:
+          type: object
+          properties:
+            hasAccess:
+              type: boolean
+            accessReason:
+              type: string
+            userRole:
+              type: string
+            permissions:
+              type: array
+              items:
+                type: string
+
+    ReindexFailedRequest:
+      type: object
+      required:
+        - connector
+        - origin
+      properties:
+        connector:
+          type: string
+          enum: [GOOGLE_DRIVE, GOOGLE_MAIL, KNOWLEDGE_BASE]
+          description: Connector name
+        origin:
+          type: string
+          enum: [CONNECTOR, UPLOAD]
+          description: Record origin
+
+    # ==================== STATISTICS SCHEMAS ====================
+    ConnectorStats:
+      type: object
+      properties:
+        totalRecords:
+          type: integer
+          description: Total number of records
+        indexedRecords:
+          type: integer
+          description: Number of successfully indexed records
+        failedRecords:
+          type: integer
+          description: Number of failed records
+        pendingRecords:
+          type: integer
+          description: Number of pending records
+        lastSyncTimestamp:
+          type: integer
+          format: int64
+          description: Last sync timestamp
+        storageUsed:
+          type: integer
+          format: int64
+          description: Storage used in bytes
+        recordsByType:
+          type: object
+          additionalProperties:
+            type: integer
+
+    # ==================== RESPONSE SCHEMAS ====================
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+        message:
+          type: string
+        detail:
+          type: string
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ==================== CORE CONNECTOR ENDPOINTS ====================
+  /:
+    get:
+      tags:
+        - Core Connectors
+      summary: Get all connectors
+      description: Retrieve all available connectors for the organization
+      operationId: getAllConnectors
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Connectors retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  connectors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Connector'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: No connectors found
+
+  /active:
+    get:
+      tags:
+        - Core Connectors
+      summary: Get active connectors
+      description: Retrieve all active/enabled connectors
+      operationId: getActiveConnectors
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Active connectors retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  connectors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Connector'
+        '401':
+          description: Unauthorized
+
+  /inactive:
+    get:
+      tags:
+        - Core Connectors
+      summary: Get inactive connectors
+      description: Retrieve all inactive/disabled connectors
+      operationId: getInactiveConnectors
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Inactive connectors retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  connectors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Connector'
+        '401':
+          description: Unauthorized
+
+  /{connectorName}:
+    get:
+      tags:
+        - Core Connectors
+      summary: Get connector by name
+      description: Retrieve specific connector details by name
+      operationId: getConnectorByName
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the connector
+          example: "Drive"
+      responses:
+        '200':
+          description: Connector retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  connector:
+                    $ref: '#/components/schemas/Connector'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only or beta connector access denied
+        '404':
+          description: Connector not found
+
+  # ==================== CONFIGURATION ENDPOINTS ====================
+  /config/{connectorName}:
+    get:
+      tags:
+        - Configuration
+      summary: Get connector configuration
+      description: Retrieve connector configuration (credentials removed for security)
+      operationId: getConnectorConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the connector
+          example: "Drive"
+      responses:
+        '200':
+          description: Configuration retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  config:
+                    $ref: '#/components/schemas/ConnectorConfig'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: Connector not found
+        '500':
+          description: Failed to load configuration
+
+    put:
+      tags:
+        - Configuration
+      summary: Update connector configuration
+      description: Update connector authentication, sync, and filter settings
+      operationId: updateConnectorConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the connector
+          example: "Drive"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectorConfigUpdateRequest'
+            example:
+              auth:
+                clientId: "your-client-id"
+                clientSecret: "your-client-secret"
+              sync:
+                syncInterval: 3600
+                enableRealtime: true
+              filters:
+                values:
+                  selectedUsers: ["user1", "user2"]
+              baseUrl: "https://yourapp.com"
+      responses:
+        '200':
+          description: Configuration updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  config:
+                    $ref: '#/components/schemas/ConnectorConfigDetails'
+        '400':
+          description: Invalid configuration
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: Connector not found
+        '500':
+          description: Internal error
+
+  /schema/{connectorName}:
+    get:
+      tags:
+        - Configuration
+      summary: Get connector schema
+      description: Retrieve connector configuration schema (template for configuration)
+      operationId: getConnectorSchema
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the connector
+          example: "Drive"
+      responses:
+        '200':
+          description: Schema retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  schema:
+                    $ref: '#/components/schemas/ConnectorSchema'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: Connector not found
+        '500':
+          description: Failed to get schema
+
+  /config-schema/{connectorName}:
+    get:
+      tags:
+        - Configuration
+      summary: Get connector config and schema
+      description: Retrieve both connector configuration and schema in a single request (optimized)
+      operationId: getConnectorConfigAndSchema
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the connector
+          example: "Drive"
+      responses:
+        '200':
+          description: Config and schema retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  config:
+                    $ref: '#/components/schemas/ConnectorConfig'
+                  schema:
+                    $ref: '#/components/schemas/ConnectorSchema'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: Connector not found
+        '500':
+          description: Failed to get config and schema
+
+  # ==================== CONTROL ENDPOINTS ====================
+  /toggle/{connectorName}:
+    post:
+      tags:
+        - Control
+      summary: Toggle connector
+      description: Enable or disable a connector and trigger sync events
+      operationId: toggleConnector
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the connector
+          example: "Drive"
+      responses:
+        '200':
+          description: Connector toggled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                  isActive:
+                    type: boolean
+                  connector:
+                    $ref: '#/components/schemas/Connector'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: Organization or connector not found
+        '500':
+          description: Internal error
+
+  # ==================== OAUTH ENDPOINTS ====================
+  /{connectorName}/oauth/authorize:
+    get:
+      tags:
+        - OAuth
+      summary: Get OAuth authorization URL
+      description: Generate OAuth authorization URL to initiate OAuth flow
+      operationId: getOAuthAuthorizationUrl
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the connector
+          example: "Drive"
+        - name: baseUrl
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Frontend base URL for redirect URI
+          example: "https://yourapp.com"
+      responses:
+        '200':
+          description: Authorization URL generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthAuthorizationResponse'
+        '400':
+          description: Connector doesn't support OAuth or configuration missing
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: Connector not found
+        '500':
+          description: Failed to generate OAuth URL
+
+  /{connectorName}/oauth/callback:
+    get:
+      tags:
+        - OAuth
+      summary: Handle OAuth callback
+      description: Process OAuth callback after user authorization
+      operationId: handleOAuthCallback
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the connector
+          example: "Drive"
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+          description: OAuth authorization code
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+          description: State parameter for CSRF protection
+        - name: baseUrl
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Frontend base URL
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+          description: OAuth error if authorization failed
+      responses:
+        '200':
+          description: OAuth callback processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthCallbackResponse'
+        '400':
+          description: Missing parameters or invalid token
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: Connector not found
+        '500':
+          description: Internal error
+
+  # ==================== FILTER ENDPOINTS ====================
+  /filters/{connectorName}:
+    get:
+      tags:
+        - Filters
+      summary: Get connector filter options
+      description: Retrieve available filter options for a connector (users, sites, drives, etc.)
+      operationId: getConnectorFilterOptions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the connector
+          example: "Drive"
+      responses:
+        '200':
+          description: Filter options retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  filterOptions:
+                    $ref: '#/components/schemas/FilterOptions'
+        '400':
+          description: Authentication required or credentials missing
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: Connector not found
+        '500':
+          description: Failed to get filter options
+
+    post:
+      tags:
+        - Filters
+      summary: Save connector filter selections
+      description: Save filter selections for a connector
+      operationId: saveConnectorFilterSelections
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the connector
+          example: "Drive"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FilterSelections'
+            example:
+              filters:
+                selectedUsers: ["user1@example.com", "user2@example.com"]
+                selectedSites: ["site1"]
+                selectedDrives: ["drive1", "drive2"]
+                includeShared: true
+      responses:
+        '200':
+          description: Filter selections saved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: No filter selections provided
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '500':
+          description: Failed to save filter selections
+
+  # ==================== RECORD ENDPOINTS (Python Backend) ====================
+  # Note: These endpoints are served directly by Python FastAPI at /api/v1
+  /records:
+    get:
+      tags:
+        - Records
+      summary: Get all records
+      description: |
+        **Python Backend Endpoint** - Retrieve all records with pagination and filters.
+        Served directly at `/api/v1/records` (not proxied through Node.js)
+      operationId: getRecords
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: Page number
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+          description: Records per page
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search query
+        - name: record_types
+          in: query
+          schema:
+            type: string
+          description: Comma-separated record types
+        - name: origins
+          in: query
+          schema:
+            type: string
+          description: Comma-separated origins (CONNECTOR, UPLOAD)
+        - name: connectors
+          in: query
+          schema:
+            type: string
+          description: Comma-separated connector names
+        - name: indexing_status
+          in: query
+          schema:
+            type: string
+          description: Comma-separated indexing statuses
+        - name: permissions
+          in: query
+          schema:
+            type: string
+          description: Comma-separated permission levels
+        - name: date_from
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Start date (Unix timestamp in milliseconds)
+        - name: date_to
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: End date (Unix timestamp in milliseconds)
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            default: createdAtTimestamp
+          description: Field to sort by
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort order
+        - name: source
+          in: query
+          schema:
+            type: string
+            default: all
+          description: Filter source
+      responses:
+        '200':
+          description: Records retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordsListResponse'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Failed to retrieve records
+
+  /records/{record_id}:
+    get:
+      tags:
+        - Records
+      summary: Get record by ID
+      description: |
+        **Python Backend Endpoint** - Retrieve specific record details with access check.
+        Served directly at `/api/v1/records/{record_id}`
+      operationId: getRecordById
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Record ID
+      responses:
+        '200':
+          description: Record retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordDetailResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Record not found or no access
+        '500':
+          description: Failed to retrieve record
+
+    delete:
+      tags:
+        - Records
+      summary: Delete record
+      description: |
+        **Python Backend Endpoint** - Delete a specific record with permission validation.
+        Served directly at `/api/v1/records/{record_id}`
+      operationId: deleteRecord
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Record ID
+      responses:
+        '200':
+          description: Record deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                  recordId:
+                    type: string
+                  connector:
+                    type: string
+                  timestamp:
+                    type: integer
+                    format: int64
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Record not found
+        '500':
+          description: Internal error
+
+  /records/{record_id}/reindex:
+    post:
+      tags:
+        - Records
+      summary: Reindex single record
+      description: |
+        **Python Backend Endpoint** - Reindex a specific record with permission validation.
+        Served directly at `/api/v1/records/{record_id}/reindex`
+      operationId: reindexSingleRecord
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Record ID
+      responses:
+        '200':
+          description: Reindex initiated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                  recordId:
+                    type: string
+                  recordName:
+                    type: string
+                  connector:
+                    type: string
+                  eventPublished:
+                    type: boolean
+                  userRole:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Record not found
+        '500':
+          description: Failed to reindex
+
+  /records/reindex-failed:
+    post:
+      tags:
+        - Records
+      summary: Reindex failed records
+      description: |
+        **Python Backend Endpoint** - Reindex all failed records for a specific connector.
+        Served directly at `/api/v1/records/reindex-failed`
+      operationId: reindexFailedRecords
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReindexFailedRequest'
+            example:
+              connector: "GOOGLE_DRIVE"
+              origin: "CONNECTOR"
+      responses:
+        '200':
+          description: Reindex initiated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                  connector:
+                    type: string
+                  origin:
+                    type: string
+                  userPermissionLevel:
+                    type: string
+                  eventPublished:
+                    type: boolean
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient permissions
+        '500':
+          description: Failed to reindex failed records
+
+  /delete/record/{record_id}:
+    delete:
+      tags:
+        - Records
+      summary: Hard delete record (Internal)
+      description: |
+        **Python Backend Endpoint** - Internal endpoint to hard delete a record and its relations.
+        Served directly at `/api/v1/delete/record/{record_id}`
+        
+        ⚠️ This performs a hard delete (permanent) vs soft delete.
+      operationId: hardDeleteRecord
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Record ID to hard delete
+      responses:
+        '200':
+          description: Record deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                    example: Record deleted successfully
+                  response:
+                    type: object
+        '404':
+          description: Record not found
+        '500':
+          description: Internal error
+
+  # ==================== STATISTICS ENDPOINTS (Python Backend) ====================
+  /stats:
+    get:
+      tags:
+        - Statistics
+      summary: Get connector statistics
+      description: |
+        **Python Backend Endpoint** - Retrieve statistics for a specific connector.
+        Served directly at `/api/v1/stats`
+      operationId: getConnectorStats
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Organization ID
+        - name: connector
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Connector name
+      responses:
+        '200':
+          description: Statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ConnectorStats'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Failed to get statistics
+
+  # ==================== STREAMING ENDPOINTS (Python Backend) ====================
+  /stream/record/{record_id}:
+    get:
+      tags:
+        - Streaming
+      summary: Stream record content
+      description: |
+        **Python Backend Endpoint** - Stream record content to client (supports PDF conversion).
+        Served directly at `/api/v1/stream/record/{record_id}`
+      operationId: streamRecord
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Record ID
+        - name: convertTo
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [application/pdf]
+          description: Convert file to this format
+      responses:
+        '200':
+          description: Record content stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Missing or invalid authorization
+        '404':
+          description: Organization, record, or file not found
+        '500':
+          description: Internal error during streaming
+
+  /internal/stream/record/{record_id}/:
+    get:
+      tags:
+        - Streaming
+      summary: Internal stream record
+      description: |
+        **Python Backend Endpoint** - Internal streaming endpoint with scoped token auth.
+        Served directly at `/api/v1/internal/stream/record/{record_id}/`
+      operationId: streamRecordInternal
+      security:
+        - scopedToken: []
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Record ID
+      responses:
+        '200':
+          description: Record content
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buffer:
+                    type: string
+                    description: Base64-encoded content
+                  mimeType:
+                    type: string
+                  filename:
+                    type: string
+        '401':
+          description: Invalid or expired scoped token
+        '404':
+          description: Organization, record, or connector not found
+        '500':
+          description: Internal error
+
+  /{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl:
+    get:
+      tags:
+        - Streaming
+      summary: Get signed URL
+      description: |
+        **Python Backend Endpoint** - Generate signed URL for secure record access.
+        Served directly at `/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl`
+      operationId: getSignedUrl
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: connector
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed URL generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signedUrl:
+                    type: string
+        '500':
+          description: Error generating signed URL
+
+  /index/{org_id}/{connector}/record/{record_id}:
+    get:
+      tags:
+        - Streaming
+      summary: Download file with signed URL
+      description: |
+        **Python Backend Endpoint** - Download file using signed URL token.
+        Served directly at `/api/v1/index/{org_id}/{connector}/record/{record_id}`
+      operationId: downloadFile
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: connector
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Signed JWT token
+      responses:
+        '200':
+          description: File content
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Invalid or expired token
+        '404':
+          description: Organization, record, or file not found
+        '500':
+          description: Internal error
+
+  # ==================== UTILITY ENDPOINTS (Python Backend) ====================
+  /record/buffer/convert:
+    post:
+      tags:
+        - Utilities
+      summary: Convert file buffer
+      description: |
+        **Python Backend Endpoint** - Convert uploaded file buffer to different format (e.g., PDF).
+        Served directly at `/api/v1/record/buffer/convert`
+      operationId: convertRecordBuffer
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: File to convert
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+          description: Source format (optional)
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [application/pdf]
+          description: Target format
+      responses:
+        '200':
+          description: File converted successfully
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid conversion request
+        '500':
+          description: Conversion error or timeout
+
+  # ==================== WEBHOOK ENDPOINTS (Python Backend - Root Level) ====================
+  # Note: Webhooks are served at root level (no /api/v1 prefix)
+  /drive/webhook:
+    post:
+      tags:
+        - Webhooks
+      summary: Google Drive webhook
+      description: |
+        **Python Backend Webhook** - Handle Google Drive webhook notifications.
+        Served directly at `/drive/webhook` (root level, no /api/v1 prefix)
+      operationId: handleDriveWebhook
+      parameters:
+        - name: X-Goog-Channel-ID
+          in: header
+          schema:
+            type: string
+        - name: X-Goog-Channel-Token
+          in: header
+          schema:
+            type: string
+        - name: X-Goog-Resource-ID
+          in: header
+          schema:
+            type: string
+        - name: X-Goog-Resource-State
+          in: header
+          schema:
+            type: string
+            enum: [sync, update, remove, trash]
+        - name: X-Goog-Resource-URI
+          in: header
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Webhook processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized webhook request
+        '500':
+          description: Error processing webhook
+
+  /gmail/webhook:
+    get:
+      tags:
+        - Webhooks
+      summary: Gmail webhook (GET)
+      description: |
+        **Python Backend Webhook** - Handle Gmail webhook notifications (GET method).
+        Served directly at `/gmail/webhook` (root level, no /api/v1 prefix)
+      operationId: handleGmailWebhookGet
+      parameters:
+        - name: X-Goog-Channel-ID
+          in: header
+          schema:
+            type: string
+        - name: X-Goog-Channel-Token
+          in: header
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Webhook processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+    post:
+      tags:
+        - Webhooks
+      summary: Gmail webhook (POST)
+      description: |
+        **Python Backend Webhook** - Handle Gmail webhook notifications (POST method).
+        Served directly at `/gmail/webhook` (root level, no /api/v1 prefix)
+      operationId: handleGmailWebhookPost
+      parameters:
+        - name: X-Goog-Channel-ID
+          in: header
+          schema:
+            type: string
+        - name: X-Goog-Channel-Token
+          in: header
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Webhook processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized webhook request
+        '500':
+          description: Error processing webhook
+
+  /admin/webhook:
+    post:
+      tags:
+        - Webhooks
+      summary: Google Workspace Admin webhook
+      description: |
+        **Python Backend Webhook** - Handle Google Workspace Admin webhook notifications.
+        Served directly at `/admin/webhook` (root level, no /api/v1 prefix)
+      operationId: handleAdminWebhook
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                events:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      parameters:
+                        type: object
+      responses:
+        '200':
+          description: Webhook processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+        '400':
+          description: No events or missing event name
+        '401':
+          description: Unauthorized webhook request
+        '500':
+          description: Error processing webhook
+
+
