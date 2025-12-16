@@ -23,9 +23,9 @@ tags:
 components:
   securitySchemes:
     scopedToken:
-      type: apiKey
-      in: header
-      name: Authorization
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
       description: |
         Scoped JWT token for specific operations. 
         Format: "Bearer {scoped_token}"
@@ -94,16 +94,13 @@ components:
               filename:
                 type: string
                 description: Name of the attachment file
-              path:
-                type: string
-                description: Path to the attachment file
               content:
                 type: string
                 description: Base64 encoded content
               contentType:
                 type: string
                 description: MIME type of the attachment
-          description: Email attachments
+          description: Email attachments (base64 encoded for security)
       required:
         - emailTemplateType
         - sendEmailTo
@@ -141,54 +138,6 @@ components:
         - port
         - fromEmail
 
-    MailInfo:
-      type: object
-      properties:
-        _id:
-          type: string
-          format: ObjectId
-          description: Unique mail record identifier
-        orgId:
-          type: string
-          format: ObjectId
-          description: Organization identifier
-        subject:
-          type: string
-          description: Email subject
-        from:
-          type: string
-          format: email
-          description: Sender email address
-        to:
-          type: array
-          items:
-            type: string
-            format: email
-          description: Recipient email addresses
-        cc:
-          type: array
-          items:
-            type: string
-            format: email
-          description: CC recipient email addresses
-        emailTemplateType:
-          type: string
-          enum:
-            - loginWithOTP
-            - resetPassword
-            - accountCreation
-            - appuserInvite
-            - suspiciousLoginAttempt
-          description: Type of email template used
-        createdAt:
-          type: integer
-          format: int64
-          description: Creation timestamp (milliseconds since epoch)
-        updatedAt:
-          type: integer
-          format: int64
-          description: Last update timestamp (milliseconds since epoch)
-
     SendEmailResponse:
       type: object
       properties:
@@ -213,79 +162,6 @@ components:
           example: "SMTP configuration updated successfully"
         smtp:
           $ref: '#/components/schemas/SmtpConfig'
-
-    EmailTemplateInfo:
-      type: object
-      description: Information about available email templates and their required template data
-      properties:
-        loginWithOTP:
-          type: object
-          description: Template data for OTP login emails
-          properties:
-            otp:
-              type: string
-              description: One-time password
-            userName:
-              type: string
-              description: User's name
-            companyName:
-              type: string
-              description: Company name
-        resetPassword:
-          type: object
-          description: Template data for password reset emails
-          properties:
-            resetLink:
-              type: string
-              description: Password reset link
-            userName:
-              type: string
-              description: User's name
-            companyName:
-              type: string
-              description: Company name
-        accountCreation:
-          type: object
-          description: Template data for account creation emails
-          properties:
-            userName:
-              type: string
-              description: User's name
-            activationLink:
-              type: string
-              description: Account activation link
-            companyName:
-              type: string
-              description: Company name
-        appuserInvite:
-          type: object
-          description: Template data for app user invitation emails
-          properties:
-            inviteLink:
-              type: string
-              description: Invitation link
-            inviterName:
-              type: string
-              description: Name of person sending invite
-            companyName:
-              type: string
-              description: Company name
-        suspiciousLoginAttempt:
-          type: object
-          description: Template data for suspicious login alert emails
-          properties:
-            userName:
-              type: string
-              description: User's name
-            ipAddress:
-              type: string
-              description: IP address of login attempt
-            location:
-              type: string
-              description: Geographic location
-            timestamp:
-              type: string
-              description: Time of login attempt
 
     Error:
       type: object

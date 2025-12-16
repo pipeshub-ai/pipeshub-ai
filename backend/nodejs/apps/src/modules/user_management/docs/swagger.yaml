@@ -30,9 +30,9 @@ components:
       scheme: bearer
       bearerFormat: JWT
     scopedToken:
-      type: apiKey
-      in: header
-      name: Authorization
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
       description: |
         Scoped JWT token for specific operations.
         Format: "Bearer {scoped_token}"
@@ -856,7 +856,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /users/{id}/fullName:
+  /users/{id}/fullname:
     patch:
       tags:
         - Users
@@ -960,40 +960,6 @@ paths:
         '403':
           description: Forbidden
 
-  /users/{id}/mobile:
-    patch:
-      tags:
-        - Users
-      summary: Update user mobile number
-      description: Update only the mobile number field (Admin or self)
-      operationId: updateUserMobile
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: ObjectId
-          description: User ID
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                mobile:
-                  type: string
-              required:
-                - mobile
-      responses:
-        '200':
-          description: Mobile number updated successfully
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden
-
   /users/{id}/designation:
     patch:
       tags:
@@ -1078,37 +1044,6 @@ paths:
         '404':
           description: User not found
 
-  /users/bulk:
-    delete:
-      tags:
-        - Users
-      summary: Bulk delete users
-      description: Soft delete multiple users (Admin only)
-      operationId: bulkDeleteUsers
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                userIds:
-                  type: array
-                  items:
-                    type: string
-                    format: ObjectId
-              required:
-                - userIds
-      responses:
-        '200':
-          description: Users deleted successfully
-        '400':
-          description: Invalid request
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin only
-
   /users/dp:
     put:
       tags:
@@ -1126,7 +1061,7 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: Profile picture file (PNG, JPG, JPEG, or WebP)
+                  description: Profile picture file (PNG, JPG, JPEG, WebP, or GIF)
               required:
                 - file
       responses:
@@ -1165,6 +1100,10 @@ paths:
                 type: string
                 format: binary
             image/webp:
+              schema:
+                type: string
+                format: binary
+            image/gif:
               schema:
                 type: string
                 format: binary
@@ -1734,12 +1673,17 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: Logo image file
+                  description: Logo image file (PNG, JPG, JPEG, WebP, or GIF)
               required:
                 - file
       responses:
-        '200':
-          description: Logo uploaded successfully
+        '201':
+          description: Logo uploaded successfully (created or updated)
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
         '400':
           description: Invalid file
         '401':
@@ -1765,10 +1709,18 @@ paths:
               schema:
                 type: string
                 format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+            image/gif:
+              schema:
+                type: string
+                format: binary
+        '204':
+          description: No Content - Logo not found
         '401':
           description: Unauthorized
-        '404':
-          description: Logo not found
 
     delete:
       tags:
