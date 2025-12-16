@@ -1,0 +1,1095 @@
+openapi: 3.0.0
+info:
+  title: Enterprise Search API
+  description: |
+    Enterprise Search module providing conversational AI, semantic search, and intelligent agent capabilities.
+    Includes support for multi-model LLM configurations, knowledge base filtering, real-time streaming responses,
+    and comprehensive conversation management.
+  version: 1.0.0
+
+servers:
+  - url: /api/v1
+    description: Base API URL
+
+tags:
+  - name: Conversations
+    description: AI-powered conversational chat management
+  - name: Semantic Search
+    description: Enterprise semantic search operations
+  - name: Agents
+    description: Intelligent agent management
+  - name: Agent Templates
+    description: Agent template CRUD operations
+  - name: Agent Conversations
+    description: Agent-specific conversation management
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    scopedToken:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: Scoped token for internal service-to-service calls
+
+  parameters:
+    ConversationId:
+      name: conversationId
+      in: path
+      required: true
+      description: Unique identifier for the conversation (MongoDB ObjectId)
+      schema:
+        type: string
+        pattern: '^[0-9a-fA-F]{24}$'
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      description: Unique identifier for the message (MongoDB ObjectId)
+      schema:
+        type: string
+        pattern: '^[0-9a-fA-F]{24}$'
+    SearchId:
+      name: searchId
+      in: path
+      required: true
+      description: Unique identifier for the search (MongoDB ObjectId)
+      schema:
+        type: string
+        pattern: '^[0-9a-fA-F]{24}$'
+    AgentKey:
+      name: agentKey
+      in: path
+      required: true
+      description: Unique key identifier for the agent
+      schema:
+        type: string
+    TemplateId:
+      name: templateId
+      in: path
+      required: true
+      description: Unique identifier for the agent template
+      schema:
+        type: string
+
+  schemas:
+    AppType:
+      type: string
+      enum:
+        - drive
+        - gmail
+        - onedrive
+        - sharepointOnline
+        - bookstack
+        - confluence
+        - jira
+        - slack
+        - dropbox
+        - outlook
+        - servicenow
+        - web
+        - local
+      description: Supported application/connector types
+
+    Filters:
+      type: object
+      properties:
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppType'
+          description: Filter by application types
+        kb:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Filter by knowledge base IDs
+
+    CreateConversationRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 100000
+          description: The initial query to start the conversation
+        recordIds:
+          type: array
+          items:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+          description: Optional record IDs to scope the conversation
+        departments:
+          type: array
+          items:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+          description: Optional department IDs to filter by
+        filters:
+          $ref: '#/components/schemas/Filters'
+        modelKey:
+          type: string
+          description: Key for the AI model to use
+        modelName:
+          type: string
+          description: Name of the AI model
+        chatMode:
+          type: string
+          description: Chat mode configuration
+
+    AddMessageRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: The message query text
+        filters:
+          $ref: '#/components/schemas/Filters'
+        modelKey:
+          type: string
+          description: Key for the AI model to use
+        modelName:
+          type: string
+          description: Name of the AI model
+        chatMode:
+          type: string
+          description: Chat mode configuration
+
+    RegenerateRequest:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/Filters'
+        modelKey:
+          type: string
+          description: Key for the AI model to use
+        modelName:
+          type: string
+          description: Name of the AI model
+        chatMode:
+          type: string
+          description: Chat mode configuration
+
+    UpdateTitleRequest:
+      type: object
+      required:
+        - title
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: New title for the conversation
+
+    ShareRequest:
+      type: object
+      required:
+        - userIds
+      properties:
+        userIds:
+          type: array
+          items:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+          minItems: 1
+          description: Array of user IDs to share with
+
+    SearchShareRequest:
+      type: object
+      required:
+        - userIds
+      properties:
+        userIds:
+          type: array
+          items:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+          minItems: 1
+          description: Array of user IDs to share with
+        accessLevel:
+          type: string
+          enum:
+            - read
+            - write
+          description: Access level for shared users
+
+    SemanticSearchRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: Search query text
+        filters:
+          $ref: '#/components/schemas/Filters'
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+          description: Maximum number of results to return
+        modelKey:
+          type: string
+          description: Key for the AI model to use
+        modelName:
+          type: string
+          description: Name of the AI model
+        chatMode:
+          type: string
+          description: Chat mode configuration
+
+    Message:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: Message unique identifier
+        role:
+          type: string
+          enum:
+            - user
+            - assistant
+            - system
+          description: Role of the message sender
+        content:
+          type: string
+          description: Message content
+        createdAt:
+          type: string
+          format: date-time
+          description: Message creation timestamp
+        sources:
+          type: array
+          items:
+            type: object
+          description: Referenced sources for the response
+        feedback:
+          type: object
+          properties:
+            rating:
+              type: string
+              enum:
+                - positive
+                - negative
+            comment:
+              type: string
+
+    Conversation:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: Conversation unique identifier
+        userId:
+          type: string
+          description: Owner user ID
+        orgId:
+          type: string
+          description: Organization ID
+        title:
+          type: string
+          description: Conversation title
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        isArchived:
+          type: boolean
+          default: false
+        sharedWith:
+          type: array
+          items:
+            type: string
+          description: User IDs this conversation is shared with
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SearchResult:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: Search result unique identifier
+        query:
+          type: string
+          description: Original search query
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              documentId:
+                type: string
+              title:
+                type: string
+              content:
+                type: string
+              score:
+                type: number
+              source:
+                type: string
+        userId:
+          type: string
+        orgId:
+          type: string
+        isArchived:
+          type: boolean
+        sharedWith:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    AgentTemplate:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: Template unique identifier
+        name:
+          type: string
+          description: Template name
+        description:
+          type: string
+          description: Template description
+        systemPrompt:
+          type: string
+          description: System prompt for the agent
+        tools:
+          type: array
+          items:
+            type: string
+          description: Available tools for the agent
+        configuration:
+          type: object
+          description: Additional template configuration
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Agent:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: Agent unique identifier
+        agentKey:
+          type: string
+          description: Unique key for the agent
+        name:
+          type: string
+          description: Agent name
+        description:
+          type: string
+          description: Agent description
+        templateId:
+          type: string
+          description: Associated template ID
+        tools:
+          type: array
+          items:
+            type: string
+          description: Enabled tools for this agent
+        configuration:
+          type: object
+          description: Agent-specific configuration
+        permissions:
+          type: object
+          properties:
+            owner:
+              type: string
+            sharedWith:
+              type: array
+              items:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                  accessLevel:
+                    type: string
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Tool:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Tool name
+        description:
+          type: string
+          description: Tool description
+        category:
+          type: string
+          description: Tool category
+
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Error message
+        code:
+          type: string
+          description: Error code
+        details:
+          type: object
+          description: Additional error details
+
+    SuccessResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Success message
+        data:
+          type: object
+          description: Response data
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ============================================
+  # CONVERSATIONS ENDPOINTS
+  # ============================================
+
+  /conversations/stream:
+    post:
+      tags:
+        - Conversations
+      summary: Stream chat response
+      description: Create a new conversation with streaming response from AI backend using Server-Sent Events
+      operationId: streamChat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '200':
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream with conversation events
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  /conversations:
+    get:
+      tags:
+        - Conversations
+      summary: Get all conversations
+      description: Retrieve all conversations for the authenticated user
+      operationId: getAllConversations
+      responses:
+        '200':
+          description: List of conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Conversation'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  /conversations/{conversationId}:
+    get:
+      tags:
+        - Conversations
+      summary: Get conversation by ID
+      description: Retrieve a specific conversation by its ID
+      operationId: getConversationById
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      responses:
+        '200':
+          description: Conversation details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+        '500':
+          description: Internal server error
+
+    delete:
+      tags:
+        - Conversations
+      summary: Delete conversation
+      description: Delete a conversation by its ID
+      operationId: deleteConversationById
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      responses:
+        '200':
+          description: Conversation deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+        '500':
+          description: Internal server error
+
+  /conversations/{conversationId}/messages/stream:
+    post:
+      tags:
+        - Conversations
+      summary: Stream message response
+      description: Add a message and stream the AI response using Server-Sent Events
+      operationId: addMessageStream
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMessageRequest'
+      responses:
+        '200':
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream with message events
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+        '500':
+          description: Internal server error
+
+  /conversations/{conversationId}/share:
+    post:
+      tags:
+        - Conversations
+      summary: Share conversation
+      description: Share a conversation with other users
+      operationId: shareConversationById
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShareRequest'
+      responses:
+        '200':
+          description: Conversation shared successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+        '500':
+          description: Internal server error
+
+  /conversations/{conversationId}/unshare:
+    post:
+      tags:
+        - Conversations
+      summary: Unshare conversation
+      description: Remove sharing access for specific users
+      operationId: unshareConversationById
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShareRequest'
+      responses:
+        '200':
+          description: Sharing access removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+        '500':
+          description: Internal server error
+
+  /conversations/{conversationId}/message/{messageId}/regenerate:
+    post:
+      tags:
+        - Conversations
+      summary: Regenerate message response
+      description: Regenerate the AI response for a specific message
+      operationId: regenerateAnswers
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegenerateRequest'
+      responses:
+        '200':
+          description: Message regenerated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
+        '500':
+          description: Internal server error
+
+  /conversations/{conversationId}/message/{messageId}/feedback:
+    post:
+      tags:
+        - Conversations
+      summary: Update message feedback
+      description: Provide feedback (positive/negative) for a specific message
+      operationId: updateFeedback
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rating:
+                  type: string
+                  enum:
+                    - positive
+                    - negative
+                comment:
+                  type: string
+                  description: Optional feedback comment
+      responses:
+        '200':
+          description: Feedback updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
+        '500':
+          description: Internal server error
+
+  /conversations/{conversationId}/title:
+    patch:
+      tags:
+        - Conversations
+      summary: Update conversation title
+      description: Update the title of a conversation
+      operationId: updateTitle
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTitleRequest'
+      responses:
+        '200':
+          description: Title updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+        '500':
+          description: Internal server error
+
+  /conversations/{conversationId}/archive:
+    patch:
+      tags:
+        - Conversations
+      summary: Archive conversation
+      description: Archive a conversation
+      operationId: archiveConversation
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      responses:
+        '200':
+          description: Conversation archived successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+        '500':
+          description: Internal server error
+
+  /conversations/{conversationId}/unarchive:
+    patch:
+      tags:
+        - Conversations
+      summary: Unarchive conversation
+      description: Unarchive a previously archived conversation
+      operationId: unarchiveConversation
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      responses:
+        '200':
+          description: Conversation unarchived successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+        '500':
+          description: Internal server error
+
+  /conversations/show/archives:
+    get:
+      tags:
+        - Conversations
+      summary: List archived conversations
+      description: Get all archived conversations for the authenticated user
+      operationId: listAllArchivesConversation
+      responses:
+        '200':
+          description: List of archived conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Conversation'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  # ============================================
+  # SEMANTIC SEARCH ENDPOINTS
+  # ============================================
+
+  /search:
+    post:
+      tags:
+        - Semantic Search
+      summary: Perform semantic search
+      description: Execute a semantic search across the enterprise knowledge base
+      operationId: search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SemanticSearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResult'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+    get:
+      tags:
+        - Semantic Search
+      summary: Get search history
+      description: Retrieve the search history for the authenticated user
+      operationId: searchHistory
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+          description: Maximum number of results
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number for pagination
+      responses:
+        '200':
+          description: Search history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SearchResult'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+    delete:
+      tags:
+        - Semantic Search
+      summary: Delete all search history
+      description: Delete the entire search history for the authenticated user
+      operationId: deleteSearchHistory
+      responses:
+        '200':
+          description: Search history deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  /search/{searchId}:
+    get:
+      tags:
+        - Semantic Search
+      summary: Get search by ID
+      description: Retrieve a specific search result by its ID
+      operationId: getSearchById
+      parameters:
+        - $ref: '#/components/parameters/SearchId'
+      responses:
+        '200':
+          description: Search result details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResult'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Search not found
+        '500':
+          description: Internal server error
+
+    delete:
+      tags:
+        - Semantic Search
+      summary: Delete search by ID
+      description: Delete a specific search result by its ID
+      operationId: deleteSearchById
+      parameters:
+        - $ref: '#/components/parameters/SearchId'
+      responses:
+        '200':
+          description: Search deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Search not found
+        '500':
+          description: Internal server error
+
+  /search/{searchId}/share:
+    patch:
+      tags:
+        - Semantic Search
+      summary: Share search result
+      description: Share a search result with other users
+      operationId: shareSearch
+      parameters:
+        - $ref: '#/components/parameters/SearchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchShareRequest'
+      responses:
+        '200':
+          description: Search shared successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Search not found
+        '500':
+          description: Internal server error
+
+  /search/{searchId}/unshare:
+    patch:
+      tags:
+        - Semantic Search
+      summary: Unshare search result
+      description: Remove sharing access for specific users
+      operationId: unshareSearch
+      parameters:
+        - $ref: '#/components/parameters/SearchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchShareRequest'
+      responses:
+        '200':
+          description: Sharing access removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Search not found
+        '500':
+          description: Internal server error
+
+  /search/{searchId}/archive:
+    patch:
+      tags:
+        - Semantic Search
+      summary: Archive search result
+      description: Archive a search result
+      operationId: archiveSearch
+      parameters:
+        - $ref: '#/components/parameters/SearchId'
+      responses:
+        '200':
+          description: Search archived successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Search not found
+        '500':
+          description: Internal server error
+
+  /search/{searchId}/unarchive:
+    patch:
+      tags:
+        - Semantic Search
+      summary: Unarchive search result
+      description: Unarchive a previously archived search result
+      operationId: unarchiveSearch
+      parameters:
+        - $ref: '#/components/parameters/SearchId'
+      responses:
+        '200':
+          description: Search unarchived successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Search not found
+        '500':
+          description: Internal server error
+
+

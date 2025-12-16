@@ -49,6 +49,7 @@ import {
   SwaggerService,
 } from './modules/docs/swagger.container';
 import { registerStorageSwagger } from './modules/storage/docs/swagger';
+import { registerEnterpriseSearchSwagger } from './modules/enterprise_search/docs/swagger';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -460,7 +461,7 @@ export class Application {
 
       // Register module documentation
       registerStorageSwagger(swaggerService);
-      // Register other modules as needed
+      registerEnterpriseSearchSwagger(swaggerService);
 
       // Setup the Swagger UI routes
       swaggerService.setupSwaggerRoutes();
