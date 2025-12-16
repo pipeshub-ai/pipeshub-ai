@@ -78,6 +78,7 @@ COPY --from=nodejs-backend /app/backend/dist ./backend/dist
 COPY --from=nodejs-backend /app/backend/src/modules/mail ./backend/src/modules/mail
 COPY --from=nodejs-backend /app/backend/src/modules/storage/docs/swagger.yaml ./backend/src/modules/storage/docs/swagger.yaml
 COPY --from=nodejs-backend /app/backend/src/modules/mail/docs/swagger.yaml ./backend/src/modules/mail/docs/swagger.yaml
+COPY --from=nodejs-backend /app/backend/src/modules/user_management/docs/swagger.yaml ./backend/src/modules/user_management/docs/swagger.yaml
 COPY --from=nodejs-backend /app/backend/node_modules ./backend/dist/node_modules
 COPY --from=frontend-build /app/frontend/dist ./backend/dist/public
 COPY backend/python/app/ /app/python/app/

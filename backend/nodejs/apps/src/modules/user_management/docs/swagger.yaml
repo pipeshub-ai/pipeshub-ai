@@ -1,0 +1,2018 @@
+openapi: 3.0.0
+info:
+  title: User Management Service API
+  description: |
+    RESTful API for User Management - providing user CRUD operations, team management,
+    organization management, and user groups with role-based access control.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@yourcompany.com
+
+servers:
+  - url: /api/v1
+    description: Base API URL
+
+tags:
+  - name: Users
+    description: User management operations
+  - name: Teams
+    description: Team management operations
+  - name: Organizations
+    description: Organization management operations
+  - name: User Groups
+    description: User group management operations
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    scopedToken:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: |
+        Scoped JWT token for specific operations.
+        Format: "Bearer {scoped_token}"
+        Required scopes:
+        - `user:lookup` for checking user existence
+
+  schemas:
+    User:
+      type: object
+      properties:
+        _id:
+          type: string
+          format: ObjectId
+          description: Unique user identifier
+        slug:
+          type: string
+          description: Unique slug for the user
+        orgId:
+          type: string
+          format: ObjectId
+          description: Organization ID
+        fullName:
+          type: string
+          description: Full name of the user
+        firstName:
+          type: string
+          description: First name
+        lastName:
+          type: string
+          description: Last name
+        middleName:
+          type: string
+          description: Middle name
+        email:
+          type: string
+          format: email
+          description: Email address (unique)
+        mobile:
+          type: string
+          description: Mobile number (10-15 digits, optional + prefix)
+          pattern: '^\+?[0-9]{10,15}$'
+          example: "+1234567890"
+        hasLoggedIn:
+          type: boolean
+          description: Whether user has logged in
+          default: false
+        designation:
+          type: string
+          description: Job designation
+        address:
+          $ref: '#/components/schemas/Address'
+        isDeleted:
+          type: boolean
+          description: Soft delete flag
+          default: false
+        deletedBy:
+          type: string
+          description: ID of user who deleted this user
+        createdAt:
+          type: integer
+          format: int64
+          description: Creation timestamp (milliseconds since epoch)
+        updatedAt:
+          type: integer
+          format: int64
+          description: Last update timestamp (milliseconds since epoch)
+      required:
+        - email
+        - orgId
+
+    Address:
+      type: object
+      properties:
+        addressLine1:
+          type: string
+          description: Address line 1
+        city:
+          type: string
+          description: City
+        state:
+          type: string
+          description: State/Province
+        postCode:
+          type: string
+          description: Postal/ZIP code
+        country:
+          type: string
+          description: Country (must be one of the predefined jurisdictions)
+          enum:
+            - United States
+            - China
+            - Japan
+            - Germany
+            - India
+            - United Kingdom
+            - France
+            - Russia
+            - Canada
+            - Italy
+            - Brazil
+            - Australia
+            - South Korea
+            - Mexico
+            - Spain
+            - Indonesia
+            - Saudi Arabia
+            - Netherlands
+            - Turkey
+            - Switzerland
+            - Poland
+            - Argentina
+            - Sweden
+            - Norway
+            - Belgium
+            - Ireland
+            - Israel
+            - United Arab Emirates
+            - Thailand
+            - Nigeria
+            - Egypt
+            - Austria
+            - Singapore
+            - Bangladesh
+            - Vietnam
+            - Malaysia
+            - South Africa
+            - Philippines
+            - Denmark
+            - Iran
+            - Pakistan
+            - Hong Kong
+            - Colombia
+            - Romania
+            - Chile
+            - Czech Republic (Czechia)
+            - Finland
+            - Iraq
+            - Portugal
+            - New Zealand
+            - Luxembourg
+            - Qatar
+            - Iceland
+            - Kuwait
+            - Andorra
+            - Brunei
+            - Malta
+            - Macao
+            - Bahamas
+            - Bahrain
+            - Slovenia
+            - Estonia
+            - Lithuania
+            - Oman
+            - Cyprus
+            - Latvia
+            - Greece
+            - Uruguay
+            - Slovakia
+            - Saint Kitts & Nevis
+            - Barbados
+            - Guyana
+            - Antigua and Barbuda
+            - Trinidad and Tobago
+            - Hungary
+            - Croatia
+            - Panama
+            - Seychelles
+            - Costa Rica
+            - Bulgaria
+            - Maldives
+            - Saint Lucia
+            - Kazakhstan
+            - Dominican Republic
+            - Grenada
+          example: "United States"
+
+    Organization:
+      type: object
+      properties:
+        _id:
+          type: string
+          format: ObjectId
+          description: Unique organization identifier
+        slug:
+          type: string
+          description: Unique slug for the organization
+        registeredName:
+          type: string
+          description: Registered name (required for business accounts)
+        shortName:
+          type: string
+          description: Short name or display name
+        domain:
+          type: string
+          description: Organization domain
+        contactEmail:
+          type: string
+          format: email
+          description: Contact email address
+        accountType:
+          type: string
+          enum: [individual, business]
+          description: Type of account
+        phoneNumber:
+          type: string
+          description: Phone number
+        permanentAddress:
+          $ref: '#/components/schemas/Address'
+        onBoardingStatus:
+          type: string
+          enum: [configured, notConfigured, skipped]
+          description: Onboarding status
+        isDeleted:
+          type: boolean
+          description: Soft delete flag
+          default: false
+        deletedByUser:
+          type: string
+          description: ID of user who deleted this org
+        createdAt:
+          type: integer
+          format: int64
+          description: Creation timestamp (milliseconds since epoch)
+        updatedAt:
+          type: integer
+          format: int64
+          description: Last update timestamp (milliseconds since epoch)
+      required:
+        - domain
+        - contactEmail
+        - accountType
+
+    Team:
+      type: object
+      properties:
+        _id:
+          type: string
+          format: ObjectId
+          description: Unique team identifier
+        name:
+          type: string
+          description: Team name
+        description:
+          type: string
+          description: Team description
+        orgId:
+          type: string
+          format: ObjectId
+          description: Organization ID
+        userRoles:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserRole'
+          description: Users and their roles in the team
+        createdAt:
+          type: integer
+          format: int64
+          description: Creation timestamp (milliseconds since epoch)
+        updatedAt:
+          type: integer
+          format: int64
+          description: Last update timestamp (milliseconds since epoch)
+      required:
+        - name
+
+    UserRole:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: |
+            User's ArangoDB _key (not MongoDB ObjectId).
+            This is the internal database key used in the graph database.
+          example: "user_key_123"
+        role:
+          type: string
+          enum:
+            - OWNER
+            - READER
+          description: |
+            User's role in the team.
+            - OWNER: Full control over the team
+            - READER: Read-only access
+          example: "READER"
+      required:
+        - userId
+        - role
+
+    UserGroup:
+      type: object
+      properties:
+        _id:
+          type: string
+          format: ObjectId
+          description: Unique group identifier
+        type:
+          type: string
+          description: Group type
+        name:
+          type: string
+          description: Group name
+        orgId:
+          type: string
+          format: ObjectId
+          description: Organization ID
+        createdAt:
+          type: integer
+          format: int64
+          description: Creation timestamp (milliseconds since epoch)
+        updatedAt:
+          type: integer
+          format: int64
+          description: Last update timestamp (milliseconds since epoch)
+      required:
+        - type
+        - name
+
+    CreateUserRequest:
+      type: object
+      properties:
+        fullName:
+          type: string
+          description: Full name of the user
+        email:
+          type: string
+          format: email
+          description: Email address
+        mobile:
+          type: string
+          description: Mobile number (10-15 digits, optional + prefix)
+          pattern: '^\+?[0-9]{10,15}$'
+          example: "+1234567890"
+        designation:
+          type: string
+          description: Job designation
+      required:
+        - fullName
+        - email
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        fullName:
+          type: string
+          description: Full name
+        email:
+          type: string
+          format: email
+          description: Email address
+        mobile:
+          type: string
+          description: Mobile number (10-15 digits, optional + prefix)
+          pattern: '^\+?[0-9]{10,15}$'
+          example: "+1234567890"
+        designation:
+          type: string
+          description: Job designation
+        firstName:
+          type: string
+          description: First name
+        lastName:
+          type: string
+          description: Last name
+        address:
+          $ref: '#/components/schemas/Address'
+        hasLoggedIn:
+          type: boolean
+          description: Has logged in flag
+
+    BulkInviteRequest:
+      type: object
+      properties:
+        userIds:
+          type: array
+          items:
+            type: string
+            format: ObjectId
+          description: Array of user IDs to invite
+      required:
+        - userIds
+
+    CreateTeamRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Team name
+        description:
+          type: string
+          description: Team description
+        userRoles:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserRole'
+          description: Users and their roles
+      required:
+        - name
+
+    UpdateTeamRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Team name
+        description:
+          type: string
+          description: Team description
+        addUserRoles:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserRole'
+          description: Users to add with roles
+        removeUserIds:
+          type: array
+          items:
+            type: string
+          description: User IDs to remove
+        updateUserRoles:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserRole'
+          description: Update existing user roles
+
+    CreateOrgRequest:
+      type: object
+      properties:
+        accountType:
+          type: string
+          enum: [individual, business]
+          description: Account type
+        shortName:
+          type: string
+          description: Short name
+        contactEmail:
+          type: string
+          format: email
+          description: Contact email
+        registeredName:
+          type: string
+          description: Registered name (required for business)
+        adminFullName:
+          type: string
+          description: Admin full name
+        password:
+          type: string
+          format: password
+          description: Admin password (min 8 characters)
+        sendEmail:
+          type: boolean
+          description: Send welcome email
+        permanentAddress:
+          $ref: '#/components/schemas/Address'
+      required:
+        - accountType
+        - contactEmail
+        - adminFullName
+        - password
+
+    CreateUserGroupRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          description: Group type
+        name:
+          type: string
+          description: Group name
+      required:
+        - type
+        - name
+
+    UserTeamMember:
+      type: object
+      properties:
+        id:
+          type: string
+          description: ArangoDB user key
+          example: "12345"
+        userId:
+          type: string
+          format: ObjectId
+          description: MongoDB user ID
+          example: "693d73f3c784287225064f17"
+        userName:
+          type: string
+          example: "John Doe"
+        userEmail:
+          type: string
+          format: email
+          example: "john.doe@example.com"
+        role:
+          type: string
+          enum: [OWNER, READER]
+          example: "READER"
+        joinedAt:
+          type: integer
+          format: int64
+          description: Timestamp when user joined the team
+          example: 1734350400000
+        isOwner:
+          type: boolean
+          example: false
+
+    UserTeamWithDetails:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Team ID (ArangoDB key)
+          example: "12345"
+        name:
+          type: string
+          example: "Engineering Team"
+        description:
+          type: string
+          example: "Core engineering team"
+        createdBy:
+          type: string
+          description: User ID who created the team
+          example: "693d73f3c784287225064f17"
+        orgId:
+          type: string
+          format: ObjectId
+          example: "693d73f3c784287225064f15"
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          example: 1734350400000
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          example: 1734350400000
+        currentUserPermission:
+          type: object
+          description: Current user's permission details
+          properties:
+            role:
+              type: string
+              enum: [OWNER, READER]
+              example: "READER"
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserTeamMember'
+        memberCount:
+          type: integer
+          example: 5
+        canEdit:
+          type: boolean
+          example: false
+        canDelete:
+          type: boolean
+          example: false
+        canManageMembers:
+          type: boolean
+          example: false
+
+    UserTeamsResponse:
+      type: object
+      properties:
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserTeamWithDetails'
+        pagination:
+          type: object
+          properties:
+            total:
+              type: integer
+              example: 10
+            page:
+              type: integer
+              example: 1
+            limit:
+              type: integer
+              example: 100
+            totalPages:
+              type: integer
+              example: 1
+
+    UserGroupBasic:
+      type: object
+      properties:
+        _id:
+          type: string
+          format: ObjectId
+          example: "69416b6bc5f3e000c8685851"
+        name:
+          type: string
+          example: "Developers"
+        type:
+          type: string
+          enum: [predefined, custom]
+          example: "custom"
+
+    GroupStatistics:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: Group name
+          example: "Developers"
+        count:
+          type: integer
+          description: Number of groups with this name
+          example: 1
+        totalUsers:
+          type: integer
+          description: Total number of users across all groups with this name
+          example: 15
+        avgUsers:
+          type: number
+          format: float
+          description: Average number of users per group
+          example: 15.0
+
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Error message
+        code:
+          type: integer
+          description: Error code
+        details:
+          type: object
+          description: Additional error details
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ==================== USERS ENDPOINTS ====================
+  /users:
+    get:
+      tags:
+        - Users
+      summary: Get all users
+      description: Retrieve a list of all users in the organization
+      operationId: getAllUsers
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - Users
+      summary: Create a new user
+      description: Create a new user in the organization (Admin only)
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '200':
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+
+  /users/{id}:
+    get:
+      tags:
+        - Users
+      summary: Get user by ID
+      description: Retrieve a specific user by their ID
+      operationId: getUserById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: User ID
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          description: Unauthorized
+        '404':
+          description: User not found
+
+    put:
+      tags:
+        - Users
+      summary: Update user
+      description: Update user information (Admin or self)
+      operationId: updateUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: User ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: User updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: User not found
+
+    delete:
+      tags:
+        - Users
+      summary: Delete user
+      description: Soft delete a user (Admin only)
+      operationId: deleteUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: User ID
+      responses:
+        '200':
+          description: User deleted successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: User not found
+
+  /users/email/exists:
+    post:
+      tags:
+        - Users
+      summary: Check if user exists by email
+      description: Check if a user with the given email exists (requires user:lookup scope)
+      operationId: checkUserExistsByEmail
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: Email to check
+                  example: "user@example.com"
+      responses:
+        '200':
+          description: Email existence check result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exists:
+                    type: boolean
+                    description: Whether the email exists
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          description: Unauthorized - Invalid or missing scoped token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Bad request - Invalid email format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users/{id}/fullName:
+    patch:
+      tags:
+        - Users
+      summary: Update user full name
+      description: Update only the full name field (Admin or self)
+      operationId: updateUserFullName
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: User ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fullName:
+                  type: string
+              required:
+                - fullName
+      responses:
+        '200':
+          description: Full name updated successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+
+  /users/{id}/firstName:
+    patch:
+      tags:
+        - Users
+      summary: Update user first name
+      description: Update only the first name field (Admin or self)
+      operationId: updateUserFirstName
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: User ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                firstName:
+                  type: string
+              required:
+                - firstName
+      responses:
+        '200':
+          description: First name updated successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+
+  /users/{id}/lastName:
+    patch:
+      tags:
+        - Users
+      summary: Update user last name
+      description: Update only the last name field (Admin or self)
+      operationId: updateUserLastName
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: User ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lastName:
+                  type: string
+              required:
+                - lastName
+      responses:
+        '200':
+          description: Last name updated successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+
+  /users/{id}/mobile:
+    patch:
+      tags:
+        - Users
+      summary: Update user mobile number
+      description: Update only the mobile number field (Admin or self)
+      operationId: updateUserMobile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: User ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mobile:
+                  type: string
+              required:
+                - mobile
+      responses:
+        '200':
+          description: Mobile number updated successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+
+  /users/{id}/designation:
+    patch:
+      tags:
+        - Users
+      summary: Update user designation
+      description: Update only the designation field (Admin or self)
+      operationId: updateUserDesignation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: User ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                designation:
+                  type: string
+              required:
+                - designation
+      responses:
+        '200':
+          description: Designation updated successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+
+  /users/bulk/invite:
+    post:
+      tags:
+        - Users
+      summary: Bulk invite users
+      description: Send invitation emails to multiple users (Admin only, requires SMTP)
+      operationId: bulkInviteUsers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkInviteRequest'
+      responses:
+        '200':
+          description: Invitations sent successfully
+        '400':
+          description: Invalid request or SMTP not configured
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+
+  /users/{id}/resend-invite:
+    post:
+      tags:
+        - Users
+      summary: Resend invitation
+      description: Resend invitation email to a user (Admin only, requires SMTP)
+      operationId: resendInvite
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: User ID
+      responses:
+        '200':
+          description: Invitation resent successfully
+        '400':
+          description: SMTP not configured
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: User not found
+
+  /users/bulk:
+    delete:
+      tags:
+        - Users
+      summary: Bulk delete users
+      description: Soft delete multiple users (Admin only)
+      operationId: bulkDeleteUsers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userIds:
+                  type: array
+                  items:
+                    type: string
+                    format: ObjectId
+              required:
+                - userIds
+      responses:
+        '200':
+          description: Users deleted successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+
+  /users/dp:
+    put:
+      tags:
+        - Users
+      summary: Upload user profile picture
+      description: Upload or update the authenticated user's profile picture
+      operationId: uploadUserDP
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Profile picture file (PNG, JPG, JPEG, or WebP)
+              required:
+                - file
+      responses:
+        '201':
+          description: Profile picture uploaded successfully
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid file or file type
+        '401':
+          description: Unauthorized
+
+    get:
+      tags:
+        - Users
+      summary: Get user profile picture
+      description: Retrieve the authenticated user's profile picture
+      operationId: getUserDP
+      responses:
+        '200':
+          description: Profile picture
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Unauthorized
+        '404':
+          description: Profile picture not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  errorMessage:
+                    type: string
+                    example: "User pic not found"
+
+    delete:
+      tags:
+        - Users
+      summary: Delete user profile picture
+      description: Delete the authenticated user's profile picture
+      operationId: deleteUserDP
+      responses:
+        '200':
+          description: Profile picture deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "User display picture deleted successfully"
+        '401':
+          description: Unauthorized
+        '404':
+          description: Profile picture not found
+
+  /users/teams/list:
+    get:
+      tags:
+        - Users
+      summary: Get authenticated user's teams
+      description: |
+        Retrieve all teams that the authenticated user is a member of.
+        Returns detailed information about each team including members, permissions, and capabilities.
+      operationId: getUserTeamsList
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+          description: Number of items per page
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search teams by name or description
+      responses:
+        '200':
+          description: Teams retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserTeamsResponse'
+              example:
+                teams:
+                  - id: "12345"
+                    name: "Engineering Team"
+                    description: "Core engineering team"
+                    createdBy: "693d73f3c784287225064f17"
+                    orgId: "693d73f3c784287225064f15"
+                    createdAtTimestamp: 1734350400000
+                    updatedAtTimestamp: 1734350400000
+                    currentUserPermission:
+                      role: "READER"
+                    members:
+                      - id: "12345"
+                        userId: "693d73f3c784287225064f17"
+                        userName: "John Doe"
+                        userEmail: "john.doe@example.com"
+                        role: "OWNER"
+                        joinedAt: 1734350400000
+                        isOwner: true
+                      - id: "12346"
+                        userId: "693d73f3c784287225064f18"
+                        userName: "Jane Smith"
+                        userEmail: "jane.smith@example.com"
+                        role: "READER"
+                        joinedAt: 1734350500000
+                        isOwner: false
+                    memberCount: 2
+                    canEdit: false
+                    canDelete: false
+                    canManageMembers: false
+                pagination:
+                  total: 1
+                  page: 1
+                  limit: 100
+                  totalPages: 1
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+
+  # ==================== TEAMS ENDPOINTS ====================
+  /teams:
+    post:
+      tags:
+        - Teams
+      summary: Create a team
+      description: Create a new team
+      operationId: createTeam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTeamRequest'
+      responses:
+        '200':
+          description: Team created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+
+    get:
+      tags:
+        - Teams
+      summary: List teams
+      description: Get all teams in the organization
+      operationId: listTeams
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search query
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+          description: Number of results per page
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number
+      responses:
+        '200':
+          description: List of teams
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Team'
+        '401':
+          description: Unauthorized
+
+  /teams/{teamId}:
+    get:
+      tags:
+        - Teams
+      summary: Get team by ID
+      description: Retrieve a specific team
+      operationId: getTeamById
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      responses:
+        '200':
+          description: Team details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Team not found
+
+    put:
+      tags:
+        - Teams
+      summary: Update team
+      description: Update team information
+      operationId: updateTeam
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTeamRequest'
+      responses:
+        '200':
+          description: Team updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Team not found
+
+    delete:
+      tags:
+        - Teams
+      summary: Delete team
+      description: Delete a team
+      operationId: deleteTeam
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      responses:
+        '200':
+          description: Team deleted successfully
+        '401':
+          description: Unauthorized
+        '404':
+          description: Team not found
+
+  /teams/{teamId}/users:
+    post:
+      tags:
+        - Teams
+      summary: Add users to team
+      description: Add users to a team with specified roles
+      operationId: addUsersToTeam
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userRoles:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/UserRole'
+              required:
+                - userRoles
+      responses:
+        '200':
+          description: Users added successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Team not found
+
+    delete:
+      tags:
+        - Teams
+      summary: Remove users from team
+      description: Remove users from a team
+      operationId: removeUsersFromTeam
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userIds:
+                  type: array
+                  items:
+                    type: string
+              required:
+                - userIds
+      responses:
+        '200':
+          description: Users removed successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Team not found
+
+    get:
+      tags:
+        - Teams
+      summary: Get team users
+      description: Get all users in a team
+      operationId: getTeamUsers
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      responses:
+        '200':
+          description: List of team users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Team not found
+
+  /teams/{teamId}/users/permissions:
+    put:
+      tags:
+        - Teams
+      summary: Update user permissions
+      description: Update roles/permissions for users in a team
+      operationId: updateTeamUsersPermissions
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userRoles:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/UserRole'
+              required:
+                - userRoles
+      responses:
+        '200':
+          description: Permissions updated successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Team not found
+
+  /teams/user/teams:
+    get:
+      tags:
+        - Teams
+      summary: Get current user teams
+      description: Get all teams the current user is a member of
+      operationId: getUserTeams
+      responses:
+        '200':
+          description: List of user teams
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Team'
+        '401':
+          description: Unauthorized
+
+  /teams/user/teams/created:
+    get:
+      tags:
+        - Teams
+      summary: Get teams created by user
+      description: Get all teams created by the current user
+      operationId: getTeamsCreatedByUser
+      responses:
+        '200':
+          description: List of created teams
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Team'
+        '401':
+          description: Unauthorized
+
+  # ==================== ORGANIZATIONS ENDPOINTS ====================
+  /org/exists:
+    get:
+      tags:
+        - Organizations
+      summary: Check if organization exists
+      description: Check if any organization exists in the system
+      operationId: checkOrgExists
+      security: []
+      responses:
+        '200':
+          description: Organization existence status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exists:
+                    type: boolean
+
+  /org:
+    post:
+      tags:
+        - Organizations
+      summary: Create organization
+      description: Create a new organization and admin user
+      operationId: createOrganization
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrgRequest'
+      responses:
+        '200':
+          description: Organization created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '400':
+          description: Invalid request
+
+    get:
+      tags:
+        - Organizations
+      summary: Get current organization
+      description: Get organization details for the current user
+      operationId: getCurrentOrganization
+      responses:
+        '200':
+          description: Organization details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Organization not found
+
+    put:
+      tags:
+        - Organizations
+      summary: Update organization
+      description: Update organization information (Admin only)
+      operationId: updateOrganization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                registeredName:
+                  type: string
+                shortName:
+                  type: string
+                phoneNumber:
+                  type: string
+                permanentAddress:
+                  $ref: '#/components/schemas/Address'
+      responses:
+        '200':
+          description: Organization updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+
+    delete:
+      tags:
+        - Organizations
+      summary: Delete organization
+      description: Soft delete organization (Admin only)
+      operationId: deleteOrganization
+      responses:
+        '200':
+          description: Organization deleted successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: Organization not found
+
+  /org/logo:
+    put:
+      tags:
+        - Organizations
+      summary: Upload organization logo
+      description: Upload or update the organization logo (Admin only)
+      operationId: uploadOrgLogo
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Logo image file
+              required:
+                - file
+      responses:
+        '200':
+          description: Logo uploaded successfully
+        '400':
+          description: Invalid file
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+
+    get:
+      tags:
+        - Organizations
+      summary: Get organization logo
+      description: Retrieve organization logo
+      operationId: getOrgLogo
+      responses:
+        '200':
+          description: Organization logo
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Unauthorized
+        '404':
+          description: Logo not found
+
+    delete:
+      tags:
+        - Organizations
+      summary: Delete organization logo
+      description: Delete organization logo (Admin only)
+      operationId: deleteOrgLogo
+      responses:
+        '200':
+          description: Logo deleted successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: Logo not found
+
+  /org/onboarding-status:
+    get:
+      tags:
+        - Organizations
+      summary: Get onboarding status
+      description: Retrieve organization onboarding status
+      operationId: getOnboardingStatus
+      responses:
+        '200':
+          description: Onboarding status retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [configured, notConfigured, skipped]
+                    example: "configured"
+        '401':
+          description: Unauthorized
+        '404':
+          description: Organization not found
+
+    put:
+      tags:
+        - Organizations
+      summary: Update onboarding status
+      description: Update organization onboarding status (Admin only)
+      operationId: updateOnboardingStatus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [configured, notConfigured, skipped]
+                  description: |
+                    Onboarding status:
+                    - configured: Organization setup is complete
+                    - notConfigured: Organization setup is incomplete
+                    - skipped: User skipped onboarding
+                  example: "configured"
+              required:
+                - status
+      responses:
+        '200':
+          description: Onboarding status updated successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+
+  # ==================== USER GROUPS ENDPOINTS ====================
+  /userGroups:
+    post:
+      tags:
+        - User Groups
+      summary: Create user group
+      description: Create a new user group (Admin only)
+      operationId: createUserGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserGroupRequest'
+      responses:
+        '200':
+          description: User group created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserGroup'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+
+    get:
+      tags:
+        - User Groups
+      summary: Get all user groups
+      description: Retrieve all user groups (Admin only)
+      operationId: getAllUserGroups
+      responses:
+        '200':
+          description: List of user groups
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserGroup'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+
+  /userGroups/{groupId}:
+    get:
+      tags:
+        - User Groups
+      summary: Get user group by ID
+      description: Retrieve a specific user group
+      operationId: getUserGroupById
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: Group ID
+      responses:
+        '200':
+          description: User group details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserGroup'
+        '401':
+          description: Unauthorized
+        '404':
+          description: User group not found
+
+    delete:
+      tags:
+        - User Groups
+      summary: Delete user group
+      description: Delete a user group (Admin only)
+      operationId: deleteUserGroup
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: Group ID
+      responses:
+        '200':
+          description: User group deleted successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin only
+        '404':
+          description: User group not found
+
+  /userGroups/users/{userId}:
+    get:
+      tags:
+        - User Groups
+      summary: Get user groups for a specific user
+      description: Retrieve all user groups that a specific user belongs to
+      operationId: getUserGroupsForUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ObjectId
+          description: User ID
+          example: "693d73f3c784287225064f17"
+      responses:
+        '200':
+          description: User groups retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserGroupBasic'
+              example:
+                - _id: "69416b6bc5f3e000c8685851"
+                  name: "Developers"
+                  type: "custom"
+                - _id: "69416b6bc5f3e000c8685852"
+                  name: "Admins"
+                  type: "predefined"
+        '401':
+          description: Unauthorized
+        '404':
+          description: User not found
+
+  /userGroups/stats/list:
+    get:
+      tags:
+        - User Groups
+      summary: Get user group statistics
+      description: |
+        Retrieve aggregated statistics for user groups in the organization.
+        Provides group name, count, total users, and average users per group.
+      operationId: getUserGroupStatistics
+      responses:
+        '200':
+          description: Group statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GroupStatistics'
+              example:
+                - _id: "Developers"
+                  count: 1
+                  totalUsers: 15
+                  avgUsers: 15.0
+                - _id: "Designers"
+                  count: 1
+                  totalUsers: 8
+                  avgUsers: 8.0
+                - _id: "Managers"
+                  count: 2
+                  totalUsers: 10
+                  avgUsers: 5.0
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
