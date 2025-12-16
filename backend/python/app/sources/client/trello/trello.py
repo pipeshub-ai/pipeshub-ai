@@ -1,7 +1,7 @@
-"""Trello Client with OAuth Authentication using direct HTTP calls.
+"""Trello Client with API Key + Token Authentication using HTTPClient.
 
-This module provides OAuth-based authentication for the Trello API
-using direct HTTP requests instead of third-party SDKs.
+This module provides API Key + Token authentication for the Trello API
+using HTTPClient infrastructure.
 """
 
 import logging
@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.http_status_code import HttpStatusCode
+from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
 
@@ -27,15 +27,17 @@ class TrelloResponse:
         return asdict(self)
 
 
-class TrelloRESTClient:
-    """Trello REST client using API Key + Token authentication.
+class TrelloRESTClient(HTTPClient):
+    """Trello REST client using API Key + Token authentication via HTTPClient.
 
     This client uses the Trello REST API directly with API Key and Token.
-    No third-party SDK is used.
+    Inherits from HTTPClient to use the standard execute() method.
 
     Args:
         api_key: API key from Trello Power-Ups admin
         token: Token generated via Trello authorization
+        timeout: Request timeout in seconds
+        follow_redirects: Whether to follow redirects
     """
 
     TRELLO_API_BASE_URL = "https://api.trello.com/1"
@@ -44,16 +46,16 @@ class TrelloRESTClient:
         self,
         api_key: str,
         token: str,
+        timeout: float = 30.0,
+        follow_redirects: bool = True,
     ) -> None:
         """Initialize the Trello client with API Key + Token."""
-        # Initialize HTTPClient base (without auth header - Trello uses query params)
+        # Initialize HTTPClient base with empty token (Trello uses query params, not headers)
+        super().__init__(token="", token_type="", timeout=timeout, follow_redirects=follow_redirects)
         self.api_key = api_key
         self.token = token
-        self.timeout = 30.0
-        self.follow_redirects = True
-        self.client = None  # httpx client
 
-        # Set headers (no Authorization header - auth is in query params)
+        # Override headers (no Authorization header - auth is in query params)
         self.headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
@@ -63,77 +65,12 @@ class TrelloRESTClient:
         """Get the Trello API base URL."""
         return self.TRELLO_API_BASE_URL
 
-    async def _ensure_client(self) -> object:
-        """Ensure client is created and available."""
-        import httpx
-
-        if self.client is None:
-            self.client = httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=self.follow_redirects
-            )
-        return self.client
-
     def _build_auth_params(self) -> Dict[str, str]:
         """Build authentication query parameters."""
         return {
             "key": self.api_key,
             "token": self.token,
         }
-
-    async def make_request(
-        self,
-        method: str,
-        endpoint: str,
-        query_params: Optional[Dict[str, Any]] = None,
-        body: Optional[Dict[str, Any]] = None,
-    ) -> TrelloResponse:
-        """Make an authenticated request to the Trello API.
-
-        Args:
-            method: HTTP method (GET, POST, PUT, DELETE)
-            endpoint: API endpoint (e.g., "/members/me")
-            query_params: Optional query parameters
-            body: Optional request body
-
-        Returns:
-            TrelloResponse with success status and data or error
-        """
-
-        url = f"{self.TRELLO_API_BASE_URL}{endpoint}"
-
-        # Merge auth params with query params
-        params = self._build_auth_params()
-        if query_params:
-            params.update(query_params)
-
-        try:
-            # Use httpx directly to avoid Pydantic alias issues with HTTPRequest
-            client = await self._ensure_client()
-
-            kwargs: Dict[str, Any] = {
-                "params": params,
-                "headers": self.headers,
-            }
-            if body:
-                kwargs["json"] = body
-
-            response = await client.request(method, url, **kwargs)
-
-            if response.status_code >= HttpStatusCode.BAD_REQUEST.value:
-                return TrelloResponse(
-                    success=False,
-                    error=f"HTTP {response.status_code}: {response.text}",
-                )
-
-            return TrelloResponse(
-                success=True,
-                data=response.json(),
-            )
-        except Exception as e:
-            return TrelloResponse(
-                success=False,
-                error=str(e),
-            )
 
 
 @dataclass

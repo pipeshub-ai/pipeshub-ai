@@ -1,23 +1,25 @@
 """
 Trello API DataSource
 
-Comprehensive Trello API client using direct HTTP calls.
+Comprehensive Trello API client using HTTPClient infrastructure.
 Covers core Trello API endpoints for boards, lists, cards, members, and organizations.
 
 Total API Categories: 5
 Total Methods: 26
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-# Import from our client module
+from app.config.constants.http_status_code import HttpStatusCode
+from app.sources.client.http.http_request import HTTPRequest
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.trello.trello import TrelloClient, TrelloResponse
 
 
 class TrelloDataSource:
     """Comprehensive Trello API DataSource wrapper.
 
-    Uses direct HTTP calls to the Trello REST API.
+    Uses HTTPClient.execute() with HTTPRequest objects to call the Trello REST API.
     Covers 5 API categories with 26 methods.
 
     All methods are async and return TrelloResponse objects.
@@ -50,6 +52,13 @@ class TrelloDataSource:
             client: TrelloClient instance (created via build_with_config or build_from_services)
         """
         self.client = client
+        self.http_client = client.get_client()
+        if self.http_client is None:
+            raise ValueError("HTTP client is not initialized")
+        try:
+            self.base_url = self.http_client.get_base_url()
+        except AttributeError as exc:
+            raise ValueError("HTTP client does not have get_base_url method") from exc
 
     def get_client(self) -> TrelloClient:
         """Get the wrapped TrelloClient instance.
@@ -58,6 +67,59 @@ class TrelloDataSource:
             TrelloClient instance
         """
         return self.client
+
+    def _as_str_dict(self, data: Dict[str, Any]) -> Dict[str, str]:
+        """Helper to ensure all dict values are strings for HTTPRequest."""
+        return {k: str(v) for k, v in data.items() if v is not None}
+
+    async def _execute_request(
+        self,
+        method: str,
+        endpoint: str,
+        query_params: Optional[Dict[str, Any]] = None,
+        body: Optional[Dict[str, Any]] = None,
+    ) -> TrelloResponse:
+        """Internal helper to execute HTTP requests and convert to TrelloResponse.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE)
+            endpoint: API endpoint (e.g., "/members/me")
+            query_params: Optional query parameters
+            body: Optional request body
+
+        Returns:
+            TrelloResponse with success status and data or error
+        """
+        # Merge Trello auth params (key and token) with any extra query params
+        auth_params = self.http_client._build_auth_params()
+        merged_params: Dict[str, Any] = {**auth_params, **(query_params or {})}
+
+        url = f"{self.base_url}{endpoint}"
+        request = HTTPRequest(
+            method=method,
+            url=url,
+            headers=self.http_client.headers,
+            query_params=self._as_str_dict(merged_params),
+            body=body,
+        )
+
+        try:
+            http_response: HTTPResponse = await self.http_client.execute(request)
+            status_code = http_response.status
+
+            if status_code >= HttpStatusCode.BAD_REQUEST.value:
+                return TrelloResponse(
+                    success=False,
+                    error=f"HTTP {status_code}: {http_response.text()}",
+                )
+
+            data = http_response.json() if http_response.is_json else http_response.text()
+            return TrelloResponse(success=True, data=data)
+        except Exception as e:
+            return TrelloResponse(
+                success=False,
+                error=str(e),
+            )
 
     # ========================================================================
     # Members API - 5 methods
@@ -69,8 +131,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with member data
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", "/members/me")
+        return await self._execute_request("GET", "/members/me")
 
     async def get_member(self, member_id: str) -> TrelloResponse:
         """Get a member by ID.
@@ -81,8 +142,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with member data
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/members/{member_id}")
+        return await self._execute_request("GET", f"/members/{member_id}")
 
     async def list_member_boards(
         self,
@@ -98,8 +158,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of boards
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request(
+        return await self._execute_request(
             "GET",
             f"/members/{member_id}/boards",
             query_params={"filter": board_filter}
@@ -114,8 +173,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of cards
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/members/{member_id}/cards")
+        return await self._execute_request("GET", f"/members/{member_id}/cards")
 
     async def list_member_organizations(self, member_id: str = "me") -> TrelloResponse:
         """List organizations for a member.
@@ -126,8 +184,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of organizations
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/members/{member_id}/organizations")
+        return await self._execute_request("GET", f"/members/{member_id}/organizations")
 
     # ========================================================================
     # Boards API - 6 methods
@@ -142,8 +199,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of boards
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request(
+        return await self._execute_request(
             "GET",
             "/members/me/boards",
             query_params={"filter": board_filter}
@@ -158,8 +214,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with board data
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/boards/{board_id}")
+        return await self._execute_request("GET", f"/boards/{board_id}")
 
     async def get_board_lists(
         self, board_id: str, list_filter: str = "open"
@@ -173,8 +228,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of lists
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request(
+        return await self._execute_request(
             "GET",
             f"/boards/{board_id}/lists",
             query_params={"filter": list_filter}
@@ -189,8 +243,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of cards
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/boards/{board_id}/cards")
+        return await self._execute_request("GET", f"/boards/{board_id}/cards")
 
     async def get_board_members(self, board_id: str) -> TrelloResponse:
         """Get members of a board.
@@ -201,8 +254,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of members
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/boards/{board_id}/members")
+        return await self._execute_request("GET", f"/boards/{board_id}/members")
 
     async def create_board(
         self,
@@ -220,15 +272,14 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with created board data
         """
-        rest_client = self.client.get_client()
-        params: Dict[str, object] = {
+        params: Dict[str, Any] = {
             "name": name,
             "defaultLists": str(default_lists).lower(),
         }
         if organization_id:
             params["idOrganization"] = organization_id
 
-        return await rest_client.make_request("POST", "/boards", query_params=params)
+        return await self._execute_request("POST", "/boards", query_params=params)
 
     # ========================================================================
     # Lists API - 4 methods
@@ -243,8 +294,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list data
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/lists/{list_id}")
+        return await self._execute_request("GET", f"/lists/{list_id}")
 
     async def get_list_cards(self, list_id: str) -> TrelloResponse:
         """Get cards in a list.
@@ -255,8 +305,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of cards
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/lists/{list_id}/cards")
+        return await self._execute_request("GET", f"/lists/{list_id}/cards")
 
     async def create_list(
         self, board_id: str, name: str, pos: Optional[str] = None
@@ -271,15 +320,14 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with created list data
         """
-        rest_client = self.client.get_client()
-        params: Dict[str, object] = {
+        params: Dict[str, Any] = {
             "name": name,
             "idBoard": board_id,
         }
         if pos:
             params["pos"] = pos
 
-        return await rest_client.make_request("POST", "/lists", query_params=params)
+        return await self._execute_request("POST", "/lists", query_params=params)
 
     async def archive_list(self, list_id: str) -> TrelloResponse:
         """Archive (close) a list.
@@ -290,8 +338,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with result
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request(
+        return await self._execute_request(
             "PUT",
             f"/lists/{list_id}/closed",
             query_params={"value": "true"}
@@ -310,8 +357,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with card data
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/cards/{card_id}")
+        return await self._execute_request("GET", f"/cards/{card_id}")
 
     async def create_card(
         self,
@@ -335,8 +381,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with created card data
         """
-        rest_client = self.client.get_client()
-        params: Dict[str, object] = {
+        params: Dict[str, Any] = {
             "idList": list_id,
             "name": name,
         }
@@ -349,7 +394,7 @@ class TrelloDataSource:
         if members:
             params["idMembers"] = ",".join(members)
 
-        return await rest_client.make_request("POST", "/cards", query_params=params)
+        return await self._execute_request("POST", "/cards", query_params=params)
 
     async def update_card(
         self,
@@ -371,8 +416,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with updated card data
         """
-        rest_client = self.client.get_client()
-        params: Dict[str, object] = {}
+        params: Dict[str, Any] = {}
         if name is not None:
             params["name"] = name
         if desc is not None:
@@ -382,7 +426,7 @@ class TrelloDataSource:
         if due is not None:
             params["due"] = due
 
-        return await rest_client.make_request(
+        return await self._execute_request(
             "PUT",
             f"/cards/{card_id}",
             query_params=params
@@ -397,8 +441,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with result
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("DELETE", f"/cards/{card_id}")
+        return await self._execute_request("DELETE", f"/cards/{card_id}")
 
     async def get_card_checklists(self, card_id: str) -> TrelloResponse:
         """Get checklists on a card.
@@ -409,8 +452,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of checklists
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/cards/{card_id}/checklists")
+        return await self._execute_request("GET", f"/cards/{card_id}/checklists")
 
     async def get_card_attachments(self, card_id: str) -> TrelloResponse:
         """Get attachments on a card.
@@ -421,8 +463,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of attachments
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/cards/{card_id}/attachments")
+        return await self._execute_request("GET", f"/cards/{card_id}/attachments")
 
     async def get_card_comments(self, card_id: str) -> TrelloResponse:
         """Get comments (actions) on a card.
@@ -433,8 +474,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of comments
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request(
+        return await self._execute_request(
             "GET",
             f"/cards/{card_id}/actions",
             query_params={"filter": "commentCard"}
@@ -450,8 +490,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with comment data
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request(
+        return await self._execute_request(
             "POST",
             f"/cards/{card_id}/actions/comments",
             query_params={"text": text}
@@ -470,8 +509,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with organization data
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/organizations/{org_id}")
+        return await self._execute_request("GET", f"/organizations/{org_id}")
 
     async def list_organization_boards(self, org_id: str) -> TrelloResponse:
         """List boards in an organization.
@@ -482,8 +520,7 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of boards
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/organizations/{org_id}/boards")
+        return await self._execute_request("GET", f"/organizations/{org_id}/boards")
 
     async def list_organization_members(self, org_id: str) -> TrelloResponse:
         """List members in an organization.
@@ -494,5 +531,4 @@ class TrelloDataSource:
         Returns:
             TrelloResponse: Standardized response with list of members
         """
-        rest_client = self.client.get_client()
-        return await rest_client.make_request("GET", f"/organizations/{org_id}/members")
+        return await self._execute_request("GET", f"/organizations/{org_id}/members")
