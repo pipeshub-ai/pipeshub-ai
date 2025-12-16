@@ -63,6 +63,7 @@ export class PrometheusService {
         'userId',
         'orgId',
         'email',
+        'fullName',
         'requestId',
         'method',
         'path',
@@ -214,9 +215,21 @@ export class PrometheusService {
     }
   }
 
+  private hasActualMetrics(metricsText: string): boolean {
+    const lines = metricsText.split('\n').filter((line) => line.trim().length > 0);
+    return lines.some((line) => !line.trim().startsWith('#'));
+  }
+
   private async pushMetricsToServer(): Promise<void> {
     try {
       const metricsText = await this.register.metrics();
+
+      // Skip pushing if metrics are empty (only headers, no actual data)
+      if (!this.hasActualMetrics(metricsText)) {
+        logger.debug('Skipping metrics push - no actual metrics data');
+        return;
+      }
+
       await axios.post(
         this.metricsServerUrl,
         {
@@ -238,6 +251,9 @@ export class PrometheusService {
         },
       );
       logger.debug('Successfully pushed metrics to server');
+
+      // Reset metrics after successful push
+      this.activityCounter.reset();
     } catch (error: any) {
       this.handlePushError(error);
     }
@@ -308,6 +324,7 @@ export class PrometheusService {
     userId?: string,
     orgId?: string,
     email?: string,
+    fullName?: string,
     requestId?: string,
     method?: string,
     path?: string,
@@ -319,6 +336,7 @@ export class PrometheusService {
       userId: userId || 'anonymous',
       orgId: orgId || 'anonymous',
       email,
+      fullName,
       requestId,
       method,
       path,
