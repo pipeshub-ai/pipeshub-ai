@@ -6,10 +6,14 @@ from box_sdk_gen.managers.files import (  # type: ignore
     CopyFileParent,
     GetFileThumbnailByIdExtension,
     UpdateFileByIdParent,
+    UpdateFileByIdSharedLink,           # <--- Added Import
+    UpdateFileByIdSharedLinkAccessField # <--- Added Import
 )
 from box_sdk_gen.managers.folders import (  # type: ignore
     CreateFolderParent,
     UpdateFolderByIdParent,
+    UpdateFolderByIdSharedLink,           # <--- Added Import
+    UpdateFolderByIdSharedLinkAccessField # <--- Added Import
 )
 from box_sdk_gen.managers.uploads import (  # type: ignore
     PreflightFileUploadCheckParent,
@@ -469,7 +473,9 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def folders_get_folder_items(self, folder_id: str, limit: Optional[int] = None, **kwargs) -> BoxResponse:
+    # Replace the folders_get_folder_items method in your box.py file (datasource)
+
+    async def folders_get_folder_items(self, folder_id: str, limit: Optional[int] = None, offset: Optional[int] = None, fields: Optional[str] = None, **kwargs) -> BoxResponse:
         """Get items in a folder
 
         API Endpoint: folders.get_folder_items
@@ -478,6 +484,8 @@ class BoxDataSource:
         Args:
             folder_id (str, required): The ID of the folder
             limit (int, optional): The maximum number of items to return
+            offset (int, optional): The offset for pagination
+            fields (str, optional): Comma-separated list of fields to include
 
         Returns:
             BoxResponse: SDK response
@@ -489,11 +497,21 @@ class BoxDataSource:
 
         try:
             loop = asyncio.get_running_loop()
-            # Add kwargs to parameters if provided
-            if kwargs:
-                # Handle additional parameters from kwargs
-                pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_items(folder_id, limit=limit))
+            
+            # Build parameters
+            params = {}
+            if limit is not None:
+                params['limit'] = limit
+            if offset is not None:
+                params['offset'] = offset
+            if fields is not None:
+                params['fields'] = fields
+            
+            # Call the SDK method with parameters
+            response = await loop.run_in_executor(
+                None, 
+                lambda: manager.get_folder_items(folder_id, **params)
+            )
             return BoxResponse(success=True, data=response.to_dict())
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1130,9 +1148,9 @@ class BoxDataSource:
             BoxResponse: SDK response
         """
         client = await self._get_client()
-        manager = getattr(client, 'shared_links', None)
+        manager = getattr(client, 'files', None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'shared_links' not found")
+            return BoxResponse(success=False, error="Manager 'files' not found")
 
         try:
             loop = asyncio.get_running_loop()
@@ -1140,7 +1158,26 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_shared_link_for_file(file_id, access=access))
+            access_enum = UpdateFileByIdSharedLinkAccessField.OPEN
+            if access == 'company':
+                access_enum = UpdateFileByIdSharedLinkAccessField.COMPANY
+            elif access == 'collaborators':
+                access_enum = UpdateFileByIdSharedLinkAccessField.COLLABORATORS
+            
+            # FIX 3: Create the specific update object required by Box SDK
+            shared_link_payload = UpdateFileByIdSharedLink(
+                access=access_enum
+            )
+
+            # FIX 4: Call update_file_by_id instead of create_shared_link
+            # Note: We do NOT pass **kwargs here because the SDK method doesn't accept arbitrary args
+            response = await loop.run_in_executor(
+                None, 
+                lambda: manager.update_file_by_id(
+                    file_id, 
+                    shared_link=shared_link_payload
+                )
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -1159,9 +1196,9 @@ class BoxDataSource:
             BoxResponse: SDK response
         """
         client = await self._get_client()
-        manager = getattr(client, 'shared_links', None)
+        manager = getattr(client, 'folders', None)
         if manager is None:
-            return BoxResponse(success=False, error="Manager 'shared_links' not found")
+            return BoxResponse(success=False, error="Manager 'folders' not found")
 
         try:
             loop = asyncio.get_running_loop()
@@ -1169,7 +1206,25 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_shared_link_for_folder(folder_id, access=access))
+            access_enum = UpdateFolderByIdSharedLinkAccessField.OPEN
+            if access == 'company':
+                access_enum = UpdateFolderByIdSharedLinkAccessField.COMPANY
+            elif access == 'collaborators':
+                access_enum = UpdateFolderByIdSharedLinkAccessField.COLLABORATORS
+
+            # FIX 3: Create payload
+            shared_link_payload = UpdateFolderByIdSharedLink(
+                access=access_enum
+            )
+
+            # FIX 4: Call update_folder_by_id
+            response = await loop.run_in_executor(
+                None, 
+                lambda: manager.update_folder_by_id(
+                    folder_id, 
+                    shared_link=shared_link_payload
+                )
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))

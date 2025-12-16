@@ -1,7 +1,7 @@
 import asyncio
 import mimetypes
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -121,7 +121,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
         .with_oauth_urls(
             "https://account.box.com/api/oauth2/authorize",
             "https://api.box.com/oauth2/token",
-            ["root_readonly", "manage_managed_users", "manage_groups"]  # Note: Box scopes are configured in Developer Console, not in OAuth URL
+            ["root_readwrite", "manage_managed_users", "manage_groups"]  # Note: Box scopes are configured in Developer Console, not in OAuth URL
         )
         .add_auth_field(CommonFields.client_id("Box Developer Console"))
         .add_auth_field(CommonFields.client_secret("Box Developer Console"))
@@ -245,44 +245,60 @@ class BoxConnector(BaseConnector):
             is_file = entry_type == 'file'
             record_type = RecordType.FILE  # Both files and folders use FILE type
 
-            # Get timestamps
-            created_at_str = entry.get('created_at')
-            modified_at_str = entry.get('modified_at')
+            # Get timestamps with fallback to current time
+            def parse_timestamp(ts_str, field_name):
+                if ts_str:
+                    try:
+                        return int(datetime.fromisoformat(ts_str.replace('Z', '+00:00')).timestamp() * 1000)
+                    except Exception as e:
+                        self.logger.debug(f"Could not parse {field_name} for {entry_name}: {e}")
+                return int(datetime.now(timezone.utc).timestamp() * 1000)
 
-            source_created_at = None
-            source_updated_at = None
-            if created_at_str:
-                source_created_at = int(datetime.fromisoformat(created_at_str.replace('Z', '+00:00')).timestamp() * 1000)
-            if modified_at_str:
-                source_updated_at = int(datetime.fromisoformat(modified_at_str.replace('Z', '+00:00')).timestamp() * 1000)
+            source_created_at = parse_timestamp(entry.get('created_at'), 'created_at')
+            source_updated_at = parse_timestamp(entry.get('modified_at'), 'modified_at')
+            current_timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-            # Get MIME type
-            mime_type = get_mimetype_enum_for_box(entry_type, entry_name)
+            # Get MIME type as string
+            mime_type_enum = get_mimetype_enum_for_box(entry_type, entry_name)
+            mime_type = mime_type_enum.value  # Convert enum to string
 
             # Determine record ID (use existing if updating, new UUID otherwise)
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
             version = (existing_record.version + 1) if existing_record else 1
 
+            # Get file size (Box API returns 'size' field)
+            file_size = 0
+            if is_file:
+                raw_size = entry.get('size')
+                if raw_size is not None:
+                    file_size = int(raw_size)
+                else:
+                    # Log warning if size is missing (shouldn't happen normally)
+                    self.logger.warning(f"Size field missing for file {entry_name}")
+
             # Create FileRecord for both files and folders
+            # FIX: Ensure all Enums are converted to .value for DB schema compatibility
             file_record = FileRecord(
                 id=record_id,
                 org_id=self.data_entities_processor.org_id,
                 record_name=entry_name,
-                record_type=record_type,
-                record_group_type=RecordGroupType.DRIVE,
+                record_type=record_type.value,  # <--- FIX: Convert Enum to string
+                record_group_type=RecordGroupType.DRIVE.value,
                 external_record_id=entry_id,
                 external_record_group_id=record_group_id,
                 parent_external_record_id=parent_external_record_id,
-                parent_record_type=RecordType.FILE if parent_external_record_id else None,
+                parent_record_type=RecordType.FILE.value if parent_external_record_id else None, # <--- FIX: Convert Enum to string
                 version=version,
-                origin=OriginTypes.CONNECTOR,
-                connector_name=self.connector_name,
-                mime_type=mime_type.value,
-                weburl=entry.get('shared_link', {}).get('url') if entry.get('shared_link') else None,
+                origin=OriginTypes.CONNECTOR.value,
+                connector_name=self.connector_name.value,  # <--- FIX: Convert Enum to string
+                mime_type=mime_type,  # String value
+                weburl=entry.get('shared_link', {}).get('url') if entry.get('shared_link') else "",
+                created_at=current_timestamp,
+                updated_at=current_timestamp,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 is_file=is_file,
-                size_in_bytes=entry.get('size', 0) if is_file else 0,
+                size_in_bytes=file_size,
                 extension=get_file_extension(entry_name) if is_file else None,
                 path=file_path,
                 etag=entry.get('etag'),
@@ -345,7 +361,8 @@ class BoxConnector(BaseConnector):
                 response = await self.data_source.collaborations_get_folder_collaborations(folder_id=item_id)
 
             if not response.success:
-                self.logger.warning(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
+                # Don't log as warning - many files don't have explicit collaborations
+                self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
                 return permissions
 
             collaborations = response.data.get('entries', []) if response.data else []
@@ -367,17 +384,24 @@ class BoxConnector(BaseConnector):
                 if accessible_by_type == 'group':
                     entity_type = EntityType.GROUP
 
+                # Skip if no ID (invalid collaboration)
+                accessible_by_id = accessible_by.get('id')
+                if not accessible_by_id:
+                    continue
+
                 permissions.append(Permission(
-                    external_id=accessible_by.get('id'),
+                    external_id=accessible_by_id,
                     email=accessible_by.get('login'),
                     type=permission_type,
                     entity_type=entity_type
                 ))
 
         except Exception as e:
-            self.logger.error(f"Error fetching permissions for {item_type} {item_id}: {e}", exc_info=True)
+            # Use debug level since this is expected for non-shared items
+            self.logger.debug(f"Error fetching permissions for {item_type} {item_id}: {e}")
 
         return permissions
+
 
     async def _process_box_items_generator(
         self,
@@ -606,13 +630,14 @@ class BoxConnector(BaseConnector):
                 root_folder = response.data if response.data else {}
 
                 # Create RecordGroup for user's drive (their "All Files" root storage)
+                # FIX: Ensure all Enums are converted to .value for DB schema compatibility
                 record_group = RecordGroup(
                     org_id=self.data_entities_processor.org_id,
                     name=f"{user.full_name or user.email}'s Box",
                     external_group_id=user.source_user_id,  # Use user ID as drive ID
                     external_user_id=user.source_user_id,
-                    connector_name=self.connector_name,
-                    group_type=RecordGroupType.DRIVE,
+                    connector_name=self.connector_name.value, # <--- FIX: Convert Enum to string
+                    group_type=RecordGroupType.DRIVE.value,   # <--- FIX: Convert Enum to string
                     web_url=root_folder.get('shared_link', {}).get('url') if root_folder.get('shared_link') else None,
                     source_created_at=int(datetime.fromisoformat(root_folder.get('created_at', '').replace('Z', '+00:00')).timestamp() * 1000) if root_folder.get('created_at') else None,
                     source_updated_at=int(datetime.fromisoformat(root_folder.get('modified_at', '').replace('Z', '+00:00')).timestamp() * 1000) if root_folder.get('modified_at') else None,
@@ -635,65 +660,19 @@ class BoxConnector(BaseConnector):
 
     async def _run_sync_for_user(self, user: AppUser) -> None:
         """
-        Synchronize Box files for a given user.
+        Synchronize Box files for a given user starting from Root.
         """
         try:
             self.logger.info(f"Starting Box sync for user {user.email}")
 
-            # Sync root folder
-            sync_context_id = user.source_user_id
-            sync_group = "users"
-            current_record_group_id = user.source_user_id
-
-            generate_record_sync_point_key(
-                RecordType.FILE.value,
-                sync_group,
-                sync_context_id
-            )
-
-            # Get folder items recursively
+            # Initialize a shared batch list to hold records across recursion
             batch_records = []
-            batch_count = 0
+            
+            # Start recursion from the Root Folder ('0')
+            # Root folder ID is usually '0' in Box
+            await self._sync_folder_recursively(user, folder_id='0', batch_records=batch_records)
 
-            response = await self.data_source.folders_get_folder_items(
-                folder_id='0',  # Root folder
-                limit=1000
-            )
-
-            if not response.success:
-                self.logger.error(f"Failed to fetch items for user {user.email}: {response.error}")
-                return
-
-            items = response.data.get('entries', []) if response.data else []
-
-            # Process items
-            async for file_record, permissions, record_update in self._process_box_items_generator(
-                items,
-                user.source_user_id,
-                user.email,
-                current_record_group_id,
-                True
-            ):
-                if record_update.is_deleted:
-                    await self._handle_record_updates(record_update)
-                    continue
-
-                if record_update.is_updated:
-                    await self._handle_record_updates(record_update)
-                    continue
-
-                if file_record:
-                    batch_records.append((file_record, permissions))
-                    batch_count += 1
-
-                    if batch_count >= self.batch_size:
-                        self.logger.info(f"Processing batch of {batch_count} records")
-                        await self.data_entities_processor.on_new_records(batch_records)
-                        batch_records = []
-                        batch_count = 0
-                        await asyncio.sleep(0.1)
-
-            # Process remaining records
+            # Flush any remaining records in the batch after recursion finishes
             if batch_records:
                 self.logger.info(f"Processing final batch of {len(batch_records)} records")
                 await self.data_entities_processor.on_new_records(batch_records)
@@ -702,6 +681,85 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing for user {user.email}: {e}", exc_info=True)
+
+    async def _sync_folder_recursively(self, user: AppUser, folder_id: str, batch_records: List) -> None:
+        """
+        Recursively fetch all items in a folder with pagination.
+        
+        Args:
+            user: The AppUser context
+            folder_id: The ID of the folder to traverse
+            batch_records: Mutable list to accumulate records before flushing
+        """
+        offset = 0
+        limit = 1000  # Box max limit is 1000
+        
+        # CRITICAL: Specify fields to retrieve - Box API doesn't return all fields by default!
+        fields = 'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link'
+        
+        while True:
+            # Rate Limiting check with proper API call
+            async with self.rate_limiter:
+                response = await self.data_source.folders_get_folder_items(
+                    folder_id=folder_id, 
+                    limit=limit, 
+                    offset=offset,
+                    fields=fields  # <- CRITICAL FIX: Request specific fields including size
+                )
+            
+            if not response.success:
+                self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
+                break
+
+            data = response.data
+            items = data.get('entries', [])
+            total_count = data.get('total_count', 0)
+            
+            if not items:
+                break
+
+            # Separate files and folders for processing logic
+            sub_folders_to_traverse = []
+
+            # Process the items (Create FileRecords)
+            current_record_group_id = user.source_user_id # Using User ID as Drive ID
+
+            # Pass 'True' for is_personal_folder assuming user drives are personal
+            async for file_record, permissions, record_update in self._process_box_items_generator(
+                items,
+                user.source_user_id,
+                user.email,
+                current_record_group_id,
+                True 
+            ):
+                # Handle Deletions/Updates immediately
+                if record_update.is_deleted or record_update.is_updated:
+                    await self._handle_record_updates(record_update)
+                    continue
+
+                # Accumulate New Records
+                if file_record:
+                    batch_records.append((file_record, permissions))
+                    
+                    # If we hit batch size, FLUSH to DB
+                    if len(batch_records) >= self.batch_size:
+                        self.logger.info(f"Processing batch of {len(batch_records)} records")
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        batch_records.clear() # Clear the list in place
+                        await asyncio.sleep(0.1) # Yield control to event loop
+
+                # Identify Sub-folders to recurse into
+                if file_record and file_record.mime_type == MimeTypes.FOLDER.value:
+                    sub_folders_to_traverse.append(file_record.external_record_id)
+
+            # RECURSION: Dive into sub-folders found in this page
+            for sub_folder_id in sub_folders_to_traverse:
+                await self._sync_folder_recursively(user, sub_folder_id, batch_records)
+
+            # Handle Pagination
+            offset += len(items)
+            if offset >= total_count:
+                break
 
     async def _process_users_in_batches(self, users: List[AppUser]) -> None:
         """
@@ -770,28 +828,88 @@ class BoxConnector(BaseConnector):
         pass
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
-        """Get a signed URL for downloading a Box file."""
+        """Get a signed URL with HEAVY DEBUGGING enabled."""
         if not self.data_source:
             return None
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                file_record = await tx_store.get_file_record_by_id(record.id)
+            self.logger.info(f"🔍 DEBUG: Attempting to get URL for {record.record_name} (ID: {record.external_record_id})")
 
-            if not file_record:
-                self.logger.warning(f"No file record found for node: {record.id}")
-                return None
-
-            # Get download URL from Box
-            response = await self.data_source.files_get_file_download_url(
+            # 1. Try to get existing file info
+            response = await self.data_source.files_get_file_by_id(
                 file_id=record.external_record_id
             )
 
-            if response.success and response.data:
-                return response.data.get('download_url')
+            download_url = None
 
+            # DEBUG: Log the success status and type of data received
+            self.logger.info(f"🔍 DEBUG: Get File Success: {response.success}")
+            if response.data:
+                self.logger.info(f"🔍 DEBUG: Get File Data Type: {type(response.data)}")
+                # Uncomment the next line if you need to see the full object (can be large)
+                # self.logger.info(f"🔍 DEBUG: Get File Data: {response.data}")
+
+            if response.success and response.data:
+                file_data = response.data
+                
+                # Check for shared link safely
+                shared_link = None
+                if isinstance(file_data, dict):
+                    shared_link = file_data.get('shared_link')
+                else:
+                    shared_link = getattr(file_data, 'shared_link', None)
+                
+                if shared_link:
+                    self.logger.info("🔍 DEBUG: Found existing shared link object.")
+                    if isinstance(shared_link, dict):
+                        download_url = shared_link.get('download_url')
+                    else:
+                        download_url = getattr(shared_link, 'download_url', None)
+                else:
+                    self.logger.info("🔍 DEBUG: No 'shared_link' attribute found on existing file object.")
+
+            # 2. If no URL found, create a temporary shared link
+            if not download_url:
+                self.logger.info(f"No existing shared link for {record.record_name}, creating one...")
+                
+                link_response = await self.data_source.shared_links_create_shared_link_for_file(
+                    file_id=record.external_record_id,
+                    access='open' 
+                )
+                
+                # DEBUG: Inspect the creation response
+                self.logger.info(f"🔍 DEBUG: Create Link Success: {link_response.success}")
+                if not link_response.success:
+                    self.logger.error(f"❌ DEBUG: Create Link Error: {link_response.error}")
+                
+                if link_response.success and link_response.data:
+                    file_data = link_response.data
+                    self.logger.info(f"🔍 DEBUG: Create Link Data Type: {type(file_data)}")
+                    # CRITICAL: Print the structure to see where download_url is hiding
+                    self.logger.info(f"🔍 DEBUG: Create Link Raw Data: {file_data}") 
+                    
+                    shared_link = None
+                    if isinstance(file_data, dict):
+                        shared_link = file_data.get('shared_link')
+                    else:
+                        shared_link = getattr(file_data, 'shared_link', None)
+
+                    if shared_link:
+                        if isinstance(shared_link, dict):
+                            download_url = shared_link.get('download_url')
+                        else:
+                            download_url = getattr(shared_link, 'download_url', None)
+                    else:
+                        self.logger.warning("🔍 DEBUG: Created link successfully, but 'shared_link' attr missing from response.")
+
+            if download_url:
+                self.logger.info(f"🔗 Generated Download URL for {record.record_name}: {download_url}")
+                return download_url
+            
+            self.logger.warning(f"Could not generate download URL for {record.record_name}")
             return None
+
         except Exception as e:
-            self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
+            self.logger.error(f"Error creating signed URL for record {record.id}: {e}", exc_info=True)
             return None
 
     async def stream_record(self, record: Record) -> StreamingResponse:
