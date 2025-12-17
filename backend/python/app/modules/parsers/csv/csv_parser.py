@@ -290,7 +290,7 @@ class CSVParser:
             except Exception as e:
                 # Attempt reflection: ask LLM to correct its response
                 try:
-                    reflection_prompt = f"""Your previous response could not be parsed correctly. 
+                    reflection_prompt = f"""Your previous response could not be parsed correctly.
 Error: {str(e)}
 
 Please provide the row descriptions in the correct JSON format."""
