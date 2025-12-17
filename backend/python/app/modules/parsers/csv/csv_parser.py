@@ -276,6 +276,8 @@ class CSVParser:
 
             llm_with_structured_output = _apply_structured_output(llm, schema=RowDescriptions)
             response = await self._call_llm(llm_with_structured_output, messages)
+            descriptions = [str(row) for row in rows_data]
+            parsed_response = None
             try:
                 if isinstance(response, dict):
                     parsed_response = adapter.validate_python(response)
@@ -283,10 +285,6 @@ class CSVParser:
                     response = cleanup_content(response.content)
                     parsed_response = adapter.validate_json(response)
 
-                descriptions = parsed_response.get("descriptions", [])
-                if descriptions==[]:
-                    descriptions = [str(row) for row in rows_data]
-                processed_texts.extend(descriptions)
             except Exception as e:
                 # Attempt reflection: ask LLM to correct its response
                 try:
@@ -301,20 +299,19 @@ Please provide the row descriptions in the correct JSON format."""
                     # Use structured output for reflection attempt
                     reflection_response = await self._call_llm(llm_with_structured_output, messages)
                     if isinstance(reflection_response, dict):
-                        parsed_reflection = adapter.validate_python(reflection_response)
+                        parsed_response = adapter.validate_python(reflection_response)
                     else:
                         response = cleanup_content(reflection_response.content)
-                        parsed_reflection = adapter.validate_json(response)
-
-                    descriptions = parsed_reflection.get("descriptions", [])
-                    if descriptions==[]:
-                        descriptions = [str(row) for row in rows_data]
-                    processed_texts.extend(descriptions)
+                        parsed_response = adapter.validate_json(response)
 
                 except Exception:
-                    descriptions = [str(row) for row in rows_data]
-                    processed_texts.extend(descriptions)
+                    pass
 
+            if parsed_response is not None and parsed_response.get("descriptions"):
+                descriptions = parsed_response.get("descriptions")
+            
+            processed_texts.extend(descriptions)
+        
         return processed_texts
     #  recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
     async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]],llm: BaseChatModel) -> BlocksContainer:

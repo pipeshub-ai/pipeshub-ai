@@ -79,7 +79,7 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
 
         # Call LLM with structured output
         response = await _call_llm(llm_with_structured_output, messages)
-
+        parsed_response = None
         try:
             # Handle both structured and non-structured responses
             if isinstance(response, dict):
@@ -90,8 +90,6 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
                 response = response.content
                 response_text = cleanup_content(response)
                 parsed_response = table_summary_adapter.validate_json(response_text)
-
-            return parsed_response
 
         except Exception as parse_error:
             # Reflection: attempt to fix the validation issue by providing feedback to the LLM
@@ -115,17 +113,20 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
                 reflection_response = await _call_llm(llm_with_structured_output, reflection_messages)
 
                 if isinstance(reflection_response, dict):
-                    parsed_reflection = table_summary_adapter.validate_python(reflection_response)
+                    parsed_response = table_summary_adapter.validate_python(reflection_response)
                 else:
                     reflection_text = cleanup_content(reflection_response.content)
-                    parsed_reflection = table_summary_adapter.validate_json(reflection_text)
-
-                return parsed_reflection
+                    parsed_response = table_summary_adapter.validate_json(reflection_text)
 
             except Exception:
                 raise ValueError(
                     f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}"
                 )
+        
+        if parsed_response is not None:
+            return parsed_response
+        else:
+            return {"summary": "", "headers": []}
     except Exception as e:
         raise e
 
@@ -161,7 +162,8 @@ async def get_rows_text(
 
             llm_with_structured_output = _apply_structured_output(llm, schema=RowDescriptions)
             response = await _call_llm(llm_with_structured_output, messages)
-
+            parsed_response = None
+            descriptions = [str(row) for row in rows_data]
             try:
                 if isinstance(response, dict):
                     parsed_response = row_adapter.validate_python(response)
@@ -169,10 +171,6 @@ async def get_rows_text(
                     response = cleanup_content(response.content)
                     parsed_response = row_adapter.validate_json(response)
 
-                descriptions = parsed_response.get("descriptions", [])
-                if descriptions==[]:
-                    descriptions = [str(row) for row in rows_data]
-                return descriptions, table_rows
             except Exception as parse_error:
                 # Reflection: attempt to fix the validation issue by providing feedback to the LLM
                 try:
@@ -190,18 +188,18 @@ async def get_rows_text(
                     reflection_response = await _call_llm(llm_with_structured_output, messages)
 
                     if isinstance(reflection_response, dict):
-                        parsed_reflection = row_adapter.validate_python(reflection_response)
+                        parsed_response = row_adapter.validate_python(reflection_response)
                     else:
                         reflection_text = cleanup_content(reflection_response.content)
-                        parsed_reflection = row_adapter.validate_json(reflection_text)
-                    descriptions = parsed_reflection.get("descriptions", [])
-                    if descriptions==[]:
-                        descriptions = [str(row) for row in rows_data]
-
-                    return descriptions, table_rows
+                        parsed_response = row_adapter.validate_json(reflection_text)
 
                 except Exception:
-                    return [str(row) for row in rows_data], table_rows
+                    pass
+
+            if parsed_response is not None and parsed_response.get("descriptions"):
+                descriptions = parsed_response.get("descriptions")
+
+            return descriptions, table_rows
         except Exception:
             raise
     else:

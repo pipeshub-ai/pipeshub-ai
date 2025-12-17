@@ -400,7 +400,8 @@ Do not include any additional explanation or text."""
 
                 try:
                     response = await self._call_llm(llm_with_structured_output, messages)
-
+                    parsed_response = None
+                    new_headers = []
                     # Parse response
                     try:
                         if isinstance(response, dict):
@@ -409,7 +410,6 @@ Do not include any additional explanation or text."""
                             response = cleanup_content(response.content if hasattr(response, 'content') else str(response))
                             parsed_response = header_adapter.validate_json(response)
 
-                        new_headers = parsed_response.get("headers", [])
                     except Exception as e:
                         # Attempt reflection immediately after parsing fails
                         try:
@@ -425,15 +425,16 @@ Please provide the table headers in the correct JSON format."""
                             reflection_response = await self._call_llm(llm_with_structured_output, messages)
 
                             if isinstance(reflection_response, dict):
-                                parsed_reflection = header_adapter.validate_python(reflection_response)
+                                parsed_response = header_adapter.validate_python(reflection_response)
                             else:
                                 response_content = cleanup_content(reflection_response.content if hasattr(reflection_response, 'content') else str(reflection_response))
-                                parsed_reflection = header_adapter.validate_json(response_content)
+                                parsed_response = header_adapter.validate_json(response_content)
 
-                            new_headers = parsed_reflection.get("headers", [])
                         except Exception:
-                            # Fall back to original headers
-                            new_headers = []
+                            pass
+
+                    if parsed_response is not None and parsed_response.get("headers"):
+                        new_headers = parsed_response.get("headers")
 
                     # Ensure we have the right number of headers
                     if not new_headers or len(new_headers) != len(table["data"][0]) if table["data"] else 0:
@@ -519,7 +520,8 @@ Please provide the table headers in the correct JSON format."""
             )
 
             llm_with_structured_output = _apply_structured_output(self.llm, schema=RowDescriptions)
-
+            parsed_response = None
+            descriptions = [str(row) for row in rows_data]
             response = await self._call_llm(llm_with_structured_output, messages)
             try:
                 if isinstance(response, dict):
@@ -528,10 +530,6 @@ Please provide the table headers in the correct JSON format."""
                     response = cleanup_content(response.content)
                     parsed_response = row_adapter.validate_json(response)
 
-                descriptions = parsed_response.get("descriptions", [])
-                if descriptions==[]:
-                    descriptions = [str(row) for row in rows_data]
-                return descriptions
             except Exception as e:
                 # Attempt reflection: ask LLM to correct its response
                 try:
@@ -547,18 +545,18 @@ Please provide the row descriptions in the correct JSON format."""
                     reflection_response = await self._call_llm(llm_with_structured_output, messages)
 
                     if isinstance(reflection_response, dict):
-                        parsed_reflection = row_adapter.validate_python(reflection_response)
+                        parsed_response = row_adapter.validate_python(reflection_response)
                     else:
                         response = cleanup_content(reflection_response.content)
-                        parsed_reflection = row_adapter.validate_json(response)
+                        parsed_response = row_adapter.validate_json(response)
 
-                    descriptions = parsed_reflection.get("descriptions", [])
-                    if descriptions==[]:
-                        descriptions = [str(row) for row in rows_data]
-                    return descriptions
                 except Exception:
-                    descriptions = [str(row) for row in rows_data]
-                    return descriptions
+                    pass
+
+            if parsed_response is not None and parsed_response.get("descriptions"):
+                descriptions = parsed_response.get("descriptions")
+            
+            return descriptions
         except Exception:
             raise
 

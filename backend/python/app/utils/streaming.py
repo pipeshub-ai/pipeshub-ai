@@ -523,7 +523,7 @@ async def execute_tool_calls(
 
         hops += 1
 
-    if len(tool_results)>0 and not isinstance(llm, ChatMistralAI):
+    if len(tool_results)>0 and not isinstance(llm, ChatMistralAI):   # MistralAI does not support Human msg after tool msg
         messages.append(HumanMessage(content="""Strictly follow the citation guidelines mentioned in the prompt above."""))
 
     yield {
