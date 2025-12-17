@@ -4,6 +4,7 @@ Notion Connector
 Authentication: OAuth 2.0
 """
 
+import asyncio
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
@@ -17,10 +18,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
-from app.connectors.core.base.sync_point.sync_point import (
-    SyncDataPointType,
-    SyncPoint,
-)
+from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
@@ -31,10 +29,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.notion.common.apps import NotionApp
-from app.models.entities import (
-    AppUser,
-    Record,
-)
+from app.models.entities import AppUser, Record
 from app.sources.client.notion.notion import NotionClient
 from app.sources.external.notion.notion import NotionDataSource
 
@@ -384,44 +379,50 @@ class NotionConnector(BaseConnector):
                     self.logger.info("No more users to process")
                     break
 
-                # Process users in this page
-                app_users = []
+                # Filter for person users only
+                person_user_ids = []
                 for user in users_data:
-                    user_type = user.get("type")
-                    user_id = user.get("id")
+                    if user.get("type") == "person" and user.get("id"):
+                        person_user_ids.append(user.get("id"))
+                    else:
+                        self.logger.debug(
+                            f"Skipping user: {user.get('name', 'Unknown')} "
+                            f"(type: {user.get('type', 'N/A')}, id: {user.get('id', 'N/A')})"
+                        )
+                        total_skipped += 1
 
-                    # Skip bot users - only sync person users
-                    if user_type != "person":
-                        self.logger.debug(f"Skipping {user_type} user: {user.get('name', 'Unknown')}")
+                if not person_user_ids:
+                    continue
+
+                # Fetch full user details in parallel to get emails
+                user_detail_tasks = [datasource.retrieve_user(user_id) for user_id in person_user_ids]
+                user_detail_responses = await asyncio.gather(*user_detail_tasks, return_exceptions=True)
+
+                # Process fetched user details
+                app_users = []
+                for i, result in enumerate(user_detail_responses):
+                    user_id = person_user_ids[i]
+
+                    if isinstance(result, Exception):
+                        self.logger.error(f"❌ Failed to process user {user_id}: {result}", exc_info=False)
                         total_skipped += 1
                         continue
 
-                    if not user_id:
-                        self.logger.warning(f"User has no ID, skipping: {user.get('name', 'Unknown')}")
+                    if not result or not result.success:
+                        self.logger.warning(
+                            f"Failed to retrieve user details for {user_id}: "
+                            f"{result.error if result else 'No response'}"
+                        )
                         total_skipped += 1
                         continue
 
-                    # Fetch full user details to get email (list_users doesn't include email)
-                    try:
-                        user_detail_response = await datasource.retrieve_user(user_id)
-
-                        if not user_detail_response or not user_detail_response.success:
-                            self.logger.warning(f"Failed to retrieve user details for {user_id}")
-                            total_skipped += 1
-                            continue
-
-                        user_detail = user_detail_response.data.json() if user_detail_response.data else {}
-
-                        app_user = self._transform_to_app_user(user_detail)
-                        if app_user:
-                            app_users.append(app_user)
-                        else:
-                            total_skipped += 1
-
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to process user {user_id}: {e}")
+                    user_detail = result.data.json() if result.data else {}
+                    app_user = self._transform_to_app_user(user_detail)
+                    if app_user:
+                        app_users.append(app_user)
+                    else:
+                        # _transform_to_app_user logs warnings for invalid data
                         total_skipped += 1
-                        continue
 
                 # Save batch to database
                 if app_users:

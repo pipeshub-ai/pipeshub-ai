@@ -192,43 +192,31 @@ class OAuthProvider:
             if "notion_version" in self.config.additional_params:
                 headers["Notion-Version"] = self.config.additional_params["notion_version"]
 
-        # Use JSON body if requested (e.g., for Notion)
+        # Prepare POST request kwargs (JSON or form-encoded)
+        post_kwargs = {"headers": headers}
         if use_json_body:
             headers["Content-Type"] = "application/json"
-            async with session.post(self.config.token_url, json=data, headers=headers) as response:
-                if response.status != HttpStatusCode.SUCCESS.value:
-                    # Get detailed error info for debugging
-                    error_text = await response.text()
-                    # Log detailed error but mask sensitive data
-                    FIRST_8_CHARS = 8
-                    masked_client_id = self.config.client_id[:FIRST_8_CHARS] + "..." if len(self.config.client_id) > FIRST_8_CHARS else "***"
-                    error_msg = (
-                        f"OAuth token exchange failed with status {response.status}. "
-                        f"Token URL: {self.config.token_url}, "
-                        f"Redirect URI: {self.config.redirect_uri}, "
-                        f"Client ID (masked): {masked_client_id}, "
-                        f"Response: {error_text}"
-                    )
-                    raise Exception(error_msg)
-                token_data = await response.json()
+            post_kwargs["json"] = data
         else:
-            # Standard form-encoded body
-            async with session.post(self.config.token_url, data=data, headers=headers) as response:
-                if response.status != HttpStatusCode.SUCCESS.value:
-                    # Get detailed error info for debugging
-                    error_text = await response.text()
-                    # Log detailed error but mask sensitive data
-                    FIRST_8_CHARS = 8
-                    masked_client_id = self.config.client_id[:FIRST_8_CHARS] + "..." if len(self.config.client_id) > FIRST_8_CHARS else "***"
-                    error_msg = (
-                        f"OAuth token exchange failed with status {response.status}. "
-                        f"Token URL: {self.config.token_url}, "
-                        f"Redirect URI: {self.config.redirect_uri}, "
-                        f"Client ID (masked): {masked_client_id}, "
-                        f"Response: {error_text}"
-                    )
-                    raise Exception(error_msg)
-                token_data = await response.json()
+            post_kwargs["data"] = data
+
+        # Make token exchange request
+        async with session.post(self.config.token_url, **post_kwargs) as response:
+            if response.status != HttpStatusCode.SUCCESS.value:
+                # Get detailed error info for debugging
+                error_text = await response.text()
+                # Log detailed error but mask sensitive data
+                FIRST_8_CHARS = 8
+                masked_client_id = self.config.client_id[:FIRST_8_CHARS] + "..." if len(self.config.client_id) > FIRST_8_CHARS else "***"
+                error_msg = (
+                    f"OAuth token exchange failed with status {response.status}. "
+                    f"Token URL: {self.config.token_url}, "
+                    f"Redirect URI: {self.config.redirect_uri}, "
+                    f"Client ID (masked): {masked_client_id}, "
+                    f"Response: {error_text}"
+                )
+                raise Exception(error_msg)
+            token_data = await response.json()
 
         token = OAuthToken.from_dict(token_data)
         return token
@@ -262,25 +250,22 @@ class OAuthProvider:
             if "notion_version" in self.config.additional_params:
                 headers["Notion-Version"] = self.config.additional_params["notion_version"]
 
-        # Use JSON body if requested (e.g., for Notion)
+        # Prepare POST request kwargs (JSON or form-encoded)
+        post_kwargs = {"headers": headers}
         if use_json_body:
             headers["Content-Type"] = "application/json"
-            async with session.post(self.config.token_url, json=data, headers=headers) as response:
-                if response.status == HttpStatusCode.FORBIDDEN.value:
-                    # Log additional details for 403 errors (common with expired/invalid refresh tokens)
-                    error_text = await response.text()
-                    raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. Response: {error_text}")
-                response.raise_for_status()
-                token_data = await response.json()
+            post_kwargs["json"] = data
         else:
-            # Standard form-encoded body
-            async with session.post(self.config.token_url, data=data, headers=headers) as response:
-                if response.status == HttpStatusCode.FORBIDDEN.value:
-                    # Log additional details for 403 errors (common with expired/invalid refresh tokens)
-                    error_text = await response.text()
-                    raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. Response: {error_text}")
-                response.raise_for_status()
-                token_data = await response.json()
+            post_kwargs["data"] = data
+
+        # Make token refresh request
+        async with session.post(self.config.token_url, **post_kwargs) as response:
+            if response.status == HttpStatusCode.FORBIDDEN.value:
+                # Log additional details for 403 errors (common with expired/invalid refresh tokens)
+                error_text = await response.text()
+                raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. Response: {error_text}")
+            response.raise_for_status()
+            token_data = await response.json()
 
         # Create new token with current timestamp
         token = OAuthToken.from_dict(token_data)
