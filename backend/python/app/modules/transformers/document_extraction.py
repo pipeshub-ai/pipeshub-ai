@@ -2,9 +2,9 @@ import json
 from typing import List, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field
-from app.utils.streaming import _apply_structured_output, cleanup_content
+from pydantic import TypeAdapter
+from typing_extensions import TypedDict
+
 from app.config.constants.arangodb import DepartmentNames
 from app.models.blocks import Block, SemanticMetadata
 from app.modules.extraction.prompt_template import (
@@ -12,8 +12,7 @@ from app.modules.extraction.prompt_template import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.llm import get_llm
-from typing_extensions import TypedDict
-from pydantic import TypeAdapter
+from app.utils.streaming import _apply_structured_output, cleanup_content
 
 DEFAULT_CONTEXT_LENGTH = 128000
 CONTENT_TOKEN_RATIO = 0.85
@@ -226,7 +225,7 @@ class DocumentExtraction(Transformer):
                     response = response.content
                     response_text = cleanup_content(response)
                     parsed_response = document_classification_adapter.validate_json(response_text)
-                
+
                 return parsed_response
 
             except Exception as parse_error:
@@ -255,7 +254,7 @@ class DocumentExtraction(Transformer):
 
                     # Use retry wrapper for reflection LLM call
                     reflection_response = await self._call_llm(reflection_messages)
-                    
+
                     # Check if reflection response is already structured (dict) or needs parsing (AIMessage)
                     if isinstance(reflection_response, dict):
                         # Structured output - response is already parsed

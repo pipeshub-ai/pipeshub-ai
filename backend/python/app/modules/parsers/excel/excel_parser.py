@@ -4,12 +4,12 @@ import json
 from datetime import datetime
 from typing import Any, Dict, List, Union
 
-from langchain_core.messages import AIMessage, HumanMessage
-from app.utils.streaming import _apply_structured_output, cleanup_content
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
+from pydantic import TypeAdapter
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -34,8 +34,8 @@ from app.modules.parsers.excel.prompt_template import (
     sheet_summary_prompt,
     table_summary_prompt,
 )
+from app.utils.streaming import _apply_structured_output, cleanup_content
 
-from pydantic import TypeAdapter
 row_adapter = TypeAdapter(RowDescriptions)
 header_adapter = TypeAdapter(TableHeaders)
 
@@ -397,10 +397,10 @@ Do not include any additional explanation or text."""
 
                 # Apply structured output
                 llm_with_structured_output = _apply_structured_output(self.llm, schema=TableHeaders)
-                
+
                 try:
                     response = await self._call_llm(llm_with_structured_output, messages)
-                    
+
                     # Parse response
                     try:
                         if isinstance(response, dict):
@@ -408,7 +408,7 @@ Do not include any additional explanation or text."""
                         else:
                             response = cleanup_content(response.content if hasattr(response, 'content') else str(response))
                             parsed_response = header_adapter.validate_json(response)
-                        
+
                         new_headers = parsed_response.get("headers", [])
                     except Exception as e:
                         # Attempt reflection immediately after parsing fails
@@ -420,7 +420,7 @@ Please provide the table headers in the correct JSON format."""
 
                             messages.append(AIMessage(content=json.dumps(response)))
                             messages.append(HumanMessage(content=reflection_prompt))
-                            
+
                             # Use structured output for reflection attempt
                             reflection_response = await self._call_llm(llm_with_structured_output, messages)
 
@@ -429,12 +429,12 @@ Please provide the table headers in the correct JSON format."""
                             else:
                                 response_content = cleanup_content(reflection_response.content if hasattr(reflection_response, 'content') else str(reflection_response))
                                 parsed_reflection = header_adapter.validate_json(response_content)
-                            
+
                             new_headers = parsed_reflection.get("headers", [])
                         except Exception:
                             # Fall back to original headers
                             new_headers = []
-                    
+
                     # Ensure we have the right number of headers
                     if not new_headers or len(new_headers) != len(table["data"][0]) if table["data"] else 0:
                         new_headers = table["headers"]
@@ -517,7 +517,7 @@ Please provide the table headers in the correct JSON format."""
             messages = self.row_text_prompt.format_messages(
                 table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
             )
-    
+
             llm_with_structured_output = _apply_structured_output(self.llm, schema=RowDescriptions)
 
             response = await self._call_llm(llm_with_structured_output, messages)
@@ -527,14 +527,14 @@ Please provide the table headers in the correct JSON format."""
                 else:
                     response = cleanup_content(response.content)
                     parsed_response = row_adapter.validate_json(response)
-            
+
                 descriptions = parsed_response.get("descriptions", [])
                 if descriptions==[]:
                     descriptions = [str(row) for row in rows_data]
                 return descriptions
             except Exception as e:
                 # Attempt reflection: ask LLM to correct its response
-                try: 
+                try:
                     reflection_prompt = f"""Your previous response could not be parsed correctly. 
 Error: {str(e)}
 
@@ -542,7 +542,7 @@ Please provide the row descriptions in the correct JSON format."""
 
                     messages.append(AIMessage(content=json.dumps(response)))
                     messages.append(HumanMessage(content=reflection_prompt))
-                    
+
                     # Use structured output for reflection attempt
                     reflection_response = await self._call_llm(llm_with_structured_output, messages)
 
@@ -551,7 +551,7 @@ Please provide the row descriptions in the correct JSON format."""
                     else:
                         response = cleanup_content(reflection_response.content)
                         parsed_reflection = row_adapter.validate_json(response)
-                    
+
                     descriptions = parsed_reflection.get("descriptions", [])
                     if descriptions==[]:
                         descriptions = [str(row) for row in rows_data]

@@ -1,6 +1,7 @@
-from typing_extensions import TypedDict
 from typing import List
+
 from langchain_core.prompts import ChatPromptTemplate
+from typing_extensions import TypedDict
 
 # Prompt for summarizing an entire sheet with multiple tables
 sheet_summary_prompt = ChatPromptTemplate.from_messages(

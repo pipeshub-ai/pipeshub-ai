@@ -1,12 +1,11 @@
 import base64
 import json
 from typing import Dict, List, Tuple, Union
-from typing_extensions import TypedDict
 
 from jinja2 import Template
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import TypeAdapter
+from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
 from app.models.blocks import (
@@ -25,8 +24,8 @@ from app.utils.streaming import _apply_structured_output, cleanup_content
 
 
 class TableSummary(TypedDict):
-    summary: str 
-    headers: list[str] 
+    summary: str
+    headers: list[str]
 
 row_adapter = TypeAdapter(RowDescriptions)
 
@@ -66,7 +65,7 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
         # Get LLM with structured output
         llm, _ = await get_llm(config)
         llm_with_structured_output = _apply_structured_output(llm, schema=TableSummary)
-        
+
         # Prepare prompt
         template = Template(table_summary_prompt_template)
         rendered_form = template.render(table_markdown=table_markdown)
@@ -77,10 +76,10 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
             },
             {"role": "user", "content": rendered_form},
         ]
-        
+
         # Call LLM with structured output
         response = await _call_llm(llm_with_structured_output, messages)
-        
+
         try:
             # Handle both structured and non-structured responses
             if isinstance(response, dict):
@@ -91,9 +90,9 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
                 response = response.content
                 response_text = cleanup_content(response)
                 parsed_response = table_summary_adapter.validate_json(response_text)
-            
+
             return parsed_response
-            
+
         except Exception as parse_error:
             # Reflection: attempt to fix the validation issue by providing feedback to the LLM
             try:
@@ -114,7 +113,7 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
 
                 # Use structured output for reflection attempt
                 reflection_response = await _call_llm(llm_with_structured_output, reflection_messages)
-                
+
                 if isinstance(reflection_response, dict):
                     parsed_reflection = table_summary_adapter.validate_python(reflection_response)
                 else:
@@ -169,7 +168,7 @@ async def get_rows_text(
                 else:
                     response = cleanup_content(response.content)
                     parsed_response = row_adapter.validate_json(response)
-                
+
                 descriptions = parsed_response.get("descriptions", [])
                 if descriptions==[]:
                     descriptions = [str(row) for row in rows_data]
@@ -184,7 +183,7 @@ async def get_rows_text(
                     Please correct your response to match the expected schema.
                     Ensure all fields are properly formatted and all required fields are present.
                     Respond only with valid JSON."""
-                    
+
                     messages.append(AIMessage(content=json.dumps(response)))
                     messages.append(HumanMessage(content=reflection_prompt))
 
@@ -197,7 +196,7 @@ async def get_rows_text(
                         parsed_reflection = row_adapter.validate_json(reflection_text)
                     descriptions = parsed_reflection.get("descriptions", [])
                     if descriptions==[]:
-                        descriptions = [str(row) for row in rows_data]  
+                        descriptions = [str(row) for row in rows_data]
 
                     return descriptions, table_rows
 

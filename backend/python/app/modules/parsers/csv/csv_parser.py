@@ -5,17 +5,16 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO, Union
-from app.utils.streaming import _apply_structured_output, cleanup_content
+
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage
+from pydantic import TypeAdapter
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
 )
-from langchain_core.messages import AIMessage, HumanMessage
 
-
-from pydantic import TypeAdapter
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -31,6 +30,7 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt,
     table_summary_prompt,
 )
+from app.utils.streaming import _apply_structured_output, cleanup_content
 
 adapter = TypeAdapter(RowDescriptions)
 
@@ -282,14 +282,14 @@ class CSVParser:
                 else:
                     response = cleanup_content(response.content)
                     parsed_response = adapter.validate_json(response)
-                
+
                 descriptions = parsed_response.get("descriptions", [])
                 if descriptions==[]:
                     descriptions = [str(row) for row in rows_data]
                 processed_texts.extend(descriptions)
             except Exception as e:
                 # Attempt reflection: ask LLM to correct its response
-                try: 
+                try:
                     reflection_prompt = f"""Your previous response could not be parsed correctly. 
 Error: {str(e)}
 
@@ -297,7 +297,7 @@ Please provide the row descriptions in the correct JSON format."""
 
                     messages.append(AIMessage(content=json.dumps(response)))
                     messages.append(HumanMessage(content=reflection_prompt))
-                    
+
                     # Use structured output for reflection attempt
                     reflection_response = await self._call_llm(llm_with_structured_output, messages)
                     if isinstance(reflection_response, dict):
@@ -305,16 +305,16 @@ Please provide the row descriptions in the correct JSON format."""
                     else:
                         response = cleanup_content(reflection_response.content)
                         parsed_reflection = adapter.validate_json(response)
-                    
+
                     descriptions = parsed_reflection.get("descriptions", [])
                     if descriptions==[]:
                         descriptions = [str(row) for row in rows_data]
                     processed_texts.extend(descriptions)
-                    
+
                 except Exception:
                     descriptions = [str(row) for row in rows_data]
                     processed_texts.extend(descriptions)
-                
+
         return processed_texts
     #  recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
     async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]],llm: BaseChatModel) -> BlocksContainer:
