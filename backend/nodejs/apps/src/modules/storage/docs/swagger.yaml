@@ -670,8 +670,7 @@ paths:
           description: Document not found
         '500':
           description: Internal server error
-
-  /internal/{documentId}:
+          
     delete:
       tags:
         - Internal

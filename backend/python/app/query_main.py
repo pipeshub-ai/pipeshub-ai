@@ -212,10 +212,10 @@ app = FastAPI(
 register_query_swagger(app)
 
 EXCLUDE_PATHS = ["/health",
-    "/docs",        
-    "/redoc",       
+    "/docs",
+    "/redoc",
     "/openapi.json"
-    ] 
+    ]
 
 
 @app.middleware("http")
