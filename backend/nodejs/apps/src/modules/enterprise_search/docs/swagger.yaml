@@ -2,7 +2,7 @@ openapi: 3.0.0
 info:
   title: Enterprise Search API
   description: |
-    Enterprise Search module providing conversational AI, semantic search, and intelligent agent capabilities.
+    Enterprise Search module providing conversational AI, semantic search.
     Includes support for multi-model LLM configurations, knowledge base filtering, real-time streaming responses,
     and comprehensive conversation management.
   version: 1.0.0
@@ -16,12 +16,6 @@ tags:
     description: AI-powered conversational chat management
   - name: Semantic Search
     description: Enterprise semantic search operations
-  - name: Agents
-    description: Intelligent agent management
-  - name: Agent Templates
-    description: Agent template CRUD operations
-  - name: Agent Conversations
-    description: Agent-specific conversation management
 
 components:
   securitySchemes:
@@ -60,20 +54,6 @@ components:
       schema:
         type: string
         pattern: '^[0-9a-fA-F]{24}$'
-    AgentKey:
-      name: agentKey
-      in: path
-      required: true
-      description: Unique key identifier for the agent
-      schema:
-        type: string
-    TemplateId:
-      name: templateId
-      in: path
-      required: true
-      description: Unique identifier for the agent template
-      schema:
-        type: string
 
   schemas:
     AppType:
@@ -357,86 +337,6 @@ components:
           type: string
           format: date-time
 
-    AgentTemplate:
-      type: object
-      properties:
-        _id:
-          type: string
-          description: Template unique identifier
-        name:
-          type: string
-          description: Template name
-        description:
-          type: string
-          description: Template description
-        systemPrompt:
-          type: string
-          description: System prompt for the agent
-        tools:
-          type: array
-          items:
-            type: string
-          description: Available tools for the agent
-        configuration:
-          type: object
-          description: Additional template configuration
-        createdBy:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
-
-    Agent:
-      type: object
-      properties:
-        _id:
-          type: string
-          description: Agent unique identifier
-        agentKey:
-          type: string
-          description: Unique key for the agent
-        name:
-          type: string
-          description: Agent name
-        description:
-          type: string
-          description: Agent description
-        templateId:
-          type: string
-          description: Associated template ID
-        tools:
-          type: array
-          items:
-            type: string
-          description: Enabled tools for this agent
-        configuration:
-          type: object
-          description: Agent-specific configuration
-        permissions:
-          type: object
-          properties:
-            owner:
-              type: string
-            sharedWith:
-              type: array
-              items:
-                type: object
-                properties:
-                  userId:
-                    type: string
-                  accessLevel:
-                    type: string
-        createdBy:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
 
     Tool:
       type: object

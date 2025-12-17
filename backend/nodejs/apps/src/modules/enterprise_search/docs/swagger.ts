@@ -14,7 +14,7 @@ export const enterpriseSearchSwaggerConfig: ModuleSwaggerInfo = {
   tagName: 'Enterprise Search',
   tagDescription:
     'Enterprise search operations including conversations, semantic search, and AI agents',
-  yamlFilePath: path.join(process.cwd(), 'src/modules/enterprise_search/docs/swagger.yaml'),
+  yamlFilePath: path.resolve(__dirname, 'swagger.yaml'),
   baseUrl: '/api/v1',
 };
 
