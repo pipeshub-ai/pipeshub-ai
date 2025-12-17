@@ -156,6 +156,12 @@ components:
 
     Document:
       type: object
+      required:
+        - _id
+        - documentName
+        - isVersionedFile
+        - orgId
+        - storageVendor
       properties:
         _id:
           type: string
@@ -665,7 +671,7 @@ paths:
         '500':
           description: Internal server error
 
-  /internal/{documentId}/:
+  /internal/{documentId}:
     delete:
       tags:
         - Internal
@@ -1188,4 +1194,5 @@ paths:
           description: Unauthorized - requires FETCH_CONFIG scope
         '500':
           description: Internal server error
+
 
