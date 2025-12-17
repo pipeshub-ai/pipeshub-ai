@@ -60,42 +60,6 @@ async def example_with_token() -> None:
         return
 
     # ------------------------------------------------------------------
-    # Accounts → Accounts
-    # ------------------------------------------------------------------
-    print("\n=== Listing accounts ===")
-    response = await zoom_data_source.list_accounts(page_size=5)
-    print(f"Status: {response.status}")
-    if response.status < 400:
-        accounts_data = response.json()
-        print(f"Accounts: {accounts_data}")
-    else:
-        print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Accounts → QSS (Quality Service Score)
-    # ------------------------------------------------------------------
-    print("\n=== Getting QSS report ===")
-    response = await zoom_data_source.get_qss_report()
-    print(f"Status: {response.status}")
-    if response.status < 400:
-        qss_data = response.json()
-        print(f"QSS Report: {qss_data}")
-    else:
-        print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Accounts → SCIM 2
-    # ------------------------------------------------------------------
-    print("\n=== Listing SCIM users ===")
-    response = await zoom_data_source.list_scim_users(page_size=10)
-    print(f"Status: {response.status}")
-    if response.status < 400:
-        scim_users = response.json()
-        print(f"SCIM Users: {scim_users}")
-    else:
-        print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
     # Workplace → Meetings (list for current user)
     # ------------------------------------------------------------------
     if current_user_id:
@@ -108,180 +72,21 @@ async def example_with_token() -> None:
         if response.status < 400:
             meetings_data = response.json()
             print(f"Meetings: {meetings_data}")
-        else:
-            print(f"Error: {response.text}")
 
-    # ------------------------------------------------------------------
-    # Workplace → Team Chat
-    # ------------------------------------------------------------------
-    if current_user_id:
-        print("\n=== Listing team chat channels ===")
-        response = await zoom_data_source.list_chat_channels(
-            user_id=current_user_id,
-            page_size=5,
-        )
-        print(f"Status: {response.status}")
-        if response.status < 400:
-            channels = response.json()
-            print(f"Chat channels: {channels}")
-        else:
-            print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → Phone
-    # ------------------------------------------------------------------
-    print("\n=== Listing phone users ===")
-    response = await zoom_data_source.list_phone_users(page_size=5)
-    print(f"Status: {response.status}")
-    if response.status < 400:
-        phone_users = response.json()
-        print(f"Phone users: {phone_users}")
-    else:
-        print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → Mail
-    # ------------------------------------------------------------------
-    if current_user_id:
-        print("\n=== Listing mail messages ===")
-        response = await zoom_data_source.list_mail_messages(
-            user_id=current_user_id,
-            page_size=5,
-        )
-        print(f"Status: {response.status}")
-        if response.status < 400:
-            mail_messages = response.json()
-            print(f"Mail messages: {mail_messages}")
-        else:
-            print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → Calendar
-    # ------------------------------------------------------------------
-    if current_user_id:
-        print("\n=== Listing calendar events ===")
-        response = await zoom_data_source.list_calendar_events(
-            user_id=current_user_id,
-            page_size=5,
-        )
-        print(f"Status: {response.status}")
-        if response.status < 400:
-            events = response.json()
-            print(f"Calendar events: {events}")
-        else:
-            print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → Scheduler
-    # ------------------------------------------------------------------
-    if current_user_id:
-        print("\n=== Listing scheduler availability ===")
-        response = await zoom_data_source.list_scheduler_availability(
-            user_id=current_user_id,
-        )
-        print(f"Status: {response.status}")
-        if response.status < 400:
-            availability = response.json()
-            print(f"Scheduler availability: {availability}")
-        else:
-            print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → Rooms
-    # ------------------------------------------------------------------
-    print("\n=== Listing rooms ===")
-    response = await zoom_data_source.list_rooms(page_size=5)
-    print(f"Status: {response.status}")
-    if response.status < 400:
-        rooms = response.json()
-        print(f"Rooms: {rooms}")
-    else:
-        print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → Clips
-    # ------------------------------------------------------------------
-    if current_user_id:
-        print("\n=== Listing clips ===")
-        response = await zoom_data_source.list_clips(
-            user_id=current_user_id,
-            page_size=5,
-        )
-        print(f"Status: {response.status}")
-        if response.status < 400:
-            clips = response.json()
-            print(f"Clips: {clips}")
-        else:
-            print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → Whiteboard
-    # ------------------------------------------------------------------
-    if current_user_id:
-        print("\n=== Listing whiteboards ===")
-        response = await zoom_data_source.list_whiteboards(
-            user_id=current_user_id,
-            page_size=5,
-        )
-        print(f"Status: {response.status}")
-        if response.status < 400:
-            whiteboards = response.json()
-            print(f"Whiteboards: {whiteboards}")
-        else:
-            print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → CRC (Call Recording)
-    # ------------------------------------------------------------------
-    print("\n=== Listing call recordings (CRC) ===")
-    response = await zoom_data_source.list_call_recordings(page_size=5)
-    print(f"Status: {response.status}")
-    if response.status < 400:
-        recordings = response.json()
-        print(f"Call recordings: {recordings}")
-    else:
-        print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → Chatbot
-    # ------------------------------------------------------------------
-    print("\n=== Listing chatbots ===")
-    response = await zoom_data_source.list_chatbots(page_size=5)
-    print(f"Status: {response.status}")
-    if response.status < 400:
-        chatbots = response.json()
-        print(f"Chatbots: {chatbots}")
-    else:
-        print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → AI Companion
-    # ------------------------------------------------------------------
-    if current_user_id:
-        print("\n=== Getting AI Companion insights ===")
-        response = await zoom_data_source.get_ai_companion_insights(
-            user_id=current_user_id,
-        )
-        print(f"Status: {response.status}")
-        if response.status < 400:
-            insights = response.json()
-            print(f"AI Companion insights: {insights}")
-        else:
-            print(f"Error: {response.text}")
-
-    # ------------------------------------------------------------------
-    # Workplace → Zoom Docs
-    # ------------------------------------------------------------------
-    if current_user_id:
-        print("\n=== Listing Zoom Docs documents ===")
-        response = await zoom_data_source.list_documents(
-            user_id=current_user_id,
-            page_size=5,
-        )
-        print(f"Status: {response.status}")
-        if response.status < 400:
-            docs = response.json()
-            print(f"Documents: {docs}")
+            # Extra working endpoint: get details for one meeting
+            meetings_list = meetings_data.get("meetings") or []
+            if meetings_list:
+                first_meeting_id = str(meetings_list[0].get("id"))
+                print("\n=== Getting details for first meeting ===")
+                meeting_resp = await zoom_data_source.get_meeting(
+                    meeting_id=first_meeting_id,
+                )
+                print(f"Status: {meeting_resp.status}")
+                if meeting_resp.status < 400:
+                    meeting_details = meeting_resp.json()
+                    print(f"Meeting details: {meeting_details}")
+                else:
+                    print(f"Error: {meeting_resp.text}")
         else:
             print(f"Error: {response.text}")
 
@@ -387,13 +192,27 @@ async def example_create_meeting() -> None:
     }
 
     response = await zoom_data_source.create_meeting(
-        user_id=user_id, meeting_info=meeting_info
+        user_id=user_id,
+        meeting_info=meeting_info,
     )
     print(f"Status: {response.status}")
     if response.status < 400:
         meeting_data = response.json()
         print(f"Meeting created: {meeting_data}")
         print(f"Join URL: {meeting_data.get('join_url')}")
+
+        # Extra working endpoint: fetch the created meeting's details
+        created_meeting_id = str(meeting_data.get("id"))
+        print("\n=== Getting details for created meeting ===")
+        details_resp = await zoom_data_source.get_meeting(
+            meeting_id=created_meeting_id,
+        )
+        print(f"Status: {details_resp.status}")
+        if details_resp.status < 400:
+            details_data = details_resp.json()
+            print(f"Created meeting details: {details_data}")
+        else:
+            print(f"Error: {details_resp.text}")
     else:
         print(f"Error: {response.text}")
 
