@@ -1,0 +1,571 @@
+from contextlib import asynccontextmanager
+from logging import Logger
+from typing import AsyncContextManager, Dict, List, Optional
+
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+)
+from app.connectors.core.base.data_store.data_store import (
+    DataStoreProvider,
+    TransactionStore,
+)
+from app.models.entities import (
+    Anyone,
+    AnyoneSameOrg,
+    AnyoneWithLink,
+    AppRole,
+    AppUser,
+    AppUserGroup,
+    Domain,
+    FileRecord,
+    Org,
+    Record,
+    RecordGroup,
+    User,
+)
+from app.models.permission import Permission
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+read_collections = [
+    collection.value for collection in CollectionNames
+]
+
+write_collections = [
+    collection.value for collection in CollectionNames
+]
+
+class GraphTransactionStore(TransactionStore):
+    """
+    Graph database transaction-aware data store using IGraphDBProvider.
+    """
+
+    def __init__(self, graph_provider: IGraphDBProvider, txn: str) -> None:
+        self.graph_provider = graph_provider
+        self.txn = txn  # Transaction ID (string) for HTTP provider
+        self.logger = graph_provider.logger
+
+    async def batch_upsert_nodes(self, nodes: List[Dict], collection: str) -> bool | None:
+        return await self.graph_provider.batch_upsert_nodes(nodes, collection, transaction=self.txn)
+
+    async def get_record_by_path(self, connector_name: Connectors, path: str) -> Optional[Record]:
+        return await self.graph_provider.get_record_by_path(connector_name, path, transaction=self.txn)
+
+    async def get_record_by_key(self, key: str) -> Optional[Record]:
+        return await self.graph_provider.get_document(key, CollectionNames.RECORDS.value, transaction=self.txn)
+
+    async def get_record_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[Record]:
+        return await self.graph_provider.get_record_by_external_id(connector_name, external_id, transaction=self.txn)
+
+    async def get_records_by_status(self, org_id: str, connector_name: Connectors, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
+        """Get records by status. Returns properly typed Record instances."""
+        return await self.graph_provider.get_records_by_status(org_id, connector_name, status_filters, limit, offset, transaction=self.txn)
+
+    async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
+        return await self.graph_provider.get_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
+
+    async def get_file_record_by_id(self, id: str) -> Optional[FileRecord]:
+        return await self.graph_provider.get_file_record_by_id(id, transaction=self.txn)
+
+    async def get_record_group_by_id(self, id: str) -> Optional[RecordGroup]:
+        return await self.graph_provider.get_record_group_by_id(id, transaction=self.txn)
+
+    async def create_record_groups_relation(self, child_id: str, parent_id: str) -> None:
+        """
+        Create BELONGS_TO edge from child record group to parent record group.
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.create_record_groups_relation(child_id, parent_id, transaction=self.txn)
+
+    async def get_or_create_app_by_name(self, app_name: str, org_id: str) -> Optional[Dict]:
+        return await self.graph_provider.get_or_create_app_by_name(app_name, org_id)
+
+    async def get_user_by_email(self, email: str) -> Optional[User]:
+        return await self.graph_provider.get_user_by_email(email, transaction=self.txn)
+
+    async def get_user_by_source_id(self, source_user_id: str, connector_name: Connectors) -> Optional[User]:
+        return await self.graph_provider.get_user_by_source_id(source_user_id, connector_name, transaction=self.txn)
+
+    async def get_app_user_by_email(self, email: str, app_name: Connectors) -> Optional[AppUser]:
+        return await self.graph_provider.get_app_user_by_email(email, app_name, transaction=self.txn)
+
+    async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
+        return await self.graph_provider.get_record_owner_source_user_email(record_id, transaction=self.txn)
+
+    async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
+        return await self.graph_provider.get_user_by_user_id(user_id)
+
+    async def delete_record_by_key(self, key: str) -> None:
+        # Delete the record node from the records collection
+        return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
+
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
+        return await self.graph_provider.delete_record_by_external_id(connector_name, external_id, user_id)
+
+    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
+        return await self.graph_provider.remove_user_access_to_record(connector_name, external_id, user_id)
+
+    async def delete_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
+        return await self.graph_provider.delete_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
+
+    async def delete_edge(self, from_key: str, to_key: str, collection: str) -> None:
+        return await self.graph_provider.delete_edge(from_key, to_key, collection, transaction=self.txn)
+
+    async def delete_nodes(self, keys: List[str], collection: str) -> None:
+        return await self.graph_provider.delete_nodes(keys, collection, transaction=self.txn)
+
+    async def delete_edges_from(self, from_key: str, collection: str) -> None:
+        return await self.graph_provider.delete_edges_from(from_key, collection, transaction=self.txn)
+
+    async def delete_edges_to(self, to_key: str, collection: str) -> None:
+        return await self.graph_provider.delete_edges_to(to_key, collection, transaction=self.txn)
+
+    async def delete_edges_to_groups(self, from_key: str, collection: str) -> None:
+        return await self.graph_provider.delete_edges_to_groups(from_key, collection, transaction=self.txn)
+
+    async def delete_edges_between_collections(self, from_key: str, edge_collection: str, to_collection: str) -> None:
+        return await self.graph_provider.delete_edges_between_collections(from_key, edge_collection, to_collection, transaction=self.txn)
+
+    async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
+        return await self.graph_provider.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
+
+    async def get_user_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppUserGroup]:
+        return await self.graph_provider.get_user_group_by_external_id(connector_name, external_id, transaction=self.txn)
+
+    async def get_app_role_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppRole]:
+        return await self.graph_provider.get_app_role_by_external_id(connector_name, external_id, transaction=self.txn)
+
+    async def get_users(self, org_id: str, active: bool = True) -> List[User]:
+        return await self.graph_provider.get_users(org_id, active)
+
+    async def get_app_users(self, org_id: str, app_name: str) -> List[AppUser]:
+        return await self.graph_provider.get_app_users(org_id, app_name)
+
+    async def get_user_groups(self, app_name: Connectors, org_id: str) -> List[AppUserGroup]:
+        return await self.graph_provider.get_user_groups(app_name, org_id, transaction=self.txn)
+
+    async def create_user_group_hierarchy(
+        self,
+        child_external_id: str,
+        parent_external_id: str,
+        connector_name: Connectors
+    ) -> bool:
+        """Create BELONGS_TO edge between child and parent user groups"""
+        try:
+            # Lookup both groups
+            child_group = await self.get_user_group_by_external_id(connector_name, child_external_id)
+            if not child_group:
+                self.logger.warning(
+                    f"Child user group not found: {child_external_id} (connector: {connector_name.value})"
+                )
+                return False
+
+            parent_group = await self.get_user_group_by_external_id(connector_name, parent_external_id)
+            if not parent_group:
+                self.logger.warning(
+                    f"Parent user group not found: {parent_external_id} (connector: {connector_name.value})"
+                )
+                return False
+
+            # Create BELONGS_TO edge
+            edge = {
+                "_from": f"{CollectionNames.GROUPS.value}/{child_group.id}",
+                "_to": f"{CollectionNames.GROUPS.value}/{parent_group.id}",
+                "entityType": "GROUP",
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+
+            await self.graph_provider.batch_create_edges(
+                [edge],
+                collection=CollectionNames.BELONGS_TO.value,
+                transaction=self.txn
+            )
+
+            self.logger.debug(f"Created user group hierarchy: {child_group.name} -> {parent_group.name}")
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to create user group hierarchy ({child_external_id} -> {parent_external_id}): {str(e)}",
+                exc_info=True
+            )
+            return False
+
+    async def create_user_group_membership(
+        self,
+        user_source_id: str,
+        group_external_id: str,
+        connector_name: Connectors
+    ) -> bool:
+        """Create BELONGS_TO edge from user to group using source IDs"""
+        try:
+            # Lookup user by sourceUserId
+            user = await self.get_user_by_source_id(user_source_id, connector_name)
+            if not user:
+                self.logger.warning(
+                    f"User not found: {user_source_id} (connector: {connector_name.value})"
+                )
+                return False
+
+            # Lookup group
+            group = await self.get_user_group_by_external_id(connector_name, group_external_id)
+            if not group:
+                self.logger.warning(
+                    f"User group not found: {group_external_id} (connector: {connector_name.value})"
+                )
+                return False
+
+            # Create BELONGS_TO edge
+            edge = {
+                "_from": f"{CollectionNames.USERS.value}/{user.id}",
+                "_to": f"{CollectionNames.GROUPS.value}/{group.id}",
+                "entityType": "GROUP",
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+
+            await self.graph_provider.batch_create_edges(
+                [edge],
+                collection=CollectionNames.BELONGS_TO.value,
+                transaction=self.txn
+            )
+
+            self.logger.debug(f"Created user group membership: {user.email} -> {group.name}")
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to create user group membership ({user_source_id} -> {group_external_id}): {str(e)}",
+                exc_info=True
+            )
+            return False
+
+    async def get_first_user_with_permission_to_node(self, node_key: str) -> Optional[User]:
+        return await self.graph_provider.get_first_user_with_permission_to_node(node_key, transaction=self.txn)
+
+    async def get_users_with_permission_to_node(self, node_key: str) -> List[User]:
+        return await self.graph_provider.get_users_with_permission_to_node(node_key, transaction=self.txn)
+
+    async def get_edge(self, from_key: str, to_key: str, collection: str) -> Optional[Dict]:
+        return await self.graph_provider.get_edge(from_key, to_key, collection, transaction=self.txn)
+
+    async def get_record_by_conversation_index(self, connector_name: Connectors, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
+        return await self.graph_provider.get_record_by_conversation_index(connector_name, conversation_index, thread_id, org_id, user_id, transaction=self.txn)
+
+    async def batch_upsert_records(self, records: List[Record]) -> None:
+        """
+        Batch upsert records (base + specific type + IS_OF_TYPE edge).
+
+        Delegates to graph_provider for the full record upsert logic.
+        """
+        return await self.graph_provider.batch_upsert_records(records, transaction=self.txn)
+
+    async def batch_upsert_record_groups(self, record_groups: List[RecordGroup]) -> None:
+        """
+        Batch upsert record groups.
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.batch_upsert_record_groups(record_groups, transaction=self.txn)
+
+    async def batch_upsert_record_permissions(self, record_id: str, permissions: List[Permission]) -> None:
+        return await self.graph_provider.batch_upsert_record_permissions(record_id, permissions, transaction=self.txn)
+
+    async def batch_create_user_app_edges(self, edges: List[Dict]) -> int:
+        return await self.graph_provider.batch_create_user_app_edges(edges)
+
+    async def batch_upsert_user_groups(self, user_groups: List[AppUserGroup]) -> None:
+        """
+        Batch upsert user groups.
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.batch_upsert_user_groups(user_groups, transaction=self.txn)
+
+    async def batch_upsert_app_roles(self, app_roles: List[AppRole]) -> None:
+        """
+        Batch upsert app roles.
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.batch_upsert_app_roles(app_roles, transaction=self.txn)
+
+    async def batch_upsert_app_users(self, users: List[AppUser]) -> None:
+        """
+        Batch upsert app users.
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.batch_upsert_app_users(users, transaction=self.txn)
+
+    async def batch_upsert_orgs(self, orgs: List[Org]) -> None:
+        return await self.graph_provider.batch_upsert_orgs(orgs, transaction=self.txn)
+
+    async def batch_upsert_domains(self, domains: List[Domain]) -> None:
+        return await self.graph_provider.batch_upsert_domains(domains, transaction=self.txn)
+
+    async def batch_upsert_anyone(self, anyone: List[Anyone]) -> None:
+        return await self.graph_provider.batch_upsert_anyone(anyone, transaction=self.txn)
+
+    async def batch_upsert_anyone_with_link(self, anyone_with_link: List[AnyoneWithLink]) -> None:
+        return await self.graph_provider.batch_upsert_anyone_with_link(anyone_with_link, transaction=self.txn)
+
+    async def batch_upsert_anyone_same_org(self, anyone_same_org: List[AnyoneSameOrg]) -> None:
+        return await self.graph_provider.batch_upsert_anyone_same_org(anyone_same_org, transaction=self.txn)
+
+    async def commit(self) -> None:
+        """
+        Commit the transaction.
+
+        With HTTP provider: Makes async HTTP call (PUT /_api/transaction/{txn_id})
+        With SDK provider: Wrapped in executor for backward compatibility
+        """
+        self.logger.debug(f"💾 Committing transaction {self.txn}...")
+        await self.graph_provider.commit_transaction(self.txn)
+        self.logger.debug(f"✅ Transaction {self.txn} committed")
+
+    async def rollback(self) -> None:
+        """
+        Rollback the transaction.
+
+        With HTTP provider: Makes async HTTP call (DELETE /_api/transaction/{txn_id})
+        With SDK provider: Wrapped in executor for backward compatibility
+        """
+        self.logger.debug(f"🔄 Rolling back transaction {self.txn}...")
+        await self.graph_provider.rollback_transaction(self.txn)
+        self.logger.debug(f"✅ Transaction {self.txn} rolled back")
+
+    async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str) -> None:
+        """
+        Create a relation edge between two records.
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.create_record_relation(from_record_id, to_record_id, relation_type, transaction=self.txn)
+    async def create_record_group_relation(self, record_id: str, record_group_id: str) -> None:
+        """
+        Create BELONGS_TO edge from record to record group.
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.create_record_group_relation(record_id, record_group_id, transaction=self.txn)
+
+    async def create_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str) -> None:
+        """
+        Create INHERIT_PERMISSIONS edge from record to record group.
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.create_inherit_permissions_relation_record_group(
+            record_id, record_group_id, transaction=self.txn
+        )
+    async def create_inherit_permissions_relation_record(self, child_record_id: str, parent_record_id: str) -> None:
+        record_edge = {
+                    "_from": f"{CollectionNames.RECORDS.value}/{child_record_id}",
+                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_record_id}",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
+        await self.graph_provider.batch_create_edges(
+            [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
+        )
+    async def get_sync_point(self, sync_point_key: str) -> Optional[Dict]:
+        return await self.graph_provider.get_sync_point(sync_point_key, CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+
+    async def get_all_orgs(self) -> List[Org]:
+        return await self.graph_provider.get_all_orgs()
+
+    async def create_user_groups(self, user_groups: List[AppUserGroup]) -> None:
+        return await self.graph_provider.batch_upsert_nodes([user_group.to_arango_base_user_group() for user_group in user_groups],
+                    collection=CollectionNames.GROUPS.value, transaction=self.txn)
+
+    async def create_users(self, users: List[AppUser]) -> None:
+        return await self.graph_provider.batch_upsert_nodes([user.to_arango_base_user() for user in users],
+                    collection=CollectionNames.USERS.value, transaction=self.txn)
+
+    async def create_orgs(self, orgs: List[Org]) -> None:
+        return await self.graph_provider.batch_upsert_nodes([org.to_arango_base_org() for org in orgs],
+                    collection=CollectionNames.ORGS.value, transaction=self.txn)
+
+    async def create_domains(self, domains: List[Domain]) -> None:
+        return await self.graph_provider.batch_upsert_nodes([domain.to_arango_base_domain() for domain in domains],
+                    collection=CollectionNames.DOMAINS.value, transaction=self.txn)
+
+    async def create_anyone(self, anyone: List[Anyone]) -> None:
+        return await self.graph_provider.batch_upsert_nodes([anyone.to_arango_base_anyone() for anyone in anyone],
+                    collection=CollectionNames.ANYONE.value, transaction=self.txn)
+
+    async def create_anyone_with_link(self, anyone_with_link: List[AnyoneWithLink]) -> None:
+        return await self.graph_provider.batch_upsert_nodes([anyone_with_link.to_arango_base_anyone_with_link() for anyone_with_link in anyone_with_link],
+                    collection=CollectionNames.ANYONE_WITH_LINK.value, transaction=self.txn)
+
+    async def create_anyone_same_org(self, anyone_same_org: List[AnyoneSameOrg]) -> None:
+        return await self.graph_provider.batch_upsert_nodes([anyone_same_org.to_arango_base_anyone_same_org() for anyone_same_org in anyone_same_org],
+                    collection=CollectionNames.ANYONE_SAME_ORG.value, transaction=self.txn)
+
+    async def create_sync_point(self, sync_point_key: str, sync_point_data: Dict) -> None:
+        return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+
+    async def delete_sync_point(self, sync_point_key: str) -> None:
+        return await self.graph_provider.remove_sync_point([sync_point_key],
+                    collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+    async def read_sync_point(self, sync_point_key: str) -> None:
+        return await self.graph_provider.get_sync_point(sync_point_key, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+
+    async def update_sync_point(self, sync_point_key: str, sync_point_data: Dict) -> None:
+        return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+
+    async def batch_upsert_record_group_permissions(
+        self, record_group_id: str, permissions: List[Permission], connector_name: Connectors
+    ) -> None:
+        """
+        Batch upsert permissions for a record group.
+
+        Creates permission edges from users/groups to the record group.
+        Looks up users by email and groups by external_id, then creates
+        the appropriate permission edges.
+
+        Args:
+            record_group_id: Internal ID (_key) of the record group
+            permissions: List of Permission objects
+            connector_name: Connector enum for scoped group lookups
+        """
+        if not permissions:
+            return
+
+        permission_edges = []
+        to_collection = f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}"
+
+        for permission in permissions:
+            from_collection = None
+
+            if permission.entity_type.value == "USER":
+                # Lookup user by email
+                user = None
+                if permission.email:
+                    user = await self.get_user_by_email(permission.email)
+
+                if user:
+                    from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                else:
+                    self.logger.warning(
+                        f"User not found for email: {permission.email}"
+                    )
+                    continue
+
+            elif permission.entity_type.value == "GROUP":
+                # Lookup group by external_id using the provided connector_name
+                user_group = None
+                if permission.external_id:
+                    user_group = await self.get_user_group_by_external_id(
+                        connector_name, permission.external_id
+                    )
+
+                if user_group:
+                    from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                else:
+                    self.logger.warning(
+                        f"Group not found for external_id: {permission.external_id}"
+                    )
+                    continue
+
+            if from_collection:
+                permission_edges.append(
+                    permission.to_arango_permission(from_collection, to_collection)
+                )
+
+        if permission_edges:
+            await self.graph_provider.batch_create_edges(
+                permission_edges,
+                collection=CollectionNames.PERMISSION.value,
+                transaction=self.txn
+            )
+
+    async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
+        return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
+
+    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> List[Dict]:
+        """Get all edges pointing to a specific node"""
+        return await self.graph_provider.get_edges_to_node(node_id, edge_collection, transaction=self.txn)
+
+    async def get_related_node_field(
+        self, node_id: str, edge_collection: str, target_collection: str,
+        field: str, direction: str = "outbound"
+    ) -> List:
+        """Get specific field values from related nodes"""
+        return await self.graph_provider.get_related_node_field(
+            node_id, edge_collection, target_collection, field, direction, transaction=self.txn
+        )
+
+    async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:
+        """Delete a record and all its relations"""
+        return await self.graph_provider.delete_records_and_relations(record_key, hard_delete, transaction=self.txn)
+
+    async def process_file_permissions(self, org_id: str, file_key: str, permissions: List[Dict]) -> None:
+        """Process file permissions"""
+        return await self.graph_provider.process_file_permissions(org_id, file_key, permissions, transaction=self.txn)
+
+    async def get_nodes_by_field_in(
+        self, collection: str, field: str, values: List, return_fields: List[str] = None
+    ) -> List[Dict]:
+        """Get nodes where field value is in list"""
+        return await self.graph_provider.get_nodes_by_field_in(
+            collection, field, values, return_fields, transaction=self.txn
+        )
+
+    async def remove_nodes_by_field(self, collection: str, field: str, value) -> int:
+        """Remove nodes matching field value"""
+        return await self.graph_provider.remove_nodes_by_field(
+            collection, field, value, transaction=self.txn
+        )
+
+
+class GraphDataStore(DataStoreProvider):
+    """
+    Graph database data store using IGraphDBProvider.
+
+    """
+
+    def __init__(self, logger: Logger, graph_provider: IGraphDBProvider) -> None:
+        self.logger = logger
+        self.graph_provider = graph_provider
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncContextManager["TransactionStore"]:
+        """
+        Create a graph database transaction store context manager.
+
+        With HTTP provider (ArangoHTTPProvider):
+        - begin_transaction() returns transaction ID (string) - fully async
+        - All operations pass txn_id in HTTP headers
+        - commit/rollback are fully async HTTP calls
+
+        """
+        # Begin transaction - returns transaction ID (str) for HTTP provider
+        self.logger.info("🔄 Beginning transaction...")
+        txn = await self.graph_provider.begin_transaction(
+            read=read_collections,
+            write=write_collections
+        )
+        self.logger.info(f"✅ Transaction started with ID: {txn}")
+
+        tx_store = GraphTransactionStore(self.graph_provider, txn)
+
+        try:
+            yield tx_store
+        except Exception as e:
+            self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
+            await tx_store.rollback()
+            self.logger.info(f"🔄 Transaction {txn} rolled back")
+            raise
+        else:
+            self.logger.info(f"💾 Committing transaction {txn}...")
+            await tx_store.commit()
+            self.logger.info(f"✅ Transaction {txn} committed successfully")
+
+    async def execute_in_transaction(self, func, *args, **kwargs) -> None:
+        """Execute function within graph database transaction"""
+        async with self.transaction() as tx_store:
+            return func(tx_store, *args, **kwargs)
+

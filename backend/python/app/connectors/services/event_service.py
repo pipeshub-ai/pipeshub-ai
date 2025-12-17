@@ -8,7 +8,6 @@ from dependency_injector import providers
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
-from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.connector import ConnectorAppContainer
@@ -79,8 +78,7 @@ class EventService:
 
             self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id}")
             config_service = self.app_container.config_service()
-            arango_service = await self.app_container.arango_service()
-            data_store_provider = ArangoDataStore(self.logger, arango_service)
+            data_store_provider = await self.app_container.data_store()
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
                 name=connector_name,

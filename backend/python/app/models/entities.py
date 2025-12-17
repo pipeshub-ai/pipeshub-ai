@@ -187,7 +187,7 @@ class FileRecord(Record):
             "extension": self.extension,
             "mimeType": self.mime_type,
             "sizeInBytes": self.size_in_bytes,
-            "webUrl": self.weburl,
+            "webUrl": self.weburl if self.weburl is not None else "",
             "etag": self.etag,
             "ctag": self.ctag,
             "md5Checksum": self.md5_hash,
