@@ -6,14 +6,14 @@ from box_sdk_gen.managers.files import (  # type: ignore
     CopyFileParent,
     GetFileThumbnailByIdExtension,
     UpdateFileByIdParent,
-    UpdateFileByIdSharedLink,           # <--- Added Import
-    UpdateFileByIdSharedLinkAccessField # <--- Added Import
+    UpdateFileByIdSharedLink,
+    UpdateFileByIdSharedLinkAccessField,
 )
 from box_sdk_gen.managers.folders import (  # type: ignore
     CreateFolderParent,
     UpdateFolderByIdParent,
-    UpdateFolderByIdSharedLink,           # <--- Added Import
-    UpdateFolderByIdSharedLinkAccessField # <--- Added Import
+    UpdateFolderByIdSharedLink,
+    UpdateFolderByIdSharedLinkAccessField,
 )
 from box_sdk_gen.managers.uploads import (  # type: ignore
     PreflightFileUploadCheckParent,
@@ -497,7 +497,7 @@ class BoxDataSource:
 
         try:
             loop = asyncio.get_running_loop()
-            
+
             # Build parameters
             params = {}
             if limit is not None:
@@ -506,10 +506,10 @@ class BoxDataSource:
                 params['offset'] = offset
             if fields is not None:
                 params['fields'] = fields
-            
+
             # Call the SDK method with parameters
             response = await loop.run_in_executor(
-                None, 
+                None,
                 lambda: manager.get_folder_items(folder_id, **params)
             )
             return BoxResponse(success=True, data=response.to_dict())
@@ -1163,7 +1163,7 @@ class BoxDataSource:
                 access_enum = UpdateFileByIdSharedLinkAccessField.COMPANY
             elif access == 'collaborators':
                 access_enum = UpdateFileByIdSharedLinkAccessField.COLLABORATORS
-            
+
             # FIX 3: Create the specific update object required by Box SDK
             shared_link_payload = UpdateFileByIdSharedLink(
                 access=access_enum
@@ -1172,9 +1172,9 @@ class BoxDataSource:
             # FIX 4: Call update_file_by_id instead of create_shared_link
             # Note: We do NOT pass **kwargs here because the SDK method doesn't accept arbitrary args
             response = await loop.run_in_executor(
-                None, 
+                None,
                 lambda: manager.update_file_by_id(
-                    file_id, 
+                    file_id,
                     shared_link=shared_link_payload
                 )
             )
@@ -1219,9 +1219,9 @@ class BoxDataSource:
 
             # FIX 4: Call update_folder_by_id
             response = await loop.run_in_executor(
-                None, 
+                None,
                 lambda: manager.update_folder_by_id(
-                    folder_id, 
+                    folder_id,
                     shared_link=shared_link_payload
                 )
             )
