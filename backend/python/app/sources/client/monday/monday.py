@@ -4,12 +4,13 @@ Monday.com OAuth 2.0 Test Script
 This script implements OAuth 2.0 authentication flow for Monday.com API
 """
 import os
-import requests
-import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlencode, parse_qs, urlparse
-import threading
 import secrets
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlencode, urlparse
+
+import requests
 
 # Configuration
 CLIENT_ID = os.getenv("MONDAY_CLIENT_ID")
@@ -29,23 +30,23 @@ auth_state = None
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
     """HTTP request handler for OAuth callback"""
-    
+
     def do_GET(self):
         """Handle GET request to callback URL"""
         global auth_code, auth_state
-        
+
         # Parse the query parameters
         query_components = parse_qs(urlparse(self.path).query)
-        
+
         if 'code' in query_components:
             auth_code = query_components['code'][0]
             returned_state = query_components.get('state', [None])[0]
-            
+
             # Send success response
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
-            
+
             success_html = """
             <html>
                 <head><title>Authorization Successful</title></head>
@@ -56,15 +57,15 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
             </html>
             """
             self.wfile.write(success_html.encode())
-            
+
         elif 'error' in query_components:
             error = query_components['error'][0]
             error_description = query_components.get('error_description', ['Unknown error'])[0]
-            
+
             self.send_response(400)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
-            
+
             error_html = f"""
             <html>
                 <head><title>Authorization Failed</title></head>
@@ -76,7 +77,7 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
             </html>
             """
             self.wfile.write(error_html.encode())
-        
+
     def log_message(self, format, *args):
         """Suppress default logging"""
         pass
@@ -102,18 +103,18 @@ def get_authorization_url(state):
 
 def exchange_code_for_token(code):
     """Exchange authorization code for access token"""
-    
+
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
     }
-    
+
     data = {
         'code': code,
         'client_id': CLIENT_ID,
         'client_secret': CLIENT_SECRET,
         'redirect_uri': CALLBACK_URL,
     }
-    
+
     try:
         response = requests.post(TOKEN_URL, headers=headers, data=data)
         response.raise_for_status()
@@ -131,7 +132,7 @@ def test_api_access(access_token):
         'Authorization': access_token,
         'Content-Type': 'application/json',
     }
-    
+
     # Test query: Get current user and boards
     query = """
     query {
@@ -151,35 +152,35 @@ def test_api_access(access_token):
         }
     }
     """
-    
+
     payload = {'query': query}
-    
+
     try:
         response = requests.post(API_URL, headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
-        
+
         if 'errors' in data:
             print("\n✗ API Access Test Failed!")
             for error in data['errors']:
                 print(f"  Error: {error.get('message')}")
             return False
-        
+
         user_data = data.get('data', {}).get('me', {})
         boards_data = data.get('data', {}).get('boards', [])
-        
+
         print("\n✓ API Access Test Successful!")
         print(f"  Name: {user_data.get('name')}")
         print(f"  Email: {user_data.get('email')}")
         print(f"  User ID: {user_data.get('id')}")
-        
+
         if user_data.get('account'):
             print(f"  Account: {user_data['account'].get('name')}")
-        
+
         print(f"\n  Boards Count: {len(boards_data)}")
         for board in boards_data[:3]:
             print(f"    - {board.get('name')} (ID: {board.get('id')})")
-        
+
         return True
     except requests.exceptions.RequestException as e:
         print(f"\n✗ API Access Test Failed: {e}")
@@ -194,11 +195,11 @@ def test_graphql_queries(access_token):
         'Authorization': access_token,
         'Content-Type': 'application/json',
     }
-    
+
     print("\n" + "=" * 60)
     print("Testing GraphQL Queries")
     print("=" * 60)
-    
+
     # Test 1: Get boards
     print("\nTest 1: Fetching boards...")
     query_boards = """
@@ -212,12 +213,12 @@ def test_graphql_queries(access_token):
         }
     }
     """
-    
+
     try:
         response = requests.post(API_URL, headers=headers, json={'query': query_boards})
         response.raise_for_status()
         data = response.json()
-        
+
         if 'errors' not in data:
             boards = data.get('data', {}).get('boards', [])
             print(f"✓ Found {len(boards)} boards")
@@ -227,7 +228,7 @@ def test_graphql_queries(access_token):
             print("✗ Query failed:", data['errors'])
     except Exception as e:
         print(f"✗ Error: {e}")
-    
+
     # Test 2: Get items
     print("\nTest 2: Fetching items...")
     query_items = """
@@ -240,12 +241,12 @@ def test_graphql_queries(access_token):
         }
     }
     """
-    
+
     try:
         response = requests.post(API_URL, headers=headers, json={'query': query_items})
         response.raise_for_status()
         data = response.json()
-        
+
         if 'errors' not in data:
             items = data.get('data', {}).get('items', [])
             print(f"✓ Found {len(items)} items")
@@ -255,7 +256,7 @@ def test_graphql_queries(access_token):
             print("✗ Query failed:", data['errors'])
     except Exception as e:
         print(f"✗ Error: {e}")
-    
+
     # Test 3: Get complexity data
     print("\nTest 3: Checking API complexity...")
     query_complexity = """
@@ -266,12 +267,12 @@ def test_graphql_queries(access_token):
         }
     }
     """
-    
+
     try:
         response = requests.post(API_URL, headers=headers, json={'query': query_complexity})
         response.raise_for_status()
         data = response.json()
-        
+
         if 'errors' not in data:
             complexity = data.get('data', {}).get('complexity', {})
             print(f"✓ Query complexity: {complexity.get('query')}")
@@ -285,11 +286,11 @@ def test_graphql_queries(access_token):
 def main():
     """Main OAuth flow"""
     global auth_code
-    
+
     print("=" * 60)
     print("Monday.com OAuth 2.0 Test Script")
     print("=" * 60)
-    
+
     # Validate configuration
     if not CLIENT_ID or not CLIENT_SECRET:
         print("\n⚠ ERROR: Please set MONDAY_CLIENT_ID and MONDAY_CLIENT_SECRET!")
@@ -302,62 +303,62 @@ def main():
         print(f"4. Set redirect URL to: {CALLBACK_URL}")
         print("5. Copy Client ID and Client Secret")
         print("\nThen run:")
-        print(f"  export MONDAY_CLIENT_ID='your_client_id'")
-        print(f"  export MONDAY_CLIENT_SECRET='your_client_secret'")
+        print("  export MONDAY_CLIENT_ID='your_client_id'")
+        print("  export MONDAY_CLIENT_SECRET='your_client_secret'")
         return
-    
+
     # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
-    
+
     print(f"\nStep 1: Starting callback server on {CALLBACK_URL}")
     server = start_callback_server()
     print("✓ Callback server started")
-    
+
     print("\nStep 2: Opening authorization URL in browser...")
     auth_url = get_authorization_url(state)
     print(f"Authorization URL: {auth_url}")
     webbrowser.open(auth_url)
-    
+
     print("\nWaiting for authorization callback...")
     print("(Please authorize the application in your browser)")
-    
+
     # Wait for callback (timeout after 5 minutes)
     import time
     timeout = 300
     start_time = time.time()
-    
+
     while auth_code is None and (time.time() - start_time) < timeout:
         time.sleep(0.5)
-    
+
     if auth_code is None:
         print("\n✗ Timeout waiting for authorization")
         return
-    
+
     print(f"\n✓ Authorization code received: {auth_code[:20]}...")
-    
+
     print("\nStep 3: Exchanging authorization code for access token...")
     token_data = exchange_code_for_token(auth_code)
-    
+
     if token_data:
         print("✓ Access token obtained successfully!")
-        print(f"\nToken Information:")
+        print("\nToken Information:")
         print(f"  Access Token: {token_data.get('access_token', 'N/A')[:30]}...")
         print(f"  Token Type: {token_data.get('token_type', 'N/A')}")
         print(f"  Scope: {token_data.get('scope', 'N/A')}")
-        
+
         # Test API access
         print("\nStep 4: Testing API access...")
         access_token = token_data.get('access_token')
         test_api_access(access_token)
-        
+
         # Test GraphQL queries
         print("\nStep 5: Testing GraphQL queries...")
         test_graphql_queries(access_token)
-        
+
         print("\n" + "=" * 60)
         print("OAuth Flow Completed Successfully!")
         print("=" * 60)
-        
+
         # Save token to file for future use
         print("\nSaving token to 'monday_token.txt'...")
         token_file = os.path.join(os.path.dirname(__file__), 'monday_token.txt')
@@ -366,7 +367,7 @@ def main():
             f.write(f"Token Type: {token_data.get('token_type')}\n")
             f.write(f"Scope: {token_data.get('scope')}\n")
         print("✓ Token saved")
-        
+
     else:
         print("\n✗ Failed to obtain access token")
 
