@@ -1,11 +1,12 @@
 import base64
 import json
 from typing import Dict, List, Tuple, Union
+from typing_extensions import TypedDict
 
 from jinja2 import Template
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter
 
 from app.config.configuration_service import ConfigurationService
 from app.models.blocks import (
@@ -18,13 +19,20 @@ from app.models.blocks import (
     Point,
     TableMetadata,
 )
-from app.modules.parsers.excel.prompt_template import row_text_prompt
+from app.modules.parsers.excel.prompt_template import RowDescriptions, row_text_prompt
 from app.utils.llm import get_llm
+from app.utils.streaming import _apply_structured_output, cleanup_content
 
 
-class TableSummary(BaseModel):
-    summary: str = Field(description="Summary of the table")
-    headers: list[str] = Field(description="Column headers of the table")
+class TableSummary(TypedDict):
+    summary: str 
+    headers: list[str] 
+
+row_adapter = TypeAdapter(RowDescriptions)
+
+
+
+table_summary_adapter = TypeAdapter(TableSummary)
 
 
 table_summary_prompt_template = """
@@ -45,8 +53,7 @@ Return the JSON object only, no additional text or explanation.
 """
 
 
-async def _call_llm(config, messages) -> Union[str, dict, list]:
-    llm,_ = await get_llm(config)
+async def _call_llm(llm, messages) -> Union[str, dict, list]:
     return await llm.ainvoke(messages)
 
 
@@ -56,10 +63,11 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
     Use LLM to generate a concise summary, mirroring the approach in Excel's get_table_summary.
     """
     try:
-        # LLM prompt (reuse Excel's)
-        # messages = table_summary_prompt.format_messages(
-        #     sample_data=table_markdown
-        # )
+        # Get LLM with structured output
+        llm, _ = await get_llm(config)
+        llm_with_structured_output = _apply_structured_output(llm, schema=TableSummary)
+        
+        # Prepare prompt
         template = Template(table_summary_prompt_template)
         rendered_form = template.render(table_markdown=table_markdown)
         messages = [
@@ -69,58 +77,49 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
             },
             {"role": "user", "content": rendered_form},
         ]
-        response = await _call_llm(config, messages)
-        if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
-        response_text = response.content.strip()
-        if response_text.startswith("```json"):
-            response_text = response_text.replace("```json", "", 1)
-        if response_text.endswith("```"):
-            response_text = response_text.rsplit("```", 1)[0]
-        response_text = response_text.strip()
-
+        
+        # Call LLM with structured output
+        response = await _call_llm(llm_with_structured_output, messages)
+        
         try:
-            parser = PydanticOutputParser(pydantic_object=TableSummary)
-            parsed_response = parser.parse(response_text)
+            # Handle both structured and non-structured responses
+            if isinstance(response, dict):
+                # Structured output (dict)
+                parsed_response = table_summary_adapter.validate_python(response)
+            else:
+                # Non-structured output (AIMessage)
+                response = response.content
+                response_text = cleanup_content(response)
+                parsed_response = table_summary_adapter.validate_json(response_text)
+            
             return parsed_response
+            
         except Exception as parse_error:
-
             # Reflection: attempt to fix the validation issue by providing feedback to the LLM
             try:
                 reflection_prompt = f"""
                 The previous response failed validation with the following error:
                 {str(parse_error)}
 
-                The response was:
-                {response_text}
-
                 Please correct your response to match the expected schema.
                 Ensure all fields are properly formatted and all required fields are present.
-                Respond only with valid JSON that matches the TableSummary schema.
+                Respond only with valid JSON.
                 """
 
                 reflection_messages = [
                     HumanMessage(content=rendered_form),
-                    AIMessage(content=response_text),
+                    AIMessage(content=json.dumps(response)),
                     HumanMessage(content=reflection_prompt),
                 ]
 
-                # Use retry wrapper for reflection LLM call
-                reflection_response = await _call_llm(config, reflection_messages)
-                if '</think>' in reflection_response.content:
-                    reflection_response.content = reflection_response.content.split('</think>')[-1]
-                reflection_text = reflection_response.content.strip()
-
-                # Clean the reflection response
-                if reflection_text.startswith("```json"):
-                    reflection_text = reflection_text.replace("```json", "", 1)
-                if reflection_text.endswith("```"):
-                    reflection_text = reflection_text.rsplit("```", 1)[0]
-                reflection_text = reflection_text.strip()
-
-
-                # Try parsing again with the reflection response
-                parsed_reflection = parser.parse(reflection_text)
+                # Use structured output for reflection attempt
+                reflection_response = await _call_llm(llm_with_structured_output, reflection_messages)
+                
+                if isinstance(reflection_response, dict):
+                    parsed_reflection = table_summary_adapter.validate_python(reflection_response)
+                else:
+                    reflection_text = cleanup_content(reflection_response.content)
+                    parsed_reflection = table_summary_adapter.validate_json(reflection_text)
 
                 return parsed_reflection
 
@@ -159,29 +158,51 @@ async def get_rows_text(
             messages = row_text_prompt.format_messages(
                 table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
             )
+            llm,_ = await get_llm(config)
 
-            response = await _call_llm(config, messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
-            # Try to extract JSON array from response
+            llm_with_structured_output = _apply_structured_output(llm, schema=RowDescriptions)
+            response = await _call_llm(llm_with_structured_output, messages)
+
             try:
-                # First try direct JSON parsing
-                return json.loads(response.content),table_rows
-            except json.JSONDecodeError:
-                # If that fails, try to find and parse a JSON array in the response
-                content = response.content
-                # Look for array between [ and ]
-                start = content.find("[")
-                end = content.rfind("]")
-                if start != -1 and end != -1:
-                    try:
-                        return json.loads(content[start : end + 1]),table_rows
-                    except json.JSONDecodeError:
-                        # If still can't parse, return response as single-item array
-                        return [content],table_rows
+                if isinstance(response, dict):
+                    parsed_response = row_adapter.validate_python(response)
                 else:
-                    # If no array found, return response as single-item array
-                    return [content],table_rows
+                    response = cleanup_content(response.content)
+                    parsed_response = row_adapter.validate_json(response)
+                
+                descriptions = parsed_response.get("descriptions", [])
+                if descriptions==[]:
+                    descriptions = [str(row) for row in rows_data]
+                return descriptions, table_rows
+            except Exception as parse_error:
+                # Reflection: attempt to fix the validation issue by providing feedback to the LLM
+                try:
+                    reflection_prompt = f"""
+                    The previous response failed validation with the following error:
+                    {str(parse_error)}
+
+                    Please correct your response to match the expected schema.
+                    Ensure all fields are properly formatted and all required fields are present.
+                    Respond only with valid JSON."""
+                    
+                    messages.append(AIMessage(content=json.dumps(response)))
+                    messages.append(HumanMessage(content=reflection_prompt))
+
+                    reflection_response = await _call_llm(llm_with_structured_output, messages)
+
+                    if isinstance(reflection_response, dict):
+                        parsed_reflection = row_adapter.validate_python(reflection_response)
+                    else:
+                        reflection_text = cleanup_content(reflection_response.content)
+                        parsed_reflection = row_adapter.validate_json(reflection_text)
+                    descriptions = parsed_reflection.get("descriptions", [])
+                    if descriptions==[]:
+                        descriptions = [str(row) for row in rows_data]  
+
+                    return descriptions, table_rows
+
+                except Exception:
+                    return [str(row) for row in rows_data], table_rows
         except Exception:
             raise
     else:
@@ -222,8 +243,8 @@ async def process_table_pymupdf(
     for table in tables:
         table_markdown = table.to_markdown()
         response = await get_table_summary_n_headers(config, table_markdown)
-        table_summary = response.summary
-        column_headers = response.headers
+        table_summary = response.get("summary", "")
+        column_headers = response.get("headers", [])
         table_data = table.extract()
         table_rows_text,table_rows = await get_rows_text(config, {"grid": table_data}, table_summary, column_headers)
         bbox = _normalize_bbox(table.bbox, page_width, page_height)

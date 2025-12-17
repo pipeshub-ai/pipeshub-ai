@@ -377,6 +377,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                     timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                     api_key=configuration.get("apiKey"),
                     base_url=configuration.get("endpoint"),
+                    stream_usage=True,  # Enable token usage tracking for Opik
                 )
 
     elif provider == LLMProvider.AZURE_OPENAI.value:
@@ -391,6 +392,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 azure_deployment=configuration["deploymentName"],
+                stream_usage=True,  # Enable token usage tracking for Opik
             )
 
     elif provider == LLMProvider.COHERE.value:
@@ -465,6 +467,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 organization=configuration.get("organizationId"),
+                stream_usage=True,  # Enable token usage tracking for Opik
             )
 
     elif provider == LLMProvider.XAI.value:
@@ -498,6 +501,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],
+                stream_usage=True,  # Enable token usage tracking for Opik
             )
 
     raise ValueError(f"Unsupported provider type: {provider}")

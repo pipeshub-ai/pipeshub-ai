@@ -780,8 +780,8 @@ class AzureOCRStrategy(OCRStrategy):
                 col_count = table_data.get("column_count", 0)
                 table_markdown,table_data_grid = self.cells_to_markdown(row_count, col_count, cells)
                 response = await get_table_summary_n_headers(self.config, table_markdown)
-                table_summary = response.summary
-                column_headers = response.headers
+                table_summary = response.get("summary", "")
+                column_headers = response.get("headers", [])
 
                 table_rows_text,table_rows = await get_rows_text(self.config, {"grid": table_data_grid}, table_summary, column_headers)
                 bbox = table_data.get("bounding_boxes", [])

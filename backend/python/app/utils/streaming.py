@@ -1340,14 +1340,7 @@ async def call_aiter_llm_stream(
     try:
         response_text = state.full_json_buf
         if  isinstance(response_text, str):
-            response_text = response_text.strip()
-            if '</think>' in response_text:
-                    response_text = response_text.split('</think>')[-1]
-            if response_text.startswith("```json"):
-                response_text = response_text.replace("```json", "", 1)
-            if response_text.endswith("```"):
-                response_text = response_text.rsplit("```", 1)[0]
-            response_text = response_text.strip()
+            response_text = cleanup_content(response_text)
 
         try:
             if isinstance(response_text, str):
@@ -1474,7 +1467,7 @@ def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|bool:
     except Exception:
         return False
 
-def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
+def _apply_structured_output(llm: BaseChatModel,schema=None) -> BaseChatModel:
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
 
         additional_kwargs = {}
@@ -1493,8 +1486,10 @@ def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
         additional_kwargs["method"] = "json_schema"
 
         try:
+            if not schema:
+                schema = AnswerWithMetadataDict
             model_with_structure = llm.with_structured_output(
-                AnswerWithMetadataDict,
+                schema,
                 **additional_kwargs
             )
             logger.info("Using structured output")
@@ -1507,3 +1502,13 @@ def _apply_structured_output(llm: BaseChatModel) -> BaseChatModel:
     return llm
 
 
+def cleanup_content(response_text: str) -> str:
+    response_text = response_text.strip()
+    if '</think>' in response_text:
+            response_text = response_text.split('</think>')[-1]
+    if response_text.startswith("```json"):
+        response_text = response_text.replace("```json", "", 1)
+    if response_text.endswith("```"):
+        response_text = response_text.rsplit("```", 1)[0]
+    response_text = response_text.strip()
+    return response_text

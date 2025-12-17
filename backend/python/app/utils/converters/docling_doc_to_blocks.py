@@ -258,8 +258,8 @@ class DoclingDocToBlocksConverter():
                 self.logger.warning(f"No table cells found in the table data: {table_data}")
                 return None
             response = await get_table_summary_n_headers(self.config, table_markdown)
-            table_summary = response.summary
-            column_headers = response.headers
+            table_summary = response.get("summary", "")
+            column_headers = response.get("headers", [])
 
             table_rows_text,table_rows = await get_rows_text(self.config, table_data, table_summary, column_headers)
 

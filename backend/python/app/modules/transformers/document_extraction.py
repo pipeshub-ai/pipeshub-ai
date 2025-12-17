@@ -1,10 +1,10 @@
+import json
 from typing import List, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
-
+from app.utils.streaming import _apply_structured_output, cleanup_content
 from app.config.constants.arangodb import DepartmentNames
 from app.models.blocks import Block, SemanticMetadata
 from app.modules.extraction.prompt_template import (
@@ -12,35 +12,29 @@ from app.modules.extraction.prompt_template import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.llm import get_llm
+from typing_extensions import TypedDict
+from pydantic import TypeAdapter
 
 DEFAULT_CONTEXT_LENGTH = 128000
 CONTENT_TOKEN_RATIO = 0.85
 SentimentType = Literal["Positive", "Neutral", "Negative"]
 
-class SubCategories(BaseModel):
-    level1: str = Field(description="Level 1 subcategory")
-    level2: str = Field(description="Level 2 subcategory")
-    level3: str = Field(description="Level 3 subcategory")
+class SubCategories(TypedDict):
+    level1: str
+    level2: str
+    level3: str
 
-class DocumentClassification(BaseModel):
-    departments: List[str] = Field(
-        description="The list of departments this document belongs to", max_items=3
-    )
-    category: str = Field(description="Main category this document belongs to")
-    subcategories: SubCategories = Field(
-        description="Nested subcategories for the document"
-    )
-    languages: List[str] = Field(
-        description="List of languages detected in the document"
-    )
-    sentiment: SentimentType = Field(description="Overall sentiment of the document")
-    confidence_score: float = Field(
-        description="Confidence score of the classification", ge=0, le=1
-    )
-    topics: List[str] = Field(
-        description="List of key topics/themes extracted from the document"
-    )
-    summary: str = Field(description="Summary of the document")
+class DocumentClassification(TypedDict):
+    departments: List[str]
+    category: str
+    subcategories: SubCategories
+    languages: List[str]
+    sentiment: SentimentType
+    confidence_score: float
+    topics: List[str]
+    summary: str
+
+document_classification_adapter = TypeAdapter(DocumentClassification)
 
 class DocumentExtraction(Transformer):
     def __init__(self, logger, base_arango_service, config_service) -> None:
@@ -48,7 +42,6 @@ class DocumentExtraction(Transformer):
         self.logger = logger
         self.arango_service = base_arango_service
         self.config_service = config_service
-        self.parser = PydanticOutputParser(pydantic_object=DocumentClassification)
 
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
@@ -59,14 +52,14 @@ class DocumentExtraction(Transformer):
             record.semantic_metadata = None
             return
         record.semantic_metadata = SemanticMetadata(
-            departments=document_classification.departments,
-            languages=document_classification.languages,
-            topics=document_classification.topics,
-            summary=document_classification.summary,
-            categories=[document_classification.category],
-            sub_category_level_1=document_classification.subcategories.level1,
-            sub_category_level_2=document_classification.subcategories.level2,
-            sub_category_level_3=document_classification.subcategories.level3,
+            departments=document_classification.get("departments", []),
+            languages=document_classification.get("languages", []),
+            topics=document_classification.get("topics", []),
+            summary=document_classification.get("summary", ""),
+            categories=[document_classification.get("category", "")],
+            sub_category_level_1=document_classification.get("subcategories", {}).get("level1", ""),
+            sub_category_level_2=document_classification.get("subcategories", {}).get("level2", ""),
+            sub_category_level_3=document_classification.get("subcategories", {}).get("level3", ""),
         )
         self.logger.info("🎯 Document extraction completed successfully")
 
@@ -196,7 +189,7 @@ class DocumentExtraction(Transformer):
             filled_prompt = prompt_for_document_extraction.replace(
                 "{department_list}", department_list
             ).replace("{sentiment_list}", sentiment_list)
-            self.prompt_template = PromptTemplate.from_template(filled_prompt)
+
 
             # Prepare multimodal content
             content = self._prepare_content(blocks, is_multimodal_llm, context_length)
@@ -224,17 +217,16 @@ class DocumentExtraction(Transformer):
             # Use retry wrapper for LLM call
             response = await self._call_llm(messages)
 
-            # Clean the response content
-            response_text = response.content.strip()
-            if response_text.startswith("```json"):
-                response_text = response_text.replace("```json", "", 1)
-            if response_text.endswith("```"):
-                response_text = response_text.rsplit("```", 1)[0]
-            response_text = response_text.strip()
-
             try:
-                # Parse the response using the Pydantic parser
-                parsed_response = self.parser.parse(response_text)
+                if isinstance(response, dict):
+                    self.logger.info(f"Response is structured output (dict): {response}")
+                    parsed_response = document_classification_adapter.validate_python(response)
+                else:
+                    self.logger.info("Response is non-structured output (AIMessage)")
+                    response = response.content
+                    response_text = cleanup_content(response)
+                    parsed_response = document_classification_adapter.validate_json(response_text)
+                
                 return parsed_response
 
             except Exception as parse_error:
@@ -250,35 +242,33 @@ class DocumentExtraction(Transformer):
                     The previous response failed validation with the following error:
                     {str(parse_error)}
 
-                    The response was:
-                    {response_text}
-
                     Please correct your response to match the expected schema.
                     Ensure all fields are properly formatted and all required fields are present.
-                    Respond only with valid JSON that matches the DocumentClassification schema.
+                    Respond only with valid JSON that matches the schema.
                     """
 
                     reflection_messages = [
                         HumanMessage(content=message_content),
-                        AIMessage(content=response_text),
+                        AIMessage(content=json.dumps(response)),
                         HumanMessage(content=reflection_prompt),
                     ]
 
                     # Use retry wrapper for reflection LLM call
                     reflection_response = await self._call_llm(reflection_messages)
-                    reflection_text = reflection_response.content.strip()
+                    
+                    # Check if reflection response is already structured (dict) or needs parsing (AIMessage)
+                    if isinstance(reflection_response, dict):
+                        # Structured output - response is already parsed
+                        self.logger.info("Reflection response is structured output (dict)")
+                        parsed_reflection = document_classification_adapter.validate_python(reflection_response)
+                    else:
+                        # Non-structured output - need to parse from response.content
+                        reflection_text = reflection_response.content
+                        reflection_text = cleanup_content(reflection_text)
 
-                    # Clean the reflection response
-                    if reflection_text.startswith("```json"):
-                        reflection_text = reflection_text.replace("```json", "", 1)
-                    if reflection_text.endswith("```"):
-                        reflection_text = reflection_text.rsplit("```", 1)[0]
-                    reflection_text = reflection_text.strip()
+                        self.logger.info(f"🎯 Reflection response: {reflection_text}")
 
-                    self.logger.info(f"🎯 Reflection response: {reflection_text}")
-
-                    # Try parsing again with the reflection response
-                    parsed_reflection = self.parser.parse(reflection_text)
+                        parsed_reflection = document_classification_adapter.validate_json(reflection_text)
 
                     self.logger.info(
                         "✅ Reflection successful - validation passed on second attempt"
@@ -295,10 +285,10 @@ class DocumentExtraction(Transformer):
             self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
             raise
 
-    async def _call_llm(self, messages) -> dict | None:
-        """Wrapper for LLM calls with retry logic"""
-        return await self.llm.ainvoke(messages)
-
+    async def _call_llm(self, messages) -> dict | AIMessage:
+        """Wrapper for LLM calls with retry logic. Returns dict when structured output is used, AIMessage otherwise."""
+        llm_with_structured_output = _apply_structured_output(self.llm, schema=DocumentClassification)
+        return await llm_with_structured_output.ainvoke(messages)
 
     async def process_document(self, blocks: List[Block], org_id: str) -> DocumentClassification:
             self.logger.info("🖼️ Processing blocks for semantic metadata extraction")

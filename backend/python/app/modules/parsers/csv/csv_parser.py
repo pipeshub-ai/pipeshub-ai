@@ -5,14 +5,17 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO, Union
-
+from app.utils.streaming import _apply_structured_output, cleanup_content
 from langchain_core.language_models.chat_models import BaseChatModel
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
 )
+from langchain_core.messages import AIMessage, HumanMessage
 
+
+from pydantic import TypeAdapter
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -24,10 +27,12 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers.excel.prompt_template import (
+    RowDescriptions,
     row_text_prompt,
     table_summary_prompt,
 )
 
+adapter = TypeAdapter(RowDescriptions)
 
 class CSVParser:
     def __init__(
@@ -46,7 +51,6 @@ class CSVParser:
         self.quotechar = quotechar
         self.encoding = encoding
         self.table_summary_prompt = table_summary_prompt
-
 
         # Configure retry parameters
         self.max_retries = 3
@@ -270,38 +274,55 @@ class CSVParser:
                 rows_data=json.dumps(rows_data, indent=2),
             )
 
-            response = await self._call_llm(llm, messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
-            # Try to extract JSON array from response
+            llm_with_structured_output = _apply_structured_output(llm, schema=RowDescriptions)
+            response = await self._call_llm(llm_with_structured_output, messages)
             try:
-                processed_texts.extend(json.loads(response.content))
-            except json.JSONDecodeError:
-                # If that fails, try to find and parse a JSON array in the response
-                content = response.content
-                start = content.find("[")
-                end = content.rfind("]")
-                if start != -1 and end != -1:
-                    try:
-                        processed_texts.extend(json.loads(content[start : end + 1]))
-                    except json.JSONDecodeError:
-                        # If still can't parse, add response as single-item array
-                        processed_texts.append(content)
+                if isinstance(response, dict):
+                    parsed_response = adapter.validate_python(response)
                 else:
-                    # If no array found, add response as single-item array
-                    processed_texts.append(content)
+                    response = cleanup_content(response.content)
+                    parsed_response = adapter.validate_json(response)
+                
+                descriptions = parsed_response.get("descriptions", [])
+                if descriptions==[]:
+                    descriptions = [str(row) for row in rows_data]
+                processed_texts.extend(descriptions)
+            except Exception as e:
+                # Attempt reflection: ask LLM to correct its response
+                try: 
+                    reflection_prompt = f"""Your previous response could not be parsed correctly. 
+Error: {str(e)}
 
+Please provide the row descriptions in the correct JSON format."""
+
+                    messages.append(AIMessage(content=json.dumps(response)))
+                    messages.append(HumanMessage(content=reflection_prompt))
+                    
+                    # Use structured output for reflection attempt
+                    reflection_response = await self._call_llm(llm_with_structured_output, messages)
+                    if isinstance(reflection_response, dict):
+                        parsed_reflection = adapter.validate_python(reflection_response)
+                    else:
+                        response = cleanup_content(reflection_response.content)
+                        parsed_reflection = adapter.validate_json(response)
+                    
+                    descriptions = parsed_reflection.get("descriptions", [])
+                    if descriptions==[]:
+                        descriptions = [str(row) for row in rows_data]
+                    processed_texts.extend(descriptions)
+                    
+                except Exception:
+                    descriptions = [str(row) for row in rows_data]
+                    processed_texts.extend(descriptions)
+                
         return processed_texts
     #  recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
-    async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]], recordId: str, orgId: str, recordName: str, version: str, origin: str, llm: BaseChatModel) -> BlocksContainer:
+    async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]],llm: BaseChatModel) -> BlocksContainer:
 
         blocks = []
         children = []
 
-        # Determine optimal batch size based on file size
         batch_size = 50
-
-
 
         # Create batches
         batches = []
