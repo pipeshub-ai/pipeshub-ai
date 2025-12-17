@@ -149,47 +149,8 @@ class SlackConnector:
         return True
 
 
-@ConnectorBuilder("Notion")\
-    .in_group("Notion")\
-    .with_auth_type("API_TOKEN")\
-    .with_description("Sync messages and channels from Notion")\
-    .with_categories(["Messaging"])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/notion.svg")
-        .add_documentation_link(DocumentationLink(
-            "Notion Bot Token Setup",
-            "https://api.notion.com/authentication/basics",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/notion/notion',
-            'pipeshub'
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(AuthField(
-            name="apiToken",
-            display_name="Api Token",
-            placeholder="ntn-...",
-            description="The Access Token from Notion App settings",
-            field_type="PASSWORD",
-            max_length=8000,
-            is_secret=True
-        ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-    )\
-    .build_decorator()
-class  NotionConnector:
-    """Notion connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "Notion"
-
-    def connect(self) -> bool:
-        """Connect to Notion"""
-        print(f"Connecting to {self.name}")
-        return True
+# Notion connector moved to app.connectors.sources.notion.connector
+# This placeholder is kept for reference but is no longer used
 
 
 
