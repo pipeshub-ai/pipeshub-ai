@@ -2,16 +2,12 @@
 #!/usr/bin/env python3
 """
 Monday.com API Code Generator
-=============================
 
-This generator follows the same pattern as Zammad / Workday generators
-in pipeshub, but adapted for Monday.com's GraphQL-only API.
+Generates:
+- backend/python/app/sources/external/monday/monday.py
+- backend/python/app/sources/external/monday/example.py
 
-- No OpenAPI specs (Monday does not provide them)
-- Operations are manually defined
-- Generator produces:
-  - external/monday/monday.py
-  - external/monday/example.py
+Monday is GraphQL-only, so operations are manually defined.
 """
 
 import sys
@@ -26,17 +22,11 @@ HTTP_ERROR_THRESHOLD = 400
 # =============================================================================
 
 class MondayAPIDefinition:
-    """
-    Manually defined GraphQL operations for Monday.
-    Extend this list to grow the generated datasource.
-    """
+    """Manually defined Monday GraphQL operations."""
 
     @staticmethod
     def get_operations() -> List[Dict]:
         return [
-            # --------------------
-            # BOARDS
-            # --------------------
             {
                 "name": "get_boards",
                 "query": """
@@ -49,10 +39,6 @@ class MondayAPIDefinition:
                 """,
                 "variables": [],
             },
-
-            # --------------------
-            # ITEMS
-            # --------------------
             {
                 "name": "get_items",
                 "query": """
@@ -68,22 +54,6 @@ class MondayAPIDefinition:
                 "variables": ["board_id"],
             },
             {
-                "name": "create_item",
-                "query": """
-                mutation ($board_id: Int!, $item_name: String!) {
-                  create_item(board_id: $board_id, item_name: $item_name) {
-                    id
-                    name
-                  }
-                }
-                """,
-                "variables": ["board_id", "item_name"],
-            },
-
-            # --------------------
-            # COLUMNS
-            # --------------------
-            {
                 "name": "get_columns",
                 "query": """
                 query ($board_id: [Int]) {
@@ -98,28 +68,6 @@ class MondayAPIDefinition:
                 """,
                 "variables": ["board_id"],
             },
-
-            # --------------------
-            # GROUPS
-            # --------------------
-            {
-                "name": "get_groups",
-                "query": """
-                query ($board_id: [Int]) {
-                  boards(ids: $board_id) {
-                    groups {
-                      id
-                      title
-                    }
-                  }
-                }
-                """,
-                "variables": ["board_id"],
-            },
-
-            # --------------------
-            # USERS
-            # --------------------
             {
                 "name": "get_users",
                 "query": """
@@ -167,11 +115,12 @@ class MondayCodeGenerator:
     async def {name}(
         {args_str}
     ) -> MondayResponse:
+{variables_block}
         payload = {{
             "query": \"\"\"{query}\"\"\",
-            "variables": variables
+            "variables": variables,
         }}
-{variables_block}
+
         try:
             request = HTTPRequest(
                 url=self.base_url,
@@ -181,7 +130,7 @@ class MondayCodeGenerator:
             )
             response = await self.http_client.execute(request)
 
-            success = response.status < {HTTP_ERROR_THRESHOLD}
+            success = response.status < HTTP_ERROR_THRESHOLD
             return MondayResponse(
                 success=success,
                 data=response.json() if response.text else None,
@@ -198,8 +147,6 @@ class MondayCodeGenerator:
 
     def generate_datasource(self) -> str:
         header = """
-from typing import Dict
-
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.monday.monday import MondayClient, MondayResponse
 
@@ -224,30 +171,32 @@ class MondayDataSource:
         return header + methods
 
     def generate_example(self) -> str:
-        return """from app.sources.client.monday.monday import MondayClient
+        return """import asyncio
+
+from app.sources.client.monday.monday import MondayClient
 from app.sources.external.monday.monday import MondayDataSource
 
 
-def main() -> None:
+async def main() -> None:
     client = MondayClient()
     datasource = MondayDataSource(client)
 
-    response = datasource.get_boards()
+    response = await datasource.get_boards()
     print(response)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
 """
 
     def write_files(self, base_dir: Path) -> None:
         base_dir.mkdir(parents=True, exist_ok=True)
-
-        datasource_path = base_dir / "monday.py"
-        example_path = base_dir / "example.py"
-
-        datasource_path.write_text(self.generate_datasource(), encoding="utf-8")
-        example_path.write_text(self.generate_example(), encoding="utf-8")
+        (base_dir / "monday.py").write_text(
+            self.generate_datasource(), encoding="utf-8"
+        )
+        (base_dir / "example.py").write_text(
+            self.generate_example(), encoding="utf-8"
+        )
 
 
 # =============================================================================
@@ -256,13 +205,10 @@ if __name__ == "__main__":
 
 def main() -> int:
     output_dir = Path("backend/python/app/sources/external/monday")
-
     generator = MondayCodeGenerator()
     generator.write_files(output_dir)
 
-    print(f"✅ Generated MondayDataSource at {output_dir / 'monday.py'}")
-    print(f"✅ Generated example.py at {output_dir / 'example.py'}")
-
+    print("✅ Generated MondayDataSource and example.py")
     return 0
 
 
