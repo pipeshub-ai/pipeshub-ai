@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from app.config.configuration_service import ConfigurationService
 from app.services.featureflag.interfaces.config import IConfigProvider
 from app.utils.logger import create_logger
@@ -10,8 +8,7 @@ logger = create_logger(__name__)
 
 
 class EtcdProvider(IConfigProvider):
-    """
-    Provider that reads feature flags from the distributed configuration store
+    """Provider that reads feature flags from the distributed configuration store
     via ConfigurationService.
 
     Expects a JSON object at key '/services/platform/settings' with shape:
@@ -48,7 +45,7 @@ class EtcdProvider(IConfigProvider):
             # Keep existing flags on error rather than clearing them
             # This provides better availability during transient failures
 
-    def get_flag_value(self, flag_name: str) -> Optional[bool]:
+    def get_flag_value(self, flag_name: str) -> bool | None:
         """Get the value of a feature flag by name (case-insensitive)."""
         return self._flags.get(str(flag_name).upper())
 

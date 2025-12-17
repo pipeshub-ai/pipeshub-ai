@@ -1,5 +1,4 @@
-"""
-Confluence Cloud Connector Example
+"""Confluence Cloud Connector Example
 
 Simple script to test the Confluence connector without running the full app.
 Requires environment variables:
@@ -33,7 +32,7 @@ async def test_run() -> None:
     org_id = "org_1"
 
     async def create_test_users(
-        user_email: str, arango_service: BaseArangoService
+        user_email: str, arango_service: BaseArangoService,
     ) -> None:
         """Create test organization and user in ArangoDB"""
         org = {
@@ -67,7 +66,7 @@ async def test_run() -> None:
                     "entityType": "ORGANIZATION",
                     "createdAtTimestamp": 1718745600,
                     "updatedAtTimestamp": 1718745600,
-                }
+                },
             ],
             CollectionNames.BELONGS_TO.value,
         )
@@ -84,7 +83,7 @@ async def test_run() -> None:
     # Connect to ArangoDB
     arango_client = ArangoClient()
     arango_service = BaseArangoService(
-        logger, arango_client, config_service, kafka_service
+        logger, arango_client, config_service, kafka_service,
     )
 
     try:
@@ -113,7 +112,7 @@ async def test_run() -> None:
         },
         "credentials": {
             "access_token": os.getenv("CONFLUENCE_ACCESS_TOKEN"),
-        }
+        },
     }
 
     # Validate required config
@@ -135,7 +134,7 @@ async def test_run() -> None:
     # Create and initialize connector
     logger.info("🔧 Creating Confluence connector...")
     connector: BaseConnector = await ConfluenceConnector.create_connector(
-        logger, data_store_provider, config_service
+        logger, data_store_provider, config_service,
     )
 
     logger.info("🔧 Initializing Confluence connector...")

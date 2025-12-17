@@ -6,7 +6,6 @@ from app.services.featureflag.featureflag import FeatureFlagService
 
 def example_basic_usage() -> None:
     """Example 1: Basic usage"""
-
     ff_service = FeatureFlagService.get_service()
     if ff_service.is_feature_enabled(CONFIG.ENABLE_WORKFLOW_BUILDER):
         print("Workflow builder is enabled")

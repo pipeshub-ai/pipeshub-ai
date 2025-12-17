@@ -1,7 +1,6 @@
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Set
 
 import aiohttp
 from aiokafka import AIOKafkaConsumer
@@ -30,14 +29,14 @@ RATE_LIMIT_PER_SECOND = 2  # Maximum number of new tasks to start per second
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
 async def make_signed_url_api_call(signed_url: str) -> dict:
-    """
-    Make an API call with the JWT token.
+    """Make an API call with the JWT token.
 
     Args:
         signed_url (str): The signed URL to send the request to
 
     Returns:
         dict: The response from the API
+
     """
     try:
         async with aiohttp.ClientSession() as session:
@@ -52,8 +51,7 @@ async def make_signed_url_api_call(signed_url: str) -> dict:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
 async def make_api_call(signed_url_route: str, token: str, signed_url: str = None) -> dict:
-    """
-    Make an API call with the JWT token.
+    """Make an API call with the JWT token.
 
     Args:
         signed_url_route (str): The route to send the request to
@@ -61,6 +59,7 @@ async def make_api_call(signed_url_route: str, token: str, signed_url: str = Non
 
     Returns:
         dict: The response from the API
+
     """
     try:
         async with aiohttp.ClientSession() as session:
@@ -79,9 +78,8 @@ async def make_api_call(signed_url_route: str, token: str, signed_url: str = Non
                 if response.status == HttpStatusCode.SUCCESS.value and "application/json" in content_type:
                     data = await response.json()
                     return {"is_json": True, "data": data}
-                else:
-                    data = await response.read()
-                    return {"is_json": False, "data": data}
+                data = await response.read()
+                return {"is_json": False, "data": data}
     except Exception:
         raise
 
@@ -95,11 +93,11 @@ class KafkaConsumerManager:
         self.config_service = config_service
         # Concurrency control
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
-        self.active_tasks: Set[asyncio.Task] = set()
+        self.active_tasks: set[asyncio.Task] = set()
         self.rate_limiter = RateLimiter(RATE_LIMIT_PER_SECOND)
 
         # Message tracking
-        self.processed_messages: Dict[str, List[int]] = {}
+        self.processed_messages: dict[str, list[int]] = {}
 
         self.redis_scheduler = redis_scheduler
         # Create task for processing scheduled updates
@@ -107,9 +105,9 @@ class KafkaConsumerManager:
 
     async def create_consumer(self) -> None:
         try:
-            async def get_kafka_config() -> Dict:
+            async def get_kafka_config() -> dict:
                 kafka_config = await self.config_service.get_config(
-                    config_node_constants.KAFKA.value
+                    config_node_constants.KAFKA.value,
                 )
                 brokers = kafka_config["brokers"]
 
@@ -126,7 +124,7 @@ class KafkaConsumerManager:
             # Initialize consumer with aiokafka
             self.consumer = AIOKafkaConsumer(
                 "record-events",
-                **kafka_config
+                **kafka_config,
             )
 
             # Start consumer
@@ -136,7 +134,7 @@ class KafkaConsumerManager:
         except Exception as e:
             self.logger.error(f"Failed to create consumer: {e}")
             self.logger.info(
-                "Please ensure the topic 'record-events' exists on the Kafka broker"
+                "Please ensure the topic 'record-events' exists on the Kafka broker",
             )
             raise
 
@@ -152,7 +150,7 @@ class KafkaConsumerManager:
             self.logger.info(f"Starting to process message: {message_id}")
             success = await self._process_message(message)
             self.logger.info(
-                f"Finished processing message {message_id}: {'Success' if success else 'Failed'}"
+                f"Finished processing message {message_id}: {'Success' if success else 'Failed'}",
             )
             return success
         except Exception as e:
@@ -189,12 +187,12 @@ class KafkaConsumerManager:
                 if isinstance(data, str):
                     data = json.loads(data)
                     self.logger.debug(
-                        f"Handled double-encoded JSON for message {message_id}"
+                        f"Handled double-encoded JSON for message {message_id}",
                     )
             except (UnicodeDecodeError, json.JSONDecodeError) as e:
                 self.logger.error(
-                    f"Failed to parse message {message_id}: {str(e)}\n"
-                    f"Raw value: {message_value[:1000]}..."
+                    f"Failed to parse message {message_id}: {e!s}\n"
+                    f"Raw value: {message_value[:1000]}...",
                 )
                 raise
 
@@ -212,7 +210,7 @@ class KafkaConsumerManager:
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
                 f"Message ID: {message_id} Virtual Record ID: {virtual_record_id}"
-                f"Message ID: {message_id}, Extension: {extension}, Mime Type: {mime_type}"
+                f"Message ID: {message_id}, Extension: {extension}, Mime Type: {mime_type}",
             )
 
             # Handle delete event
@@ -225,18 +223,18 @@ class KafkaConsumerManager:
                 await self.redis_scheduler.schedule_update(data)
                 self.logger.info(f"Scheduled update for record {record_id}")
                 record = await self.event_processor.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value,
                 )
                 if record is None:
                     self.logger.error(f"❌ Record {record_id} not found in database")
-                    return
+                    return None
                 doc = dict(record)
 
                 doc.update({"isDirty": True})
 
                 docs = [doc]
                 await self.event_processor.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
+                    docs, CollectionNames.RECORDS.value,
                 )
                 return True
 
@@ -248,11 +246,11 @@ class KafkaConsumerManager:
             self.logger.info("🚀 extension: %s", extension)
 
             record = await self.event_processor.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value,
             )
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
-                return
+                return None
             doc = dict(record)
 
             if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
@@ -286,18 +284,18 @@ class KafkaConsumerManager:
                 and extension not in supported_extensions
             ):
                 self.logger.info(
-                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {extension} 🔴🔴🔴"
+                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {extension} 🔴🔴🔴",
                 )
 
                 doc.update(
                     {
                         "indexingStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                         "extractionStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    }
+                    },
                 )
                 docs = [doc]
                 await self.event_processor.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
+                    docs, CollectionNames.RECORDS.value,
                 )
 
                 return True
@@ -307,12 +305,12 @@ class KafkaConsumerManager:
                 {
                     "indexingStatus": ProgressStatus.IN_PROGRESS.value,
                     "extractionStatus": ProgressStatus.IN_PROGRESS.value,
-                }
+                },
             )
 
             docs = [doc]
             await self.event_processor.arango_service.batch_upsert_nodes(
-                docs, CollectionNames.RECORDS.value
+                docs, CollectionNames.RECORDS.value,
             )
 
             # Signed URL handling
@@ -326,10 +324,10 @@ class KafkaConsumerManager:
                     self.logger.debug(f"Generated JWT token for message {message_id}")
                     self.logger.debug(f"Signed URL route: {payload_data['signedUrlRoute']}")
                     response = await make_api_call(
-                        payload_data["signedUrlRoute"], token
+                        payload_data["signedUrlRoute"], token,
                     )
                     self.logger.debug(
-                        f"Received signed URL response for message {message_id}"
+                        f"Received signed URL response for message {message_id}",
                     )
 
                     if response.get("is_json"):
@@ -343,13 +341,13 @@ class KafkaConsumerManager:
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                        f"Record: {record_id}, Time: {processing_time:.2f}s",
                     )
                     self.mark_message_processed(topic_partition, offset)
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL route: {str(e)}"
+                    error_msg = f"Failed to process signed URL route: {e!s}"
                     raise
             elif payload_data and payload_data.get("signedUrl"):
                 try:
@@ -362,13 +360,13 @@ class KafkaConsumerManager:
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                        f"Record: {record_id}, Time: {processing_time:.2f}s",
                     )
                     self.mark_message_processed(topic_partition, offset)
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = f"Failed to process signed URL: {e!s}"
                     raise
             else:
                 try:
@@ -383,10 +381,10 @@ class KafkaConsumerManager:
                     connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
                     response = await make_api_call(
-                        f"{connector_url}/api/v1/internal/stream/record/{record_id}", token
+                        f"{connector_url}/api/v1/internal/stream/record/{record_id}", token,
                     )
                     self.logger.debug(
-                        f"Received signed URL response for message {message_id}"
+                        f"Received signed URL response for message {message_id}",
                     )
 
                     payload_data["buffer"] = response["data"]
@@ -396,30 +394,30 @@ class KafkaConsumerManager:
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                        f"Record: {record_id}, Time: {processing_time:.2f}s",
                     )
                     self.mark_message_processed(topic_partition, offset)
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL route: {str(e)}"
+                    error_msg = f"Failed to process signed URL route: {e!s}"
                     raise
 
         except IndexingError as e:
             error_occurred = True
-            error_msg = f"❌ Indexing error for record {record_id}: {str(e)}"
+            error_msg = f"❌ Indexing error for record {record_id}: {e!s}"
             self.logger.error(error_msg, exc_info=True)
             raise
         except Exception as e:
             error_occurred = True
-            error_msg = f"Error processing message {message_id}: {str(e)}"
+            error_msg = f"Error processing message {message_id}: {e!s}"
             self.logger.error(error_msg, exc_info=True)
             raise
         finally:
             processing_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(
                 f"Message {message_id} processing completed in {processing_time:.2f}s. "
-                f"Success: {not error_occurred}"
+                f"Success: {not error_occurred}",
             )
 
             if error_occurred and record_id:
@@ -471,7 +469,7 @@ class KafkaConsumerManager:
 
         # Log current task count
         self.logger.debug(
-            f"Active tasks: {len(self.active_tasks)}/{MAX_CONCURRENT_TASKS}"
+            f"Active tasks: {len(self.active_tasks)}/{MAX_CONCURRENT_TASKS}",
         )
 
     async def consume_messages(self) -> None:
@@ -506,7 +504,7 @@ class KafkaConsumerManager:
                                         f"Messages: {processed_count}, "
                                         f"Errors: {error_count}, "
                                         f"Runtime: {runtime:.2f}s, "
-                                        f"Rate: {processed_count/runtime:.2f} msg/s"
+                                        f"Rate: {processed_count/runtime:.2f} msg/s",
                                     )
 
                             except Exception as e:
@@ -520,13 +518,13 @@ class KafkaConsumerManager:
                 except Exception as e:
                     error_count += 1
                     self.logger.error(
-                        f"Error in consume_messages loop: {str(e)}", exc_info=True
+                        f"Error in consume_messages loop: {e!s}", exc_info=True,
                     )
                     await asyncio.sleep(1)
 
         except Exception as e:
             self.logger.error(
-                f"Fatal error in consume_messages: {str(e)}", exc_info=True
+                f"Fatal error in consume_messages: {e!s}", exc_info=True,
             )
         finally:
             runtime = (datetime.now() - start_time).total_seconds()
@@ -535,12 +533,12 @@ class KafkaConsumerManager:
                 f"Messages: {processed_count}, "
                 f"Errors: {error_count}, "
                 f"Runtime: {runtime:.2f}s, "
-                f"Average rate: {processed_count/runtime:.2f} msg/s"
+                f"Average rate: {processed_count/runtime:.2f} msg/s",
             )
 
             if self.active_tasks:
                 self.logger.info(
-                    f"Waiting for {len(self.active_tasks)} active tasks to complete..."
+                    f"Waiting for {len(self.active_tasks)} active tasks to complete...",
                 )
                 await asyncio.gather(*self.active_tasks, return_exceptions=True)
 
@@ -556,18 +554,18 @@ class KafkaConsumerManager:
             self.logger.error(f"Error during cleanup: {e}")
 
     async def generate_jwt(self, token_payload: dict) -> str:
-        """
-        Generate a JWT token using the jose library.
+        """Generate a JWT token using the jose library.
 
         Args:
             token_payload (dict): The payload to include in the JWT
 
         Returns:
             str: The generated JWT token
+
         """
         # Get the JWT secret from environment variable
         secret_keys = await self.config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
+            config_node_constants.SECRET_KEYS.value,
         )
         scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
         if not scoped_jwt_secret:
@@ -607,11 +605,11 @@ class KafkaConsumerManager:
 
                         self.logger.info(
                             f"Processing update for record {record_id}"
-                            f"Extension: {extension}, Mime Type: {mime_type}"
+                            f"Extension: {extension}, Mime Type: {mime_type}",
                         )
 
                         record = await self.event_processor.arango_service.get_document(
-                            record_id, CollectionNames.RECORDS.value
+                            record_id, CollectionNames.RECORDS.value,
                         )
                         if record is None:
                             self.logger.error(f"❌ Record {record_id} not found in database")
@@ -623,12 +621,12 @@ class KafkaConsumerManager:
                             {
                                 "indexingStatus": ProgressStatus.IN_PROGRESS.value,
                                 "extractionStatus": ProgressStatus.IN_PROGRESS.value,
-                            }
+                            },
                         )
 
                         docs = [doc]
                         await self.event_processor.arango_service.batch_upsert_nodes(
-                            docs, CollectionNames.RECORDS.value
+                            docs, CollectionNames.RECORDS.value,
                         )
 
                         if payload_data and payload_data.get("signedUrlRoute"):
@@ -641,10 +639,10 @@ class KafkaConsumerManager:
                                 self.logger.debug(f"Generated JWT token for record {record_id}")
 
                                 response = await make_api_call(
-                                    payload_data["signedUrlRoute"], token
+                                    payload_data["signedUrlRoute"], token,
                                 )
                                 self.logger.debug(
-                                    f"Received signed URL response for record {record_id}"
+                                    f"Received signed URL response for record {record_id}",
                                 )
 
                                 if response.get("is_json"):
@@ -657,7 +655,7 @@ class KafkaConsumerManager:
                                 await self.event_processor.on_event(event)
 
                             except Exception as e:
-                                self.logger.error(f"Error processing signed URL: {str(e)}")
+                                self.logger.error(f"Error processing signed URL: {e!s}")
                                 raise
 
                         # Remove processed event
@@ -665,16 +663,16 @@ class KafkaConsumerManager:
 
                         self.logger.info(
                             f"Processed scheduled update for record "
-                            f"{event.get('payload', {}).get('recordId')}"
+                            f"{event.get('payload', {}).get('recordId')}",
                         )
                     except Exception as e:
-                        self.logger.error(f"Error processing scheduled update: {str(e)}")
+                        self.logger.error(f"Error processing scheduled update: {e!s}")
 
                 # Wait before next check
                 await asyncio.sleep(60)  # Check every minute
 
             except Exception as e:
-                self.logger.error(f"Error in scheduled update processor: {str(e)}")
+                self.logger.error(f"Error in scheduled update processor: {e!s}")
                 await asyncio.sleep(60)
 
     async def start(self) -> None:
@@ -688,7 +686,7 @@ class KafkaConsumerManager:
             # Start scheduled update processing
             self.scheduled_update_task = asyncio.create_task(self.process_scheduled_updates())
         except Exception as e:
-            self.logger.error(f"❌ Error starting Kafka consumer: {str(e)}")
+            self.logger.error(f"❌ Error starting Kafka consumer: {e!s}")
             raise
 
     async def stop(self) -> None:
@@ -712,7 +710,7 @@ class KafkaConsumerManager:
         """Update document status in Arango"""
         try:
             record = await self.event_processor.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value,
             )
             if not record:
                 self.logger.error(f"❌ Record {record_id} not found for status update")
@@ -725,7 +723,7 @@ class KafkaConsumerManager:
                 {
                     "indexingStatus": indexing_status,
                     "extractionStatus": extraction_status,
-                }
+                },
             )
 
             if reason:
@@ -733,16 +731,15 @@ class KafkaConsumerManager:
 
             docs = [doc]
             await self.event_processor.arango_service.batch_upsert_nodes(
-                docs, CollectionNames.RECORDS.value
+                docs, CollectionNames.RECORDS.value,
             )
             self.logger.info(f"✅ Updated document status for record {record_id}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update document status: {str(e)}")
+            self.logger.error(f"❌ Failed to update document status: {e!s}")
 
     async def cleanup_in_progress_documents(self) -> None:
-        """
-        Cleanup documents that were left in IN_PROGRESS state due to application crash
+        """Cleanup documents that were left in IN_PROGRESS state due to application crash
         """
         try:
             self.logger.info("🧹 Cleaning up documents stuck in IN_PROGRESS state")
@@ -750,7 +747,7 @@ class KafkaConsumerManager:
             # Get all documents with IN_PROGRESS status
             records = await self.event_processor.arango_service.get_documents_by_status(
                 CollectionNames.RECORDS.value,
-                ProgressStatus.IN_PROGRESS.value
+                ProgressStatus.IN_PROGRESS.value,
             )
 
             if not records:
@@ -758,7 +755,7 @@ class KafkaConsumerManager:
                 return
 
             self.logger.warning(
-                f"Found {len(records)} documents stuck in IN_PROGRESS state"
+                f"Found {len(records)} documents stuck in IN_PROGRESS state",
             )
 
             # Update each document's status to FAILED
@@ -767,16 +764,16 @@ class KafkaConsumerManager:
                     record_id=record["_key"],
                     indexing_status=ProgressStatus.FAILED.value,
                     extraction_status=ProgressStatus.FAILED.value,
-                    reason="Document processing interrupted due to system crash"
+                    reason="Document processing interrupted due to system crash",
                 )
 
             self.logger.info(
-                f"✅ Successfully cleaned up {len(records)} stuck documents"
+                f"✅ Successfully cleaned up {len(records)} stuck documents",
             )
 
         except Exception as e:
             self.logger.error(
-                f"❌ Error cleaning up IN_PROGRESS documents: {str(e)}"
+                f"❌ Error cleaning up IN_PROGRESS documents: {e!s}",
             )
 
 
@@ -801,8 +798,7 @@ class RateLimiter:
                 self.last_check = now
 
                 # Cap tokens at the maximum rate
-                if self.tokens > self.rate:
-                    self.tokens = self.rate
+                self.tokens = min(self.tokens, self.rate)
 
                 if self.tokens >= 1:
                     # Consume a token

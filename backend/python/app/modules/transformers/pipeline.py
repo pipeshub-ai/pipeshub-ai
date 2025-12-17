@@ -20,7 +20,7 @@ class IndexingPipeline:
             if blocks is not None and len(blocks) == 0 and block_groups is not None and len(block_groups) == 0:
                 record_id = record.id
                 record_dict = await self.document_extraction.arango_service.get_document(
-                    record_id, CollectionNames.RECORDS.value
+                    record_id, CollectionNames.RECORDS.value,
                 )
 
                 record_dict.update(
@@ -28,16 +28,16 @@ class IndexingPipeline:
                         "indexingStatus": ProgressStatus.EMPTY.value,
                         "isDirty": False,
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                    }
+                    },
                 )
 
                 docs = [record_dict]
                 success = await self.document_extraction.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
+                    docs, CollectionNames.RECORDS.value,
                 )
                 if not success:
                     raise DocumentProcessingError(
-                        "Failed to update indexing status for record id: " + record_id
+                        "Failed to update indexing status for record id: " + record_id,
                     )
                 return
             await self.document_extraction.apply(ctx)

@@ -3,24 +3,22 @@ import logging
 import mimetypes
 from email.message import EmailMessage
 from pathlib import Path
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
 class GmailUtils:
     @staticmethod
     def transform_message_body(
-    mail_to: List[str],
+    mail_to: list[str],
     mail_subject: str,
-    mail_cc: Optional[List[str]] = None,
-    mail_bcc: Optional[List[str]] = None,
-    mail_body: Optional[str] = None,
-    mail_attachments: Optional[List[str]] = None,
-    thread_id: Optional[str] = None,
-    message_id: Optional[str] = None,
+    mail_cc: list[str] | None = None,
+    mail_bcc: list[str] | None = None,
+    mail_body: str | None = None,
+    mail_attachments: list[str] | None = None,
+    thread_id: str | None = None,
+    message_id: str | None = None,
 ) -> dict:
-        """
-        Build a Gmail API message payload (with attachments) using EmailMessage
+        """Build a Gmail API message payload (with attachments) using EmailMessage
         so MIME/encodings are correct. Returns {"raw": ..., "threadId": ...?}
         """
         if not mail_to:

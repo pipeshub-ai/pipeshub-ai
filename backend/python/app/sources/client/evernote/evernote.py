@@ -1,5 +1,4 @@
-"""
-Evernote Client using Apache Thrift Protocol
+"""Evernote Client using Apache Thrift Protocol
 =============================================
 
 Evernote API uses Apache Thrift RPC protocol (NOT REST/HTTP JSON).
@@ -58,7 +57,7 @@ Reference:
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib.parse import parse_qs, urlencode
 
 from pydantic import BaseModel, Field  # type: ignore
@@ -80,12 +79,13 @@ except ImportError:
 
 class EvernoteResponse(BaseModel):
     """Standardized Evernote API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return self.model_dump()
 
@@ -104,24 +104,25 @@ class EvernoteThriftClient:
         token: The access token (starts with S=...)
         note_store_url: The user's NoteStore URL (required for NoteStore API calls)
         sandbox: Whether to use sandbox environment (default: False)
+
     """
 
     def __init__(
         self,
         token: str,
-        note_store_url: Optional[str] = None,
-        sandbox: bool = False
+        note_store_url: str | None = None,
+        sandbox: bool = False,
     ) -> None:
         if not EVERNOTE_SDK_AVAILABLE:
             raise ImportError(
-                "Evernote SDK not available. Install it with: pip install evernote3"
+                "Evernote SDK not available. Install it with: pip install evernote3",
             )
 
         if not token:
             raise ValueError("Evernote token cannot be empty")
 
         # Validate token format (should start with S=)
-        if not token.startswith('S='):
+        if not token.startswith("S="):
             raise ValueError(f"Invalid Evernote token format. Token should start with 'S=', got: {token[:10]}...")
 
         self.token = token
@@ -135,14 +136,15 @@ class EvernoteThriftClient:
             self.user_store_uri = "https://www.evernote.com/edam/user"
 
         # Initialize Thrift clients (lazy loading)
-        self._user_store_client: Optional[Any] = None
-        self._note_store_client: Optional[Any] = None
+        self._user_store_client: Any | None = None
+        self._note_store_client: Any | None = None
 
     def get_user_store(self) -> object:
         """Get UserStore Thrift client
 
         Returns:
             UserStore.Client for authentication and user operations
+
         """
         if self._user_store_client is None:
             transport = THttpClient.THttpClient(self.user_store_uri)
@@ -158,11 +160,12 @@ class EvernoteThriftClient:
 
         Raises:
             ValueError: If note_store_url is not set
+
         """
         if not self.note_store_url:
             raise ValueError(
                 "note_store_url is required for NoteStore API calls. "
-                "Obtain it from OAuth response (edam_noteStoreUrl) or UserStore.getNoteStoreUrl()"
+                "Obtain it from OAuth response (edam_noteStoreUrl) or UserStore.getNoteStoreUrl()",
             )
 
         if self._note_store_client is None:
@@ -175,7 +178,7 @@ class EvernoteThriftClient:
         """Get the authentication token"""
         return self.token
 
-    def get_note_store_url(self) -> Optional[str]:
+    def get_note_store_url(self) -> str | None:
         """Get the NoteStore URL"""
         return self.note_store_url
 
@@ -196,6 +199,7 @@ class EvernoteOAuthHandler:
         consumer_secret: The API secret (consumer secret)
         callback_url: The callback URL for OAuth flow
         sandbox: Whether to use sandbox environment (default: False)
+
     """
 
     def __init__(
@@ -203,7 +207,7 @@ class EvernoteOAuthHandler:
         consumer_key: str,
         consumer_secret: str,
         callback_url: str,
-        sandbox: bool = False
+        sandbox: bool = False,
     ) -> None:
         self.consumer_key = consumer_key
         self.consumer_secret = consumer_secret
@@ -222,14 +226,14 @@ class EvernoteOAuthHandler:
             self.oauth_authorize_url = "https://www.evernote.com/OAuth.action"
             self.oauth_access_token_url = "https://www.evernote.com/oauth"
 
-    async def request_temporary_token(self) -> Optional[str]:
+    async def request_temporary_token(self) -> str | None:
         """Step 1: Generate a temporary token
         Returns:
             Temporary OAuth token
         """
         raise NotImplementedError(
             "OAuth 1.0 signing not implemented. Use an OAuth 1.0 library like 'oauthlib' "
-            "or 'requests-oauthlib' to properly sign the request."
+            "or 'requests-oauthlib' to properly sign the request.",
         )
 
     def get_authorization_url(self, oauth_token: str) -> str:
@@ -245,8 +249,8 @@ class EvernoteOAuthHandler:
     async def exchange_token_for_access(
         self,
         oauth_token: str,
-        oauth_verifier: str
-    ) -> Optional[Dict[str, str]]:
+        oauth_verifier: str,
+    ) -> dict[str, str] | None:
         """Step 3: Exchange temporary token and verifier for access token
         Args:
             oauth_token: The temporary OAuth token
@@ -256,10 +260,10 @@ class EvernoteOAuthHandler:
         """
         raise NotImplementedError(
             "OAuth 1.0 signing not implemented. Use an OAuth 1.0 library like 'oauthlib' "
-            "or 'requests-oauthlib' to properly sign the request."
+            "or 'requests-oauthlib' to properly sign the request.",
         )
 
-    def _parse_oauth_response(self, response_text: str) -> Dict[str, str]:
+    def _parse_oauth_response(self, response_text: str) -> dict[str, str]:
         """Parse OAuth response in URL-encoded format
         Args:
             response_text: URL-encoded response string
@@ -280,8 +284,9 @@ class EvernoteTokenConfig(BaseModel):
         note_store_url: NoteStore URL for the user (required for NoteStore API calls)
         sandbox: Whether to use sandbox environment
     """
+
     token: str = Field(..., description="Evernote access token")
-    note_store_url: Optional[str] = Field(None, description="User's NoteStore URL")
+    note_store_url: str | None = Field(None, description="User's NoteStore URL")
     sandbox: bool = Field(default=False, description="Use sandbox environment")
 
     def create_client(self) -> EvernoteThriftClient:
@@ -289,7 +294,7 @@ class EvernoteTokenConfig(BaseModel):
         return EvernoteThriftClient(
             self.token,
             self.note_store_url,
-            self.sandbox
+            self.sandbox,
         )
 
     def to_dict(self) -> dict:
@@ -305,7 +310,9 @@ class EvernoteOAuthConfig(BaseModel):
         consumer_secret: The API secret (consumer secret)
         callback_url: The callback URL for OAuth flow
         sandbox: Whether to use sandbox environment
+
     """
+
     consumer_key: str = Field(..., description="Evernote consumer key (API key)")
     consumer_secret: str = Field(..., description="Evernote consumer secret")
     callback_url: str = Field(..., description="OAuth callback URL")
@@ -317,7 +324,7 @@ class EvernoteOAuthConfig(BaseModel):
             self.consumer_key,
             self.consumer_secret,
             self.callback_url,
-            self.sandbox
+            self.sandbox,
         )
 
     def to_dict(self) -> dict:
@@ -362,7 +369,7 @@ class EvernoteClient(IClient):
         """Get the authentication token"""
         return self.client.get_token()
 
-    def get_note_store_url(self) -> Optional[str]:
+    def get_note_store_url(self) -> str | None:
         """Get the user's NoteStore URL"""
         return self.client.get_note_store_url()
 
@@ -373,7 +380,7 @@ class EvernoteClient(IClient):
     @classmethod
     def build_with_config(
         cls,
-        config: EvernoteTokenConfig
+        config: EvernoteTokenConfig,
     ) -> "EvernoteClient":
         """Build EvernoteClient with token configuration
         Args:
@@ -417,14 +424,14 @@ class EvernoteClient(IClient):
             return cls(client)
 
         except Exception as e:
-            logger.error(f"Failed to build Evernote client from services: {str(e)}")
+            logger.error(f"Failed to build Evernote client from services: {e!s}")
             raise
 
     @staticmethod
     async def _get_connector_config(
         logger: logging.Logger,
-        config_service: ConfigurationService
-    ) -> Dict[str, Any]:
+        config_service: ConfigurationService,
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for Evernote."""
         try:
             config = await config_service.get_config("/services/connectors/evernote/config")

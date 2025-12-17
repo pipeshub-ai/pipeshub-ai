@@ -1,6 +1,5 @@
 import base64
 import json
-from typing import Dict, List, Tuple, Union
 
 from jinja2 import Template
 from langchain.output_parsers import PydanticOutputParser
@@ -45,15 +44,14 @@ Return the JSON object only, no additional text or explanation.
 """
 
 
-async def _call_llm(config, messages) -> Union[str, dict, list]:
+async def _call_llm(config, messages) -> str | dict | list:
     llm,_ = await get_llm(config)
     return await llm.ainvoke(messages)
 
 
 
 async def get_table_summary_n_headers(config, table_markdown: str) -> TableSummary:
-    """
-    Use LLM to generate a concise summary, mirroring the approach in Excel's get_table_summary.
+    """Use LLM to generate a concise summary, mirroring the approach in Excel's get_table_summary.
     """
     try:
         # LLM prompt (reuse Excel's)
@@ -70,8 +68,8 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
             {"role": "user", "content": rendered_form},
         ]
         response = await _call_llm(config, messages)
-        if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
+        if "</think>" in response.content:
+                response.content = response.content.split("</think>")[-1]
         response_text = response.content.strip()
         if response_text.startswith("```json"):
             response_text = response_text.replace("```json", "", 1)
@@ -89,7 +87,7 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
             try:
                 reflection_prompt = f"""
                 The previous response failed validation with the following error:
-                {str(parse_error)}
+                {parse_error!s}
 
                 The response was:
                 {response_text}
@@ -107,8 +105,8 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
 
                 # Use retry wrapper for reflection LLM call
                 reflection_response = await _call_llm(config, reflection_messages)
-                if '</think>' in reflection_response.content:
-                    reflection_response.content = reflection_response.content.split('</think>')[-1]
+                if "</think>" in reflection_response.content:
+                    reflection_response.content = reflection_response.content.split("</think>")[-1]
                 reflection_text = reflection_response.content.strip()
 
                 # Clean the reflection response
@@ -126,15 +124,15 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
 
             except Exception:
                 raise ValueError(
-                    f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}"
+                    f"Failed to parse LLM response and reflection attempt failed: {parse_error!s}",
                 )
     except Exception as e:
         raise e
 
 
 async def get_rows_text(
-    config, table_data: dict, table_summary: str, column_headers: list[str]
-) -> Tuple[List[str], List[List[dict]]]:
+    config, table_data: dict, table_summary: str, column_headers: list[str],
+) -> tuple[list[str], list[list[dict]]]:
     """Convert multiple rows into natural language text using context from summaries in a single prompt"""
     table = table_data.get("grid")
     if table:
@@ -157,12 +155,12 @@ async def get_rows_text(
 
             # Get natural language text from LLM with retry
             messages = row_text_prompt.format_messages(
-                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
+                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2),
             )
 
             response = await _call_llm(config, messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
+            if "</think>" in response.content:
+                response.content = response.content.split("</think>")[-1]
             # Try to extract JSON array from response
             try:
                 # First try direct JSON parsing
@@ -189,10 +187,10 @@ async def get_rows_text(
 
 
 def _normalize_bbox(
-    bbox: Tuple[float, float, float, float],
+    bbox: tuple[float, float, float, float],
     page_width: float,
     page_height: float,
-) -> List[Dict[str, float]]:
+) -> list[dict[str, float]]:
     """Normalize bounding box coordinates to 0-1 range"""
     x0, y0, x1, y1 = bbox
     return [
@@ -205,7 +203,7 @@ def _normalize_bbox(
 
 def image_bytes_to_base64(image_bytes, extention) -> str:
     mime_type = f"image/{extention}"
-    base64_encoded = base64.b64encode(image_bytes).decode('utf-8')
+    base64_encoded = base64.b64encode(image_bytes).decode("utf-8")
     return f"data:{mime_type};base64,{base64_encoded}"
 
 async def process_table_pymupdf(
@@ -213,7 +211,7 @@ async def process_table_pymupdf(
     result: dict,
     config: ConfigurationService,
     page_number: int,
-) -> Tuple[List[str], List[List[dict]]]:
+) -> tuple[list[str], list[list[dict]]]:
     """Process table data with normalized coordinates"""
     page_width = page.rect.width
     page_height = page.rect.height
@@ -256,9 +254,9 @@ async def process_table_pymupdf(
                 data={
                     "row_natural_language_text": table_rows_text[i] if i<len(table_rows_text) else "",
                     "row_number": i+1,
-                    "row":json.dumps(row)
+                    "row":json.dumps(row),
                 },
-                citation_metadata=block_group.citation_metadata
+                citation_metadata=block_group.citation_metadata,
             )
             # _enrich_metadata(block, row, doc_dict)
             result["blocks"].append(block)

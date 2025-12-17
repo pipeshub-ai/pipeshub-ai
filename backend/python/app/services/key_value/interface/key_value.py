@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
 
 
 class IKeyValueService(ABC):
@@ -16,7 +15,7 @@ class IKeyValueService(ABC):
         pass
 
     @abstractmethod
-    async def get(self, key: str) -> Optional[str]:
+    async def get(self, key: str) -> str | None:
         pass
 
     @abstractmethod
@@ -24,9 +23,9 @@ class IKeyValueService(ABC):
         pass
 
     @abstractmethod
-    async def store_progress(self, progress: Dict) -> bool:
+    async def store_progress(self, progress: dict) -> bool:
         pass
 
     @abstractmethod
-    async def get_progress(self) -> Optional[Dict]:
+    async def get_progress(self) -> dict | None:
         pass

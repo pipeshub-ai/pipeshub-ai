@@ -3,7 +3,6 @@ import hashlib
 import os
 import threading
 import time
-from typing import Union
 
 import dotenv
 from cachetools import LRUCache
@@ -34,7 +33,7 @@ class ConfigurationService:
         self.logger.debug("🔑 Secret key hashed to 32 bytes and converted to hex")
 
         self.encryption_service = EncryptionService.get_instance(
-            "aes-256-gcm", hex_key, logger
+            "aes-256-gcm", hex_key, logger,
         )
         self.logger.debug("🔐 Initialized EncryptionService")
 
@@ -50,7 +49,7 @@ class ConfigurationService:
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None, use_cache: bool = True) -> Union[str, int, float, bool, dict, list, None]:
+    async def get_config(self, key: str, default: str | float | bool | dict | list | None = None, use_cache: bool = True) -> str | int | float | bool | dict | list | None:
         """Get configuration value with LRU cache and environment variable fallback"""
         try:
             # Check cache first
@@ -80,7 +79,7 @@ class ConfigurationService:
                 return env_fallback
             return default
 
-    def _get_env_fallback(self, key: str) -> Union[dict, None]:
+    def _get_env_fallback(self, key: str) -> dict | None:
         """Get environment variable fallback for specific configuration keys"""
         if key == config_node_constants.KAFKA.value:
             # Kafka configuration fallback
@@ -92,7 +91,7 @@ class ConfigurationService:
                     "port": int(brokers_list[0].split(":")[1]) if ":" in brokers_list[0] else 9092,
                     "topic": "records",
                     "bootstrap_servers": brokers_list,
-                    "brokers": brokers_list
+                    "brokers": brokers_list,
                 }
         elif key == config_node_constants.ARANGODB.value:
             # ArangoDB configuration fallback
@@ -102,7 +101,7 @@ class ConfigurationService:
                     "url": arango_url,
                     "username": os.getenv("ARANGO_USERNAME", "root"),
                     "password": os.getenv("ARANGO_PASSWORD"),
-                    "db": os.getenv("ARANGO_DB_NAME", "es")
+                    "db": os.getenv("ARANGO_DB_NAME", "es"),
                 }
         elif key == config_node_constants.REDIS.value:
             # Redis configuration fallback
@@ -112,7 +111,7 @@ class ConfigurationService:
                 return {
                     "host": redis_host,
                     "port": int(os.getenv("REDIS_PORT", "6379")),
-                    "password": redis_password if redis_password and redis_password.strip() else None
+                    "password": redis_password if redis_password and redis_password.strip() else None,
                 }
         elif key == config_node_constants.QDRANT.value:
             # Qdrant configuration fallback
@@ -121,7 +120,7 @@ class ConfigurationService:
                 return {
                     "host": qdrant_host,
                     "grpcPort": int(os.getenv("QDRANT_GRPC_PORT", "6333")),
-                    "apiKey": os.getenv("QDRANT_API_KEY", "qdrant")
+                    "apiKey": os.getenv("QDRANT_API_KEY", "qdrant"),
                 }
         return None
 
@@ -130,9 +129,9 @@ class ConfigurationService:
 
         def watch_etcd() -> None:
             # Expect store implementations to expose .client directly
-            if hasattr(self.store, 'client'):
+            if hasattr(self.store, "client"):
                 # Wait for client to be ready
-                while getattr(self.store, 'client', None) is None:
+                while getattr(self.store, "client", None) is None:
                     time.sleep(3)
                 try:
                     self.store.client.add_watch_prefix_callback("/", self._watch_callback)
@@ -145,7 +144,7 @@ class ConfigurationService:
         self.watch_thread = threading.Thread(target=watch_etcd, daemon=True)
         self.watch_thread.start()
 
-    async def set_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
+    async def set_config(self, key: str, value: str | float | bool | dict | list) -> bool:
         """Set configuration value with optional encryption"""
         try:
 
@@ -170,7 +169,7 @@ class ConfigurationService:
             self.logger.error("❌ Failed to set config %s: %s", key, str(e))
             return False
 
-    async def update_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
+    async def update_config(self, key: str, value: str | float | bool | dict | list) -> bool:
         """Update configuration value with optional encryption"""
         try:
             # Check if key exists

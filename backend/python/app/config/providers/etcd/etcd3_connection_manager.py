@@ -1,6 +1,5 @@
 import asyncio
 from dataclasses import dataclass
-from typing import List, Optional
 
 import etcd3
 
@@ -13,12 +12,12 @@ logger = create_logger("etcd")
 class ConnectionConfig:
     """Configuration for ETCD connection."""
 
-    hosts: List[str]
+    hosts: list[str]
     port: int = 2379
     timeout: float = 5.0
-    ca_cert: Optional[str] = None
-    cert_key: Optional[str] = None
-    cert_cert: Optional[str] = None
+    ca_cert: str | None = None
+    cert_key: str | None = None
+    cert_cert: str | None = None
 
 
 class ConnectionState:
@@ -31,22 +30,22 @@ class ConnectionState:
 
 
 class Etcd3ConnectionManager:
-    """
-    Manages ETCD3 client connections with automatic reconnection and health checks.
+    """Manages ETCD3 client connections with automatic reconnection and health checks.
 
     Attributes:
         config: Connection configuration
         client: ETCD3 client instance
         state: Current connection state
         retry_policy: Policy for connection retries
+
     """
 
     def __init__(self, config: ConnectionConfig) -> None:
-        """
-        Initialize the connection manager.
+        """Initialize the connection manager.
 
         Args:
             config: Connection configuration
+
         """
         logger.debug("🔧 Initializing ETCD3 Connection Manager")
         logger.debug("📋 Connection config:")
@@ -56,11 +55,11 @@ class Etcd3ConnectionManager:
         logger.debug("   - SSL enabled: %s", bool(config.ca_cert or config.cert_key))
 
         self.config = config
-        self.client: Optional[etcd3.client] = None
+        self.client: etcd3.client | None = None
         self.state = ConnectionState.DISCONNECTED
         logger.debug("📋 Initial state: %s", self.state)
 
-        self._health_check_task: Optional[asyncio.Task] = None
+        self._health_check_task: asyncio.Task | None = None
         logger.debug("✅ Connection manager initialized")
 
     async def connect(self) -> None:
@@ -94,7 +93,7 @@ class Etcd3ConnectionManager:
             logger.debug("   - Port: %s", self.config.port)
             logger.debug("   - Error type: %s", type(e).__name__)
             logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to connect to ETCD: {str(e)}")
+            raise ConnectionError(f"Failed to connect to ETCD: {e!s}")
 
     def _create_client(self) -> etcd3.client:
         """Create new ETCD client instance."""
@@ -117,7 +116,7 @@ class Etcd3ConnectionManager:
                         "ca_cert": self.config.ca_cert,
                         "cert_key": self.config.cert_key,
                         "cert_cert": self.config.cert_cert,
-                    }
+                    },
                 )
 
             # Create client synchronously since etcd3 doesn't support async
@@ -160,14 +159,14 @@ class Etcd3ConnectionManager:
         logger.debug("📋 New connection state: %s", self.state)
 
     async def get_client(self) -> etcd3.client:
-        """
-        Get the current ETCD client, connecting if necessary.
+        """Get the current ETCD client, connecting if necessary.
 
         Returns:
             etcd3.client: Connected ETCD client
 
         Raises:
             ConnectionError: If no connection is available
+
         """
         logger.debug("🔍 Getting ETCD client")
         logger.debug("📋 Current state: %s", self.state)

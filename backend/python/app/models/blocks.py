@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
@@ -50,123 +50,133 @@ class DataFormat(str, Enum):
 class BlockComment(BaseModel):
     text: str
     format: DataFormat
-    thread_id: Optional[str] = None
-    attachment_record_ids: Optional[List[str]] = None
+    thread_id: str | None = None
+    attachment_record_ids: list[str] | None = None
 
 class CitationMetadata(BaseModel):
     """Citation-specific metadata for referencing source locations"""
+
     # All File formatsspecific
-    section_title: Optional[str] = None
+    section_title: str | None = None
 
     # PDF specific
-    page_number: Optional[int] = None
-    has_more_pages: Optional[bool] = None
-    more_page_numbers: Optional[List[int]] = None
-    bounding_boxes: Optional[List[Point]] = None
-    more_page_bounding_boxes: Optional[List[List[Point]]] = None
+    page_number: int | None = None
+    has_more_pages: bool | None = None
+    more_page_numbers: list[int] | None = None
+    bounding_boxes: list[Point] | None = None
+    more_page_bounding_boxes: list[list[Point]] | None = None
 
     # PDF/Word/Text specific
-    line_number: Optional[int] = None
-    paragraph_number: Optional[int] = None
+    line_number: int | None = None
+    paragraph_number: int | None = None
 
     # Excel specific
-    sheet_number: Optional[int] = None
-    sheet_name: Optional[str] = None
-    cell_reference: Optional[str] = None  # e.g., "A1", "B5"
+    sheet_number: int | None = None
+    sheet_name: str | None = None
+    cell_reference: str | None = None  # e.g., "A1", "B5"
 
     # Excel/CSV specific
-    row_number: Optional[int] = None
-    column_number: Optional[int] = None
+    row_number: int | None = None
+    column_number: int | None = None
 
     # Slide specific
-    slide_number: Optional[int] = None
+    slide_number: int | None = None
 
     # Video/Audio specific
-    start_timestamp: Optional[str] = None  # For video/audio content
-    end_timestamp: Optional[str] = None  # For video/audio content
-    duration_ms: Optional[int] = None  # For video/audio
+    start_timestamp: str | None = None  # For video/audio content
+    end_timestamp: str | None = None  # For video/audio content
+    duration_ms: int | None = None  # For video/audio
 
-    @field_validator('bounding_boxes')
+    @field_validator("bounding_boxes")
     @classmethod
-    def validate_bounding_boxes(cls, v: List[Point]) -> List[Point]:
+    def validate_bounding_boxes(cls, v: list[Point]) -> list[Point]:
         """Validate that the bounding boxes contain exactly 4 points"""
         COORDINATE_COUNT = 4
         if len(v) != COORDINATE_COUNT:
-            raise ValueError(f'bounding_boxes must contain exactly {COORDINATE_COUNT} points')
+            raise ValueError(f"bounding_boxes must contain exactly {COORDINATE_COUNT} points")
         return v
 
 class TableCellMetadata(BaseModel):
     """Metadata specific to table cell blocks"""
-    row_number: Optional[int] = None
-    column_number: Optional[int] = None
-    row_span: Optional[int] = None
-    column_span: Optional[int] = None
-    column_header: Optional[bool] = None
-    row_header: Optional[bool] = None
+
+    row_number: int | None = None
+    column_number: int | None = None
+    row_span: int | None = None
+    column_span: int | None = None
+    column_header: bool | None = None
+    row_header: bool | None = None
 
 class TableRowMetadata(BaseModel):
     """Metadata specific to table row blocks"""
-    row_number: Optional[int] = None
-    row_span: Optional[int] = None
+
+    row_number: int | None = None
+    row_span: int | None = None
     is_header: bool = False
 
 class TableMetadata(BaseModel):
     """Metadata specific to table blocks"""
-    num_of_rows: Optional[int] = None
-    num_of_cols: Optional[int] = None
+
+    num_of_rows: int | None = None
+    num_of_cols: int | None = None
     has_header: bool = False
-    column_names: Optional[List[str]] = None
-    captions: Optional[List[str]] = Field(default_factory=list)
-    footnotes: Optional[List[str]] = Field(default_factory=list)
+    column_names: list[str] | None = None
+    captions: list[str] | None = Field(default_factory=list)
+    footnotes: list[str] | None = Field(default_factory=list)
 
 class CodeMetadata(BaseModel):
     """Metadata specific to code blocks"""
-    language: Optional[str] = None
-    execution_context: Optional[str] = None
+
+    language: str | None = None
+    execution_context: str | None = None
     is_executable: bool = False
-    dependencies: Optional[List[str]] = None
+    dependencies: list[str] | None = None
 
 class MediaMetadata(BaseModel):
     """Metadata for media blocks (image, video, audio)"""
-    duration_ms: Optional[int] = None  # For video/audio
-    dimensions: Optional[Dict[str, int]] = None  # {"width": 1920, "height": 1080}
-    file_size_bytes: Optional[int] = None
-    mime_type: Optional[str] = None
-    alt_text: Optional[str] = None
-    transcription: Optional[str] = None  # For audio/video
+
+    duration_ms: int | None = None  # For video/audio
+    dimensions: dict[str, int] | None = None  # {"width": 1920, "height": 1080}
+    file_size_bytes: int | None = None
+    mime_type: str | None = None
+    alt_text: str | None = None
+    transcription: str | None = None  # For audio/video
 
 class ListMetadata(BaseModel):
     """Metadata specific to list blocks"""
-    list_style: Optional[Literal["bullet", "numbered", "checkbox", "dash"]] = None
+
+    list_style: Literal["bullet", "numbered", "checkbox", "dash"] | None = None
     indent_level: int = 0
-    parent_list_id: Optional[str] = None
-    item_count: Optional[int] = None
+    parent_list_id: str | None = None
+    item_count: int | None = None
 
 class FileMetadata(BaseModel):
     """Metadata specific to file blocks"""
-    file_name: Optional[str] = None
-    file_size_bytes: Optional[int] = None
-    mime_type: Optional[str] = None
-    file_extension: Optional[str] = None
-    file_path: Optional[str] = None
+
+    file_name: str | None = None
+    file_size_bytes: int | None = None
+    mime_type: str | None = None
+    file_extension: str | None = None
+    file_path: str | None = None
 
 class LinkMetadata(BaseModel):
     """Metadata specific to link blocks"""
-    link_text: Optional[str] = None
-    link_url: Optional[HttpUrl] = None
-    link_type: Optional[Literal["internal", "external"]] = None
-    link_target: Optional[str] = None
+
+    link_text: str | None = None
+    link_url: HttpUrl | None = None
+    link_type: Literal["internal", "external"] | None = None
+    link_target: str | None = None
 
 class ImageMetadata(BaseModel):
     """Metadata specific to image blocks"""
-    image_type: Optional[Literal["image", "drawing"]] = None
-    image_format: Optional[str] = None
-    image_size: Optional[Dict[str, int]] = None
-    image_resolution: Optional[Dict[str, int]] = None
-    image_dpi: Optional[int] = None
-    captions: Optional[List[str]] = Field(default_factory=list)
-    footnotes: Optional[List[str]] = Field(default_factory=list)
-    annotations: Optional[List[str]] = Field(default_factory=list)
+
+    image_type: Literal["image", "drawing"] | None = None
+    image_format: str | None = None
+    image_size: dict[str, int] | None = None
+    image_resolution: dict[str, int] | None = None
+    image_dpi: int | None = None
+    captions: list[str] | None = Field(default_factory=list)
+    footnotes: list[str] | None = Field(default_factory=list)
+    annotations: list[str] | None = Field(default_factory=list)
 
 class Confidence(str, Enum):
     VERY_HIGH = "very_high"
@@ -186,83 +196,83 @@ class GroupType(str, Enum):
     ORDERED_LIST = "ordered_list"
 
 class SemanticMetadata(BaseModel):
-    entities: Optional[List[Dict[str, Any]]] = None
-    section_numbers: Optional[List[str]] = None
-    summary: Optional[str] = None
-    keywords: Optional[List[str]] = None
-    departments: Optional[List[str]] = None
-    languages: Optional[List[str]] = None
-    topics: Optional[List[str]] = None
-    record_id: Optional[str] = None
-    categories: Optional[List[str]] = Field(default_factory=list)
-    sub_category_level_1: Optional[str] = None
-    sub_category_level_2: Optional[str] = None
-    sub_category_level_3: Optional[str] = None
-    confidence: Optional[Confidence] = None
+    entities: list[dict[str, Any]] | None = None
+    section_numbers: list[str] | None = None
+    summary: str | None = None
+    keywords: list[str] | None = None
+    departments: list[str] | None = None
+    languages: list[str] | None = None
+    topics: list[str] | None = None
+    record_id: str | None = None
+    categories: list[str] | None = Field(default_factory=list)
+    sub_category_level_1: str | None = None
+    sub_category_level_2: str | None = None
+    sub_category_level_3: str | None = None
+    confidence: Confidence | None = None
 
 class Block(BaseModel):
     # Core block properties
     id: str = Field(default_factory=lambda: str(uuid4()))
     index: int = None
-    parent_index: Optional[int] = Field(default=None, description="Index of the parent block group")
+    parent_index: int | None = Field(default=None, description="Index of the parent block group")
     type: BlockType
-    name: Optional[str] = None
+    name: str | None = None
     format: DataFormat = None
-    comments: List[BlockComment] = Field(default_factory=list)
-    source_creation_date: Optional[datetime] = None
-    source_update_date: Optional[datetime] = None
-    source_id: Optional[str] = None
-    source_name: Optional[str] = None
-    source_type: Optional[str] = None
+    comments: list[BlockComment] = Field(default_factory=list)
+    source_creation_date: datetime | None = None
+    source_update_date: datetime | None = None
+    source_id: str | None = None
+    source_name: str | None = None
+    source_type: str | None = None
     # Content and links
-    data: Optional[Any] = None
-    links: Optional[List[str]] = None
-    weburl: Optional[HttpUrl] = None
-    public_data_link: Optional[HttpUrl] = None
-    public_data_link_expiration_epoch_time_in_ms: Optional[int] = None
-    citation_metadata: Optional[CitationMetadata] = None
-    list_metadata: Optional[ListMetadata] = None
-    table_row_metadata: Optional[TableRowMetadata] = None
-    table_cell_metadata: Optional[TableCellMetadata] = None
-    code_metadata: Optional[CodeMetadata] = None
-    media_metadata: Optional[MediaMetadata] = None
-    file_metadata: Optional[FileMetadata] = None
-    link_metadata: Optional[LinkMetadata] = None
-    image_metadata: Optional[ImageMetadata] = None
-    semantic_metadata: Optional[SemanticMetadata] = None
+    data: Any | None = None
+    links: list[str] | None = None
+    weburl: HttpUrl | None = None
+    public_data_link: HttpUrl | None = None
+    public_data_link_expiration_epoch_time_in_ms: int | None = None
+    citation_metadata: CitationMetadata | None = None
+    list_metadata: ListMetadata | None = None
+    table_row_metadata: TableRowMetadata | None = None
+    table_cell_metadata: TableCellMetadata | None = None
+    code_metadata: CodeMetadata | None = None
+    media_metadata: MediaMetadata | None = None
+    file_metadata: FileMetadata | None = None
+    link_metadata: LinkMetadata | None = None
+    image_metadata: ImageMetadata | None = None
+    semantic_metadata: SemanticMetadata | None = None
 
 class Blocks(BaseModel):
-    blocks: List[Block] = Field(default_factory=list)
+    blocks: list[Block] = Field(default_factory=list)
 
 class BlockContainerIndex(BaseModel):
-    block_index: Optional[int] = None
-    block_group_index: Optional[int] = None
+    block_index: int | None = None
+    block_group_index: int | None = None
 
 class BlockGroup(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     index: int = None
-    name: Optional[str] = Field(description="Name of the block group",default=None)
+    name: str | None = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
-    parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
-    description: Optional[str] = Field(description="Description of the block group",default=None)
-    source_group_id: Optional[str] = Field(description="Source group identifier",default=None)
-    citation_metadata: Optional[CitationMetadata] = None
-    list_metadata: Optional[ListMetadata] = None
-    table_metadata: Optional[TableMetadata] = None
-    table_row_metadata: Optional[TableRowMetadata] = None
-    table_cell_metadata: Optional[TableCellMetadata] = None
-    code_metadata: Optional[CodeMetadata] = None
-    media_metadata: Optional[MediaMetadata] = None
-    file_metadata: Optional[FileMetadata] = None
-    link_metadata: Optional[LinkMetadata] = None
-    semantic_metadata: Optional[SemanticMetadata] = None
-    children: Optional[List[BlockContainerIndex]] = None
-    data: Optional[Any] = None
-    format: Optional[DataFormat] = None
+    parent_index: int | None = Field(description="Index of the parent block group",default=None)
+    description: str | None = Field(description="Description of the block group",default=None)
+    source_group_id: str | None = Field(description="Source group identifier",default=None)
+    citation_metadata: CitationMetadata | None = None
+    list_metadata: ListMetadata | None = None
+    table_metadata: TableMetadata | None = None
+    table_row_metadata: TableRowMetadata | None = None
+    table_cell_metadata: TableCellMetadata | None = None
+    code_metadata: CodeMetadata | None = None
+    media_metadata: MediaMetadata | None = None
+    file_metadata: FileMetadata | None = None
+    link_metadata: LinkMetadata | None = None
+    semantic_metadata: SemanticMetadata | None = None
+    children: list[BlockContainerIndex] | None = None
+    data: Any | None = None
+    format: DataFormat | None = None
 
 class BlockGroups(BaseModel):
-    block_groups: List[BlockGroup] = Field(default_factory=list)
+    block_groups: list[BlockGroup] = Field(default_factory=list)
 
 class BlocksContainer(BaseModel):
-    block_groups: List[BlockGroup] = Field(default_factory=list)
-    blocks: List[Block] = Field(default_factory=list)
+    block_groups: list[BlockGroup] = Field(default_factory=list)
+    blocks: list[Block] = Field(default_factory=list)

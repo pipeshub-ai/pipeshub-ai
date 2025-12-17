@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from dependency_injector import providers
 
@@ -27,20 +27,19 @@ class EventService:
         self.arango_service = arango_service
         self.app_container = app_container
 
-    def _get_connector(self, connector_name: str) -> Optional[BaseConnector]:
-        """
-        Get connector instance from app_container.
+    def _get_connector(self, connector_name: str) -> BaseConnector | None:
+        """Get connector instance from app_container.
         """
         connector_key = f"{connector_name}_connector"
 
         if hasattr(self.app_container, connector_key):
             return getattr(self.app_container, connector_key)()
-        elif hasattr(self.app_container, 'connectors_map'):
+        if hasattr(self.app_container, "connectors_map"):
             return self.app_container.connectors_map.get(connector_name)
 
         return None
 
-    async def process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
+    async def process_event(self, event_type: str, payload: dict[str, Any]) -> bool:
         """Handle connector-specific events - implementing abstract method"""
         try:
             if "." in event_type:
@@ -55,21 +54,18 @@ class EventService:
 
             if action == "init":
                 return await self._handle_init(connector_name, payload)
-            elif action == "start":
+            if action == "start" or action == "resync":
                 return await self._handle_start_sync(connector_name, payload)
-            elif action == "resync":
-                return await self._handle_start_sync(connector_name, payload)
-            elif action == "reindex":
+            if action == "reindex":
                 return await self._handle_reindex(connector_name, payload)
-            else:
-                self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {action}")
-                return False
+            self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {action}")
+            return False
 
         except Exception as e:
             self.logger.error(f"Error handling connector event {event_type}: {e}", exc_info=True)
             return False
 
-    async def _handle_init(self, connector_name: str, payload: Dict[str, Any]) -> bool:
+    async def _handle_init(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Initializes the event service connector and its dependencies."""
         try:
             org_id = payload.get("orgId")
@@ -86,7 +82,7 @@ class EventService:
                 name=connector_name,
                 logger=self.logger,
                 data_store_provider=data_store_provider,
-                config_service=config_service
+                config_service=config_service,
             )
 
             if not connector:
@@ -101,7 +97,7 @@ class EventService:
                 getattr(self.app_container, connector_key).override(providers.Object(connector))
             else:
                 # Store in connectors_map if specific connector attribute doesn't exist
-                if not hasattr(self.app_container, 'connectors_map'):
+                if not hasattr(self.app_container, "connectors_map"):
                     self.app_container.connectors_map = {}
                 self.app_container.connectors_map[connector_name] = connector
             # Initialize directly since we can't use BackgroundTasks in Kafka consumer
@@ -110,7 +106,7 @@ class EventService:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
             return False
 
-    async def _handle_start_sync(self, connector_name: str, payload: Dict[str, Any]) -> bool:
+    async def _handle_start_sync(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Queue immediate start of the sync service"""
         try:
             org_id = payload.get("orgId")
@@ -130,10 +126,10 @@ class EventService:
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to queue {connector_name.capitalize()} sync service start: {str(e)}")
+            self.logger.error(f"Failed to queue {connector_name.capitalize()} sync service start: {e!s}")
             return False
 
-    async def _handle_reindex(self, connector_name: str, payload: Dict[str, Any]) -> bool:
+    async def _handle_reindex(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Handle reindex event for a connector with pagination support"""
         try:
             org_id = payload.get("orgId")
@@ -168,7 +164,7 @@ class EventService:
                     connector_name=connector_enum,
                     status_filters=status_filters,
                     limit=batch_size,
-                    offset=offset
+                    offset=offset,
                 )
 
                 if not records:
@@ -190,5 +186,5 @@ class EventService:
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to handle reindex for {connector_name.capitalize()}: {str(e)}", exc_info=True)
+            self.logger.error(f"Failed to handle reindex for {connector_name.capitalize()}: {e!s}", exc_info=True)
             return False

@@ -1,6 +1,6 @@
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -11,12 +11,13 @@ from app.sources.client.iclient import IClient
 
 class WorkdayResponse(BaseModel):
     """Standardized Workday API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return self.model_dump()
 
@@ -27,14 +28,16 @@ class WorkdayRESTClient(HTTPClient):
     Args:
         base_url: The base URL of the Workday instance
         token: The access token to use for authentication (Bearer token or OAuth token)
+
     """
+
     def __init__(self, base_url: str, token: str) -> None:
         if not base_url:
             raise ValueError("Workday base_url cannot be empty")
         if not token:
             raise ValueError("Workday token cannot be empty")
 
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
         self.token = token
 
         super().__init__(token, "Bearer")
@@ -53,14 +56,16 @@ class WorkdayConfig:
     Args:
         base_url: The base URL of the Workday instance
         token: The access token (API token or OAuth access token)
+
     """
+
     base_url: str
     token: str
 
     def create_client(self) -> WorkdayRESTClient:
         return WorkdayRESTClient(self.base_url, self.token)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -71,7 +76,7 @@ class WorkdayClient(IClient):
 
     def __init__(
         self,
-        client: WorkdayRESTClient
+        client: WorkdayRESTClient,
     ) -> None:
         self.client = client
 
@@ -129,8 +134,8 @@ class WorkdayClient(IClient):
     @staticmethod
     async def _get_connector_config(
         logger: logging.Logger,
-        config_service: ConfigurationService
-    ) -> Dict[str, Any]:
+        config_service: ConfigurationService,
+    ) -> dict[str, Any]:
         """Fetch connector config from configuration service for Workday"""
         try:
             config = await config_service.get_config("/services/connectors/workday/config")

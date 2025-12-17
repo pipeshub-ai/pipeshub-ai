@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.sources.google.common.connector_google_exceptions import (
@@ -32,14 +32,15 @@ except ImportError:
 @dataclass
 class GoogleAuthConfig:
     """Configuration for Google authentication"""
-    credentials_path: Optional[str] = None
-    redirect_uri: Optional[str] = None
-    scopes: Optional[List[str]] = None
-    oauth_port: Optional[int] = 8080
-    token_file_path: Optional[str] = "token.json"
-    credentials_file_path: Optional[str] = "credentials.json"
-    admin_scopes: Optional[List[str]] = None
-    is_individual: Optional[bool] = False  # Flag to indicate if authentication is for an individual user.
+
+    credentials_path: str | None = None
+    redirect_uri: str | None = None
+    scopes: list[str] | None = None
+    oauth_port: int | None = 8080
+    token_file_path: str | None = "token.json"
+    credentials_file_path: str | None = "credentials.json"
+    admin_scopes: list[str] | None = None
+    is_individual: bool | None = False  # Flag to indicate if authentication is for an individual user.
 
 
 class GoogleClient(IClient):
@@ -50,9 +51,8 @@ class GoogleClient(IClient):
         self.client = client
 
     @staticmethod
-    def _get_optimized_scopes(service_name: str, additional_scopes: Optional[List[str]] = None) -> List[str]:
-        """
-        Get optimized scopes for a specific service.
+    def _get_optimized_scopes(service_name: str, additional_scopes: list[str] | None = None) -> list[str]:
+        """Get optimized scopes for a specific service.
 
         Args:
             service_name: Name of the Google service
@@ -60,6 +60,7 @@ class GoogleClient(IClient):
 
         Returns:
             List of optimized scopes for the service
+
         """
         # Get base scopes for the service
         base_scopes = GOOGLE_SERVICE_SCOPES.get(service_name, [])
@@ -79,9 +80,8 @@ class GoogleClient(IClient):
         return self.client
 
     @classmethod
-    def build_with_client(cls, client: object) -> 'GoogleClient':
-        """
-        Build GoogleDriveClient with an already authenticated client
+    def build_with_client(cls, client: object) -> "GoogleClient":
+        """Build GoogleDriveClient with an already authenticated client
         Args:
             client: Authenticated Google Drive client object
         Returns:
@@ -90,13 +90,14 @@ class GoogleClient(IClient):
         return cls(client)
 
     @classmethod
-    def build_with_config(cls, config: GoogleAuthConfig) -> 'GoogleClient':
-        """
-        Build GoogleDriveClient with configuration (placeholder for future OAuth2/enterprise support)
+    def build_with_config(cls, config: GoogleAuthConfig) -> "GoogleClient":
+        """Build GoogleDriveClient with configuration (placeholder for future OAuth2/enterprise support)
+
         Args:
             config: GoogleAuthConfig instance
         Returns:
             GoogleClient instance with placeholder implementation
+
         """
         # TODO: Implement OAuth2 flow and enterprise account authentication
         # For now, return a placeholder client
@@ -109,14 +110,13 @@ class GoogleClient(IClient):
         service_name: str, # Name of the service to build the client for [drive, admin, calendar, gmail]
         logger,
         config_service: ConfigurationService,
-        is_individual: Optional[bool] = False,
-        version: Optional[str] = "v3", # Version of the service to build the client for [v3, v1]
-        scopes: Optional[List[str]] = None, # Scopes of the service to build the client
-        calendar_id: Optional[str] = 'primary', # Calendar ID to build the client for
-        user_email: Optional[str] = None, # User email for enterprise impersonation
-    ) -> 'GoogleClient':
-        """
-        Build GoogleClient using configuration service and arango service
+        is_individual: bool | None = False,
+        version: str | None = "v3", # Version of the service to build the client for [v3, v1]
+        scopes: list[str] | None = None, # Scopes of the service to build the client
+        calendar_id: str | None = "primary", # Calendar ID to build the client for
+        user_email: str | None = None, # User email for enterprise impersonation
+    ) -> "GoogleClient":
+        """Build GoogleClient using configuration service and arango service
         Args:
             service_name: Name of the service to build the client for
             logger: Logger instance
@@ -127,7 +127,6 @@ class GoogleClient(IClient):
         Returns:
             GoogleClient instance
         """
-
         if is_individual:
             try:
                 #fetch saved credentials
@@ -178,7 +177,7 @@ class GoogleClient(IClient):
                             saved_credentials,
                             scopes=optimized_scopes,
                             # Impersonate the specific user when provided; otherwise default to admin
-                            subject=(user_email or admin_email)
+                            subject=(user_email or admin_email),
                         )
                     )
             except Exception as e:
@@ -208,12 +207,12 @@ class GoogleClient(IClient):
         return cls(client)
 
     @staticmethod
-    async def _get_connector_config(service_name: str,logger: logging.Logger, config_service: ConfigurationService) -> Dict:
+    async def _get_connector_config(service_name: str,logger: logging.Logger, config_service: ConfigurationService) -> dict:
         """Fetch connector config from etcd for the given app."""
         try:
             service_name = service_name.replace(" ", "").lower()
             config = await config_service.get_config(
-                f"/services/connectors/{service_name}/config"
+                f"/services/connectors/{service_name}/config",
             )
             return config or {}
         except Exception as e:
@@ -229,9 +228,8 @@ class GoogleClient(IClient):
 
 
     @staticmethod
-    async def get_individual_token(service_name: str, logger: logging.Logger,config_service: ConfigurationService, ) -> dict:
+    async def get_individual_token(service_name: str, logger: logging.Logger,config_service: ConfigurationService ) -> dict:
         """Get individual OAuth token for a specific connector (gmail/drive/calendar/)."""
-
         try:
             config = await GoogleClient._get_connector_config(service_name, logger, config_service)
             creds = (config or {}).get("credentials") or {}
@@ -240,18 +238,18 @@ class GoogleClient(IClient):
             if creds:
                 # Return a merged view including client info for SDK constructors
                 merged = dict(creds)
-                merged['clientId'] = auth_cfg.get("clientId")
-                merged['clientSecret'] = auth_cfg.get("clientSecret")
+                merged["clientId"] = auth_cfg.get("clientId")
+                merged["clientSecret"] = auth_cfg.get("clientSecret")
                 return merged
         except Exception as e:
-            logger.error(f"❌ Failed to get individual token for {service_name}: {str(e)}")
+            logger.error(f"❌ Failed to get individual token for {service_name}: {e!s}")
             raise
 
     @staticmethod
     async def get_enterprise_token(
         service_name: str,
         logger: logging.Logger,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
     ) -> dict[str, Any]:
         """Handle enterprise token for a specific connector."""
         config = await GoogleClient._get_connector_config(service_name, logger, config_service)

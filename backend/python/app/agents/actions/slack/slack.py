@@ -1,7 +1,7 @@
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from app.agents.actions.slack.config import SlackResponse
 from app.agents.tools.decorator import tool
@@ -53,13 +53,13 @@ class Slack:
                 return SlackResponse(success=False, error="Empty response from Slack API")
 
             # Pass-through if already normalized
-            if hasattr(response, 'success') and hasattr(response, 'data'):
+            if hasattr(response, "success") and hasattr(response, "data"):
                 return response  # type: ignore[return-value]
 
             # Dict-like payload from WebClient
             if isinstance(response, dict):
-                if response.get('ok') is False:
-                    return SlackResponse(success=False, error=response.get('error', 'unknown_error'))
+                if response.get("ok") is False:
+                    return SlackResponse(success=False, error=response.get("error", "unknown_error"))
                 return SlackResponse(success=True, data=response)
 
             # Fallback: wrap arbitrary payload
@@ -82,17 +82,17 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to send the message to",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="message",
                 type=ParameterType.STRING,
                 description="The message to send",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def send_message(self, channel: str, message: str) -> Tuple[bool, str]:
+    def send_message(self, channel: str, message: str) -> tuple[bool, str]:
         """Send a message to a channel"""
         """
         Args:
@@ -105,7 +105,7 @@ class Slack:
             # Use SlackDataSource method
             response = self._run_async(self.client.chat_me_message(
                 channel=channel,
-                text=message
+                text=message,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -126,17 +126,17 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to get the history of",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="limit",
                 type=ParameterType.INTEGER,
                 description="Maximum number of messages to return",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_channel_history(self, channel: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    def get_channel_history(self, channel: str, limit: int | None = None) -> tuple[bool, str]:
         """Get the history of a channel"""
         """
         Args:
@@ -149,15 +149,15 @@ class Slack:
             chan = channel
             try:
                 if isinstance(chan, str):
-                    name = chan[1:] if chan.startswith('#') else chan
+                    name = chan.removeprefix("#")
                     # If it doesn't look like a channel ID (C...), try to find by name
-                    if not name.startswith('C'):
+                    if not name.startswith("C"):
                         clist = self._run_async(self.client.conversations_list())
                         cl_resp = self._handle_slack_response(clist)
                         if cl_resp.success and cl_resp.data and isinstance(cl_resp.data, dict):
-                            for c in (cl_resp.data.get('channels') or []):
-                                if isinstance(c, dict) and c.get('name') == name:
-                                    chan = c.get('id') or chan
+                            for c in (cl_resp.data.get("channels") or []):
+                                if isinstance(c, dict) and c.get("name") == name:
+                                    chan = c.get("id") or chan
                                     break
             except Exception:
                 pass
@@ -165,7 +165,7 @@ class Slack:
             # Use SlackDataSource method
             response = self._run_async(self.client.conversations_history(
                 channel=chan,
-                limit=limit
+                limit=limit,
             ))
             slack_response = self._handle_slack_response(response)
             if not slack_response.success or not slack_response.data:
@@ -174,13 +174,13 @@ class Slack:
             # Resolve Slack mentions in message text: <@UXXXXXXXX> -> @display_name
             try:
                 data = slack_response.data
-                messages = data.get('messages', []) if isinstance(data, dict) else []
+                messages = data.get("messages", []) if isinstance(data, dict) else []
                 import re
                 mention_re = re.compile(r"<@([A-Z0-9]+)>")
                 user_ids: set[str] = set()
                 for msg in messages:
-                    if isinstance(msg, dict) and isinstance(msg.get('text'), str):
-                        for m in mention_re.findall(msg['text']):
+                    if isinstance(msg, dict) and isinstance(msg.get("text"), str):
+                        for m in mention_re.findall(msg["text"]):
                             user_ids.add(m)
                 id_to_name: dict[str, str] = {}
                 id_to_email: dict[str, str] = {}
@@ -189,10 +189,10 @@ class Slack:
                         uresp = self._run_async(self.client.users_info(user=uid))
                         u = self._handle_slack_response(uresp)
                         if u.success and u.data and isinstance(u.data, dict):
-                            user_obj = u.data.get('user') or {}
-                            profile = user_obj.get('profile') or {}
-                            display = profile.get('display_name') or user_obj.get('real_name') or user_obj.get('name') or uid
-                            email = profile.get('email')
+                            user_obj = u.data.get("user") or {}
+                            profile = user_obj.get("profile") or {}
+                            display = profile.get("display_name") or user_obj.get("real_name") or user_obj.get("name") or uid
+                            email = profile.get("email")
                             id_to_name[uid] = display
                             if email:
                                 id_to_email[uid] = email
@@ -204,25 +204,25 @@ class Slack:
                 for msg in messages:
                     if isinstance(msg, dict):
                         new_msg = dict(msg)
-                        text = new_msg.get('text')
+                        text = new_msg.get("text")
                         if isinstance(text, str):
                             def _rep(m) -> str:
                                 return f"@{id_to_name.get(m.group(1), m.group(1))}"
-                            new_msg['resolved_text'] = mention_re.sub(_rep, text)
+                            new_msg["resolved_text"] = mention_re.sub(_rep, text)
                         mentions_meta = []
                         for uid in mention_re.findall(text or ""):
                             mentions_meta.append({
-                                'id': uid,
-                                'display_name': id_to_name.get(uid),
-                                'email': id_to_email.get(uid),
+                                "id": uid,
+                                "display_name": id_to_name.get(uid),
+                                "email": id_to_email.get(uid),
                             })
                         if mentions_meta:
-                            new_msg['mentions'] = mentions_meta
+                            new_msg["mentions"] = mentions_meta
                         resolved_messages.append(new_msg)
                     else:
                         resolved_messages.append(msg)
                 enriched = dict(data)
-                enriched['messages'] = resolved_messages
+                enriched["messages"] = resolved_messages
                 return (True, SlackResponse(success=True, data=enriched).to_json())
             except Exception:
                 # If enrichment fails, return original
@@ -243,11 +243,11 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to get the info of",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_channel_info(self, channel: str) -> Tuple[bool, str]:
+    def get_channel_info(self, channel: str) -> tuple[bool, str]:
         """Get the info of a channel"""
         """
         Args:
@@ -273,11 +273,11 @@ class Slack:
                 name="user",
                 type=ParameterType.STRING,
                 description="The user to get the info of",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_user_info(self, user: str) -> Tuple[bool, str]:
+    def get_user_info(self, user: str) -> tuple[bool, str]:
         """Get the info of a user"""
         """
         Args:
@@ -297,9 +297,9 @@ class Slack:
 
     @tool(
         app_name="slack",
-        tool_name="fetch_channels"
+        tool_name="fetch_channels",
     )
-    def fetch_channels(self) -> Tuple[bool, str]:
+    def fetch_channels(self) -> tuple[bool, str]:
         """Fetch all channels"""
         """
         Returns:
@@ -323,17 +323,17 @@ class Slack:
                 name="query",
                 type=ParameterType.STRING,
                 description="The search query to find messages, files, and channels",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="limit",
                 type=ParameterType.INTEGER,
                 description="Maximum number of results to return",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def search_all(self, query: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    def search_all(self, query: str, limit: int | None = None) -> tuple[bool, str]:
         """Search messages, files, and channels in Slack"""
         """
         Args:
@@ -346,7 +346,7 @@ class Slack:
             # Use SlackDataSource method
             response = self._run_async(self.client.search_messages(
                 query=query,
-                count=limit
+                count=limit,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -363,11 +363,11 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to get the members of",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_channel_members(self, channel: str) -> Tuple[bool, str]:
+    def get_channel_members(self, channel: str) -> tuple[bool, str]:
         """Get the members of a channel"""
         """
         Args:
@@ -396,11 +396,11 @@ class Slack:
                 name="channel_id",
                 type=ParameterType.STRING,
                 description="The channel ID to get the members of",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_channel_members_by_id(self, channel_id: str) -> Tuple[bool, str]:
+    def get_channel_members_by_id(self, channel_id: str) -> tuple[bool, str]:
         """Get the members of a channel by ID"""
         """
         Args:
@@ -426,11 +426,11 @@ class Slack:
                 name="user_id",
                 type=ParameterType.STRING,
                 description="Slack user ID (e.g., U123ABC45) to resolve to name/email",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def resolve_user(self, user_id: str) -> Tuple[bool, str]:
+    def resolve_user(self, user_id: str) -> tuple[bool, str]:
         """Resolve a Slack user ID to display name and email"""
         try:
             response = self._run_async(self.client.users_info(user=user_id))
@@ -438,13 +438,13 @@ class Slack:
             if not slack_response.success or not slack_response.data:
                 return (slack_response.success, slack_response.to_json())
             data = slack_response.data if isinstance(slack_response.data, dict) else {}
-            user = data.get('user') or {}
-            profile = user.get('profile') or {}
+            user = data.get("user") or {}
+            profile = user.get("profile") or {}
             result = {
-                'id': user.get('id') or user_id,
-                'real_name': user.get('real_name'),
-                'display_name': profile.get('display_name') or user.get('name') or user.get('real_name'),
-                'email': profile.get('email'),
+                "id": user.get("id") or user_id,
+                "real_name": user.get("real_name"),
+                "display_name": profile.get("display_name") or user.get("name") or user.get("real_name"),
+                "email": profile.get("email"),
             }
             return (True, SlackResponse(success=True, data=result).to_json())
         except Exception as e:
@@ -454,9 +454,9 @@ class Slack:
 
     @tool(
         app_name="slack",
-        tool_name="check_token_info"
+        tool_name="check_token_info",
     )
-    def check_token_info(self) -> Tuple[bool, str]:
+    def check_token_info(self) -> tuple[bool, str]:
         """Check Slack token information and available scopes"""
         """
         Returns:
@@ -480,17 +480,17 @@ class Slack:
                 name="user",
                 type=ParameterType.STRING,
                 description="User ID, email, or display name to send DM to",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="message",
                 type=ParameterType.STRING,
                 description="The message to send",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def send_direct_message(self, user: str, message: str) -> Tuple[bool, str]:
+    def send_direct_message(self, user: str, message: str) -> tuple[bool, str]:
         """Send a direct message to a user"""
         """
         Args:
@@ -513,14 +513,14 @@ class Slack:
                 return (slack_response.success, slack_response.to_json())
 
             # Get channel ID from the opened conversation
-            channel_id = slack_response.data.get('channel', {}).get('id') if slack_response.data else None
+            channel_id = slack_response.data.get("channel", {}).get("id") if slack_response.data else None
             if not channel_id:
                 return (False, SlackResponse(success=False, error="Failed to get DM channel ID").to_json())
 
             # Send message to DM channel
             message_response = self._run_async(self.client.chat_post_message(
                 channel=channel_id,
-                text=message
+                text=message,
             ))
             message_slack_response = self._handle_slack_response(message_response)
             return (message_slack_response.success, message_slack_response.to_json())
@@ -538,24 +538,24 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to send the message to",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="message",
                 type=ParameterType.STRING,
                 description="The message to send with markdown formatting",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="blocks",
                 type=ParameterType.ARRAY,
                 description="Rich message blocks for advanced formatting",
                 required=False,
-                items={"type": "object"}
-            )
-        ]
+                items={"type": "object"},
+            ),
+        ],
     )
-    def send_message_with_formatting(self, channel: str, message: str, blocks: Optional[List[Dict]] = None) -> Tuple[bool, str]:
+    def send_message_with_formatting(self, channel: str, message: str, blocks: list[dict] | None = None) -> tuple[bool, str]:
         """Send a message with markdown formatting or rich blocks"""
         """
         Args:
@@ -569,7 +569,7 @@ class Slack:
             kwargs = {
                 "channel": channel,
                 "text": message,
-                "mrkdwn": True
+                "mrkdwn": True,
             }
 
             if blocks:
@@ -591,29 +591,29 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel containing the message to reply to",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="message",
                 type=ParameterType.STRING,
                 description="The reply message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="thread_ts",
                 type=ParameterType.STRING,
                 description="Timestamp of the parent message to reply to",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="latest_message",
                 type=ParameterType.BOOLEAN,
                 description="Whether to reply to the latest message in the channel",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def reply_to_message(self, channel: str, message: str, thread_ts: Optional[str] = None, latest_message: Optional[bool] = None) -> Tuple[bool, str]:
+    def reply_to_message(self, channel: str, message: str, thread_ts: str | None = None, latest_message: bool | None = None) -> tuple[bool, str]:
         """Reply to a specific message in a channel"""
         """
         Args:
@@ -633,11 +633,11 @@ class Slack:
                 if not history_slack_response.success or not history_slack_response.data:
                     return (False, SlackResponse(success=False, error="Failed to get latest message").to_json())
 
-                messages = history_slack_response.data.get('messages', [])
+                messages = history_slack_response.data.get("messages", [])
                 if not messages:
                     return (False, SlackResponse(success=False, error="No messages found in channel").to_json())
 
-                thread_ts = messages[0].get('ts')
+                thread_ts = messages[0].get("ts")
 
             if not thread_ts:
                 return (False, SlackResponse(success=False, error="No thread timestamp provided").to_json())
@@ -646,7 +646,7 @@ class Slack:
             response = self._run_async(self.client.chat_post_message(
                 channel=channel,
                 text=message,
-                thread_ts=thread_ts
+                thread_ts=thread_ts,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -665,17 +665,17 @@ class Slack:
                 type=ParameterType.ARRAY,
                 description="List of channels to send the message to",
                 required=True,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="message",
                 type=ParameterType.STRING,
                 description="The message to send to all channels",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def send_message_to_multiple_channels(self, channels: List[str], message: str) -> Tuple[bool, str]:
+    def send_message_to_multiple_channels(self, channels: list[str], message: str) -> tuple[bool, str]:
         """Send the same message to multiple channels"""
         """
         Args:
@@ -692,14 +692,14 @@ class Slack:
                 try:
                     response = self._run_async(self.client.chat_post_message(
                         channel=channel,
-                        text=message
+                        text=message,
                     ))
                     slack_response = self._handle_slack_response(response)
                     results.append({
                         "channel": channel,
                         "success": slack_response.success,
                         "data": slack_response.data if slack_response.success else None,
-                        "error": slack_response.error if not slack_response.success else None
+                        "error": slack_response.error if not slack_response.success else None,
                     })
                     if not slack_response.success:
                         all_success = False
@@ -707,7 +707,7 @@ class Slack:
                     results.append({
                         "channel": channel,
                         "success": False,
-                        "error": str(e)
+                        "error": str(e),
                     })
                     all_success = False
 
@@ -726,41 +726,41 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to upload the file to",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="file_path",
                 type=ParameterType.STRING,
                 description="Path to the file to upload",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="file_content",
                 type=ParameterType.STRING,
                 description="Content of the file to upload",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filename",
                 type=ParameterType.STRING,
                 description="Name of the file",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="title",
                 type=ParameterType.STRING,
                 description="Title of the file",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="initial_comment",
                 type=ParameterType.STRING,
                 description="Initial comment about the file",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def upload_file(self, channel: str, filename: str, file_path: Optional[str] = None, file_content: Optional[str] = None, title: Optional[str] = None, initial_comment: Optional[str] = None) -> Tuple[bool, str]:
+    def upload_file(self, channel: str, filename: str, file_path: str | None = None, file_content: str | None = None, title: str | None = None, initial_comment: str | None = None) -> tuple[bool, str]:
         """Upload a file to a channel"""
         """
         Args:
@@ -776,7 +776,7 @@ class Slack:
         try:
             kwargs = {
                 "channels": channel,
-                "filename": filename
+                "filename": filename,
             }
 
             if file_path:
@@ -806,23 +806,23 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel containing the message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Timestamp of the message to add reaction to",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="name",
                 type=ParameterType.STRING,
                 description="Name of the emoji reaction (e.g., 'thumbsup', '+1')",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def add_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
+    def add_reaction(self, channel: str, timestamp: str, name: str) -> tuple[bool, str]:
         """Add a reaction to a message"""
         """
         Args:
@@ -836,7 +836,7 @@ class Slack:
             response = self._run_async(self.client.reactions_add(
                 channel=channel,
                 timestamp=timestamp,
-                name=name
+                name=name,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -853,29 +853,29 @@ class Slack:
                 name="name",
                 type=ParameterType.STRING,
                 description="Name of the channel to create",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="is_private",
                 type=ParameterType.BOOLEAN,
                 description="Whether the channel should be private",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="topic",
                 type=ParameterType.STRING,
                 description="Topic for the channel",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="purpose",
                 type=ParameterType.STRING,
                 description="Purpose of the channel",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def create_channel(self, name: str, is_private: Optional[bool] = None, topic: Optional[str] = None, purpose: Optional[str] = None) -> Tuple[bool, str]:
+    def create_channel(self, name: str, is_private: bool | None = None, topic: str | None = None, purpose: str | None = None) -> tuple[bool, str]:
         """Create a new channel"""
         """
         Args:
@@ -897,7 +897,7 @@ class Slack:
 
             # Set topic and purpose if provided and channel was created successfully
             if slack_response.success and slack_response.data:
-                channel_id = slack_response.data.get('channel', {}).get('id')
+                channel_id = slack_response.data.get("channel", {}).get("id")
 
                 if topic and channel_id:
                     try:
@@ -926,18 +926,18 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to invite users to",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="users",
                 type=ParameterType.ARRAY,
                 description="List of user IDs or emails to invite",
                 required=True,
-                items={"type": "string"}
-            )
-        ]
+                items={"type": "string"},
+            ),
+        ],
     )
-    def invite_users_to_channel(self, channel: str, users: List[str]) -> Tuple[bool, str]:
+    def invite_users_to_channel(self, channel: str, users: list[str]) -> tuple[bool, str]:
         """Invite users to a channel"""
         """
         Args:
@@ -961,7 +961,7 @@ class Slack:
 
             response = self._run_async(self.client.conversations_invite(
                 channel=channel,
-                users=user_ids
+                users=user_ids,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -979,29 +979,29 @@ class Slack:
                 name="query",
                 type=ParameterType.STRING,
                 description="Search query",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="channel",
                 type=ParameterType.STRING,
                 description="Channel to search in (optional)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="count",
                 type=ParameterType.INTEGER,
                 description="Maximum number of results to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="sort",
                 type=ParameterType.STRING,
                 description="Sort order (timestamp, score)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def search_messages(self, query: str, channel: Optional[str] = None, count: Optional[int] = None, sort: Optional[str] = None) -> Tuple[bool, str]:
+    def search_messages(self, query: str, channel: str | None = None, count: int | None = None, sort: str | None = None) -> tuple[bool, str]:
         """Search for messages in Slack"""
         """
         Args:
@@ -1017,13 +1017,13 @@ class Slack:
             search_query = query
             if channel:
                 # Remove # if present
-                channel_name = channel[1:] if channel.startswith('#') else channel
+                channel_name = channel.removeprefix("#")
                 search_query = f"in:{channel_name} {query}"
 
             response = self._run_async(self.client.search_messages(
                 query=search_query,
                 count=count,
-                sort=sort
+                sort=sort,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -1041,23 +1041,23 @@ class Slack:
                 name="status_text",
                 type=ParameterType.STRING,
                 description="Status text to set",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="status_emoji",
                 type=ParameterType.STRING,
                 description="Status emoji to set",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="expiration",
                 type=ParameterType.STRING,
                 description="Expiration time for the status (Unix timestamp)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def set_user_status(self, status_text: str, status_emoji: Optional[str] = None, expiration: Optional[str] = None) -> Tuple[bool, str]:
+    def set_user_status(self, status_text: str, status_emoji: str | None = None, expiration: str | None = None) -> tuple[bool, str]:
         """Set user status"""
         """
         Args:
@@ -1095,23 +1095,23 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to send the message to",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="message",
                 type=ParameterType.STRING,
                 description="The message to send",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="post_at",
                 type=ParameterType.STRING,
                 description="Unix timestamp for when to post the message",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def schedule_message(self, channel: str, message: str, post_at: str) -> Tuple[bool, str]:
+    def schedule_message(self, channel: str, message: str, post_at: str) -> tuple[bool, str]:
         """Schedule a message to be sent at a specific time"""
         """
         Args:
@@ -1125,7 +1125,7 @@ class Slack:
             response = self._run_async(self.client.chat_schedule_message(
                 channel=channel,
                 text=message,
-                post_at=int(post_at)
+                post_at=int(post_at),
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -1143,24 +1143,24 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to post the poll in",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="question",
                 type=ParameterType.STRING,
                 description="The poll question",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="options",
                 type=ParameterType.ARRAY,
                 description="List of poll options",
                 required=True,
-                items={"type": "string"}
-            )
-        ]
+                items={"type": "string"},
+            ),
+        ],
     )
-    def create_poll(self, channel: str, question: str, options: List[str]) -> Tuple[bool, str]:
+    def create_poll(self, channel: str, question: str, options: list[str]) -> tuple[bool, str]:
         """Create an interactive poll in a channel"""
         """
         Args:
@@ -1177,13 +1177,13 @@ class Slack:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{question}*"
-                    }
+                        "text": f"*{question}*",
+                    },
                 },
                 {
                     "type": "actions",
-                    "elements": []
-                }
+                    "elements": [],
+                },
             ]
 
             # Add buttons for each option
@@ -1192,16 +1192,16 @@ class Slack:
                     "type": "button",
                     "text": {
                         "type": "plain_text",
-                        "text": option
+                        "text": option,
                     },
                     "action_id": f"poll_option_{i}",
-                    "value": option
+                    "value": option,
                 })
 
             response = self._run_async(self.client.chat_post_message(
                 channel=channel,
                 text=f"Poll: {question}",
-                blocks=blocks
+                blocks=blocks,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -1219,11 +1219,11 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to archive",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def archive_channel(self, channel: str) -> Tuple[bool, str]:
+    def archive_channel(self, channel: str) -> tuple[bool, str]:
         """Archive a channel"""
         """
         Args:
@@ -1248,17 +1248,17 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel containing the message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Timestamp of the message to pin",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def pin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
+    def pin_message(self, channel: str, timestamp: str) -> tuple[bool, str]:
         """Pin a message to a channel"""
         """
         Args:
@@ -1270,7 +1270,7 @@ class Slack:
         try:
             response = self._run_async(self.client.pins_add(
                 channel=channel,
-                timestamp=timestamp
+                timestamp=timestamp,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -1287,11 +1287,11 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to check for unread messages",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_unread_messages(self, channel: str) -> Tuple[bool, str]:
+    def get_unread_messages(self, channel: str) -> tuple[bool, str]:
         """Get unread messages from a channel"""
         """
         Args:
@@ -1317,7 +1317,7 @@ class Slack:
             # Combine channel info with recent messages
             result = {
                 "channel_info": info_slack_response.data,
-                "recent_messages": history_slack_response.data.get('messages', []) if history_slack_response.data else []
+                "recent_messages": history_slack_response.data.get("messages", []) if history_slack_response.data else [],
             }
 
             return (True, SlackResponse(success=True, data=result).to_json())
@@ -1335,11 +1335,11 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to get scheduled messages for",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_scheduled_messages(self, channel: Optional[str] = None) -> Tuple[bool, str]:
+    def get_scheduled_messages(self, channel: str | None = None) -> tuple[bool, str]:
         """Get scheduled messages"""
         """
         Args:
@@ -1368,24 +1368,24 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to send the message to",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="message",
                 type=ParameterType.STRING,
                 description="The message to send with mentions",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="mentions",
                 type=ParameterType.ARRAY,
                 description="List of users to mention",
                 required=False,
-                items={"type": "string"}
-            )
-        ]
+                items={"type": "string"},
+            ),
+        ],
     )
-    def send_message_with_mentions(self, channel: str, message: str, mentions: Optional[List[str]] = None) -> Tuple[bool, str]:
+    def send_message_with_mentions(self, channel: str, message: str, mentions: list[str] | None = None) -> tuple[bool, str]:
         """Send a message with user mentions"""
         """
         Args:
@@ -1407,12 +1407,12 @@ class Slack:
 
                 response = self._run_async(self.client.chat_post_message(
                     channel=channel,
-                    text=processed_message
+                    text=processed_message,
                 ))
             else:
                 response = self._run_async(self.client.chat_post_message(
                     channel=channel,
-                    text=message
+                    text=message,
                 ))
 
             slack_response = self._handle_slack_response(response)
@@ -1431,17 +1431,17 @@ class Slack:
                 name="include_deleted",
                 type=ParameterType.BOOLEAN,
                 description="Include deleted users in the list",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="limit",
                 type=ParameterType.INTEGER,
                 description="Maximum number of users to return",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_users_list(self, include_deleted: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
+    def get_users_list(self, include_deleted: bool | None = None, limit: int | None = None) -> tuple[bool, str]:
         """Get list of all users in the organization"""
         """
         Args:
@@ -1473,29 +1473,29 @@ class Slack:
                 name="user",
                 type=ParameterType.STRING,
                 description="User ID to get conversations for",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="types",
                 type=ParameterType.STRING,
                 description="Comma-separated list of conversation types (public_channel, private_channel, mpim, im)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="exclude_archived",
                 type=ParameterType.BOOLEAN,
                 description="Exclude archived conversations",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="limit",
                 type=ParameterType.INTEGER,
                 description="Maximum number of conversations to return",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_user_conversations(self, user: str, types: Optional[str] = None, exclude_archived: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
+    def get_user_conversations(self, user: str, types: str | None = None, exclude_archived: bool | None = None, limit: int | None = None) -> tuple[bool, str]:
         """Get conversations for a specific user"""
         """
         Args:
@@ -1531,17 +1531,17 @@ class Slack:
                 name="include_users",
                 type=ParameterType.BOOLEAN,
                 description="Include users in each user group",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_disabled",
                 type=ParameterType.BOOLEAN,
                 description="Include disabled user groups",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_user_groups(self, include_users: Optional[bool] = None, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
+    def get_user_groups(self, include_users: bool | None = None, include_disabled: bool | None = None) -> tuple[bool, str]:
         """Get list of user groups in the organization"""
         """
         Args:
@@ -1573,17 +1573,17 @@ class Slack:
                 name="usergroup",
                 type=ParameterType.STRING,
                 description="User group ID to get info for",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="include_disabled",
                 type=ParameterType.BOOLEAN,
                 description="Include disabled user groups",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_user_group_info(self, usergroup: str, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
+    def get_user_group_info(self, usergroup: str, include_disabled: bool | None = None) -> tuple[bool, str]:
         """Get information about a specific user group"""
         """
         Args:
@@ -1613,23 +1613,23 @@ class Slack:
                 name="user",
                 type=ParameterType.STRING,
                 description="User ID to get channels for",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="exclude_archived",
                 type=ParameterType.BOOLEAN,
                 description="Exclude archived channels",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="types",
                 type=ParameterType.STRING,
                 description="Comma-separated list of channel types (public_channel, private_channel)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_user_channels(self, user: str, exclude_archived: Optional[bool] = None, types: Optional[str] = None) -> Tuple[bool, str]:
+    def get_user_channels(self, user: str, exclude_archived: bool | None = None, types: str | None = None) -> tuple[bool, str]:
         """Get channels that a specific user is a member of"""
         """
         Args:
@@ -1662,23 +1662,23 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel containing the message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Timestamp of the message to delete",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="as_user",
                 type=ParameterType.BOOLEAN,
                 description="Delete the message as the authenticated user",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def delete_message(self, channel: str, timestamp: str, as_user: Optional[bool] = None) -> Tuple[bool, str]:
+    def delete_message(self, channel: str, timestamp: str, as_user: bool | None = None) -> tuple[bool, str]:
         """Delete a message from a channel"""
         """
         Args:
@@ -1691,7 +1691,7 @@ class Slack:
         try:
             kwargs = {
                 "channel": channel,
-                "ts": timestamp
+                "ts": timestamp,
             }
             if as_user is not None:
                 kwargs["as_user"] = as_user
@@ -1712,36 +1712,36 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel containing the message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Timestamp of the message to update",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="text",
                 type=ParameterType.STRING,
                 description="New text content for the message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="blocks",
                 type=ParameterType.ARRAY,
                 description="Rich message blocks for advanced formatting",
                 required=False,
-                items={"type": "object"}
+                items={"type": "object"},
             ),
             ToolParameter(
                 name="as_user",
                 type=ParameterType.BOOLEAN,
                 description="Update the message as the authenticated user",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def update_message(self, channel: str, timestamp: str, text: str, blocks: Optional[List[Dict]] = None, as_user: Optional[bool] = None) -> Tuple[bool, str]:
+    def update_message(self, channel: str, timestamp: str, text: str, blocks: list[dict] | None = None, as_user: bool | None = None) -> tuple[bool, str]:
         """Update an existing message"""
         """
         Args:
@@ -1757,7 +1757,7 @@ class Slack:
             kwargs = {
                 "channel": channel,
                 "ts": timestamp,
-                "text": text
+                "text": text,
             }
             if blocks:
                 kwargs["blocks"] = blocks
@@ -1780,17 +1780,17 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel containing the message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Timestamp of the message to get permalink for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_message_permalink(self, channel: str, timestamp: str) -> Tuple[bool, str]:
+    def get_message_permalink(self, channel: str, timestamp: str) -> tuple[bool, str]:
         """Get a permalink for a specific message"""
         """
         Args:
@@ -1802,7 +1802,7 @@ class Slack:
         try:
             response = self._run_async(self.client.chat_get_permalink(
                 channel=channel,
-                message_ts=timestamp
+                message_ts=timestamp,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -1819,23 +1819,23 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel containing the message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Timestamp of the message to get reactions for",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="full",
                 type=ParameterType.BOOLEAN,
                 description="Return full reaction objects",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_reactions(self, channel: str, timestamp: str, full: Optional[bool] = None) -> Tuple[bool, str]:
+    def get_reactions(self, channel: str, timestamp: str, full: bool | None = None) -> tuple[bool, str]:
         """Get reactions for a specific message"""
         """
         Args:
@@ -1848,7 +1848,7 @@ class Slack:
         try:
             kwargs = {
                 "channel": channel,
-                "timestamp": timestamp
+                "timestamp": timestamp,
             }
             if full is not None:
                 kwargs["full"] = full
@@ -1869,23 +1869,23 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel containing the message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Timestamp of the message to remove reaction from",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="name",
                 type=ParameterType.STRING,
                 description="Name of the emoji reaction to remove",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def remove_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
+    def remove_reaction(self, channel: str, timestamp: str, name: str) -> tuple[bool, str]:
         """Remove a reaction from a message"""
         """
         Args:
@@ -1899,7 +1899,7 @@ class Slack:
             response = self._run_async(self.client.reactions_remove(
                 channel=channel,
                 timestamp=timestamp,
-                name=name
+                name=name,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -1916,11 +1916,11 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to get pinned messages from",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_pinned_messages(self, channel: str) -> Tuple[bool, str]:
+    def get_pinned_messages(self, channel: str) -> tuple[bool, str]:
         """Get pinned messages from a channel"""
         """
         Args:
@@ -1945,17 +1945,17 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel containing the message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Timestamp of the message to unpin",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def unpin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
+    def unpin_message(self, channel: str, timestamp: str) -> tuple[bool, str]:
         """Unpin a message from a channel"""
         """
         Args:
@@ -1967,7 +1967,7 @@ class Slack:
         try:
             response = self._run_async(self.client.pins_remove(
                 channel=channel,
-                timestamp=timestamp
+                timestamp=timestamp,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -1984,17 +1984,17 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to rename",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="name",
                 type=ParameterType.STRING,
                 description="New name for the channel",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def rename_channel(self, channel: str, name: str) -> Tuple[bool, str]:
+    def rename_channel(self, channel: str, name: str) -> tuple[bool, str]:
         """Rename a channel"""
         """
         Args:
@@ -2006,7 +2006,7 @@ class Slack:
         try:
             response = self._run_async(self.client.conversations_rename(
                 channel=channel,
-                name=name
+                name=name,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -2023,17 +2023,17 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to set topic for",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="topic",
                 type=ParameterType.STRING,
                 description="New topic for the channel",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def set_channel_topic(self, channel: str, topic: str) -> Tuple[bool, str]:
+    def set_channel_topic(self, channel: str, topic: str) -> tuple[bool, str]:
         """Set the topic for a channel"""
         """
         Args:
@@ -2045,7 +2045,7 @@ class Slack:
         try:
             response = self._run_async(self.client.conversations_set_topic(
                 channel=channel,
-                topic=topic
+                topic=topic,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -2062,17 +2062,17 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to set purpose for",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="purpose",
                 type=ParameterType.STRING,
                 description="New purpose for the channel",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def set_channel_purpose(self, channel: str, purpose: str) -> Tuple[bool, str]:
+    def set_channel_purpose(self, channel: str, purpose: str) -> tuple[bool, str]:
         """Set the purpose for a channel"""
         """
         Args:
@@ -2084,7 +2084,7 @@ class Slack:
         try:
             response = self._run_async(self.client.conversations_set_purpose(
                 channel=channel,
-                purpose=purpose
+                purpose=purpose,
             ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -2101,17 +2101,17 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel to mark as read",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Timestamp of the last message read",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def mark_channel_read(self, channel: str, timestamp: Optional[str] = None) -> Tuple[bool, str]:
+    def mark_channel_read(self, channel: str, timestamp: str | None = None) -> tuple[bool, str]:
         """Mark a channel as read"""
         """
         Args:
@@ -2141,23 +2141,23 @@ class Slack:
                 name="channel",
                 type=ParameterType.STRING,
                 description="The channel containing the thread",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="timestamp",
                 type=ParameterType.STRING,
                 description="Timestamp of the parent message",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="limit",
                 type=ParameterType.INTEGER,
                 description="Maximum number of replies to return",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_thread_replies(self, channel: str, timestamp: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    def get_thread_replies(self, channel: str, timestamp: str, limit: int | None = None) -> tuple[bool, str]:
         """Get replies in a thread"""
         """
         Args:
@@ -2170,7 +2170,7 @@ class Slack:
         try:
             kwargs = {
                 "channel": channel,
-                "ts": timestamp
+                "ts": timestamp,
             }
             if limit:
                 kwargs["limit"] = limit
@@ -2183,7 +2183,7 @@ class Slack:
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
-    def _resolve_user_identifier(self, user_identifier: str) -> Optional[str]:
+    def _resolve_user_identifier(self, user_identifier: str) -> str | None:
         """Resolve user identifier (email, display name, or user ID) to user ID.
 
         Optimized for large workspaces:
@@ -2193,19 +2193,19 @@ class Slack:
         """
         try:
             # If it's already a user ID (starts with U), return as is
-            if user_identifier.startswith('U'):
+            if user_identifier.startswith("U"):
                 return user_identifier
 
             # Normalize the identifier for comparison (remove @ prefix if present)
-            target_identifier = user_identifier.lstrip('@').casefold()
+            target_identifier = user_identifier.lstrip("@").casefold()
 
             # Try to find by email first (fastest, O(1) API call)
-            if '@' in user_identifier:
+            if "@" in user_identifier:
                 try:
                     response = self._run_async(self.client.users_lookup_by_email(email=user_identifier))
                     slack_response = self._handle_slack_response(response)
                     if slack_response.success and slack_response.data:
-                        return slack_response.data.get('user', {}).get('id')
+                        return slack_response.data.get("user", {}).get("id")
                 except Exception:
                     pass
 
@@ -2221,32 +2221,32 @@ class Slack:
                     if not users_slack_response.success or not users_slack_response.data:
                         break
 
-                    users = users_slack_response.data.get('members', [])
+                    users = users_slack_response.data.get("members", [])
                     if not users:
                         break
 
                     # Search through users in this page
                     for user in users:
-                        profile = user.get('profile', {}) or {}
+                        profile = user.get("profile", {}) or {}
 
                         # Prefer normalized fields (more reliable), fallback to regular fields
                         # Check multiple name variations for better matching
                         names_to_match = [
-                            profile.get('display_name_normalized'),
-                            profile.get('real_name_normalized'),
-                            profile.get('display_name'),
-                            profile.get('real_name'),
-                            user.get('name'),
+                            profile.get("display_name_normalized"),
+                            profile.get("real_name_normalized"),
+                            profile.get("display_name"),
+                            profile.get("real_name"),
+                            user.get("name"),
                         ]
 
                         for name in names_to_match:
                             if isinstance(name, str) and name.casefold() == target_identifier:
                                 # Early return when match is found
-                                return user.get('id')
+                                return user.get("id")
 
                     # Check for next page
-                    response_metadata = users_slack_response.data.get('response_metadata', {})
-                    next_cursor = response_metadata.get('next_cursor')
+                    response_metadata = users_slack_response.data.get("response_metadata", {})
+                    next_cursor = response_metadata.get("next_cursor")
                     if not next_cursor:
                         # No more pages
                         break

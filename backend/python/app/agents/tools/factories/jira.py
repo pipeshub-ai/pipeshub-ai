@@ -1,5 +1,4 @@
-"""
-Client factories for Jira.
+"""Client factories for Jira.
 """
 
 
@@ -15,8 +14,7 @@ class JiraClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger, state=None) -> JiraClient:
         """Create Jira client instance"""
-
         return await JiraClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

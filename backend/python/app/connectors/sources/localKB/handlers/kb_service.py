@@ -1,6 +1,5 @@
 import asyncio
 import uuid
-from typing import Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -12,13 +11,13 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class KnowledgeBaseService :
-    """ Data handler for knowledge base opertaions   """
+    """Data handler for knowledge base opertaions"""
 
     def __init__(
         self,
         logger,
         arango_service : BaseArangoService,
-        kafka_service : KafkaService
+        kafka_service : KafkaService,
     ) -> None:
         self.logger = logger
         self.arango_service = arango_service
@@ -29,8 +28,8 @@ class KnowledgeBaseService :
         self,
         user_id: str,
         org_id: str,
-        name: str
-    ) -> Optional[Dict]:
+        name: str,
+    ) -> dict | None:
         """Create a new knowledge base"""
         try:
             self.logger.info(f"🚀 Creating KB '{name}' for user {user_id} in org {org_id}")
@@ -42,11 +41,11 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
 
-            user_key = user.get('_key')
-            user_name = user.get('fullName') or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or 'Unknown'
+            user_key = user.get("_key")
+            user_name = user.get("fullName") or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or "Unknown"
             self.logger.info(f"✅ Found user: {user_name} (key: {user_key})")
 
             # Step 2: Generate data
@@ -66,15 +65,15 @@ class KnowledgeBaseService :
                         CollectionNames.IS_OF_TYPE.value,
                         CollectionNames.BELONGS_TO.value,
                         CollectionNames.PERMISSION.value,
-                    ]
+                    ],
                 )
                 self.logger.info("🔄 Transaction created")
             except Exception as tx_error:
-                self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                self.logger.error(f"❌ Failed to create transaction: {tx_error!s}")
                 return {
                     "success": False,
                     "code": 500,
-                    "reason": f"Transaction creation failed: {str(tx_error)}"
+                    "reason": f"Transaction creation failed: {tx_error!s}",
                 }
 
 
@@ -108,7 +107,7 @@ class KnowledgeBaseService :
                 # root_folder_data=root_folder_data,
                 permission_edge=permission_edge,
                 # folder_edge=folder_edge,
-                transaction=transaction
+                transaction=transaction,
             )
 
             await asyncio.to_thread(lambda: transaction.commit_transaction())
@@ -120,23 +119,22 @@ class KnowledgeBaseService :
                     "createdAtTimestamp": kb_data["createdAtTimestamp"],
                     "updatedAtTimestamp": kb_data["updatedAtTimestamp"],
                     "success": True,
-                    "userRole": "OWNER"
+                    "userRole": "OWNER",
                 }
 
                 self.logger.info(f"✅ KB '{name}' created successfully: {kb_key}")
                 return response
 
-            else:
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": "Failed to create knowledge base in database"
-                }
+            return {
+                "success": False,
+                "code": 500,
+                "reason": "Failed to create knowledge base in database",
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ KB creation failed for '{name}': {str(e)}")
+            self.logger.error(f"❌ KB creation failed for '{name}': {e!s}")
             self.logger.error(f"❌ Error type: {type(e).__name__}")
-            if hasattr(transaction, 'abort_transaction'):
+            if hasattr(transaction, "abort_transaction"):
                     await asyncio.to_thread(lambda: transaction.abort_transaction())
 
             # Only log full traceback for unexpected errors (not business logic errors)
@@ -147,14 +145,14 @@ class KnowledgeBaseService :
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": str(e),
             }
 
     async def get_knowledge_base(
         self,
         kb_id:str,
-        user_id:str
-    )-> Optional[Dict]:
+        user_id:str,
+    )-> dict | None:
         """Get Knowledge base details"""
         try:
             self.logger.info(f"Getting knowledge base {kb_id} for user {user_id}")
@@ -166,45 +164,44 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
-            user_key = user.get('_key')
+            user_key = user.get("_key")
             # validates permissions and gets kb for the user
             user_role = await self.arango_service.get_user_kb_permission(
                 kb_id=kb_id,
-                user_id=user_key
+                user_id=user_key,
             )
             if not user_role:
                 self.logger.warning(f"⚠️ User {user_key} has no access to KB {kb_id}")
                 response = {
                     "success": False,
                     "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
+                    "code": "403",
                 }
                 return response
 
             result = await self.arango_service.get_knowledge_base(
                 kb_id = kb_id,
-                user_id = user_key
+                user_id = user_key,
             )
 
             if result:
                 self.logger.info(f"Knowledge base retrieved successfullu: {result}")
                 return result
-            else :
-                self.logger.warning("Knowledge base not found")
-                return {
-                    "success":False,
-                    "reason":"Knowledge base not found",
-                    "code":"404"
-                }
+            self.logger.warning("Knowledge base not found")
+            return {
+                "success":False,
+                "reason":"Knowledge base not found",
+                "code":"404",
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get knowledge base: {str(e)}")
+            self.logger.error(f"❌ Failed to get knowledge base: {e!s}")
             return {
                 "success": False,
                 "reason": str(e),
-                "code":"500"
+                "code":"500",
             }
 
     async def list_user_knowledge_bases(
@@ -213,11 +210,11 @@ class KnowledgeBaseService :
         org_id: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        permissions: Optional[List[str]] = None,
+        search: str | None = None,
+        permissions: list[str] | None = None,
         sort_by: str = "name",
         sort_order: str = "asc",
-    ) -> Union[List[Dict],Dict]:
+    ) -> list[dict] | dict:
         """List knowledge bases with pagination and filtering"""
         try:
             self.logger.info(f" Listing knowledge bases for user {user_id}")
@@ -230,9 +227,9 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Calculate pagination
             skip = (page - 1) * limit
@@ -280,12 +277,12 @@ class KnowledgeBaseService :
                     "totalCount": total_count,
                     "totalPages": total_pages,
                     "hasNext": page < total_pages,
-                    "hasPrev": page > 1
+                    "hasPrev": page > 1,
                 },
                 "filters": {
                     "applied": applied_filters,
-                    "available": available_filters
-                }
+                    "available": available_filters,
+                },
             }
 
 
@@ -293,19 +290,19 @@ class KnowledgeBaseService :
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to list knowledge bases: {str(e)}")
+            self.logger.error(f"❌ Failed to list knowledge bases: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": str(e),
             }
 
     async def update_knowledge_base(
         self,
         kb_id: str,
         user_id: str,
-        updates: Dict,
-    ) -> Optional[Dict]:
+        updates: dict,
+    ) -> dict | None:
         """Update knowledge base details"""
         try:
             self.logger.info(f"🚀 Updating knowledge base {kb_id}")
@@ -319,9 +316,9 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER","ORGANIZER","FILEORGANIZER"]:
@@ -329,14 +326,14 @@ class KnowledgeBaseService :
                 response = {
                     "success": False,
                     "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
+                    "code": "403",
                 }
                 return response
             updates["updatedAtTimestamp"] = timestamp
             # Update in database
             result = await self.arango_service.update_knowledge_base(
                 kb_id=kb_id,
-                updates=updates
+                updates=updates,
             )
 
             if result:
@@ -344,29 +341,28 @@ class KnowledgeBaseService :
                 return {
                     "success":True,
                     "reason":"Knowledge base updated successfully",
-                    "code":"200"
+                    "code":"200",
                 }
-            else:
-                self.logger.warning("⚠️ Failed to update knowledge base")
-                return {
-                    "success":False,
-                    "reason":"Knowledge base not found",
-                    "code":"404"
-                }
+            self.logger.warning("⚠️ Failed to update knowledge base")
+            return {
+                "success":False,
+                "reason":"Knowledge base not found",
+                "code":"404",
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update knowledge base: {str(e)}")
+            self.logger.error(f"❌ Failed to update knowledge base: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": str(e),
             }
 
     async def delete_knowledge_base(
         self,
         kb_id: str,
         user_id: str,
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Delete a knowledge base"""
         try:
             self.logger.info(f"🚀 Deleting knowledge base {kb_id}")
@@ -378,10 +374,10 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
-            user_key = user.get('_key')
-            user_name = user.get('fullName') or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or 'Unknown'
+            user_key = user.get("_key")
+            user_name = user.get("fullName") or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or "Unknown"
             self.logger.info(f"✅ Found user: {user_name} (key: {user_key})")
 
             # Check user permissions
@@ -391,14 +387,14 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "Only KB owners can delete knowledge bases",
-                    "code": 403
+                    "code": 403,
                 }
 
             self.logger.info(f"🔐 User {user_name} has OWNER permission - proceeding with deletion")
 
             # Delete in database with transaction
             result = await self.arango_service.delete_knowledge_base(
-                kb_id=kb_id
+                kb_id=kb_id,
            )
 
             if result:
@@ -406,18 +402,17 @@ class KnowledgeBaseService :
                 return {
                     "success": True,
                     "reason": "Knowledge base and all contents deleted successfully",
-                    "code": 200
+                    "code": 200,
                 }
-            else:
-                self.logger.warning(f"⚠️ Failed to delete knowledge base {kb_id}")
-                return {
-                    "success": False,
-                    "reason": "Failed to delete knowledge base",
-                    "code": 500
-                }
+            self.logger.warning(f"⚠️ Failed to delete knowledge base {kb_id}")
+            return {
+                "success": False,
+                "reason": "Failed to delete knowledge base",
+                "code": 500,
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete knowledge base {kb_id}: {str(e)}")
+            self.logger.error(f"❌ Failed to delete knowledge base {kb_id}: {e!s}")
             self.logger.error(f"❌ Error type: {type(e).__name__}")
 
             # Only log full traceback for unexpected errors
@@ -428,7 +423,7 @@ class KnowledgeBaseService :
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": str(e),
             }
 
     async def create_folder_in_kb(
@@ -437,7 +432,7 @@ class KnowledgeBaseService :
         name: str,
         user_id: str,
         org_id: str,
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Create folder in KB root"""
         try:
             self.logger.info(f"🚀 Creating folder '{name}' in KB {kb_id} root")
@@ -458,7 +453,7 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 409,
-                    "reason": f"Folder '{name}' already exists in KB root"
+                    "reason": f"Folder '{name}' already exists in KB root",
                 }
 
             # Create folder using unified method
@@ -471,11 +466,10 @@ class KnowledgeBaseService :
 
             if result and result.get("success"):
                 return result
-            else:
-                return {"success": False, "code": 500, "reason": "Failed to create folder"}
+            return {"success": False, "code": 500, "reason": "Failed to create folder"}
 
         except Exception as e:
-            self.logger.error(f"❌ KB folder creation failed: {str(e)}")
+            self.logger.error(f"❌ KB folder creation failed: {e!s}")
             return {"success": False, "code": 500, "reason": str(e)}
 
     async def create_nested_folder(
@@ -485,7 +479,7 @@ class KnowledgeBaseService :
         name: str,
         user_id: str,
         org_id: str,
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Create folder inside another folder"""
         try:
             self.logger.info(f"🚀 Creating nested folder '{name}' in folder {parent_folder_id}")
@@ -501,7 +495,7 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"Parent folder {parent_folder_id} not found in KB {kb_id}"
+                    "reason": f"Parent folder {parent_folder_id} not found in KB {kb_id}",
                 }
 
             # Check for name conflicts in KB root
@@ -515,7 +509,7 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 409,
-                    "reason": f"Folder '{name}' already exists in KB root"
+                    "reason": f"Folder '{name}' already exists in KB root",
                 }
 
             # Create folder using unified method
@@ -528,11 +522,10 @@ class KnowledgeBaseService :
 
             if result and result.get("success"):
                 return result
-            else:
-                return {"success": False, "code": 500, "reason": "Failed to create folder"}
+            return {"success": False, "code": 500, "reason": "Failed to create folder"}
 
         except Exception as e:
-            self.logger.error(f"❌ Nested folder creation failed: {str(e)}")
+            self.logger.error(f"❌ Nested folder creation failed: {e!s}")
             return {"success": False, "code": 500, "reason": str(e)}
 
     async def get_folder_contents(
@@ -540,7 +533,7 @@ class KnowledgeBaseService :
         kb_id: str,
         folder_id: str,
         user_id: str,
-    ) -> Dict:
+    ) -> dict:
         """Get contents of a folder"""
         try:
             self.logger.info(f"🔍 Getting contents of folder {folder_id} in KB {kb_id}")
@@ -552,9 +545,9 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
-            user_key = user.get('_key')
+            user_key = user.get("_key")
             # Check user permissions
             user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
             if not user_role:
@@ -562,7 +555,7 @@ class KnowledgeBaseService :
                 response = {
                     "success": False,
                     "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
+                    "code": "403",
                 }
                 return response
 
@@ -575,20 +568,19 @@ class KnowledgeBaseService :
             if result:
                 self.logger.info("✅ Folder contents retrieved successfully")
                 return result
-            else:
-                self.logger.warning("⚠️ Folder not found")
-                return {
-                    "success": False,
-                    "code": 400,
-                    "reason": "Failed to get folder contents, or folder not found "
-                }
+            self.logger.warning("⚠️ Folder not found")
+            return {
+                "success": False,
+                "code": 400,
+                "reason": "Failed to get folder contents, or folder not found ",
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get folder contents: {str(e)}")
+            self.logger.error(f"❌ Failed to get folder contents: {e!s}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": str(e),
             }
 
     async def updateFolder(
@@ -596,8 +588,8 @@ class KnowledgeBaseService :
         folder_id: str,
         kb_id: str,
         user_id: str,
-        name: str
-    ) -> Dict:
+        name: str,
+    ) -> dict:
         try:
             self.logger.info(f"🚀 Updating folder {folder_id} in KB {kb_id}")
             # timestamp = get_epoch_timestamp_in_ms()
@@ -609,9 +601,9 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
-            user_key = user.get('_key')
+            user_key = user.get("_key")
             # Check user permissions
             user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
@@ -619,7 +611,7 @@ class KnowledgeBaseService :
                 response = {
                     "success": False,
                     "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
+                    "code": "403",
                 }
                 return response
 
@@ -630,11 +622,11 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "Folder not found in knowledge base",
-                    "code": "404"
+                    "code": "404",
                 }
 
             updates = {
-                "name": name
+                "name": name,
                 # "updatedAtTimestamp": timestamp
             }
 
@@ -649,14 +641,14 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 409,
-                    "reason": f"Folder '{name}' already exists in KB root"
+                    "reason": f"Folder '{name}' already exists in KB root",
                 }
 
 
             # Update in database
             result = await self.arango_service.update_folder(
                 folder_id=folder_id,
-                updates=updates
+                updates=updates,
             )
 
             if result:
@@ -664,30 +656,29 @@ class KnowledgeBaseService :
                 return {
                     "success": True,
                     "code": 200,
-                    "reason": "Updated folder successfully"
+                    "reason": "Updated folder successfully",
                  }
-            else:
-                self.logger.warning(f"⚠️ Failed to update folder {folder_id}")
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": "Failed to update the folder"
-                }
-        except Exception as e:
-            self.logger.error(f"Failed to update folder {folder_id} for knowledge base {kb_id}: {str(e)}")
+            self.logger.warning(f"⚠️ Failed to update folder {folder_id}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": "Failed to update the folder",
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to update folder {folder_id} for knowledge base {kb_id}: {e!s}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": str(e),
             }
 
     async def delete_folder(
         self,
         kb_id: str,
         folder_id: str,
-        user_id: str
-    ) -> Dict:
-        """Delete a folder """
+        user_id: str,
+    ) -> dict:
+        """Delete a folder"""
         try:
             self.logger.info(f" Deleting folder {folder_id} in  knowledge base {kb_id}")
             self.logger.info(f"Looking up user by user_id: {user_id}")
@@ -698,9 +689,9 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Check user permissions
             user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
@@ -709,7 +700,7 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "User lacks permission to add records",
-                    "code": "403"
+                    "code": "403",
                 }
             # Validate that folder exists and belongs to the KB
             folder_exists = await self.arango_service.validate_folder_in_kb(kb_id, folder_id)
@@ -718,13 +709,13 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "Folder not found in knowledge base",
-                    "code": "404"
+                    "code": "404",
                 }
 
             # Delete in database
             result = await self.arango_service.delete_folder(
                 kb_id=kb_id,
-                folder_id=folder_id
+                folder_id=folder_id,
             )
 
             if result:
@@ -734,31 +725,29 @@ class KnowledgeBaseService :
                     "reason": "Folder and all contents deleted successfully",
                     "code": 200,
                 }
-            else:
-                self.logger.warning("⚠️ Failed to delete folder")
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": "Failed to delete folder"
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete folder: {str(e)}")
+            self.logger.warning("⚠️ Failed to delete folder")
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": "Failed to delete folder",
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete folder: {e!s}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": str(e),
             }
 
     async def update_record(
         self,
         user_id: str,
         record_id: str,
-        updates: Dict,
-        file_metadata: Optional[Dict] = None,
-    ) -> Optional[Dict]:
-        """
-        Update a record directly in KB root (not in any folder)
+        updates: dict,
+        file_metadata: dict | None = None,
+    ) -> dict | None:
+        """Update a record directly in KB root (not in any folder)
         """
         try:
             self.logger.info(f"🚀 Updating record {record_id}")
@@ -768,34 +757,32 @@ class KnowledgeBaseService :
                 record_id=record_id,
                 user_id=user_id,
                 updates=updates,
-                file_metadata=file_metadata
+                file_metadata=file_metadata,
             )
 
             if result and result.get("success"):
                 return result
-            else:
-                return result or {
-                    "success": False,
-                    "reason": "Failed to update record",
-                    "code": 500
-                }
+            return result or {
+                "success": False,
+                "reason": "Failed to update record",
+                "code": 500,
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update KB record: {str(e)}")
+            self.logger.error(f"❌ Failed to update KB record: {e!s}")
             return {
                 "success": False,
                 "reason": str(e),
-                "code": 500
+                "code": 500,
             }
 
     async def delete_records_in_kb(
         self,
         kb_id: str,
-        record_ids: List[str],
+        record_ids: list[str],
         user_id: str,
-    ) -> Optional[Dict]:
-        """
-        Delete multiple records from KB root (not in any folder)
+    ) -> dict | None:
+        """Delete multiple records from KB root (not in any folder)
         """
         try:
             self.logger.info(f"🚀 Bulk deleting {len(record_ids)} records from KB {kb_id} root")
@@ -806,52 +793,50 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
             user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
 
             if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
                 return {
                     "success": False,
                     "reason": "User lacks permission to delete records",
-                    "code": 403
+                    "code": 403,
                 }
 
             # Step 2: Call bulk deletion method (folder_id=None for KB root)
             result = await self.arango_service.delete_records(
                 record_ids=record_ids,
                 kb_id=kb_id,
-                folder_id=None  # KB root records
+                folder_id=None,  # KB root records
             )
 
             if result and result.get("success"):
                 return result
-            else:
-                return result or {
-                    "success": False,
-                    "reason": "Failed to delete records",
-                    "code": 500
-                }
+            return result or {
+                "success": False,
+                "reason": "Failed to delete records",
+                "code": 500,
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete KB records: {str(e)}")
+            self.logger.error(f"❌ Failed to delete KB records: {e!s}")
             return {
                 "success": False,
                 "reason": str(e),
-                "code": 500
+                "code": 500,
             }
 
     async def delete_records_in_folder(
         self,
         kb_id: str,
         folder_id: str,
-        record_ids: List[str],
+        record_ids: list[str],
         user_id: str,
-    ) -> Optional[Dict]:
-        """
-        Delete multiple records from a specific folder
+    ) -> dict | None:
+        """Delete multiple records from a specific folder
         """
         try:
             self.logger.info(f"🚀 Bulk deleting {len(record_ids)} records from folder {folder_id} in KB {kb_id}")
@@ -862,17 +847,17 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
             user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
 
             if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
                 return {
                     "success": False,
                     "reason": "User lacks permission to delete records",
-                    "code": 403
+                    "code": 403,
                 }
 
             # Step 2: Validate folder exists in KB
@@ -881,41 +866,40 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "Folder not found in knowledge base",
-                    "code": 404
+                    "code": 404,
                 }
 
         # Step 3 Call bulk deletion method (folder_id=None for KB root)
             result = await self.arango_service.delete_records(
                 record_ids=record_ids,
                 kb_id=kb_id,
-                folder_id=folder_id
+                folder_id=folder_id,
             )
 
             if result and result.get("success"):
                 return result
-            else:
-                return result or {
-                    "success": False,
-                    "reason": "Failed to delete records in folder",
-                    "code": 500
-                }
+            return result or {
+                "success": False,
+                "reason": "Failed to delete records in folder",
+                "code": 500,
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete folder records: {str(e)}")
+            self.logger.error(f"❌ Failed to delete folder records: {e!s}")
             return {
                 "success": False,
                 "reason": str(e),
-                "code": 500
+                "code": 500,
             }
 
     async def create_kb_permissions(
         self,
         kb_id: str,
         requester_id: str,
-        user_ids: List[str],  # External user IDs
-        team_ids: List[str],  # External team IDs
+        user_ids: list[str],  # External user IDs
+        team_ids: list[str],  # External team IDs
         role: str,
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Optimized version - single AQL query approach"""
         try:
             self.logger.info(f"🚀 Creating {role} permissions for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id}")
@@ -940,28 +924,27 @@ class KnowledgeBaseService :
                 requester_id=requester_id,
                 user_ids=unique_users,
                 team_ids=unique_teams,
-                role=role if role else "READER"  # Default for teams (won't be used)
+                role=role if role else "READER",  # Default for teams (won't be used)
             )
 
             if result.get("success"):
                 self.logger.info(f"✅ Permissions created: {result['grantedCount']} granted")
                 return result
-            else:
-                self.logger.error(f"❌ Permission creation failed: {result.get('reason')}")
-                return result
+            self.logger.error(f"❌ Permission creation failed: {result.get('reason')}")
+            return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to create KB permissions: {str(e)}")
+            self.logger.error(f"❌ Failed to create KB permissions: {e!s}")
             return {"success": False, "reason": str(e), "code": 500}
 
     async def update_kb_permission(
         self,
         kb_id: str,
         requester_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
-        new_role: str
-    ) -> Optional[Dict]:
+        user_ids: list[str],
+        team_ids: list[str],
+        new_role: str,
+    ) -> dict | None:
         """Update permissions for users and teams on a knowledge base"""
         try:
             self.logger.info(f"🚀 Updating permission for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id} to {new_role}")
@@ -971,7 +954,7 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "No users or teams provided for permission update",
-                    "code": "400"
+                    "code": "400",
                 }
 
             # Teams don't have roles - they just have access or not
@@ -980,7 +963,7 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "Teams don't have roles. Only user permissions can be updated.",
-                    "code": "400"
+                    "code": "400",
                 }
 
             self.logger.info(f"Looking up requester by requester: {requester_id}")
@@ -991,9 +974,9 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {requester_id}"
+                    "reason": f"User not found for user_id: {requester_id}",
                 }
-            requester_key = requester.get('_key')
+            requester_key = requester.get("_key")
 
             # Validate requester has permission to update permissions
             requester_role = await self.arango_service.get_user_kb_permission(kb_id, requester_key)
@@ -1001,7 +984,7 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "Only KB owners can update permissions",
-                    "code": "403"
+                    "code": "403",
                 }
 
             # Validate new role
@@ -1010,14 +993,14 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
-                    "code": "400"
+                    "code": "400",
                 }
 
             # Get current permissions for all users and teams in a single batch query
             current_permissions = await self.arango_service.get_kb_permissions(
                 kb_id=kb_id,
                 user_ids=user_ids,
-                team_ids=team_ids
+                team_ids=team_ids,
             )
 
             # Filter out users/teams that don't have permissions (skip them instead of erroring)
@@ -1048,7 +1031,7 @@ class KnowledgeBaseService :
                     "reason": "No users or teams with existing permissions found to update",
                     "code": "404",
                     "skipped_users": skipped_users,
-                    "skipped_teams": skipped_teams
+                    "skipped_teams": skipped_teams,
                 }
 
             # Update permissions using batch update method for valid entities only
@@ -1057,7 +1040,7 @@ class KnowledgeBaseService :
                 requester_id=requester_key,
                 user_ids=valid_user_ids,
                 team_ids=valid_team_ids,
-                new_role=new_role
+                new_role=new_role,
             )
 
             if result:
@@ -1073,28 +1056,27 @@ class KnowledgeBaseService :
                     "newRole": new_role,
                     "kbId": kb_id,
                 }
-            else:
-                return {
-                    "success": False,
-                    "reason": "Failed to update permission",
-                    "code": "500"
-                }
+            return {
+                "success": False,
+                "reason": "Failed to update permission",
+                "code": "500",
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update KB permission: {str(e)}")
+            self.logger.error(f"❌ Failed to update KB permission: {e!s}")
             return {
                 "success": False,
                 "reason": str(e),
-                "code": "500"
+                "code": "500",
             }
 
     async def remove_kb_permission(
         self,
         kb_id: str,
         requester_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
-    ) -> Optional[Dict]:
+        user_ids: list[str],
+        team_ids: list[str],
+    ) -> dict | None:
         """Remove permissions for users and teams from a knowledge base"""
         try:
             self.logger.info(f"🚀 Removing permission for {len(user_ids)} users and {len(team_ids)} teams from KB {kb_id}")
@@ -1104,7 +1086,7 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "No users or teams provided for permission removal",
-                    "code": "400"
+                    "code": "400",
                 }
 
             self.logger.info(f"Looking up requester by requester: {requester_id}")
@@ -1115,9 +1097,9 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {requester_id}"
+                    "reason": f"User not found for user_id: {requester_id}",
                 }
-            requester_key = requester.get('_key')
+            requester_key = requester.get("_key")
 
             # Validate requester has permission to remove permissions
             requester_role = await self.arango_service.get_user_kb_permission(kb_id, requester_key)
@@ -1125,14 +1107,14 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "Only KB owners can remove permissions",
-                    "code": "403"
+                    "code": "403",
                 }
 
             # Get current permissions for all users and teams in a single batch query
             current_permissions = await self.arango_service.get_kb_permissions(
                 kb_id=kb_id,
                 user_ids=user_ids,
-                team_ids=team_ids
+                team_ids=team_ids,
             )
 
             # Filter out users/teams that don't have permissions and check for owner removal
@@ -1168,7 +1150,7 @@ class KnowledgeBaseService :
                     "reason": "No users or teams with existing permissions found to remove",
                     "code": "404",
                     "skipped_users": skipped_users,
-                    "skipped_teams": skipped_teams
+                    "skipped_teams": skipped_teams,
                 }
 
             # Check for owner removal restrictions
@@ -1180,14 +1162,14 @@ class KnowledgeBaseService :
                         "success": False,
                         "reason": "Cannot remove all owners from the knowledge base. At least one owner must remain.",
                         "code": "400",
-                        "owner_users": owner_users_to_remove
+                        "owner_users": owner_users_to_remove,
                     }
 
             # Remove permissions using batch remove method for valid entities only
             result = await self.arango_service.remove_kb_permission(
                 kb_id=kb_id,
                 user_ids=valid_user_ids,
-                team_ids=valid_team_ids
+                team_ids=valid_team_ids,
             )
 
             if result:
@@ -1203,19 +1185,18 @@ class KnowledgeBaseService :
                     "teamIds": valid_team_ids,
                     "kbId": kb_id,
                 }
-            else:
-                return {
-                    "success": False,
-                    "reason": "Failed to remove permissions",
-                    "code": "500"
-                }
+            return {
+                "success": False,
+                "reason": "Failed to remove permissions",
+                "code": "500",
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to remove KB permission: {str(e)}")
+            self.logger.error(f"❌ Failed to remove KB permission: {e!s}")
             return {
                 "success": False,
                 "reason": str(e),
-                "code": "500"
+                "code": "500",
             }
 
 
@@ -1223,7 +1204,7 @@ class KnowledgeBaseService :
         self,
         kb_id: str,
         requester_id: str,
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """List all permissions for a knowledge base"""
         try:
             self.logger.info(f"🔍 Listing permissions for KB {kb_id}")
@@ -1235,9 +1216,9 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {requester_id}"
+                    "reason": f"User not found for user_id: {requester_id}",
                 }
-            requester_key = requester.get('_key')
+            requester_key = requester.get("_key")
 
             # Validate requester has access to the KB
             requester_role = await self.arango_service.get_user_kb_permission(kb_id, requester_key)
@@ -1245,7 +1226,7 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "User does not have access to this knowledge base",
-                    "code": "403"
+                    "code": "403",
                 }
 
             # Get all permissions
@@ -1260,11 +1241,11 @@ class KnowledgeBaseService :
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to list KB permissions: {str(e)}")
+            self.logger.error(f"❌ Failed to list KB permissions: {e!s}")
             return {
                 "success": False,
                 "reason": str(e),
-                "code": "500"
+                "code": "500",
             }
 
     async def list_all_records(
@@ -1273,20 +1254,19 @@ class KnowledgeBaseService :
         org_id: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        permissions: Optional[List[str]] = None,
-        date_from: Optional[int] = None,
-        date_to: Optional[int] = None,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        permissions: list[str] | None = None,
+        date_from: int | None = None,
+        date_to: int | None = None,
         sort_by: str = "createdAtTimestamp",
         sort_order: str = "desc",
         source: str = "all",  # "all", "local", "connector"
-    ) -> Dict:
-        """
-        List all records the user can access (from all KBs, folders, and direct connector permissions), with filters.
+    ) -> dict:
+        """List all records the user can access (from all KBs, folders, and direct connector permissions), with filters.
         """
         try:
             self.logger.info(f"Looking up user by user_id: {user_id}")
@@ -1297,14 +1277,14 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             skip = (page - 1) * limit
             sort_order = sort_order.lower() if sort_order.lower() in ["asc", "desc"] else "desc"
             sort_by = sort_by if sort_by in [
-                "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
+                "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus",
             ] else "createdAtTimestamp"
 
             records, total_count, available_filters = await self.arango_service.list_all_records(
@@ -1350,10 +1330,10 @@ class KnowledgeBaseService :
                 "filters": {
                     "applied": applied_filters,
                     "available": available_filters,
-                }
+                },
             }
         except Exception as e:
-            self.logger.error(f"❌ Failed to list all records: {str(e)}")
+            self.logger.error(f"❌ Failed to list all records: {e!s}")
             return {
                 "records": [],
                 "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
@@ -1368,18 +1348,17 @@ class KnowledgeBaseService :
         org_id: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        date_from: Optional[int] = None,
-        date_to: Optional[int] = None,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        date_from: int | None = None,
+        date_to: int | None = None,
         sort_by: str = "createdAtTimestamp",
         sort_order: str = "desc",
-    ) -> Dict:
-        """
-        List all records in a specific KB (including all folders and direct records), with filters.
+    ) -> dict:
+        """List all records in a specific KB (including all folders and direct records), with filters.
         """
         try:
             self.logger.info(f"Looking up user by user_id: {user_id}")
@@ -1390,14 +1369,14 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
+                    "reason": f"User not found for user_id: {user_id}",
                 }
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             skip = (page - 1) * limit
             sort_order = sort_order.lower() if sort_order.lower() in ["asc", "desc"] else "desc"
             sort_by = sort_by if sort_by in [
-                "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
+                "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus",
             ] else "createdAtTimestamp"
 
             records, total_count, available_filters = await self.arango_service.list_kb_records(
@@ -1441,10 +1420,10 @@ class KnowledgeBaseService :
                 "filters": {
                     "applied": applied_filters,
                     "available": available_filters,
-                }
+                },
             }
         except Exception as e:
-            self.logger.error(f"❌ Failed to list KB records: {str(e)}")
+            self.logger.error(f"❌ Failed to list KB records: {e!s}")
             return {
                 "records": [],
                 "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
@@ -1459,16 +1438,15 @@ class KnowledgeBaseService :
         page: int = 1,
         limit: int = 20,
         level: int = 1,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
         sort_by: str = "name",
         sort_order: str = "asc",
-    ) -> Dict:
-        """
-        Get KB root contents with pagination and filters
+    ) -> dict:
+        """Get KB root contents with pagination and filters
         """
         try:
             self.logger.info(f"🔍 Getting KB {kb_id} children with pagination (page {page}, limit {limit})")
@@ -1478,7 +1456,7 @@ class KnowledgeBaseService :
             if not user:
                 return self._error_response(404, f"User not found: {user_id}")
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Check user permissions
             user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
@@ -1525,7 +1503,7 @@ class KnowledgeBaseService :
                 "canCreateFolders": user_role in ["OWNER", "WRITER"],
                 "canEdit": user_role in ["OWNER", "WRITER", "FILEORGANIZER"],
                 "canDelete": user_role in ["OWNER"],
-                "canManagePermissions": user_role in ["OWNER"]
+                "canManagePermissions": user_role in ["OWNER"],
             }
 
             result["pagination"] = {
@@ -1534,7 +1512,7 @@ class KnowledgeBaseService :
                 "totalItems": total_items,
                 "totalPages": total_pages,
                 "hasNext": page < total_pages,
-                "hasPrev": page > 1
+                "hasPrev": page > 1,
             }
 
             result["filters"] = {
@@ -1549,14 +1527,14 @@ class KnowledgeBaseService :
                         "sort_order": sort_order,
                     }.items() if v is not None
                 },
-                "available": result.get("availableFilters", {})
+                "available": result.get("availableFilters", {}),
             }
 
             self.logger.info(f"✅ KB children retrieved: {result['counts']['folders']} folders, {result['counts']['records']} records")
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get KB children with pagination: {str(e)}")
+            self.logger.error(f"❌ Failed to get KB children with pagination: {e!s}")
             return self._error_response(500, str(e))
 
     async def get_folder_children(
@@ -1567,16 +1545,15 @@ class KnowledgeBaseService :
         page: int = 1,
         limit: int = 20,
         level: int = 1,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
         sort_by: str = "name",
         sort_order: str = "asc",
-    ) -> Dict:
-        """
-        Get folder contents with pagination and filters
+    ) -> dict:
+        """Get folder contents with pagination and filters
         """
         try:
             self.logger.info(f"🔍 Getting folder {folder_id} children with pagination (page {page}, limit {limit})")
@@ -1586,7 +1563,7 @@ class KnowledgeBaseService :
             if not user:
                 return self._error_response(404, f"User not found: {user_id}")
 
-            user_key = user.get('_key')
+            user_key = user.get("_key")
 
             # Check user permissions
             user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
@@ -1634,7 +1611,7 @@ class KnowledgeBaseService :
                 "canCreateFolders": user_role in ["OWNER", "WRITER"],
                 "canEdit": user_role in ["OWNER", "WRITER", "FILEORGANIZER"],
                 "canDelete": user_role in ["OWNER"],
-                "canManagePermissions": user_role in ["OWNER"]
+                "canManagePermissions": user_role in ["OWNER"],
             }
 
             result["pagination"] = {
@@ -1643,7 +1620,7 @@ class KnowledgeBaseService :
                 "totalItems": total_items,
                 "totalPages": total_pages,
                 "hasNext": page < total_pages,
-                "hasPrev": page > 1
+                "hasPrev": page > 1,
             }
 
             result["filters"] = {
@@ -1658,7 +1635,7 @@ class KnowledgeBaseService :
                         "sort_order": sort_order,
                     }.items() if v is not None
                 },
-                "available": result.get("availableFilters", {})
+                "available": result.get("availableFilters", {}),
             }
 
             # # Add breadcrumb navigation
@@ -1671,22 +1648,22 @@ class KnowledgeBaseService :
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get folder children with pagination: {str(e)}")
+            self.logger.error(f"❌ Failed to get folder children with pagination: {e!s}")
             return self._error_response(500, str(e))
 
-    def _error_response(self, code: int, reason: str) -> Dict:
+    def _error_response(self, code: int, reason: str) -> dict:
         """Create consistent error response"""
         return {
             "success": False,
             "code": code,
-            "reason": reason
+            "reason": reason,
         }
 
     # Convenience methods that call the unified method
-    async def upload_records_to_kb(self, kb_id: str, user_id: str, org_id: str, files: List[Dict]) -> Dict:
+    async def upload_records_to_kb(self, kb_id: str, user_id: str, org_id: str, files: list[dict]) -> dict:
         """Upload to KB root"""
         return await self.arango_service.upload_records(kb_id, user_id, org_id, files, parent_folder_id=None)
 
-    async def upload_records_to_folder(self, kb_id: str, folder_id: str, user_id: str, org_id: str, files: List[Dict]) -> Dict:
+    async def upload_records_to_folder(self, kb_id: str, folder_id: str, user_id: str, org_id: str, files: list[dict]) -> dict:
         """Upload to specific folder"""
         return await self.arango_service.upload_records(kb_id, user_id, org_id, files, parent_folder_id=folder_id)

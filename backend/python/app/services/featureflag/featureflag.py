@@ -1,5 +1,4 @@
-"""
-Feature Flag Service Module
+"""Feature Flag Service Module
 
 A singleton service for managing feature flags with extensible architecture.
 
@@ -30,22 +29,21 @@ from app.services.featureflag.interfaces.config import IConfigProvider
 from app.services.featureflag.provider.env import EnvFileProvider
 from app.services.featureflag.provider.etcd import EtcdProvider
 
-DEFAULT_ENV_PATH = '../../../.env'
+DEFAULT_ENV_PATH = "../../../.env"
 
 class FeatureFlagService:
-    """
-    Singleton service for managing feature flags
+    """Singleton service for managing feature flags
     """
 
-    _instance: Optional['FeatureFlagService'] = None
+    _instance: Optional["FeatureFlagService"] = None
     _lock: Lock = Lock()
 
     def __init__(self, provider: IConfigProvider) -> None:
-        """
-        Private constructor - use get_service() instead
+        """Private constructor - use get_service() instead
 
         Args:
             provider: Configuration provider implementing IConfigProvider
+
         """
         if FeatureFlagService._instance is not None:
             raise RuntimeError("Use get_service() to get the singleton instance")
@@ -53,15 +51,15 @@ class FeatureFlagService:
         self._provider = provider
 
     @classmethod
-    def get_service(cls, provider: Optional[IConfigProvider] = None) -> 'FeatureFlagService':
-        """
-        Get or create the singleton instance (thread-safe)
+    def get_service(cls, provider: IConfigProvider | None = None) -> "FeatureFlagService":
+        """Get or create the singleton instance (thread-safe)
 
         Args:
             provider: Optional provider for first-time initialization
 
         Returns:
             FeatureFlagService singleton instance
+
         """
         if cls._instance is None:
             with cls._lock:
@@ -73,11 +71,11 @@ class FeatureFlagService:
                         # .env.template is at: backend/python/.env.template
                         default_env_path = os.path.join(
                             os.path.dirname(os.path.abspath(__file__)),
-                            DEFAULT_ENV_PATH
+                            DEFAULT_ENV_PATH,
                         )
                         env_path = os.getenv(
-                            'FEATURE_FLAG_ENV_PATH',
-                            default_env_path
+                            "FEATURE_FLAG_ENV_PATH",
+                            default_env_path,
                         )
                         provider = EnvFileProvider(env_path)
 
@@ -96,9 +94,8 @@ class FeatureFlagService:
         cls,
         provider: EtcdProvider,
         logger: Logger,
-    ) -> 'FeatureFlagService':
-        """
-        Initialize the singleton to use EtcdProvider as the provider.
+    ) -> "FeatureFlagService":
+        """Initialize the singleton to use EtcdProvider as the provider.
 
         The provider is refreshed once during initialization.
         """
@@ -107,13 +104,11 @@ class FeatureFlagService:
                 await provider.refresh()
             except Exception as e:
                 logger.debug(f"Feature flag provider refresh failed: {e}")
-                pass
             cls._instance = cls(provider)
             return cls._instance
 
     def is_feature_enabled(self, flag_name: str, default: bool = False) -> bool:
-        """
-        Check if a feature flag is enabled
+        """Check if a feature flag is enabled
 
         Args:
             flag_name: Name of the feature flag (e.g., 'ENABLE_WORKFLOW_BUILDER')
@@ -121,6 +116,7 @@ class FeatureFlagService:
 
         Returns:
             bool: True if feature is enabled, False otherwise
+
         """
         value = self._provider.get_flag_value(flag_name)
         return value if value is not None else default
@@ -130,8 +126,7 @@ class FeatureFlagService:
         await self._provider.refresh()
 
     def set_provider(self, provider: IConfigProvider) -> None:
-        """
-        Set a new configuration provider (Dependency Injection)
+        """Set a new configuration provider (Dependency Injection)
 
         Allows runtime switching of providers for:
         - Testing

@@ -1,12 +1,11 @@
-"""
-Unified Permission Edge Migration Service
+"""Unified Permission Edge Migration Service
 Migrates permission edges from deprecated collections to 'permission' collection.
 Supports both direction reversal and same-direction migrations.
 """
 
 import uuid
 from logging import Logger
-from typing import Any, Dict, List
+from typing import Any
 
 from app.config.constants.arangodb import CollectionNames, LegacyCollectionNames
 from app.connectors.services.base_arango_service import BaseArangoService
@@ -14,8 +13,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class UnifiedPermissionEdgeMigrationService:
-    """
-    Unified service to handle migration of permission edges from deprecated collections to new collection.
+    """Unified service to handle migration of permission edges from deprecated collections to new collection.
 
     Migration process:
     1. Validates all preconditions
@@ -29,6 +27,7 @@ class UnifiedPermissionEdgeMigrationService:
         source_collection: Name of the deprecated source collection (e.g., "permissions", "permissionsToKB")
         target_collection: Name of the target collection (default: "permission")
         reverse_direction: If True, reverses edge direction; if False, keeps same direction
+
     """
 
     def __init__(
@@ -37,7 +36,7 @@ class UnifiedPermissionEdgeMigrationService:
         logger: Logger,
         source_collection: str,
         target_collection: str = CollectionNames.PERMISSION.value,
-        reverse_direction: bool = False
+        reverse_direction: bool = False,
     ) -> None:
         self.arango_service = arango_service
         self.logger = logger
@@ -49,10 +48,9 @@ class UnifiedPermissionEdgeMigrationService:
     async def run_migration(
         self,
         dry_run: bool = False,
-        batch_size: int = 1000
-    ) -> Dict[str, Any]:
-        """
-        Main migration method that orchestrates the entire migration process.
+        batch_size: int = 1000,
+    ) -> dict[str, Any]:
+        """Main migration method that orchestrates the entire migration process.
 
         Args:
             dry_run: If True, only reports what would be done without making changes
@@ -60,6 +58,7 @@ class UnifiedPermissionEdgeMigrationService:
 
         Returns:
             Dict with statistics about the operation
+
         """
         try:
             direction_msg = "REVERSED" if self.reverse_direction else "SAME"
@@ -82,7 +81,7 @@ class UnifiedPermissionEdgeMigrationService:
                     "total_edges": 0,
                     "migrated_edges": 0,
                     "deleted_edges": 0,
-                    "errors": 0
+                    "errors": 0,
                 }
 
             # Step 2: Fetch all edges from source collection
@@ -100,7 +99,7 @@ class UnifiedPermissionEdgeMigrationService:
             migration_result = await self._execute_migration(
                 all_edges,
                 total_edges,
-                batch_size
+                batch_size,
             )
 
             if not migration_result["success"]:
@@ -119,19 +118,18 @@ class UnifiedPermissionEdgeMigrationService:
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Permission Edge Migration failed: {str(e)}", exc_info=True)
+            self.logger.error(f"❌ Permission Edge Migration failed: {e!s}", exc_info=True)
             return {
                 "success": False,
-                "message": f"Migration failed: {str(e)}",
+                "message": f"Migration failed: {e!s}",
                 "total_edges": 0,
                 "migrated_edges": 0,
                 "deleted_edges": 0,
-                "errors": 0
+                "errors": 0,
             }
 
-    async def _validate_migration_preconditions(self) -> Dict[str, Any]:
-        """
-        Validate all preconditions for migration:
+    async def _validate_migration_preconditions(self) -> dict[str, Any]:
+        """Validate all preconditions for migration:
         1. Database connection
         2. Source collection exists
         3. Target collection exists (or can be created)
@@ -145,7 +143,7 @@ class UnifiedPermissionEdgeMigrationService:
                 return {
                     "success": False,
                     "message": "Database not connected",
-                    "migration_needed": False
+                    "migration_needed": False,
                 }
 
             # 2. Check if source collection exists
@@ -155,7 +153,7 @@ class UnifiedPermissionEdgeMigrationService:
                     "success": True,
                     "message": f"Source collection '{self.source_collection}' not found",
                     "migration_needed": False,
-                    "edge_count": 0
+                    "edge_count": 0,
                 }
 
             # 3. Check if target collection exists (should exist, but check anyway)
@@ -179,7 +177,7 @@ class UnifiedPermissionEdgeMigrationService:
                     "success": True,
                     "message": "No edges found in source collection",
                     "migration_needed": False,
-                    "edge_count": 0
+                    "edge_count": 0,
                 }
 
             self.logger.info("✅ Preconditions validated:")
@@ -192,18 +190,18 @@ class UnifiedPermissionEdgeMigrationService:
                 "migration_needed": True,
                 "edge_count": edge_count,
                 "source_collection": self.source_collection,
-                "target_collection": self.target_collection
+                "target_collection": self.target_collection,
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Precondition validation failed: {str(e)}")
+            self.logger.error(f"❌ Precondition validation failed: {e!s}")
             return {
                 "success": False,
-                "message": f"Precondition validation failed: {str(e)}",
-                "migration_needed": False
+                "message": f"Precondition validation failed: {e!s}",
+                "migration_needed": False,
             }
 
-    async def _fetch_source_edges(self) -> Dict[str, Any]:
+    async def _fetch_source_edges(self) -> dict[str, Any]:
         """Fetch all edges from the source (deprecated) collection"""
         try:
             self.logger.info(f"📊 Fetching edges from source collection '{self.source_collection}'...")
@@ -232,23 +230,23 @@ class UnifiedPermissionEdgeMigrationService:
             return {
                 "success": True,
                 "total_edges": total_edges,
-                "edges": all_edges
+                "edges": all_edges,
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch source edges: {str(e)}")
+            self.logger.error(f"❌ Failed to fetch source edges: {e!s}")
             return {
                 "success": False,
-                "message": f"Failed to fetch source edges: {str(e)}",
+                "message": f"Failed to fetch source edges: {e!s}",
                 "total_edges": 0,
-                "edges": []
+                "edges": [],
             }
 
     async def _dry_run_analysis(
         self,
-        all_edges: List[Dict],
-        total_edges: int
-    ) -> Dict[str, Any]:
+        all_edges: list[dict],
+        total_edges: int,
+    ) -> dict[str, Any]:
         """Perform dry run analysis without making changes"""
         try:
             self.logger.info("🔍 Running dry run analysis...")
@@ -271,22 +269,22 @@ class UnifiedPermissionEdgeMigrationService:
                 "success": True,
                 "dry_run": True,
                 "total_edges": total_edges,
-                "message": f"Dry run completed. Would migrate {total_edges} edges from '{self.source_collection}' to '{self.target_collection}' with {direction_label} direction."
+                "message": f"Dry run completed. Would migrate {total_edges} edges from '{self.source_collection}' to '{self.target_collection}' with {direction_label} direction.",
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Dry run analysis failed: {str(e)}")
+            self.logger.error(f"❌ Dry run analysis failed: {e!s}")
             return {
                 "success": False,
-                "message": f"Dry run analysis failed: {str(e)}"
+                "message": f"Dry run analysis failed: {e!s}",
             }
 
     async def _execute_migration(
         self,
-        all_edges: List[Dict],
+        all_edges: list[dict],
         total_edges: int,
-        batch_size: int
-    ) -> Dict[str, Any]:
+        batch_size: int,
+    ) -> dict[str, Any]:
         """Execute the actual migration in batches"""
         try:
             self.logger.info(f"🔄 Processing {total_edges} edges in batches of {batch_size}...")
@@ -326,26 +324,25 @@ class UnifiedPermissionEdgeMigrationService:
                 "migrated_edges": migrated_count,
                 "deleted_edges": deleted_count,
                 "errors": error_count,
-                "total_processed": total_edges
+                "total_processed": total_edges,
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Migration execution failed: {str(e)}", exc_info=True)
+            self.logger.error(f"❌ Migration execution failed: {e!s}", exc_info=True)
             return {
                 "success": False,
-                "message": f"Migration execution failed: {str(e)}",
+                "message": f"Migration execution failed: {e!s}",
                 "migrated_edges": 0,
                 "deleted_edges": 0,
-                "errors": 0
+                "errors": 0,
             }
 
     async def _process_batch(
         self,
-        batch: List[Dict],
-        batch_num: int
-    ) -> Dict[str, int]:
-        """
-        Process a single batch of edges:
+        batch: list[dict],
+        batch_num: int,
+    ) -> dict[str, int]:
+        """Process a single batch of edges:
         1. Create edges in target collection (with optional direction reversal)
         2. Delete edges from source collection
         """
@@ -378,14 +375,14 @@ class UnifiedPermissionEdgeMigrationService:
                     "externalPermissionId": old_edge.get("externalPermissionId"),
                     "createdAtTimestamp": old_edge.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "lastUpdatedTimestampAtSource": old_edge.get("lastUpdatedTimestampAtSource")
+                    "lastUpdatedTimestampAtSource": old_edge.get("lastUpdatedTimestampAtSource"),
                 }
 
                 new_edges.append(new_edge)
                 edge_keys_to_delete.append(old_edge["_key"])
 
             except Exception as e:
-                self.logger.error(f"❌ Error preparing edge {old_edge.get('_key')}: {str(e)}")
+                self.logger.error(f"❌ Error preparing edge {old_edge.get('_key')}: {e!s}")
                 errors += 1
                 continue
 
@@ -394,7 +391,7 @@ class UnifiedPermissionEdgeMigrationService:
             if new_edges:
                 result = await self.arango_service.batch_create_edges(
                     new_edges,
-                    collection=self.target_collection
+                    collection=self.target_collection,
                 )
                 if result:
                     migrated += len(new_edges)
@@ -406,7 +403,7 @@ class UnifiedPermissionEdgeMigrationService:
                     # Don't delete from source if creation failed
                     edge_keys_to_delete = []
         except Exception as e:
-            self.logger.error(f"❌ Error creating edges in target collection (batch {batch_num}): {str(e)}")
+            self.logger.error(f"❌ Error creating edges in target collection (batch {batch_num}): {e!s}")
             errors += len(new_edges)
             # Don't delete from source if creation failed
             edge_keys_to_delete = []
@@ -416,7 +413,7 @@ class UnifiedPermissionEdgeMigrationService:
             if edge_keys_to_delete:
                 result = await self.arango_service.delete_nodes(
                     keys=edge_keys_to_delete,
-                    collection=self.source_collection
+                    collection=self.source_collection,
                 )
                 if result:
                     deleted += len(edge_keys_to_delete)
@@ -425,13 +422,13 @@ class UnifiedPermissionEdgeMigrationService:
                     self.logger.warning(f"⚠️ Some edges may not have been deleted from source (batch {batch_num})")
                     errors += len(edge_keys_to_delete)
         except Exception as e:
-            self.logger.error(f"❌ Error deleting edges from source collection (batch {batch_num}): {str(e)}")
+            self.logger.error(f"❌ Error deleting edges from source collection (batch {batch_num}): {e!s}")
             errors += len(edge_keys_to_delete)
 
         return {
             "migrated": migrated,
             "deleted": deleted,
-            "errors": errors
+            "errors": errors,
         }
 
 
@@ -441,10 +438,9 @@ async def run_permissions_edge_migration(
     arango_service: BaseArangoService,
     logger: Logger,
     dry_run: bool = False,
-    batch_size: int = 1000
-) -> Dict[str, Any]:
-    """
-    Convenience function to run the 'permissions' collection migration with REVERSED direction.
+    batch_size: int = 1000,
+) -> dict[str, Any]:
+    """Convenience function to run the 'permissions' collection migration with REVERSED direction.
 
     Migrates from 'permissions' to 'permission' collection:
     - Old: Record → User/Group/Org
@@ -458,6 +454,7 @@ async def run_permissions_edge_migration(
 
     Returns:
         Dict with migration results
+
     """
     try:
         migration_service = UnifiedPermissionEdgeMigrationService(
@@ -465,7 +462,7 @@ async def run_permissions_edge_migration(
             logger=logger,
             source_collection=LegacyCollectionNames.PERMISSIONS.value,
             target_collection=CollectionNames.PERMISSION.value,
-            reverse_direction=True  # Reverse direction for permissions collection
+            reverse_direction=True,  # Reverse direction for permissions collection
         )
         result = await migration_service.run_migration(dry_run=dry_run, batch_size=batch_size)
 
@@ -476,7 +473,7 @@ async def run_permissions_edge_migration(
                 logger.info(
                     f"✅ Migration completed: {result.get('migrated_edges', 0)} edges migrated, "
                     f"{result.get('deleted_edges', 0)} edges deleted, "
-                    f"{result.get('errors', 0)} errors"
+                    f"{result.get('errors', 0)} errors",
                 )
         else:
             logger.error(f"❌ Migration failed: {result.get('message')}")
@@ -484,13 +481,13 @@ async def run_permissions_edge_migration(
         return result
 
     except Exception as e:
-        logger.error(f"❌ Migration error: {str(e)}")
+        logger.error(f"❌ Migration error: {e!s}")
         return {
             "success": False,
-            "message": f"Migration error: {str(e)}",
+            "message": f"Migration error: {e!s}",
             "migrated_edges": 0,
             "deleted_edges": 0,
-            "errors": 0
+            "errors": 0,
         }
 
 
@@ -498,10 +495,9 @@ async def run_permissions_to_kb_migration(
     arango_service: BaseArangoService,
     logger: Logger,
     dry_run: bool = False,
-    batch_size: int = 1000
-) -> Dict[str, Any]:
-    """
-    Convenience function to run the 'permissionsToKB' collection migration with SAME direction.
+    batch_size: int = 1000,
+) -> dict[str, Any]:
+    """Convenience function to run the 'permissionsToKB' collection migration with SAME direction.
 
     Migrates from 'permissionsToKB' to 'permission' collection:
     - Old: User/Team → RecordGroup
@@ -515,6 +511,7 @@ async def run_permissions_to_kb_migration(
 
     Returns:
         Dict with migration results
+
     """
     try:
         migration_service = UnifiedPermissionEdgeMigrationService(
@@ -522,7 +519,7 @@ async def run_permissions_to_kb_migration(
             logger=logger,
             source_collection=LegacyCollectionNames.PERMISSIONS_TO_KB.value,
             target_collection=CollectionNames.PERMISSION.value,
-            reverse_direction=False  # Keep same direction for permissionsToKB collection
+            reverse_direction=False,  # Keep same direction for permissionsToKB collection
         )
         result = await migration_service.run_migration(dry_run=dry_run, batch_size=batch_size)
 
@@ -533,7 +530,7 @@ async def run_permissions_to_kb_migration(
                 logger.info(
                     f"✅ Migration completed: {result.get('migrated_edges', 0)} edges migrated, "
                     f"{result.get('deleted_edges', 0)} edges deleted, "
-                    f"{result.get('errors', 0)} errors"
+                    f"{result.get('errors', 0)} errors",
                 )
         else:
             logger.error(f"❌ Migration failed: {result.get('message')}")
@@ -541,12 +538,12 @@ async def run_permissions_to_kb_migration(
         return result
 
     except Exception as e:
-        logger.error(f"❌ Migration error: {str(e)}")
+        logger.error(f"❌ Migration error: {e!s}")
         return {
             "success": False,
-            "message": f"Migration error: {str(e)}",
+            "message": f"Migration error: {e!s}",
             "migrated_edges": 0,
             "deleted_edges": 0,
-            "errors": 0
+            "errors": 0,
         }
 

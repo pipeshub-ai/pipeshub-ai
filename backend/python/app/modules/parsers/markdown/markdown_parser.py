@@ -1,6 +1,5 @@
 
 import re
-from typing import Dict, List, Tuple
 
 import markdown
 from bs4 import BeautifulSoup
@@ -13,8 +12,7 @@ class MarkdownParser:
         self.converter = DocumentConverter()
 
     def parse_string(self, md_content: str) -> bytes:
-        """
-        Parse Markdown content from a string.
+        """Parse Markdown content from a string.
 
         Args:
             md_content (str): Markdown content as a string
@@ -24,6 +22,7 @@ class MarkdownParser:
 
         Raises:
             ValueError: If parsing fails
+
         """
         # Convert string to bytes
 
@@ -32,8 +31,7 @@ class MarkdownParser:
         return md_bytes
 
     def parse_file(self, file_path: str) -> DoclingDocument:
-        """
-        Parse Markdown content from a file.
+        """Parse Markdown content from a file.
 
         Args:
             file_path (str): Path to the Markdown file
@@ -43,6 +41,7 @@ class MarkdownParser:
 
         Raises:
             ValueError: If parsing fails
+
         """
         result = self.converter.convert(file_path)
 
@@ -51,9 +50,8 @@ class MarkdownParser:
 
         return result.document
 
-    def extract_and_replace_images(self, md_content: str) -> Tuple[str, List[Dict[str, str]]]:
-        """
-        Extract all images from markdown content (inline, reference-style, and HTML syntax)
+    def extract_and_replace_images(self, md_content: str) -> tuple[str, list[dict[str, str]]]:
+        """Extract all images from markdown content (inline, reference-style, and HTML syntax)
         and replace their alt text sequentially.
 
         Args:
@@ -70,8 +68,9 @@ class MarkdownParser:
                         'new_alt_text': str,
                         'image_type': str  # 'markdown', 'reference', or 'html'
                     }
+
         """
-        images: List[Dict[str, str]] = []
+        images: list[dict[str, str]] = []
         image_counter = [1]  # Use list to allow modification in nested function
 
         # Pattern for markdown inline images: ![alt text](url "optional title")
@@ -79,7 +78,7 @@ class MarkdownParser:
         markdown_img_pattern = r'!\[([^\]]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)'
 
         # Pattern for reference-style image usage: ![alt text][reference]
-        reference_usage_pattern = r'!\[([^\]]*)\]\[([^\]]+)\]'
+        reference_usage_pattern = r"!\[([^\]]*)\]\[([^\]]+)\]"
 
         # Pattern for reference definitions: [reference]: url "optional title"
         # Captures URL only (non-whitespace chars), optional title is matched but not captured
@@ -110,11 +109,11 @@ class MarkdownParser:
 
             # Store image info
             images.append({
-                'original_text': original_text,
-                'url': url,
-                'alt_text': original_alt,
-                'new_alt_text': new_alt,
-                'image_type': 'reference'
+                "original_text": original_text,
+                "url": url,
+                "alt_text": original_alt,
+                "new_alt_text": new_alt,
+                "image_type": "reference",
             })
 
             image_counter[0] += 1
@@ -133,11 +132,11 @@ class MarkdownParser:
 
             # Store image info
             images.append({
-                'original_text': original_text,
-                'url': url,
-                'alt_text': original_alt,
-                'new_alt_text': new_alt,
-                'image_type': 'markdown'
+                "original_text": original_text,
+                "url": url,
+                "alt_text": original_alt,
+                "new_alt_text": new_alt,
+                "image_type": "markdown",
             })
 
             image_counter[0] += 1
@@ -145,18 +144,17 @@ class MarkdownParser:
 
         # Process HTML images using BeautifulSoup
         def process_html_images(content: str) -> str:
-            """
-            Use BeautifulSoup to properly parse and replace HTML img tags.
+            """Use BeautifulSoup to properly parse and replace HTML img tags.
             This is more robust than regex for handling various HTML formats.
             """
             # Parse with html.parser to handle fragments
-            soup = BeautifulSoup(content, 'html.parser')
+            soup = BeautifulSoup(content, "html.parser")
 
             # Find all img tags
-            for img_tag in soup.find_all('img'):
+            for img_tag in soup.find_all("img"):
                 # Get src and alt attributes
-                src = img_tag.get('src', '')
-                original_alt = img_tag.get('alt', '')
+                src = img_tag.get("src", "")
+                original_alt = img_tag.get("alt", "")
 
                 # Store original HTML
                 original_text = str(img_tag)
@@ -165,15 +163,15 @@ class MarkdownParser:
                 new_alt = f"Image_{image_counter[0]}"
 
                 # Update the alt attribute
-                img_tag['alt'] = new_alt
+                img_tag["alt"] = new_alt
 
                 # Store image info
                 images.append({
-                    'original_text': original_text,
-                    'url': src,
-                    'alt_text': original_alt,
-                    'new_alt_text': new_alt,
-                    'image_type': 'html'
+                    "original_text": original_text,
+                    "url": src,
+                    "alt_text": original_alt,
+                    "new_alt_text": new_alt,
+                    "image_type": "html",
                 })
 
                 image_counter[0] += 1

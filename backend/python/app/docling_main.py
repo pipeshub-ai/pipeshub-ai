@@ -1,8 +1,8 @@
 import asyncio
 import signal
 import sys
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 import uvicorn
 from fastapi import FastAPI
@@ -45,7 +45,6 @@ async def get_initialized_container() -> DoclingAppContainer:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
-
     # Initialize container and Docling service
     try:
         app_container = await get_initialized_container()
@@ -55,13 +54,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         config_service = app_container.config_service()
         logger = app_container.logger()
         app.state.docling_service = DoclingService(
-            config_service=config_service, logger=logger
+            config_service=config_service, logger=logger,
         )
         await app.state.docling_service.initialize()
         # Wire the initialized instance into the mounted routes
         set_docling_service(app.state.docling_service)
     except Exception as e:
-        logger.error(f"❌ Failed to initialize Docling service: {str(e)}")
+        logger.error(f"❌ Failed to initialize Docling service: {e!s}")
         raise
 
     yield
@@ -121,15 +120,14 @@ async def health_check() -> JSONResponse:
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-        else:
-            return JSONResponse(
-                status_code=HttpStatusCode.UNHEALTHY.value,
-                content={
-                    "status": "unhealthy",
-                    "service": "docling",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                },
-            )
+        return JSONResponse(
+            status_code=HttpStatusCode.UNHEALTHY.value,
+            content={
+                "status": "unhealthy",
+                "service": "docling",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -143,7 +141,7 @@ async def health_check() -> JSONResponse:
 def run(host: str = "0.0.0.0", port: int = 8081, reload: bool = False) -> None:
     """Run the Docling service"""
     uvicorn.run(
-        "app.docling_main:app", host=host, port=port, log_level="info", reload=reload
+        "app.docling_main:app", host=host, port=port, log_level="info", reload=reload,
     )
 
 if __name__ == "__main__":

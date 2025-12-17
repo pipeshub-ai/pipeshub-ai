@@ -1,7 +1,6 @@
 """Generic Connector Factory for creating and managing connectors"""
 
 import logging
-from typing import Dict, Optional, Type
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -44,7 +43,7 @@ class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
 
     # Registry of available connectors
-    _connector_registry: Dict[str, Type[BaseConnector]] = {
+    _connector_registry: dict[str, type[BaseConnector]] = {
         "onedrive": OneDriveConnector,
         "sharepointonline": SharePointConnector,
         "outlook": OutlookConnector,
@@ -59,24 +58,24 @@ class ConnectorFactory:
 
     # Beta connector definitions - single source of truth
     # Maps registry key to connector class
-    _beta_connector_definitions: Dict[str, Type[BaseConnector]] = {
-        'slack': SlackConnector,
-        'calendar': CalendarConnector,
-        'meet': MeetConnector,
-        'forms': FormsConnector,
-        'slides': SlidesConnector,
-        'docs': DocsConnector,
-        'zendesk': ZendeskConnector,
-        'linear': LinearConnector,
-        's3': S3Connector,
-        'notion': NotionConnector,
-        'airtable': AirtableConnector,
-        'azureblob': AzureBlobConnector,
+    _beta_connector_definitions: dict[str, type[BaseConnector]] = {
+        "slack": SlackConnector,
+        "calendar": CalendarConnector,
+        "meet": MeetConnector,
+        "forms": FormsConnector,
+        "slides": SlidesConnector,
+        "docs": DocsConnector,
+        "zendesk": ZendeskConnector,
+        "linear": LinearConnector,
+        "s3": S3Connector,
+        "notion": NotionConnector,
+        "airtable": AirtableConnector,
+        "azureblob": AzureBlobConnector,
     }
 
 
     @classmethod
-    def register_connector(cls, name: str, connector_class: Type[BaseConnector]) -> None:
+    def register_connector(cls, name: str, connector_class: type[BaseConnector]) -> None:
         """Register a new connector type"""
         cls._connector_registry[name.lower()] = connector_class
 
@@ -87,25 +86,25 @@ class ConnectorFactory:
             cls.register_connector(name.lower(), connector)
 
     @classmethod
-    def list_beta_connectors(cls) -> Dict[str, Type[BaseConnector]]:
-        """
-        Get the dictionary of beta connectors.
+    def list_beta_connectors(cls) -> dict[str, type[BaseConnector]]:
+        """Get the dictionary of beta connectors.
 
         This dynamically extracts app names from connector metadata,
         making it the single source of truth for beta connector identification.
 
         Returns:
             Dictionary of beta connectors
+
         """
         return cls._beta_connector_definitions.copy()
 
     @classmethod
-    def get_connector_class(cls, name: str) -> Optional[Type[BaseConnector]]:
+    def get_connector_class(cls, name: str) -> type[BaseConnector] | None:
         """Get connector class by name"""
         return cls._connector_registry.get(name.lower())
 
     @classmethod
-    def list_connectors(cls) -> Dict[str, Type[BaseConnector]]:
+    def list_connectors(cls) -> dict[str, type[BaseConnector]]:
         """List all registered connectors"""
         return cls._connector_registry.copy()
 
@@ -116,8 +115,8 @@ class ConnectorFactory:
         logger: logging.Logger,
         data_store_provider: ArangoDataStore,
         config_service: ConfigurationService,
-        **kwargs
-    ) -> Optional[BaseConnector]:
+        **kwargs,
+    ) -> BaseConnector | None:
         """Create a connector instance"""
         connector_class = cls.get_connector_class(name)
         if not connector_class:
@@ -129,12 +128,12 @@ class ConnectorFactory:
                 logger=logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
-                **kwargs
+                **kwargs,
             )
             logger.info(f"Created {name} connector successfully")
             return connector
         except Exception as e:
-            logger.error(f"❌ Failed to create {name} connector: {str(e)}")
+            logger.error(f"❌ Failed to create {name} connector: {e!s}")
             return None
 
     @classmethod
@@ -144,15 +143,15 @@ class ConnectorFactory:
         logger: logging.Logger,
         data_store_provider: ArangoDataStore,
         config_service: ConfigurationService,
-        **kwargs
-    ) -> Optional[BaseConnector]:
+        **kwargs,
+    ) -> BaseConnector | None:
         """Create and initialize a connector"""
         connector = await cls.create_connector(
             name=name,
             logger=logger,
             data_store_provider=data_store_provider,
             config_service=config_service,
-            **kwargs
+            **kwargs,
         )
 
         if connector:
@@ -161,7 +160,7 @@ class ConnectorFactory:
                 logger.info(f"Initialized {name} connector successfully")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to initialize {name} connector: {str(e)}")
+                logger.error(f"❌ Failed to initialize {name} connector: {e!s}")
                 return None
 
         return None
@@ -173,15 +172,15 @@ class ConnectorFactory:
         logger: logging.Logger,
         data_store_provider: ArangoDataStore,
         config_service: ConfigurationService,
-        **kwargs
-    ) -> Optional[BaseConnector]:
+        **kwargs,
+    ) -> BaseConnector | None:
         """Create, initialize, and start sync for a connector"""
         connector = await cls.initialize_connector(
             name=name,
             logger=logger,
             data_store_provider=data_store_provider,
             config_service=config_service,
-            **kwargs
+            **kwargs,
         )
 
         if connector:
@@ -191,7 +190,7 @@ class ConnectorFactory:
                 logger.info(f"Started sync for {name} connector")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to start sync for {name} connector: {str(e)}")
+                logger.error(f"❌ Failed to start sync for {name} connector: {e!s}")
                 return None
 
         return None

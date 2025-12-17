@@ -17,7 +17,7 @@ from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConvert
 
 SUCCESS_STATUS = "success"
 
-class DoclingProcessor():
+class DoclingProcessor:
     def __init__(self, logger, config) -> None:
         self.logger = logger
         self.config = config

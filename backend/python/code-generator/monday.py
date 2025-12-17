@@ -6,8 +6,12 @@ Monday.com API Code Generator
 Generates:
 - backend/python/app/sources/external/monday/monday.py
 - backend/python/app/sources/external/monday/example.py
+- backend/python/app/sources/external/monday/example_build_from_services.py
 
-Monday is GraphQL-only, so operations are manually defined.
+DESIGN RULES:
+- Authentication handled ONLY by MondayClient
+- DataSource never manages auth or tokens
+- Generator never injects Authorization headers
 """
 
 import sys
@@ -15,6 +19,28 @@ from pathlib import Path
 from typing import Dict, List
 
 HTTP_ERROR_THRESHOLD = 400
+
+
+# =============================================================================
+# PATH RESOLUTION (THIS FIXES YOUR ISSUE)
+# =============================================================================
+
+# File location: backend/python/code-generator/monday.py
+THIS_FILE = Path(__file__).resolve()
+
+# Repo root = ../../../..
+REPO_ROOT = THIS_FILE.parents[3]
+
+# Correct output directory
+OUTPUT_DIR = (
+    REPO_ROOT
+    / "backend"
+    / "python"
+    / "app"
+    / "sources"
+    / "external"
+    / "monday"
+)
 
 
 # =============================================================================
@@ -51,7 +77,9 @@ class MondayAPIDefinition:
                   }
                 }
                 """,
-                "variables": ["board_id"],
+                "variables": [
+                    {"name": "board_id", "type": "int"},
+                ],
             },
             {
                 "name": "get_columns",
@@ -66,7 +94,9 @@ class MondayAPIDefinition:
                   }
                 }
                 """,
-                "variables": ["board_id"],
+                "variables": [
+                    {"name": "board_id", "type": "int"},
+                ],
             },
             {
                 "name": "get_users",
@@ -89,23 +119,27 @@ class MondayAPIDefinition:
 # =============================================================================
 
 class MondayCodeGenerator:
-    """Generates MondayDataSource and example.py"""
+    """Generates MondayDataSource and example files"""
 
     def _generate_method(self, operation: Dict) -> str:
         name = operation["name"]
         query = operation["query"].strip()
         variables = operation.get("variables", [])
 
+        # Method signature
         args = ["self"]
         for v in variables:
-            args.append(f"{v}: int")
+            args.append(f"{v['name']}: {v['type']}")
 
         args_str = ",\n        ".join(args)
 
+        # Variables payload
         if variables:
             variables_block = (
                 "\n        variables = {\n"
-                + "\n".join([f'            "{v}": {v},' for v in variables])
+                + "\n".join(
+                    [f'            "{v["name"]}": {v["name"]},' for v in variables]
+                )
                 + "\n        }\n"
             )
         else:
@@ -141,12 +175,16 @@ class MondayCodeGenerator:
             return MondayResponse(
                 success=False,
                 error=str(e),
-                message="{name} failed: " + str(e),
+                message="{name} failed",
             )
 """
 
     def generate_datasource(self) -> str:
         header = """
+# NOTE:
+# - Authentication headers are handled by HTTPClient
+# - DataSource must not manage auth or tokens
+
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.monday.monday import MondayClient, MondayResponse
 
@@ -171,14 +209,20 @@ class MondayDataSource:
         return header + methods
 
     def generate_example(self) -> str:
-        return """import asyncio
+        return """import os
+import asyncio
 
-from app.sources.client.monday.monday import MondayClient
+from app.sources.client.monday.monday import MondayClient, MondayConfig
 from app.sources.external.monday.monday import MondayDataSource
 
 
 async def main() -> None:
-    client = MondayClient()
+    config = MondayConfig(
+        base_url=os.environ["MONDAY_BASE_URL"],
+        token=os.environ["MONDAY_TOKEN"],
+    )
+
+    client = MondayClient.build_with_config(config)
     datasource = MondayDataSource(client)
 
     response = await datasource.get_boards()
@@ -189,13 +233,52 @@ if __name__ == "__main__":
     asyncio.run(main())
 """
 
-    def write_files(self, base_dir: Path) -> None:
-        base_dir.mkdir(parents=True, exist_ok=True)
-        (base_dir / "monday.py").write_text(
+    def generate_example_build_from_services(self) -> str:
+        return """import asyncio
+import logging
+
+from app.config.configuration_service import ConfigurationService
+from app.sources.client.monday.monday import MondayClient
+from app.sources.external.monday.monday import MondayDataSource
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+
+async def main() -> None:
+    config_service = ConfigurationService()
+
+    client = await MondayClient.build_from_services(
+        logger=logger,
+        config_service=config_service,
+    )
+
+    datasource = MondayDataSource(client)
+
+    response = await datasource.get_boards()
+
+    if response.success:
+        logger.info("Successfully fetched boards")
+        logger.info(response.data)
+    else:
+        logger.error(f"Failed to fetch boards: {response.error}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+"""
+
+    def write_files(self) -> None:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        (OUTPUT_DIR / "monday.py").write_text(
             self.generate_datasource(), encoding="utf-8"
         )
-        (base_dir / "example.py").write_text(
+        (OUTPUT_DIR / "example.py").write_text(
             self.generate_example(), encoding="utf-8"
+        )
+        (OUTPUT_DIR / "example_build_from_services.py").write_text(
+            self.generate_example_build_from_services(), encoding="utf-8"
         )
 
 
@@ -204,11 +287,10 @@ if __name__ == "__main__":
 # =============================================================================
 
 def main() -> int:
-    output_dir = Path("backend/python/app/sources/external/monday")
     generator = MondayCodeGenerator()
-    generator.write_files(output_dir)
+    generator.write_files()
 
-    print("✅ Generated MondayDataSource and example.py")
+    print(f"✅ Generated Monday files at: {OUTPUT_DIR}")
     return 0
 
 

@@ -26,17 +26,16 @@ class Arango(Transformer):
         await self.save_metadata_to_db( record_id, metadata, virtual_record_id)
 
     async def save_metadata_to_db(
-        self,  record_id: str, metadata: SemanticMetadata, virtual_record_id: str
+        self,  record_id: str, metadata: SemanticMetadata, virtual_record_id: str,
     ) -> None:
-        """
-        Extract metadata from a document in ArangoDB and create department relationships
+        """Extract metadata from a document in ArangoDB and create department relationships
         """
         self.logger.info("🚀 Saving metadata to ArangoDB")
         async with self.arango_data_store.transaction() as tx_store:
             try:
                 # Retrieve the document content from ArangoDB
                 record = await tx_store.get_record_by_key(
-                    record_id
+                    record_id,
                 )
 
                 if record is None:
@@ -49,7 +48,7 @@ class Arango(Transformer):
                     try:
                         dept_query = f"FOR d IN {CollectionNames.DEPARTMENTS.value} FILTER d.departmentName == @department RETURN d"
                         cursor = tx_store.txn.aql.execute(
-                            dept_query, bind_vars={"department": department}
+                            dept_query, bind_vars={"department": department},
                         )
                         dept_doc = cursor.next()
                         self.logger.info(f"🚀 Department: {dept_doc}")
@@ -61,10 +60,10 @@ class Arango(Transformer):
                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                             }
                             await tx_store.batch_create_edges(
-                                [edge], CollectionNames.BELONGS_TO_DEPARTMENT.value
+                                [edge], CollectionNames.BELONGS_TO_DEPARTMENT.value,
                             )
                             self.logger.info(
-                                f"🔗 Created relationship between document {record_id} and department {department}"
+                                f"🔗 Created relationship between document {record_id} and department {department}",
                             )
 
                     except StopIteration:
@@ -72,14 +71,14 @@ class Arango(Transformer):
                         continue
                     except Exception as e:
                         self.logger.error(
-                            f"❌ Error creating relationship with department {department}: {str(e)}"
+                            f"❌ Error creating relationship with department {department}: {e!s}",
                         )
                         continue
 
                 # Handle single category
                 category_query = f"FOR c IN {CollectionNames.CATEGORIES.value} FILTER c.name == @name RETURN c"
                 cursor = tx_store.txn.aql.execute(
-                    category_query, bind_vars={"name": metadata.categories[0]}
+                    category_query, bind_vars={"name": metadata.categories[0]},
                 )
                 try:
                     category_doc = cursor.next()
@@ -89,12 +88,12 @@ class Arango(Transformer):
                 except (StopIteration, KeyError, TypeError):
                     category_key = str(uuid.uuid4())
                     tx_store.txn.collection(
-                        CollectionNames.CATEGORIES.value
+                        CollectionNames.CATEGORIES.value,
                     ).insert(
                         {
                             "_key": category_key,
                             "name": metadata.categories[0],
-                        }
+                        },
                     )
 
                 # Create category relationship if it doesn't exist
@@ -112,23 +111,23 @@ class Arango(Transformer):
                 )
                 if not cursor.count():
                     tx_store.txn.collection(
-                        CollectionNames.BELONGS_TO_CATEGORY.value
+                        CollectionNames.BELONGS_TO_CATEGORY.value,
                     ).insert(
                         {
                             "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
                             "_to": f"{CollectionNames.CATEGORIES.value}/{category_key}",
                             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        }
+                        },
                     )
 
                 # Handle subcategories with similar pattern
                 def handle_subcategory(name, level, parent_key, parent_collection) -> str:
                     collection_name = getattr(
-                        CollectionNames, f"SUBCATEGORIES{level}"
+                        CollectionNames, f"SUBCATEGORIES{level}",
                     ).value
                     query = f"FOR s IN {collection_name} FILTER s.name == @name RETURN s"
                     cursor = tx_store.txn.aql.execute(
-                        query, bind_vars={"name": name}
+                        query, bind_vars={"name": name},
                     )
                     try:
                         doc = cursor.next()
@@ -141,7 +140,7 @@ class Arango(Transformer):
                             {
                                 "_key": key,
                                 "name": name,
-                            }
+                            },
                         )
 
                     # Create belongs_to relationship
@@ -159,13 +158,13 @@ class Arango(Transformer):
                     )
                     if not cursor.count():
                         tx_store.txn.collection(
-                            CollectionNames.BELONGS_TO_CATEGORY.value
+                            CollectionNames.BELONGS_TO_CATEGORY.value,
                         ).insert(
                             {
                                 "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
                                 "_to": f"{collection_name}/{key}",
                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                            }
+                            },
                         )
 
                     # Create hierarchy relationship
@@ -184,35 +183,35 @@ class Arango(Transformer):
                         )
                         if not cursor.count():
                             tx_store.txn.collection(
-                                CollectionNames.INTER_CATEGORY_RELATIONS.value
+                                CollectionNames.INTER_CATEGORY_RELATIONS.value,
                             ).insert(
                                 {
                                     "_from": f"{collection_name}/{key}",
                                     "_to": f"{parent_collection}/{parent_key}",
                                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                                }
+                                },
                             )
                     return key
 
                 # Process subcategories
                 if metadata.sub_category_level_1:
                     sub1_key = handle_subcategory(
-                        metadata.sub_category_level_1, "1", category_key, "categories"
+                        metadata.sub_category_level_1, "1", category_key, "categories",
                     )
                 if metadata.sub_category_level_2 and sub1_key:
                     sub2_key = handle_subcategory(
-                        metadata.sub_category_level_2, "2", sub1_key, "subcategories1"
+                        metadata.sub_category_level_2, "2", sub1_key, "subcategories1",
                     )
                 if metadata.sub_category_level_3 and sub2_key:
                     handle_subcategory(
-                        metadata.sub_category_level_3, "3", sub2_key, "subcategories2"
+                        metadata.sub_category_level_3, "3", sub2_key, "subcategories2",
                     )
 
                 # Handle languages
                 for language in metadata.languages:
                     query = f"FOR l IN {CollectionNames.LANGUAGES.value} FILTER l.name == @name RETURN l"
                     cursor = tx_store.txn.aql.execute(
-                        query, bind_vars={"name": language}
+                        query, bind_vars={"name": language},
                     )
                     try:
                         lang_doc = cursor.next()
@@ -222,12 +221,12 @@ class Arango(Transformer):
                     except (StopIteration, KeyError, TypeError):
                         lang_key = str(uuid.uuid4())
                         tx_store.txn.collection(
-                            CollectionNames.LANGUAGES.value
+                            CollectionNames.LANGUAGES.value,
                         ).insert(
                             {
                                 "_key": lang_key,
                                 "name": language,
-                            }
+                            },
                         )
 
                     # Create relationship if it doesn't exist
@@ -245,20 +244,20 @@ class Arango(Transformer):
                     )
                     if not cursor.count():
                         tx_store.txn.collection(
-                            CollectionNames.BELONGS_TO_LANGUAGE.value
+                            CollectionNames.BELONGS_TO_LANGUAGE.value,
                         ).insert(
                             {
                                 "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
                                 "_to": f"{CollectionNames.LANGUAGES.value}/{lang_key}",
                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                            }
+                            },
                         )
 
                 # Handle topics
                 for topic in metadata.topics:
                     query = f"FOR t IN {CollectionNames.TOPICS.value} FILTER t.name == @name RETURN t"
                     cursor = tx_store.txn.aql.execute(
-                        query, bind_vars={"name": topic}
+                        query, bind_vars={"name": topic},
                     )
                     try:
                         topic_doc = cursor.next()
@@ -268,12 +267,12 @@ class Arango(Transformer):
                     except (StopIteration, KeyError, TypeError):
                         topic_key = str(uuid.uuid4())
                         tx_store.txn.collection(
-                            CollectionNames.TOPICS.value
+                            CollectionNames.TOPICS.value,
                         ).insert(
                             {
                                 "_key": topic_key,
                                 "name": topic,
-                            }
+                            },
                         )
 
                     # Create relationship if it doesn't exist
@@ -291,35 +290,35 @@ class Arango(Transformer):
                     )
                     if not cursor.count():
                         tx_store.txn.collection(
-                            CollectionNames.BELONGS_TO_TOPIC.value
+                            CollectionNames.BELONGS_TO_TOPIC.value,
                         ).insert(
                             {
                                 "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
                                 "_to": f"{CollectionNames.TOPICS.value}/{topic_key}",
                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                            }
+                            },
                         )
 
                 self.logger.info(
-                    "🚀 Metadata saved successfully for document"
+                    "🚀 Metadata saved successfully for document",
                 )
 
                 record.update(
                     {
                         "extractionStatus": "COMPLETED",
                         "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                    }
+                    },
                 )
                 docs = [record]
 
                 self.logger.info(
-                    "🎯 Upserting domain metadata for document"
+                    "🎯 Upserting domain metadata for document",
                 )
                 await tx_store.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
+                    docs, CollectionNames.RECORDS.value,
                 )
 
             except Exception as e:
-                self.logger.error(f"❌ Error saving metadata to ArangoDB: {str(e)}")
+                self.logger.error(f"❌ Error saving metadata to ArangoDB: {e!s}")
                 raise
 

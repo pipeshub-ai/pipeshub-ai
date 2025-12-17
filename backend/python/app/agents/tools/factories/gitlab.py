@@ -1,5 +1,4 @@
-"""
-Client factories for GitLab.
+"""Client factories for GitLab.
 """
 
 
@@ -15,8 +14,7 @@ class GitLabClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> GitLabClient:
         """Create GitLab client instance"""
-
         return await GitLabClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

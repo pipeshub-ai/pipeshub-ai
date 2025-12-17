@@ -20,7 +20,7 @@ class SinkOrchestrator(Transformer):
         record = ctx.record
         record_id = record.id
         record = await self.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value,
             )
         if record is None:
             self.logger.error(f"❌ Record {record_id} not found in database")

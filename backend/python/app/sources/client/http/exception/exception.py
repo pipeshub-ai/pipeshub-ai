@@ -1,5 +1,4 @@
 from enum import Enum
-from typing import Dict, Optional
 
 from fastapi import HTTPException as FastAPIHTTPException  # type: ignore
 
@@ -33,7 +32,8 @@ class HTTPException(FastAPIHTTPException):
         message: The message of the exception
         headers: The headers of the exception
     """
-    def __init__(self, status_code: int, message: str = "", headers: Optional[Dict[str, str]] = None) -> None:
+
+    def __init__(self, status_code: int, message: str = "", headers: dict[str, str] | None = None) -> None:
         super().__init__(status_code, message, headers)
 
 
@@ -42,6 +42,7 @@ class BadRequestError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Bad Request") -> None:
         super().__init__(HttpStatusCode.BAD_REQUEST.value, message)
 
@@ -51,6 +52,7 @@ class UnauthorizedError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Unauthorized") -> None:
         super().__init__(HttpStatusCode.UNAUTHORIZED.value, message)
 
@@ -60,6 +62,7 @@ class ForbiddenError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Forbidden") -> None:
         super().__init__(HttpStatusCode.FORBIDDEN.value, message)
 
@@ -69,6 +72,7 @@ class NotFoundError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Not Found") -> None:
         super().__init__(HttpStatusCode.NOT_FOUND.value, message)
 
@@ -78,6 +82,7 @@ class MethodNotAllowedError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Method Not Allowed") -> None:
         super().__init__(HttpStatusCode.METHOD_NOT_ALLOWED.value, message)
 
@@ -87,6 +92,7 @@ class ConflictError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Conflict") -> None:
         super().__init__(HttpStatusCode.CONFLICT.value, message)
 
@@ -96,6 +102,7 @@ class UnprocessableEntityError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Unprocessable Entity") -> None:
         super().__init__(HttpStatusCode.UNPROCESSABLE_ENTITY.value, message)
 
@@ -105,6 +112,7 @@ class TooManyRequestsError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Too Many Requests") -> None:
         super().__init__(HttpStatusCode.TOO_MANY_REQUESTS.value, message)
 
@@ -114,6 +122,7 @@ class InternalServerError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Internal Server Error") -> None:
         super().__init__(HttpStatusCode.INTERNAL_SERVER_ERROR.value, message)
 
@@ -123,6 +132,7 @@ class BadGatewayError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Bad Gateway") -> None:
         super().__init__(HttpStatusCode.BAD_GATEWAY.value, message)
 
@@ -132,6 +142,7 @@ class ServiceUnavailableError(HTTPException):
     Args:
         message: The message of the exception
     """
+
     def __init__(self, message: str = "Service Unavailable") -> None:
         super().__init__(HttpStatusCode.SERVICE_UNAVAILABLE.value, message)
 

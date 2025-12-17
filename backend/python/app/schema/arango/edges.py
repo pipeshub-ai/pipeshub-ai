@@ -172,7 +172,7 @@ role_based_edge_schema = {
         },
         "required": ["role", "createdAtTimestamp"],
         "additionalProperties": True,
-    }
+    },
 }
 
 # Agent -> Memory
@@ -187,7 +187,7 @@ source_edge_schema = {
         },
         "required": ["createdAtTimestamp"],
         "additionalProperties": True,
-    }
+    },
 }
 
 

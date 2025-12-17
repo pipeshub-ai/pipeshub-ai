@@ -1,7 +1,6 @@
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from typing import Dict, Set
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
@@ -11,7 +10,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 class AbstractDriveWebhookHandler(ABC):
     def __init__(
-        self, logger, config_service: ConfigurationService, arango_service, change_handler
+        self, logger, config_service: ConfigurationService, arango_service, change_handler,
     ) -> None:
         self.logger = logger
         self.config_service = config_service
@@ -24,9 +23,8 @@ class AbstractDriveWebhookHandler(ABC):
         self.last_notification_time = None
         self.processed_message_numbers = set()
 
-    async def _log_headers(self, headers: Dict) -> Dict:
+    async def _log_headers(self, headers: dict) -> dict:
         """Log webhook headers and return important headers"""
-
         important_headers = {
             "resource_id": headers.get("x-goog-resource-id"),
             "changed_id": headers.get("x-goog-changed"),
@@ -47,14 +45,12 @@ class AbstractDriveWebhookHandler(ABC):
         return important_headers
 
     @abstractmethod
-    async def process_notification(self, headers: Dict) -> bool:
+    async def process_notification(self, headers: dict) -> bool:
         """Process incoming webhook notification"""
-        pass
 
     @abstractmethod
     async def _delayed_process_notifications(self) -> None:
         """Process coalesced notifications after delay"""
-        pass
 
 
 class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
@@ -73,9 +69,9 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
         self.drive_user_service = drive_user_service
         self.arango_service = arango_service
         self.change_handler = change_handler
-        self.pending_notifications: Set[str] = set()
+        self.pending_notifications: set[str] = set()
 
-    async def process_notification(self, headers: Dict) -> bool:
+    async def process_notification(self, headers: dict) -> bool:
         try:
             important_headers = await self._log_headers(headers)
             if not important_headers:
@@ -101,12 +97,12 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
             if self.scheduled_task and not self.scheduled_task.done():
                 self.scheduled_task.cancel()
             self.scheduled_task = asyncio.create_task(
-                self._delayed_process_notifications(user_email)
+                self._delayed_process_notifications(user_email),
             )
             return True
 
         except Exception as e:
-            self.logger.error(f"Error processing individual notification: {str(e)}")
+            self.logger.error(f"Error processing individual notification: {e!s}")
             return False
 
     async def _delayed_process_notifications(self, user_email: str = None) -> None:
@@ -128,34 +124,34 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
                 # Clear processed notifications for this user
                 self.pending_notifications.clear()
                 self.logger.info(
-                    f"🚀 Cleared processed notifications for user {user_email}"
+                    f"🚀 Cleared processed notifications for user {user_email}",
                 )
 
         except asyncio.CancelledError:
             self.logger.info(f"Processing delayed for user {user_email}")
         except Exception as e:
             self.logger.error(
-                "Error processing notifications for user %s: %s", user_email, str(e)
+                "Error processing notifications for user %s: %s", user_email, str(e),
             )
 
-    async def _process_user_changes(self, user_email: str, notification: Dict) -> None:
+    async def _process_user_changes(self, user_email: str, notification: dict) -> None:
         """Process changes for a single user"""
         user_service = self.drive_user_service
 
         page_token = await self.arango_service.get_page_token_db(
-            notification["channel_id"], notification["resource_id"]
+            notification["channel_id"], notification["resource_id"],
         )
 
         if not page_token:
             return
 
         changes, new_token = await user_service.get_changes(
-            page_token=page_token["token"]
+            page_token=page_token["token"],
         )
         user_id = await self.arango_service.get_entity_id_by_email(user_email)
 
         user = await self.arango_service.get_document(
-            user_id, CollectionNames.USERS.value
+            user_id, CollectionNames.USERS.value,
         )
         org_id = user.get("orgId")
         user_id = user.get("userId")
@@ -164,10 +160,10 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
             for change in changes:
                 try:
                     await self.change_handler.process_change(
-                        change, user_service, org_id, user_id
+                        change, user_service, org_id, user_id,
                     )
                 except Exception as e:
-                    self.logger.error(f"Error processing change: {str(e)}")
+                    self.logger.error(f"Error processing change: {e!s}")
                     continue
 
         if new_token and new_token != page_token["token"]:
@@ -195,9 +191,9 @@ class EnterpriseDriveWebhookHandler(AbstractDriveWebhookHandler):
         super().__init__(logger, config_service, arango_service, change_handler)
         self.logger = logger
         self.drive_admin_service = drive_admin_service
-        self.pending_notifications: Set[str] = set()
+        self.pending_notifications: set[str] = set()
 
-    async def process_notification(self, headers: Dict) -> bool:
+    async def process_notification(self, headers: dict) -> bool:
         try:
             important_headers = await self._log_headers(headers)
             if not important_headers:
@@ -213,13 +209,13 @@ class EnterpriseDriveWebhookHandler(AbstractDriveWebhookHandler):
                 self.scheduled_task.cancel()
 
             self.scheduled_task = asyncio.create_task(
-                self._delayed_process_notifications()
+                self._delayed_process_notifications(),
             )
 
             return True
 
         except Exception as e:
-            self.logger.error(f"Error processing enterprise notification: {str(e)}")
+            self.logger.error(f"Error processing enterprise notification: {e!s}")
             return False
 
     async def _delayed_process_notifications(self) -> None:
@@ -261,21 +257,21 @@ class EnterpriseDriveWebhookHandler(AbstractDriveWebhookHandler):
                 self.logger.info("Processing changes for channel %s", channel_id)
                 resource_id = notification["resource_id"]
                 page_token = await self.arango_service.get_page_token_db(
-                    channel_id, resource_id
+                    channel_id, resource_id,
                 )
 
                 if not page_token:
                     continue
                 user_service = await self.drive_admin_service.create_drive_user_service(
-                    page_token["userEmail"]
+                    page_token["userEmail"],
                 )
 
                 changes, new_token = await user_service.get_changes(
-                    page_token=page_token["token"]
+                    page_token=page_token["token"],
                 )
 
                 user_id = await self.arango_service.get_entity_id_by_email(
-                    page_token["userEmail"]
+                    page_token["userEmail"],
                 )
                 # Get org_id from belongsTo relation for this user
                 query = f"""
@@ -288,18 +284,18 @@ class EnterpriseDriveWebhookHandler(AbstractDriveWebhookHandler):
                 org_id = next(cursor, None)
 
                 user = await self.arango_service.get_document(
-                    user_id, CollectionNames.USERS.value
+                    user_id, CollectionNames.USERS.value,
                 )
                 user_id = user.get("userId")
 
                 if changes:
                     self.logger.info(
-                        "Processing %s changes for channel %s", len(changes), channel_id
+                        "Processing %s changes for channel %s", len(changes), channel_id,
                     )
                     for change in changes:
                         try:
                             await self.change_handler.process_change(
-                                change, user_service, org_id, user_id
+                                change, user_service, org_id, user_id,
                             )
                         except Exception as e:
                             self.logger.error("Error processing change: %s", str(e))

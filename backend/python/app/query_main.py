@@ -1,5 +1,5 @@
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List
 
 import httpx
 import uvicorn
@@ -48,7 +48,7 @@ async def initialize_container(container: QueryAppContainer) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"❌ Failed to initialize resources: {str(e)}")
+        logger.error(f"❌ Failed to initialize resources: {e!s}")
         raise
 
 
@@ -60,13 +60,13 @@ async def get_initialized_container() -> QueryAppContainer:
             modules=[
                 "app.api.routes.search",
                 "app.api.routes.chatbot",
-                "app.modules.retrieval.retrieval_service"
-            ]
+                "app.modules.retrieval.retrieval_service",
+            ],
         )
         get_initialized_container.initialized = True
     return container
 
-async def start_kafka_consumers(app_container: QueryAppContainer) -> List:
+async def start_kafka_consumers(app_container: QueryAppContainer) -> list:
     """Start all Kafka consumers at application level"""
     logger = app_container.logger()
     consumers = []
@@ -78,7 +78,7 @@ async def start_kafka_consumers(app_container: QueryAppContainer) -> List:
         aiconfig_kafka_consumer = MessagingFactory.create_consumer(
             broker_type="kafka",
             logger=logger,
-            config=aiconfig_kafka_config
+            config=aiconfig_kafka_config,
         )
         aiconfig_message_handler = await KafkaUtils.create_aiconfig_message_handler(app_container)
         await aiconfig_kafka_consumer.start(aiconfig_message_handler)
@@ -89,7 +89,7 @@ async def start_kafka_consumers(app_container: QueryAppContainer) -> List:
         return consumers
 
     except Exception as e:
-        logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
+        logger.error(f"❌ Error starting Kafka consumers: {e!s}")
         # Cleanup any started consumers
         for name, consumer in consumers:
             try:
@@ -102,25 +102,24 @@ async def start_kafka_consumers(app_container: QueryAppContainer) -> List:
 async def stop_kafka_consumers(container: QueryAppContainer) -> bool:
     """Stop all Kafka consumers"""
     logger = container.logger()
-    consumers = getattr(container, 'kafka_consumers', [])
+    consumers = getattr(container, "kafka_consumers", [])
     for name, consumer in consumers:
         try:
             await consumer.stop()
             logger.info(f"✅ {name.title()} Kafka consumer stopped")
             return True
         except Exception as e:
-            logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
+            logger.error(f"❌ Error stopping {name} consumer: {e!s}")
             return False
         finally:
             # Clear the consumers list
-            if hasattr(container, 'kafka_consumers'):
+            if hasattr(container, "kafka_consumers"):
                 container.kafka_consumers = []
             return True
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
-
     # Initialize container
     app_container = await get_initialized_container()
     # Store container in app state for access in dependencies
@@ -135,7 +134,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_container.kafka_consumers = consumers
         logger.info("✅ All Kafka consumers started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        logger.error(f"❌ Failed to start Kafka consumers: {e!s}")
         raise
 
     arango_service = await app_container.arango_service()
@@ -150,7 +149,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await retrieval_service.get_embedding_model_instance()
 
     arango_config_dict = await container.config_service().get_config(
-        config_node_constants.ARANGODB.value
+        config_node_constants.ARANGODB.value,
     )
     arango_config = ArangoConfig(**arango_config_dict)
 
@@ -194,7 +193,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await stop_kafka_consumers(app_container)
         logger.info("✅ All Kafka consumers stopped")
     except Exception as e:
-        logger.error(f"❌ Error stopping Kafka consumers: {str(e)}")
+        logger.error(f"❌ Error stopping Kafka consumers: {e!s}")
 
 
 # Create FastAPI app with lifespan
@@ -249,7 +248,7 @@ async def health_check() -> JSONResponse:
     """Health check endpoint that also verifies connector service health"""
     try:
         endpoints = await app.container.config_service().get_config(
-            config_node_constants.ENDPOINTS.value
+            config_node_constants.ENDPOINTS.value,
         )
         connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
         connector_url = f"{connector_endpoint}/health"
@@ -278,7 +277,7 @@ async def health_check() -> JSONResponse:
             status_code=500,
             content={
                 "status": "fail",
-                "error": f"Failed to connect to connector service: {str(e)}",
+                "error": f"Failed to connect to connector service: {e!s}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -294,8 +293,7 @@ async def health_check() -> JSONResponse:
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """
-    Custom handler to log Pydantic validation errors.
+    """Custom handler to log Pydantic validation errors.
     This will log the detailed error and the body of the failed request.
     """
     # Log the full error details from the exception
@@ -326,7 +324,7 @@ app.include_router(tools_router, prefix="/api/v1")
 def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:
     """Run the application"""
     uvicorn.run(
-        "app.query_main:app", host=host, port=port, log_level="info", reload=reload
+        "app.query_main:app", host=host, port=port, log_level="info", reload=reload,
     )
 
 

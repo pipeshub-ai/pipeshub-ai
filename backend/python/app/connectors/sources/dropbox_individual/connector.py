@@ -2,9 +2,9 @@ import asyncio
 import mimetypes
 import re
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 from aiolimiter import AsyncLimiter
 from dropbox.exceptions import ApiError
@@ -65,7 +65,7 @@ from app.utils.streaming import stream_content
 
 
 # Helper functions (reused from team connector)
-def get_parent_path_from_path(path: str) -> Optional[str]:
+def get_parent_path_from_path(path: str) -> str | None:
     """Extracts the parent path from a file/folder path."""
     if not path or path == "/" or "/" not in path.lstrip("/"):
         return None # Root directory has no parent path in this context
@@ -73,7 +73,7 @@ def get_parent_path_from_path(path: str) -> Optional[str]:
     return f"/{parent_path}" if parent_path else "/"
 
 
-def get_file_extension(filename: str) -> Optional[str]:
+def get_file_extension(filename: str) -> str | None:
     """Extracts the extension from a filename."""
     if "." in filename:
         parts = filename.split(".")
@@ -82,15 +82,15 @@ def get_file_extension(filename: str) -> Optional[str]:
     return None
 
 
-def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) -> MimeTypes:
-    """
-    Determines the correct MimeTypes enum member for a Dropbox API entry.
+def get_mimetype_enum_for_dropbox(entry: FileMetadata | FolderMetadata) -> MimeTypes:
+    """Determines the correct MimeTypes enum member for a Dropbox API entry.
 
     Args:
         entry: A FileMetadata or FolderMetadata object from the Dropbox SDK.
 
     Returns:
         The corresponding MimeTypes enum member.
+
     """
     # 1. Handle folders directly
     if isinstance(entry, FolderMetadata):
@@ -100,7 +100,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
     if isinstance(entry, FileMetadata):
         # The '.paper' extension is a special Dropbox file type. We can handle it explicitly
         # or let it fall through to the default binary type if not in the enum.
-        if entry.name.endswith('.paper'):
+        if entry.name.endswith(".paper"):
             # Assuming .paper files are a form of web content.
             return MimeTypes.HTML
 
@@ -145,12 +145,12 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         .add_documentation_link(DocumentationLink(
             "Dropbox App Setup",
             "https://developers.dropbox.com/oauth-guide",
-            "setup"
+            "setup",
         ))
         .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/dropbox/dropbox_personal',
-            'pipeshub'
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/connectors/dropbox/dropbox_personal",
+            "pipeshub",
         ))
         .with_redirect_uri("connectors/oauth/callback/Dropbox%20Personal", True)
         .with_oauth_urls(
@@ -161,24 +161,23 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
                 "files.content.read",
                 "files.metadata.read",
                 "sharing.read",
-                "sharing.write"
-            ]
+                "sharing.write",
+            ],
         )
         .add_auth_field(CommonFields.client_id("Dropbox App Console"))
         .add_auth_field(CommonFields.client_secret("Dropbox App Console"))
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
         .with_scheduled_config(True, 60)
-        .add_sync_custom_field(CommonFields.batch_size_field())
+        .add_sync_custom_field(CommonFields.batch_size_field()),
     )\
     .build_decorator()
 class DropboxIndividualConnector(BaseConnector):
-    """
-    Connector for synchronizing data from a Dropbox Individual account.
+    """Connector for synchronizing data from a Dropbox Individual account.
     Simplified version without team-specific features.
     """
 
-    current_user_id: Optional[str] = None
-    current_user_email: Optional[str] = None
+    current_user_id: str | None = None
+    current_user_email: str | None = None
 
     def __init__(
         self,
@@ -187,15 +186,13 @@ class DropboxIndividualConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
     ) -> None:
-
         """Initialize the Dropbox Individual connector."""
-
         super().__init__(
             DropboxIndividualApp(),
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
         )
 
         self.connector_name = Connectors.DROPBOX_PERSONAL
@@ -206,24 +203,23 @@ class DropboxIndividualConnector(BaseConnector):
             connector_name=self.connector_name,
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
-            data_store_provider=self.data_store_provider
+            data_store_provider=self.data_store_provider,
         )
 
         # NOTE: We do NOT initialize user_sync_point or user_group_sync_point
         # because individual accounts do not sync a member directory.
 
-        self.data_source: Optional[DropboxDataSource] = None
+        self.data_source: DropboxDataSource | None = None
         self.batch_size = 100
         self.max_concurrent_batches = 5
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
 
     async def init(self) -> bool:
-        """
-        Initializes the Dropbox client using credentials from the config service.
+        """Initializes the Dropbox client using credentials from the config service.
         Sets up client for individual account (is_team=False).
         """
         config = await self.config_service.get_config(
-            "/services/connectors/dropboxpersonal/config"
+            "/services/connectors/dropboxpersonal/config",
         )
         if not config:
             self.logger.error("Dropbox Individual access token not found in configuration.")
@@ -242,7 +238,7 @@ class DropboxIndividualConnector(BaseConnector):
                 token=access_token,
                 refresh_token=refresh_token,
                 app_key=app_key,
-                app_secret=app_secret
+                app_secret=app_secret,
             )
             client = await DropboxClient.build_with_config(config, is_team=False)
             self.data_source = DropboxDataSource(client)
@@ -253,11 +249,12 @@ class DropboxIndividualConnector(BaseConnector):
             return False
 
 
-    async def _get_current_user_info(self) -> Tuple[str, str]:
-        """
-        Fetches the current user's account information.
+    async def _get_current_user_info(self) -> tuple[str, str]:
+        """Fetches the current user's account information.
+
         Returns:
             Tuple of (account_id, email)
+
         """
         # Check if we already have the current user info
         if self.current_user_id and self.current_user_email:
@@ -285,13 +282,12 @@ class DropboxIndividualConnector(BaseConnector):
 
     async def _process_dropbox_entry(
         self,
-        entry: Union[FileMetadata, FolderMetadata, DeletedMetadata],
+        entry: FileMetadata | FolderMetadata | DeletedMetadata,
         user_id: str,
         user_email: str,
-        record_group_id: str
-    ) -> Optional[RecordUpdate]:
-        """
-        Process a single Dropbox entry and detect changes.
+        record_group_id: str,
+    ) -> RecordUpdate | None:
+        """Process a single Dropbox entry and detect changes.
         Simplified version without team-specific parameters.
         """
         try:
@@ -329,7 +325,7 @@ class DropboxIndividualConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_name=self.connector_name,
-                    external_id=entry.id
+                    external_id=entry.id,
                 )
 
             # 3. Detect changes
@@ -362,7 +358,7 @@ class DropboxIndividualConnector(BaseConnector):
             signed_url = None
             if is_file:
                 temp_link_result = await self.data_source.files_get_temporary_link(
-                    entry.path_lower
+                    entry.path_lower,
                 )
                 if temp_link_result.success:
                     signed_url = temp_link_result.data.link
@@ -375,14 +371,14 @@ class DropboxIndividualConnector(BaseConnector):
 
             preview_url = None
             link_settings = SharedLinkSettings(
-                audience=LinkAudience('no_one'),
-                allow_download=True
+                audience=LinkAudience("no_one"),
+                allow_download=True,
             )
 
             # First call - try to create link with settings
             shared_link_result = await self.data_source.sharing_create_shared_link_with_settings(
                 path=entry.path_lower,
-                settings=link_settings
+                settings=link_settings,
             )
 
             self.logger.info("Result 1: %s", shared_link_result)
@@ -396,13 +392,13 @@ class DropboxIndividualConnector(BaseConnector):
                 error_str = str(shared_link_result.error)
                 self.logger.info("First call failed with error type")
 
-                if 'shared_link_already_exists' in error_str:
+                if "shared_link_already_exists" in error_str:
                     self.logger.info("Link already exists, making second call to retrieve it")
 
                     # Make second call with settings=None to get the existing link
                     second_result = await self.data_source.sharing_create_shared_link_with_settings(
                         path=entry.path_lower,
-                        settings=None
+                        settings=None,
                     )
 
                     self.logger.info("Result 2 received")
@@ -415,7 +411,7 @@ class DropboxIndividualConnector(BaseConnector):
                         # Expected to fail - extract URL from error string
                         second_error_str = str(second_result.error)
 
-                        if 'shared_link_already_exists' in second_error_str:
+                        if "shared_link_already_exists" in second_error_str:
                             # Extract URL using regex - Crucial fallback for Dropbox API quirks
                             url_pattern = r"url='(https://[^']+)'"
                             url_match = re.search(url_pattern, second_error_str)
@@ -440,7 +436,7 @@ class DropboxIndividualConnector(BaseConnector):
             # 6. Get parent record ID
             parent_path = None
             parent_external_record_id = None
-            if entry.path_display != '/':
+            if entry.path_display != "/":
                 parent_path = get_parent_path_from_path(entry.path_lower)
 
             if parent_path:
@@ -474,7 +470,7 @@ class DropboxIndividualConnector(BaseConnector):
                 extension=get_file_extension(entry.name) if is_file else None,
                 path=entry.path_lower,
                 mime_type=get_mimetype_enum_for_dropbox(entry),
-                sha256_hash=entry.content_hash if is_file and hasattr(entry, 'content_hash') else None,
+                sha256_hash=entry.content_hash if is_file and hasattr(entry, "content_hash") else None,
             )
 
             # 8. Handle Permissions
@@ -486,8 +482,8 @@ class DropboxIndividualConnector(BaseConnector):
                         external_id=user_id,
                         email=user_email,
                         type=PermissionType.WRITE,
-                        entity_type=EntityType.USER
-                    )
+                        entity_type=EntityType.USER,
+                    ),
                 )
 
             except Exception as perm_ex:
@@ -498,8 +494,8 @@ class DropboxIndividualConnector(BaseConnector):
                         external_id=user_id,
                         email=user_email,
                         type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    )
+                        entity_type=EntityType.USER,
+                    ),
                 ]
 
             # 9. Compare permissions
@@ -515,7 +511,7 @@ class DropboxIndividualConnector(BaseConnector):
                 permissions_changed=permissions_changed,
                 old_permissions=old_permissions,
                 new_permissions=new_permissions,
-                external_record_id=entry.id
+                external_record_id=entry.id,
             )
 
         except Exception as ex:
@@ -524,13 +520,12 @@ class DropboxIndividualConnector(BaseConnector):
 
     async def _process_dropbox_items_generator(
         self,
-        entries: List[Union[FileMetadata, FolderMetadata, DeletedMetadata]],
+        entries: list[FileMetadata | FolderMetadata | DeletedMetadata],
         user_id: str,
         user_email: str,
-        record_group_id: str
-    ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
-        """
-        Process Dropbox entries and yield records with their permissions.
+        record_group_id: str,
+    ) -> AsyncGenerator[tuple[FileRecord | None, list[Permission], RecordUpdate], None]:
+        """Process Dropbox entries and yield records with their permissions.
         Generator for non-blocking processing of large datasets.
         """
         for entry in entries:
@@ -539,7 +534,7 @@ class DropboxIndividualConnector(BaseConnector):
                     entry,
                     user_id,
                     user_email,
-                    record_group_id
+                    record_group_id,
                 )
                 if record_update:
                     yield (record_update.record, record_update.new_permissions or [], record_update)
@@ -549,18 +544,17 @@ class DropboxIndividualConnector(BaseConnector):
                 continue
 
     async def _run_sync_with_cursor(self, user_id: str, user_email: str) -> None:
-        """
-        Synchronizes Dropbox files using cursor-based approach.
+        """Synchronizes Dropbox files using cursor-based approach.
         """
         # 1. Setup (Let errors bubble up to run_sync if DB fails here)
         sync_point_key = generate_record_sync_point_key(
             RecordType.DRIVE.value,
             "personal_drive",
-            user_id
+            user_id,
         )
 
         sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sync_point_key)
-        cursor = sync_point.get('cursor')
+        cursor = sync_point.get("cursor")
 
         self.logger.info(f"Starting sync for {user_email}. Cursor exists: {bool(cursor)}")
 
@@ -575,7 +569,7 @@ class DropboxIndividualConnector(BaseConnector):
                     else:
                         result = await self.data_source.files_list_folder(
                             path="",
-                            recursive=True
+                            recursive=True,
                         )
 
                 if not result.success:
@@ -591,11 +585,9 @@ class DropboxIndividualConnector(BaseConnector):
                     entries,
                     user_id,
                     user_email,
-                    user_id
+                    user_id,
                 ):
-                    if update.is_deleted:
-                        await self._handle_record_updates(update)
-                    elif update.is_updated:
+                    if update.is_deleted or update.is_updated:
                         await self._handle_record_updates(update)
                     else:
                         batch_records.append((record, perms))
@@ -615,16 +607,16 @@ class DropboxIndividualConnector(BaseConnector):
 
                 await self.dropbox_cursor_sync_point.update_sync_point(
                     sync_point_key,
-                    {'cursor': cursor}
+                    {"cursor": cursor},
                 )
 
             except ApiError as api_e:
                 error_str = str(api_e)
                 # Handle known "Stop Sync" errors gracefully
-                if 'cursor' in error_str.lower() or 'reset' in error_str.lower():
+                if "cursor" in error_str.lower() or "reset" in error_str.lower():
                     self.logger.warning(f"Dropbox Cursor Invalid/Expired for {user_email}. Stopping sync.")
                     has_more = False
-                elif 'path/not_found' in error_str.lower():
+                elif "path/not_found" in error_str.lower():
                     self.logger.warning(f"Path not found for {user_email}. Stopping sync.")
                     has_more = False
                 else:
@@ -642,7 +634,7 @@ class DropboxIndividualConnector(BaseConnector):
         try:
             if record_update.is_deleted:
                 await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
+                    record_id=record_update.external_record_id,
                 )
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
@@ -655,7 +647,7 @@ class DropboxIndividualConnector(BaseConnector):
                     self.logger.info(f"Permissions changed for record: {record_update.record.record_name}")
                     await self.data_entities_processor.on_updated_record_permissions(
                         record_update.record,
-                        record_update.new_permissions
+                        record_update.new_permissions,
                     )
 
                 if record_update.content_changed:
@@ -666,8 +658,7 @@ class DropboxIndividualConnector(BaseConnector):
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
     async def run_sync(self) -> None:
-        """
-        Runs a full synchronization from the Dropbox individual account.
+        """Runs a full synchronization from the Dropbox individual account.
         Simplified workflow without team/group syncing.
         """
         try:
@@ -682,7 +673,7 @@ class DropboxIndividualConnector(BaseConnector):
             await self._create_personal_record_group(
                 user_id,
                 user_email,
-                display_name
+                display_name,
             )
             self.logger.info(f"Ensured Record Group exists for: {display_name}")
 
@@ -697,10 +688,11 @@ class DropboxIndividualConnector(BaseConnector):
             raise
 
     async def _create_personal_record_group(self, user_id: str, user_email: str, display_name: str) -> RecordGroup:
-        """
-        Create a single record group for the individual user's root folder.
+        """Create a single record group for the individual user's root folder.
+
         Returns:
             RecordGroup for the user's personal Dropbox
+
         """
         record_group = RecordGroup(
             id=str(uuid.uuid4()),
@@ -710,7 +702,7 @@ class DropboxIndividualConnector(BaseConnector):
             connector_name=self.connector_name,
             external_group_id=user_id,
             external_user_id=user_id,
-            is_active=True
+            is_active=True,
         )
         # Permissions: Owner
         permissions = [Permission(external_id=user_id, email=user_email, type=PermissionType.OWNER, entity_type=EntityType.USER)]
@@ -731,9 +723,8 @@ class DropboxIndividualConnector(BaseConnector):
             self.logger.error(f"❌ Error in incremental sync: {e}", exc_info=True)
             raise
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
-        """
-        Generate a temporary signed URL for downloading a file.
+    async def get_signed_url(self, record: Record) -> str | None:
+        """Generate a temporary signed URL for downloading a file.
         Simplified for individual accounts.
         """
         if not self.data_source:
@@ -743,7 +734,7 @@ class DropboxIndividualConnector(BaseConnector):
             target_identifier = record.external_record_id
             if not target_identifier:
                 # Fallback: Use path if ID is somehow missing
-                target_identifier = getattr(record, 'path', None)
+                target_identifier = getattr(record, "path", None)
             if not target_identifier:
                 self.logger.warning(f"Cannot generate signed URL: Record {record.id} missing external_id")
                 return None
@@ -763,8 +754,8 @@ class DropboxIndividualConnector(BaseConnector):
             stream_content(signed_url),
             media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
+                "Content-Disposition": f"attachment; filename={record.record_name}",
+            },
         )
 
     async def test_connection_and_access(self) -> bool:
@@ -778,7 +769,7 @@ class DropboxIndividualConnector(BaseConnector):
             self.logger.error(f"Dropbox connection test failed: {e}", exc_info=True)
             return False
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications by triggering incremental sync."""
         self.logger.info("Dropbox webhook received. Triggering incremental sync.")
         asyncio.create_task(self.run_incremental_sync())
@@ -792,15 +783,15 @@ class DropboxIndividualConnector(BaseConnector):
         cls,
         logger,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
     ) -> "BaseConnector":
         data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
+            logger, data_store_provider, config_service,
         )
         await data_entities_processor.initialize()
         return DropboxIndividualConnector(
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
         )
