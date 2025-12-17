@@ -230,7 +230,6 @@ class DocumentExtraction(Transformer):
 
             except Exception as parse_error:
                 self.logger.error(f"❌ Failed to parse response: {str(parse_error)}")
-                self.logger.error(f"Response content: {response_text}")
 
                 # Reflection: attempt to fix the validation issue by providing feedback to the LLM
                 try:
