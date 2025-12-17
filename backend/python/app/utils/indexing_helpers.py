@@ -122,7 +122,7 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
                 raise ValueError(
                     f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}"
                 )
-        
+
         if parsed_response is not None:
             return parsed_response
         else:

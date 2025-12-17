@@ -555,7 +555,7 @@ Please provide the row descriptions in the correct JSON format."""
 
             if parsed_response is not None and parsed_response.get("descriptions"):
                 descriptions = parsed_response.get("descriptions")
-            
+
             return descriptions
         except Exception:
             raise

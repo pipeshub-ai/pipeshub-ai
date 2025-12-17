@@ -309,9 +309,9 @@ Please provide the row descriptions in the correct JSON format."""
 
             if parsed_response is not None and parsed_response.get("descriptions"):
                 descriptions = parsed_response.get("descriptions")
-            
+
             processed_texts.extend(descriptions)
-        
+
         return processed_texts
     #  recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
     async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]],llm: BaseChatModel) -> BlocksContainer:
