@@ -337,13 +337,22 @@ class VectorStore(Transformer):
                 dense_embeddings = get_default_embedding_model()
                 self.logger.info("Using default embedding model")
             else:
-                config = embedding_configs[0]
-                provider = config["provider"]
-                configuration = config["configuration"]
-                model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-                model_name = model_names[0]
-                dense_embeddings = get_embedding_model(provider, config)
-                is_multimodal = config.get("isMultimodal")
+                for config in embedding_configs:
+                    if config.get("isDefault", False):
+                        configuration=config["configuration"]
+                        provider = config["provider"]
+                        dense_embeddings = get_embedding_model(provider, config)
+                        is_multimodal = config.get("isMultimodal")
+                        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+                        model_name = model_names[0]
+                if not configuration:
+                    config = embedding_configs[0]
+                    provider = config["provider"]
+                    configuration = config["configuration"]
+                    model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+                    model_name = model_names[0]
+                    dense_embeddings = get_embedding_model(provider, config)
+                    is_multimodal = config.get("isMultimodal")
             # Get the embedding dimensions from the model
             try:
                 sample_embedding = dense_embeddings.embed_query("test")
