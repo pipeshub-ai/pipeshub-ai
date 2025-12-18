@@ -2787,7 +2787,6 @@ class JiraConnector(BaseConnector):
             self.logger.info(f"Issue {issue_id} has changed at source (timestamp: {record.source_updated_at if hasattr(record, 'source_updated_at') else 'N/A'} -> {current_updated_at})")
 
             # Transform issue to TicketRecord
-            issue_key = issue_data.get("key", issue_id)
             issue_name = fields.get("summary", "")
             description = fields.get("description", {})
             priority = fields.get("priority", {}).get("name", "")
