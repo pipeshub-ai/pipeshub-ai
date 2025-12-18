@@ -32,6 +32,17 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    CommonFields
+)
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterType,
+    IndexingFilterKey,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
@@ -46,6 +57,7 @@ from app.models.entities import (
     Record,
     RecordGroupType,
     RecordType,
+    IndexingStatus
 )
 from app.models.permission import EntityType, Permission
 from app.utils.streaming import stream_content
@@ -115,6 +127,9 @@ class OneDriveCredentials:
             required=False,
             max_length=2000
         ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
@@ -145,6 +160,8 @@ class OneDriveConnector(BaseConnector):
         self.max_concurrent_batches = 3
 
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
 
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
@@ -163,6 +180,12 @@ class OneDriveConnector(BaseConnector):
         if not all((tenant_id, client_id, client_secret)):
             self.logger.error("Incomplete OneDrive config. Ensure tenantId, clientId, and clientSecret are configured.")
             raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
+        
+        self.sync_filters, self.indexing_filters = await load_connector_filters(
+            self.config_service, "onedrive", self.logger
+        )
+
+        print("\n\n\n\n\n\n\nFILTERS:\n", self.sync_filters, "\n", self.indexing_filters)
 
         has_admin_consent = auth_config.get("hasAdminConsent", False)
         credentials = OneDriveCredentials(
@@ -301,6 +324,8 @@ class OneDriveConnector(BaseConnector):
             )
             if file_record.is_file and file_record.extension is None:
                 return None
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # Get current permissions
             permission_result = await self.msgraph_client.get_file_permission(
@@ -1086,10 +1111,89 @@ class OneDriveConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during cleanup: {e}")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, records: List[Record]) -> None:
         """Reindex records - not implemented for OneDrive yet."""
-        self.logger.warning("Reindex not implemented for OneDrive connector")
-        pass
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} OneDrive records")
+
+            # Ensure external clients are initialized
+            if not self.external_client or not self.data_source:
+                self.logger.error("External API clients not initialized. Call init() first.")
+                raise Exception("External API clients not initialized. Call init() first.")
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non updated records")
+        except Exception as e:
+            self.logger.error(f"Error during OneDrive reindex: {e}", exc_info=True)
+            raise
+    
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch record from MS Graph and return data for reindexing if changed."""
+        try:
+            drive_id = record.external_record_group_id
+            item_id = record.external_record_id
+
+            if not drive_id or not item_id:
+                self.logger.warning(f"Missing drive_id or item_id for record {record.id}")
+                return None
+
+            # Fetch fresh item from MS Graph
+            async with self.msgraph_client.rate_limiter:
+                item = await self.msgraph_client.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
+
+            if not item:
+                self.logger.warning(f"Item {item_id} not found at source")
+                return None
+            
+            print("!!!!!!!!!!!!!!!!!! item:", item)
+
+            # Use existing logic to detect changes and transform to FileRecord
+            record_update = await self._process_delta_item(item)
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update (metadata, content, or permissions)
+            if record_update.is_updated:
+                self.logger.info(f"Record {item_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions)
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking OneDrive record {record.id} at source: {e}")
+            return None
 
     async def get_signed_url(self, record: Record) -> str:
         """

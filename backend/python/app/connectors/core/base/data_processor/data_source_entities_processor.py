@@ -354,11 +354,20 @@ class DataSourceEntitiesProcessor:
     async def on_record_content_update(self, record: Record) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             processed_record = await self._process_record(record, [], tx_store)
-            await self.messaging_producer.send_message(
-                "record-events",
-                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
-                key=record.id
-            )
+
+            # Skip publishing re-indexing events for records with AUTO_INDEX_OFF status
+            if hasattr(record, 'indexing_status') and record.indexing_status == IndexingStatus.AUTO_INDEX_OFF.value:
+                self.logger.debug(
+                    f"Skipping automatic indexing event for record {record.id} "
+                    f"with AUTO_INDEX_OFF status"
+                )
+
+            else:
+                await self.messaging_producer.send_message(
+                    "record-events",
+                    {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
+                    key=record.id
+                )
 
     async def on_record_metadata_update(self, record: Record) -> None:
         async with self.data_store_provider.transaction() as tx_store:

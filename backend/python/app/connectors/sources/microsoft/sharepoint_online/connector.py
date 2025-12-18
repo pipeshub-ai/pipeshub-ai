@@ -49,9 +49,20 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+)
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterType,
+    IndexingFilterKey,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
@@ -71,6 +82,7 @@ from app.models.entities import (
     SharePointListItemRecord,
     SharePointListRecord,
     SharePointPageRecord,
+    IndexingStatus,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import stream_content
@@ -172,6 +184,25 @@ class SiteMetadata:
             field_type="URL",
             max_length=2000
         ))
+        .add_filter_field(FilterField(
+            name="site_urls",
+            display_name="Site URLs",
+            description="Filter specific sites by URL.",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[]
+        ))
+        .add_filter_field(FilterField(
+            name="page_urls",
+            display_name="Page URLs",
+            description="Filter specific pages by URL.",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[]
+        ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
@@ -235,6 +266,9 @@ class SharePointConnector(BaseConnector):
 
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
+
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
             raise ValueError("SharePoint Online credentials not found")
@@ -259,6 +293,12 @@ class SharePointConnector(BaseConnector):
         self.logger.debug(f"🔍 Certificate data present: {bool(certificate_data)}")
         self.logger.debug(f"🔍 Private key data present: {bool(private_key_data)}")
         self.logger.debug(f"🔍 Client secret present: {bool(client_secret)}")
+
+        self.sync_filters, self.indexing_filters = await load_connector_filters(
+            self.config_service, "sharepointonline", self.logger
+        )
+
+        print("\n\n\n\n\n\n\nFILTERS:\n", self.sync_filters, "\n", self.indexing_filters)
 
         # Normalize SharePoint domain to scheme+host (no path)
         try:
@@ -718,7 +758,6 @@ class SharePointConnector(BaseConnector):
             # Process pages
             self.logger.info(f"Processing pages for site: {site_name}")
             async for record, permissions, record_update in self._process_site_pages(site_id, site_name):
-                self.logger.info(f"\n\n\n\nPage record_update: is_new={record_update.is_new}, is_updated={record_update.is_updated}, content_changed={record_update.content_changed}")
                 if record_update.is_deleted:
                     await self._handle_record_updates(record_update)
                     continue
@@ -950,6 +989,9 @@ class SharePointConnector(BaseConnector):
             file_record = await self._create_file_record(item, drive_id, existing_record)
             if not file_record:
                 return None
+            
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # Get permissions currently fetching permissions via site record group
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
@@ -1390,6 +1432,8 @@ class SharePointConnector(BaseConnector):
         try:
             encoded_site_id = self._construct_site_url(site_id)
 
+            content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES)
+
             async with self.rate_limiter:
                 try:
                     pages_response = await self._safe_api_call(
@@ -1456,6 +1500,11 @@ class SharePointConnector(BaseConnector):
 
 
                     page_record = await self._create_page_record(page, site_id, site_name, existing_record)
+
+                    # Set indexing status based on filter
+                    if not content_indexing_enabled:
+                        page_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                     if page_record:
                         permissions = await self._get_page_permissions(site_id, page.id)
                         yield (page_record, permissions, RecordUpdate(
@@ -2951,10 +3000,33 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during SharePoint connector cleanup: {e}")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, records: List[Record]) -> None:
         """Reindex records - not implemented for SharePoint yet."""
-        self.logger.warning("Reindex not implemented for SharePoint connector")
-        pass
+        # self.logger.warning("Reindex not implemented for SharePoint connector")
+
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} Confluence records")
+
+            # Ensure external clients are initialized
+            if not self.external_client or not self.data_source:
+                self.logger.error("External API clients not initialized. Call init() first.")
+                raise Exception("External API clients not initialized. Call init() first.")
+
+            # org_id = self.data_entities_processor.org_id
+            # updated_records = []
+            # non_updated_records = []
+
+            await self.data_entities_processor.reindex_existing_records(records)
+            self.logger.info(f"Published reindex event for {len(records)} records")
+
+
+        except Exception as e:
+            self.logger.error(f"Error during SharePoint reindex: {e}", exc_info=True)
+            raise
 
     @classmethod
     async def create_connector(cls, logger: Logger,

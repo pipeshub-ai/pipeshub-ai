@@ -49,6 +49,16 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorScope,
     DocumentationLink,
 )
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterType,
+    IndexingFilterKey,
+    SyncFilterKey,
+    load_connector_filters,
+)
 
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox.common.apps import DropboxApp
@@ -64,6 +74,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     User,
+    IndexingStatus,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.dropbox.dropbox_ import (
@@ -184,6 +195,9 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         )
         .add_auth_field(CommonFields.client_id("Dropbox App Console"))
         .add_auth_field(CommonFields.client_secret("Dropbox App Console"))
+        .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
@@ -231,6 +245,8 @@ class DropboxConnector(BaseConnector):
         self.batch_size = 100
         self.max_concurrent_batches = 5
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
 
     async def init(self) -> bool:
         """Initializes the Dropbox client using credentials from the config service."""
@@ -249,6 +265,12 @@ class DropboxConnector(BaseConnector):
         auth_config = config.get("auth")
         app_key = auth_config.get("clientId")
         app_secret = auth_config.get("clientSecret")
+
+        self.sync_filters, self.indexing_filters = await load_connector_filters(
+            self.config_service, "dropbox", self.logger
+        )
+
+        print("\n\n\n\n\n\n\nDROPBOX FILTERS:\n", self.sync_filters, "\n", self.indexing_filters)
 
         try:
             config = DropboxTokenConfig(
@@ -471,6 +493,8 @@ class DropboxConnector(BaseConnector):
                 mime_type=get_mimetype_enum_for_dropbox(entry),
                 sha256_hash=entry.content_hash if is_file and hasattr(entry, 'content_hash') else None,
             )
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # async with self.data_store_provider.transaction() as tx_store:
             #     user = await tx_store.get_user_by_id(user_id=user_id)

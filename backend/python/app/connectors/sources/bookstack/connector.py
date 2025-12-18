@@ -29,6 +29,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
@@ -42,6 +43,17 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    IndexingStatus,
+)
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterType,
+    IndexingFilterKey,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.bookstack.bookstack import (
@@ -110,6 +122,9 @@ class RecordUpdate:
             max_length=100,
             is_secret=True
         ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter content by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter content by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)
@@ -150,6 +165,9 @@ class BookStackConnector(BaseConnector):
         self.batch_size = 100
         self.max_concurrent_batches = 5
 
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
+
     def _create_sync_points(self) -> None:
         """Initialize sync points for different data types."""
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -186,6 +204,10 @@ class BookStackConnector(BaseConnector):
             base_url = credentials_config.get("base_url")
             token_id = credentials_config.get("token_id")
             token_secret = credentials_config.get("token_secret")
+
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "bookstack", self.logger
+            )
 
             if not all([base_url, token_id, token_secret]):
                 self.logger.error(
@@ -1620,6 +1642,8 @@ class BookStackConnector(BaseConnector):
                 size_in_bytes=0,
                 inherit_permissions=True,
             )
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # 4. Fetch and parse permissions
             new_permissions = []
