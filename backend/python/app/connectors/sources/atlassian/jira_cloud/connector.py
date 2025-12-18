@@ -1,4 +1,4 @@
-"""Jira Cloud Connector Implementation"""
+﻿"""Jira Cloud Connector Implementation"""
 import re
 from datetime import datetime, timezone
 from logging import Logger
@@ -295,7 +295,7 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
     .build_decorator()
 class JiraConnector(BaseConnector):
     """
-    Jira connector for syncing projects, issues, groups, roles and users from Jira 
+    Jira connector for syncing projects, issues, groups, roles and users from Jira
     """
     def __init__(
         self,
@@ -766,7 +766,7 @@ class JiraConnector(BaseConnector):
 
             # Convert timestamp to ISO format
             from_date = datetime.fromtimestamp(
-                last_sync_time / 1000, 
+                last_sync_time / 1000,
                 tz=timezone.utc
             ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
@@ -796,8 +796,8 @@ class JiraConnector(BaseConnector):
             return 0
 
     async def _fetch_deleted_issues_from_audit(
-        self, 
-        from_date: str, 
+        self,
+        from_date: str,
         to_date: str
     ) -> List[str]:
         """
@@ -834,7 +834,7 @@ class JiraConnector(BaseConnector):
 
                     # Check if this is an issue deletion
                     if type_name == "ISSUE_DELETE":
-                        issue_key = object_item.get("name")  
+                        issue_key = object_item.get("name")
                         if issue_key:
                             deleted_issue_keys.append(issue_key)
                             self.logger.debug(f"🗑️ Audit: Issue {issue_key} deleted at {record.get('created')}")
@@ -866,7 +866,7 @@ class JiraConnector(BaseConnector):
 
                 if response.status == HTTP_STATUS_OK:
                     self.logger.warning(f"Issue {issue_key} still exists in Jira (not deleted, maybe moved?)")
-                    return 
+                    return
 
             except Exception:
                 pass
@@ -902,24 +902,24 @@ class JiraConnector(BaseConnector):
 
                 # 1. Delete child Sub-tasks (pass cached records to avoid refetch)
                 subtask_count = await self._delete_issue_children(
-                    issue_id, 
-                    RecordType.TICKET, 
+                    issue_id,
+                    RecordType.TICKET,
                     tx_store,
                     all_records
                 )
 
                 # 2. Delete child comments (pass cached records to avoid refetch)
                 comment_count = await self._delete_issue_children(
-                    issue_id, 
-                    RecordType.COMMENT, 
+                    issue_id,
+                    RecordType.COMMENT,
                     tx_store,
                     all_records
                 )
 
                 # 3. Delete child attachments (pass cached records to avoid refetch)
                 attachment_count = await self._delete_issue_children(
-                    issue_id, 
-                    RecordType.FILE, 
+                    issue_id,
+                    RecordType.FILE,
                     tx_store,
                     all_records
                 )
@@ -940,8 +940,8 @@ class JiraConnector(BaseConnector):
             self.logger.error(f"Error handling deleted issue {issue_key}: {e}", exc_info=True)
 
     async def _delete_issue_children(
-        self, 
-        parent_issue_id: str, 
+        self,
+        parent_issue_id: str,
         child_type: RecordType,
         tx_store,
         cached_records: List[Record] = None
@@ -970,7 +970,7 @@ class JiraConnector(BaseConnector):
 
             for record in cached_records:
                 # Check if this is the right type with matching parent
-                if (record.record_type == child_type and 
+                if (record.record_type == child_type and
                     hasattr(record, 'parent_external_record_id') and
                     record.parent_external_record_id == parent_issue_id):
 
@@ -979,15 +979,15 @@ class JiraConnector(BaseConnector):
                         subtask_id = record.external_record_id
                         # Delete sub-task's comments
                         await self._delete_issue_children(
-                            subtask_id, 
-                            RecordType.COMMENT, 
+                            subtask_id,
+                            RecordType.COMMENT,
                             tx_store,
                             cached_records
                         )
                         # Delete sub-task's attachments
                         await self._delete_issue_children(
-                            subtask_id, 
-                            RecordType.FILE, 
+                            subtask_id,
+                            RecordType.FILE,
                             tx_store,
                             cached_records
                         )
@@ -1027,7 +1027,7 @@ class JiraConnector(BaseConnector):
             roles_data = response.json()
 
             for role in roles_data:
-                role_key = role.get("key") 
+                role_key = role.get("key")
                 group_details = role.get("groupDetails", [])
 
                 if role_key and group_details:
@@ -1048,7 +1048,7 @@ class JiraConnector(BaseConnector):
         return mapping
 
     async def _fetch_project_permission_scheme(
-        self, 
+        self,
         project_key: str,
         app_roles_mapping: Dict[str, List[Dict[str, str]]] = None
     ) -> List[Permission]:
@@ -1100,7 +1100,7 @@ class JiraConnector(BaseConnector):
             # Step 3: Filter for BROWSE_PROJECTS permission (determines who can see the project)
             relevant_permission_types = ["BROWSE_PROJECTS"]
 
-            seen_holders = set() 
+            seen_holders = set()
 
             for grant in permission_grants:
                 permission_name = grant.get("permission")
@@ -1110,8 +1110,8 @@ class JiraConnector(BaseConnector):
 
                 holder = grant.get("holder", {})
                 holder_type = holder.get("type")
-                holder_param = holder.get("parameter") 
-                holder_value = holder.get("value")    
+                holder_param = holder.get("parameter")
+                holder_value = holder.get("value")
 
                 # Create unique key for deduplication
                 holder_key = f"{holder_type}:{holder_value or holder_param}"
@@ -1124,12 +1124,12 @@ class JiraConnector(BaseConnector):
                     # Group has BROWSE_PROJECTS permission
                     permissions.append(Permission(
                         entity_type=EntityType.GROUP,
-                        external_id=holder_value,  
+                        external_id=holder_value,
                         type=PermissionType.READ
                     ))
 
                 elif holder_type == "applicationRole":
-                    role_key = holder_param 
+                    role_key = holder_param
 
                     if role_key and app_roles_mapping and role_key in app_roles_mapping:
                         role_groups = app_roles_mapping[role_key]
@@ -1161,7 +1161,7 @@ class JiraConnector(BaseConnector):
                     if user_email:
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
-                            email=user_email, 
+                            email=user_email,
                             type=PermissionType.READ
                         ))
                     else:
@@ -1185,7 +1185,7 @@ class JiraConnector(BaseConnector):
 
                     permissions.append(Permission(
                         entity_type=EntityType.ROLE,
-                        external_id=f"{project_key}_{role_id}", 
+                        external_id=f"{project_key}_{role_id}",
                         type=PermissionType.READ
                     ))
 
@@ -1307,7 +1307,7 @@ class JiraConnector(BaseConnector):
 
         groups: List[Dict[str, Any]] = []
         start_at = 0
-        max_results = 50 
+        max_results = 50
 
         while True:
             try:
@@ -1582,7 +1582,7 @@ class JiraConnector(BaseConnector):
         lead_roles_to_sync: List[Tuple[AppRole, List[AppUser]]] = []
         total_leads = 0
 
-        # Iterate through raw project data already fetched with lead 
+        # Iterate through raw project data already fetched with lead
         for project in raw_projects:
             try:
                 project_key = project.get("key")
@@ -2038,10 +2038,10 @@ class JiraConnector(BaseConnector):
             elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
                 version = existing_record.version + 1
             else:
-                version = existing_record.version if existing_record else 0  
+                version = existing_record.version if existing_record else 0
 
             # Set parent relationships and record group
-            external_record_group_id = project_id 
+            external_record_group_id = project_id
             record_group_type = RecordGroupType.JIRA_PROJECT
             parent_record_id = None
             parent_record_type = None
@@ -2118,10 +2118,10 @@ class JiraConnector(BaseConnector):
                 attachment_records = await self._fetch_issue_attachments(
                     issue_id,
                     issue_key,
-                    fields,  
+                    fields,
                     permissions,
                     external_record_group_id,
-                    record_group_type, 
+                    record_group_type,
                     org_id,
                     tx_store
                 )
@@ -2249,7 +2249,7 @@ class JiraConnector(BaseConnector):
                     external_revision_id=str(updated_at) if updated_at else None,
                     parent_external_record_id=parent_external_id,
                     parent_record_type=parent_record_type,
-                    external_record_group_id=parent_record_group_id, 
+                    external_record_group_id=parent_record_group_id,
                     connector_name=Connectors.JIRA,
                     origin=OriginTypes.CONNECTOR,
                     version=version,
@@ -2426,7 +2426,7 @@ class JiraConnector(BaseConnector):
         Check if current filters differ from stored filters in sync point
         """
         if not sync_point_data:
-            return False  
+            return False
 
         stored_filters = sync_point_data.get("filters", {})
         current_filters = self._get_current_filter_values()
@@ -2718,7 +2718,7 @@ class JiraConnector(BaseConnector):
 
                 # Filter for child records (comments and attachments) of our parent issues
                 for record in all_records:
-                    if (hasattr(record, 'parent_external_record_id') and 
+                    if (hasattr(record, 'parent_external_record_id') and
                         record.parent_external_record_id in parent_issue_ids):
                         # This is a child of one of our parent issues
                         if record.record_type in (RecordType.COMMENT, RecordType.FILE):
