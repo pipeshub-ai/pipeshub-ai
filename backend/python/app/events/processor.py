@@ -1,6 +1,7 @@
 import io
 import json
 from datetime import datetime
+from pathlib import Path
 
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
@@ -719,8 +720,17 @@ class Processor:
             for config in ocr_configs:
                 provider = config["provider"]
                 self.logger.info(f"🔧 Checking OCR provider: {provider}")
+                
+                if provider == OCRProvider.VLM_OCR.value:
+                    self.logger.debug("🤖 Setting up VLM OCR handler")
+                    handler = OCRHandler(
+                        self.logger,
+                        OCRProvider.VLM_OCR.value,
+                        config=self.config_service
+                    )
+                    break
 
-                if provider == OCRProvider.AZURE_DI.value:
+                elif provider == OCRProvider.AZURE_DI.value:
                     self.logger.debug("☁️ Setting up Azure OCR handler")
                     handler = OCRHandler(
                         self.logger,
@@ -738,24 +748,53 @@ class Processor:
                     break
 
             if not handler:
-                self.logger.debug("📚 Setting up PyMuPDF OCR handler")
-                handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
-                provider = OCRProvider.OCRMYPDF.value
+                # Check if multimodal LLM is available
+                self.logger.debug("🔍 Checking for multimodal LLM availability")
+                has_multimodal_llm = False
+                
+                try:
+                    llm_configs = ai_models.get("llm", [])
+                    for llm_config in llm_configs:
+                        is_multimodal = (
+                            llm_config.get("isMultimodal", False) or 
+                            llm_config.get("configuration", {}).get("isMultimodal", False)
+                        )
+                        if is_multimodal:
+                            has_multimodal_llm = True
+                            self.logger.info(f"✅ Found multimodal LLM: {llm_config.get('provider')}")
+                            break
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Error checking for multimodal LLM: {str(e)}")
+                
+                if has_multimodal_llm:
+                    self.logger.debug("🤖 Setting up VLM OCR handler (multimodal LLM detected)")
+                    handler = OCRHandler(self.logger, OCRProvider.VLM_OCR.value, config=self.config_service)
+                    provider = OCRProvider.VLM_OCR.value
+                else:
+                    self.logger.debug("📚 Setting up OCRmyPDF handler (no multimodal LLM available)")
+                    handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
+                    provider = OCRProvider.OCRMYPDF.value
 
             # Process document
             self.logger.info("🔄 Processing document with OCR handler")
             try:
                 ocr_result = await handler.process_document(pdf_binary)
             except Exception:
-                if provider == OCRProvider.AZURE_DI.value:
-                    self.logger.info("🔄 Switching to PyMuPDF OCR handler as Azure OCR failed")
+                if provider == OCRProvider.AZURE_DI.value or provider == OCRProvider.VLM_OCR.value:
+                    self.logger.info(f"🔄 Switching to OCRmyPDF handler as {provider} failed")
                     handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
                     ocr_result = await handler.process_document(pdf_binary)
                 else:
                     raise
-
+            
             self.logger.debug("✅ OCR processing completed")
-
+            
+            if provider == OCRProvider.VLM_OCR.value:
+                markdown_content = ocr_result.get("markdown", "")
+                self.logger.info(f"📝 Markdown content: {markdown_content}")
+                await self.process_md_document(recordName, recordId, markdown_content, virtual_record_id)
+                self.logger.info("✅ PDF processing completed successfully using VLM OCR")
+                return
             # Extract domain metadata from paragraphs
             self.logger.info("🎯 Extracting domain metadata")
             blocks_from_ocr = ocr_result.get("blocks", [])
@@ -1102,9 +1141,6 @@ class Processor:
             await self.process_md_document(
                 recordName=recordName,
                 recordId=recordId,
-                version=version,
-                source=source,
-                orgId=orgId,
                 md_binary=md_binary,
                 virtual_record_id=virtual_record_id
             )
@@ -1141,13 +1177,13 @@ class Processor:
 
         # Process the converted markdown content
         await self.process_md_document(
-            recordName, recordId, version, source, orgId, md_content, virtual_record_id
+            recordName, recordId, md_content, virtual_record_id
         )
 
         return {"status": "success", "message": "MDX processed successfully"}
 
     async def process_md_document(
-        self, recordName, recordId, version, source, orgId, md_binary, virtual_record_id
+        self, recordName, recordId, md_binary, virtual_record_id
     ) -> None:
         self.logger.info(
             f"🚀 Starting Markdown document processing for record: {recordName}"
@@ -1201,7 +1237,9 @@ class Processor:
             md_bytes = parser.parse_string(modified_markdown)
 
             processor = DoclingProcessor(logger=self.logger,config=self.config_service)
-            block_containers = await processor.load_document(f"{recordName}.md", md_bytes)
+            filename_without_ext = Path(recordName).stem
+
+            block_containers = await processor.load_document(f"{filename_without_ext}.md", md_bytes)
             if block_containers is False:
                 raise Exception("Failed to process MD document. It might contain scanned pages.")
 
@@ -1231,7 +1269,6 @@ class Processor:
                             self.logger.warning(f"⚠️ Skipping image with caption '{caption}' - no valid base64 data available")
 
             block_containers.blocks = blocks
-
 
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
@@ -1275,9 +1312,6 @@ class Processor:
             await self.process_md_document(
                 recordName=recordName,
                 recordId=recordId,
-                version=version,
-                source=source,
-                orgId=orgId,
                 md_binary=text_content,
                 virtual_record_id=virtual_record_id
             )

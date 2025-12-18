@@ -147,6 +147,16 @@ class OCRHandler:
                 model_id=kwargs.get("model_id", "prebuilt-document"),
                 config=kwargs.get("config"),
             )
+        elif strategy_type == OCRProvider.VLM_OCR.value:
+            self.logger.debug("🤖 Creating VLM OCR strategy")
+            from app.modules.parsers.pdf.vlm_ocr_strategy import (
+                VLMOCRStrategy,
+            )
+
+            return VLMOCRStrategy(
+                logger=self.logger,
+                config=kwargs.get("config"),
+            )
         else:
             self.logger.error(f"❌ Unsupported OCR strategy: {strategy_type}")
             raise ValueError(f"Unsupported OCR strategy: {strategy_type}")

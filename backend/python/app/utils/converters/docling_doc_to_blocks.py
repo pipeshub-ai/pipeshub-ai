@@ -386,10 +386,6 @@ class DoclingDocToBlocksConverter():
         # Start processing from body
         doc_dict = doc.export_to_dict()
         body = doc_dict.get("body", {})
-        texts = doc_dict.get("texts", [])
-        if texts == []:
-            self.logger.info("No text blocks found in the document")
-            return False
         for child in body.get("children", []):
             await _process_item(child,doc)
 
