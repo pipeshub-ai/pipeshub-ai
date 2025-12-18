@@ -263,6 +263,9 @@ export default function RecordDetails() {
     fileIconColor = '#2196f3';
     fileType = 'EMAIL';
     // We don't have a size for emails, so leave fileSize as N/A
+  } else {
+    // For other record types (TICKET, COMMENT, WEBPAGE, etc.), use the recordType
+    fileType = record.recordType || 'N/A';
   }
   // Check all possible sources for webUrl
   const webUrl = record.webUrl || record.fileRecord?.webUrl || record.mailRecord?.webUrl;

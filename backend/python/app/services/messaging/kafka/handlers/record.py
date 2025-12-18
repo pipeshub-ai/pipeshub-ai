@@ -161,9 +161,20 @@ class RecordEventHandler(BaseEventService):
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 return False
 
+            # Safety check: Skip processing for records with AUTO_INDEX_OFF status
+            # These records should only be indexed via manual trigger from UI
+            if record.get("indexingStatus") == ProgressStatus.AUTO_INDEX_OFF.value:
+                self.logger.debug(
+                    f"⏭️ Skipping processing for record {record_id} with AUTO_INDEX_OFF status"
+                )
+                return True
+
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
+            # Fallback: Get mimeType from database record if payload has empty/unknown value
+            if mime_type == "unknown" or not mime_type:
+                mime_type = record.get("mimeType") or "unknown"
 
             if extension is None and mime_type != "text/gmail_content":
                 extension = payload.get("extension", None)

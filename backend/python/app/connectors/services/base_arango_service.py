@@ -2343,6 +2343,20 @@ class BaseArangoService:
             file_record = await self.get_document(record_id, CollectionNames.FILES.value) if record.get("recordType") == "FILE" else await self.get_document(record_id, CollectionNames.MAILS.value)
 
             self.logger.info(f"📋 File record: {file_record}")
+            
+            # If record has AUTO_INDEX_OFF status, update it to NOT_STARTED before reindexing
+            # This allows manual reindex to proceed while keeping automatic indexing blocked
+            current_indexing_status = record.get("indexingStatus")
+            if current_indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                self.logger.info(f"🔄 Record {record_id} has AUTO_INDEX_OFF status, updating to NOT_STARTED for manual reindex")
+                await self.update_node(
+                    record_id,
+                    {"indexingStatus": ProgressStatus.NOT_STARTED.value},
+                    CollectionNames.RECORDS.value
+                )
+                # Update local record dict for payload
+                record["indexingStatus"] = ProgressStatus.NOT_STARTED.value
+            
             # Create and publish reindex event
             try:
                 payload = await self._create_reindex_event_payload(record, file_record,user_id,request)
@@ -4100,6 +4114,10 @@ class BaseArangoService:
             if file_record:
                 extension = file_record.get("extension", "")
                 mime_type = file_record.get("mimeType", "")
+            
+            # Fallback to record's mimeType for TICKET, COMMENT, and other record types
+            if not mime_type:
+                mime_type = record.get("mimeType", "")
 
             # Fallback: check if mimeType is in the record itself (for WebpageRecord, CommentRecord, etc.)
             if not mime_type:
