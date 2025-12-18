@@ -152,13 +152,13 @@ class JiraClient(IClient):
 
             # Check if the response is successful
             if response.status != HttpStatusCode.SUCCESS.value:
-                raise Exception(f"API request failed with status {response.status}: {response.text()}")
+                raise Exception(f"API request failed with status {response.status}: {await response.text()}")
 
             # Try to parse JSON response
             try:
                 response_data = response.json()
             except Exception as json_error:
-                raise Exception(f"Failed to parse JSON response: {json_error}. Response: {response.text()}")
+                raise Exception(f"Failed to parse JSON response: {json_error}. Response: {await response.text()}")
 
             # Check if response_data is a list
             if not isinstance(response_data, list):

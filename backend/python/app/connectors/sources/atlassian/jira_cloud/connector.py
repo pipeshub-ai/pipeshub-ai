@@ -2,7 +2,7 @@
 import re
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from fastapi.responses import StreamingResponse
@@ -71,23 +71,24 @@ ISSUE_SEARCH_FIELDS: List[str] = [
 # HTTP status codes
 HTTP_STATUS_OK: int = 200
 HTTP_STATUS_BAD_REQUEST: int = 400
+HTTP_STATUS_NOT_FOUND: int = 404
 HTTP_STATUS_GONE: int = 410
 
 
 class SyncStats:
     """Statistics for sync operations."""
-    
-    def __init__(self):
+
+    def __init__(self) -> None:
         self.total_synced = 0
         self.new_count = 0
         self.updated_count = 0
-    
+
     def add(self, other: "SyncStats") -> None:
         """Add another SyncStats to this one."""
         self.total_synced += other.total_synced
         self.new_count += other.new_count
         self.updated_count += other.updated_count
-    
+
     def __str__(self) -> str:
         return f"Total: {self.total_synced} issues (New: {self.new_count}, Updated: {self.updated_count})"
 
@@ -381,15 +382,12 @@ class JiraConnector(BaseConnector):
         """
         Get JiraDataSource with ALWAYS-FRESH access token.
         """
-        # Fetch fresh access token from config
-        fresh_token = await self._get_access_token()
-
-        # Rebuild client with fresh token
+        # Rebuild client with fresh token from configuration
         client = await JiraClient.build_from_services(
             self.logger,
             self.config_service
         )
-        
+
         # Track client for cleanup (helps reduce connection leaks)
         self._client_refs.append(client)
 
@@ -492,7 +490,7 @@ class JiraConnector(BaseConnector):
         try:
             sync_point_data = await self.issues_sync_point.read_sync_point("issues_global")
             last_sync_time = sync_point_data.get("last_sync_time") if sync_point_data else None
-            
+
             if self._have_filters_changed(sync_point_data):
                 self.logger.info("Filters changed, performing full sync")
                 return None
@@ -509,7 +507,7 @@ class JiraConnector(BaseConnector):
     ) -> "SyncStats":
         """Sync issues for all projects and return statistics."""
         stats = SyncStats()
-        
+
         for project, _ in projects:
             try:
                 project_stats = await self._sync_project_issues(
@@ -519,7 +517,7 @@ class JiraConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
-        
+
         return stats
 
     async def _sync_project_issues(
@@ -531,7 +529,7 @@ class JiraConnector(BaseConnector):
     ) -> "SyncStats":
         """Sync issues for a single project."""
         stats = SyncStats()
-        
+
         issues_with_permissions = await self._fetch_issues(
             project.short_name,
             project.external_group_id,
@@ -539,7 +537,7 @@ class JiraConnector(BaseConnector):
             last_sync_time,
             org_id
         )
-        
+
         if not issues_with_permissions:
             self.logger.info(f"No new/updated issues for project {project.short_name}")
             return stats
@@ -561,7 +559,7 @@ class JiraConnector(BaseConnector):
             f"Completed syncing {len(issues_with_permissions)} issues for project {project.short_name} "
             f"(New: {len(new_records)}, Updated: {len(updated_records)})"
         )
-        
+
         return stats
 
     async def _process_new_records(
@@ -579,17 +577,17 @@ class JiraConnector(BaseConnector):
             records_with_permissions,
             key=lambda x: (x[0].parent_external_record_id is not None, x[0].parent_external_record_id or "")
         )
-        
+
         batch_size = BATCH_PROCESSING_SIZE
-        
+
         for i in range(0, len(sorted_records), batch_size):
             batch = sorted_records[i:i + batch_size]
             await self.data_entities_processor.on_new_records(batch)
-            
+
             stats.new_count += len(batch)
             issues_count = sum(1 for r, _ in batch if isinstance(r, TicketRecord))
             comments_count = sum(1 for r, _ in batch if isinstance(r, CommentRecord))
-            
+
             self.logger.info(
                 f"Synced batch {i//batch_size + 1}: {issues_count} NEW issues, "
                 f"{comments_count} NEW comments for project {project_name}"
@@ -622,7 +620,7 @@ class JiraConnector(BaseConnector):
         stats.updated_count += len(records_with_permissions)
         issues_count = sum(1 for r, _ in records_with_permissions if isinstance(r, TicketRecord))
         comments_count = sum(1 for r, _ in records_with_permissions if isinstance(r, CommentRecord))
-        
+
         self.logger.info(
             f"Updated {issues_count} existing issues, {comments_count} existing comments "
             f"for project {project_name}"
@@ -645,19 +643,19 @@ class JiraConnector(BaseConnector):
         Detect and handle issue deletions via Audit API.
         """
         audit_sync_key = "issues_audit_deletions"
-        
+
         try:
             audit_sync_point_data = await self.issues_sync_point.read_sync_point(audit_sync_key)
             audit_last_sync_time = audit_sync_point_data.get("last_sync_time") if audit_sync_point_data else None
         except Exception:
             audit_last_sync_time = None
-        
+
         deletion_check_time = audit_last_sync_time or global_last_sync_time
-        
+
         if deletion_check_time:
             deleted_count = await self._detect_and_handle_deletions(deletion_check_time)
             self.logger.info(f"Processed {deleted_count} deleted issues")
-            
+
             # Update audit sync checkpoint
             await self.issues_sync_point.update_sync_point(
                 audit_sync_key,
@@ -667,20 +665,20 @@ class JiraConnector(BaseConnector):
     def _should_set_auto_index_off(self, filter_key: IndexingFilterKey) -> bool:
         """
         Determine if a record should have AUTO_INDEX_OFF status.
-        
+
         Rules:
         1. If enable_manual_sync = True → always return True (set AUTO_INDEX_OFF, ignore other INDEXING filters)
         2. If enable_manual_sync = False → check the specific indexing filter using is_enabled()
-        
+
         Args:
             filter_key: The indexing filter key to check (e.g., IndexingFilterKey.ISSUES)
-            
+
         Returns:
             True if record should have AUTO_INDEX_OFF status, False otherwise
         """
         if not self.indexing_filters:
             return False  # No filters configured, allow auto-indexing
-        
+
         # Check if manual sync is enabled
         manual_sync_filter = self.indexing_filters.get(IndexingFilterKey.ENABLE_MANUAL_SYNC)
         if (manual_sync_filter is not None
@@ -688,7 +686,7 @@ class JiraConnector(BaseConnector):
             and manual_sync_filter.type == FilterType.BOOLEAN
             and manual_sync_filter.value is True):
             return True
-        
+
         # We want AUTO_INDEX_OFF if filter is disabled
         return not self.indexing_filters.is_enabled(filter_key)
 
@@ -716,7 +714,7 @@ class JiraConnector(BaseConnector):
                 raise Exception(f"Failed to fetch users: {response.text()}")
 
             users_batch = response.json()
-            
+
             if isinstance(users_batch, list):
                 batch_users = users_batch
             else:
@@ -726,7 +724,7 @@ class JiraConnector(BaseConnector):
                 break
 
             users.extend(batch_users)
-            
+
             if len(batch_users) < max_results_per_request:
                 break
 
@@ -765,22 +763,22 @@ class JiraConnector(BaseConnector):
         """
         try:
             self.logger.info("Checking for deleted issues via Audit API...")
-            
+
             # Convert timestamp to ISO format
             from_date = datetime.fromtimestamp(
                 last_sync_time / 1000, 
                 tz=timezone.utc
             ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-            
+
             to_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-            
+
             # Fetch audit records for issue deletions
             deleted_issue_keys = await self._fetch_deleted_issues_from_audit(from_date, to_date)
-            
+
             if not deleted_issue_keys:
                 self.logger.info("No deleted issues found in audit log")
                 return 0
-                        
+
             # Handle each deletion
             deleted_count = 0
             for issue_key in deleted_issue_keys:
@@ -790,9 +788,9 @@ class JiraConnector(BaseConnector):
                 except Exception as e:
                     self.logger.error(f"Error handling deleted issue {issue_key}: {e}")
                     continue
-            
+
             return deleted_count
-            
+
         except Exception as e:
             self.logger.error(f"Error detecting deletions: {e}", exc_info=True)
             return 0
@@ -808,7 +806,7 @@ class JiraConnector(BaseConnector):
         deleted_issue_keys = []
         offset = 0
         limit = 1000
-        
+
         while True:
             try:
                 datasource = await self._get_fresh_datasource()
@@ -818,40 +816,40 @@ class JiraConnector(BaseConnector):
                     from_=from_date,
                     to=to_date
                 )
-                
+
                 if response.status != HTTP_STATUS_OK:
                     self.logger.warning(f"Failed to fetch audit records: {response.text()}")
                     break
-                
+
                 audit_data = response.json()
                 records = audit_data.get("records", [])
-                
+
                 if not records:
                     break
-                
+
                 # Filter for issue deletion events
                 for record in records:
                     object_item = record.get("objectItem", {})
                     type_name = object_item.get("typeName")
-                    
+
                     # Check if this is an issue deletion
                     if type_name == "ISSUE_DELETE":
                         issue_key = object_item.get("name")  
                         if issue_key:
                             deleted_issue_keys.append(issue_key)
                             self.logger.debug(f"🗑️ Audit: Issue {issue_key} deleted at {record.get('created')}")
-                
+
                 # Check pagination
                 total = audit_data.get("total", 0)
                 if offset + len(records) >= total:
                     break
-                
+
                 offset += limit
-                
+
             except Exception as e:
                 self.logger.error(f"Error fetching audit records at offset {offset}: {e}")
                 break
-        
+
         return deleted_issue_keys
 
     async def _handle_deleted_issue(self, issue_key: str) -> None:
@@ -860,7 +858,7 @@ class JiraConnector(BaseConnector):
         """
         try:
             self.logger.info(f"🗑️ Handling deletion of issue {issue_key}")
-        
+
             issue_id = None
             try:
                 datasource = await self._get_fresh_datasource()
@@ -869,21 +867,21 @@ class JiraConnector(BaseConnector):
                 if response.status == HTTP_STATUS_OK:
                     self.logger.warning(f"Issue {issue_key} still exists in Jira (not deleted, maybe moved?)")
                     return 
-                
+
             except Exception:
                 pass
-            
+
             async with self.data_store_provider.transaction() as tx_store:
 
                 all_status_values = [status.value for status in IndexingStatus]
-                
+
                 all_records = await tx_store.get_records_by_status(
                     org_id=self.data_entities_processor.org_id,
                     connector_name=Connectors.JIRA,
                     status_filters=all_status_values,
                     limit=None
                 )
-                
+
                 # Search for issue in the cached records by webUrl pattern
                 issue_record = None
                 for record in all_records:
@@ -894,14 +892,14 @@ class JiraConnector(BaseConnector):
                             issue_record = record
                             issue_id = record.external_record_id
                             break
-                
+
                 if not issue_record:
                     self.logger.warning(f"Issue {issue_key} not found in database (already deleted or never synced?)")
                     return
-                
+
                 record_internal_id = issue_record.id
                 self.logger.info(f"Found issue {issue_key} with internal ID {record_internal_id}, external ID {issue_id}")
-                
+
                 # 1. Delete child Sub-tasks (pass cached records to avoid refetch)
                 subtask_count = await self._delete_issue_children(
                     issue_id, 
@@ -909,7 +907,7 @@ class JiraConnector(BaseConnector):
                     tx_store,
                     all_records
                 )
-                
+
                 # 2. Delete child comments (pass cached records to avoid refetch)
                 comment_count = await self._delete_issue_children(
                     issue_id, 
@@ -917,7 +915,7 @@ class JiraConnector(BaseConnector):
                     tx_store,
                     all_records
                 )
-                
+
                 # 3. Delete child attachments (pass cached records to avoid refetch)
                 attachment_count = await self._delete_issue_children(
                     issue_id, 
@@ -925,19 +923,19 @@ class JiraConnector(BaseConnector):
                     tx_store,
                     all_records
                 )
-                                
+
                 # 4. Delete the issue itself and all its edges
                 await tx_store.arango_service.delete_records_and_relations(
                     node_key=record_internal_id,
                     hard_delete=True,
                     transaction=tx_store.txn
                 )
-                
+
                 self.logger.info(
                     f"Deleted issue {issue_key} and its children "
                     f"({subtask_count} sub-tasks, {comment_count} comments, {attachment_count} attachments)"
                 )
-                
+
         except Exception as e:
             self.logger.error(f"Error handling deleted issue {issue_key}: {e}", exc_info=True)
 
@@ -959,7 +957,7 @@ class JiraConnector(BaseConnector):
                 RecordType.COMMENT: "comment",
                 RecordType.FILE: "attachment"
             }.get(child_type, str(child_type))
-            
+
             # Use cached records if provided, otherwise fetch (for backwards compatibility)
             if cached_records is None:
                 all_status_values = [status.value for status in IndexingStatus]
@@ -969,13 +967,13 @@ class JiraConnector(BaseConnector):
                     status_filters=all_status_values,
                     limit=None
                 )
-            
+
             for record in cached_records:
                 # Check if this is the right type with matching parent
                 if (record.record_type == child_type and 
                     hasattr(record, 'parent_external_record_id') and
                     record.parent_external_record_id == parent_issue_id):
-                    
+
                     # If deleting a sub-task (TICKET), recursively delete its children first
                     if child_type == RecordType.TICKET:
                         subtask_id = record.external_record_id
@@ -993,7 +991,7 @@ class JiraConnector(BaseConnector):
                             tx_store,
                             cached_records
                         )
-                    
+
                     # Delete record and all its edges (indexer cleanup handled automatically)
                     await tx_store.arango_service.delete_records_and_relations(
                         node_key=record.id,
@@ -1002,9 +1000,9 @@ class JiraConnector(BaseConnector):
                     )
                     deleted_count += 1
                     self.logger.debug(f"  Deleted {child_type_name} {record.external_record_id}")
-            
+
             return deleted_count
-            
+
         except Exception as e:
             self.logger.error(f"Error deleting {child_type_name}s for issue {parent_issue_id}: {e}")
             return 0
@@ -1015,23 +1013,23 @@ class JiraConnector(BaseConnector):
         """
         if hasattr(self, '_app_roles_cache') and self._app_roles_cache:
             return self._app_roles_cache
-        
+
         mapping: Dict[str, List[Dict[str, str]]] = {}
-        
+
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_all_application_roles()
-            
+
             if response.status != HTTP_STATUS_OK:
                 self.logger.warning(f"Failed to fetch application roles: {response.text()}")
                 return {}
-            
+
             roles_data = response.json()
-            
+
             for role in roles_data:
                 role_key = role.get("key") 
                 group_details = role.get("groupDetails", [])
-                
+
                 if role_key and group_details:
                     mapping[role_key] = [
                         {"groupId": g.get("groupId"), "name": g.get("name")}
@@ -1039,14 +1037,14 @@ class JiraConnector(BaseConnector):
                         if g.get("groupId")
                     ]
                     self.logger.debug(f"ApplicationRole '{role_key}' → {len(mapping[role_key])} groups")
-            
+
             # Cache the result
             self._app_roles_cache = mapping
             self.logger.info(f"Fetched {len(mapping)} application roles with group mappings")
-            
+
         except Exception as e:
             self.logger.error(f"Error fetching application roles: {e}", exc_info=True)
-        
+
         return mapping
 
     async def _fetch_project_permission_scheme(
@@ -1056,7 +1054,7 @@ class JiraConnector(BaseConnector):
     ) -> List[Permission]:
         """
         Fetch permission holders for a project from its Permission Scheme.
-            
+
         Permission Schemes grant permissions (like BROWSE_PROJECTS) through different holder types:
         - group: Direct group permissions (e.g., "jira-software-users")
         - applicationRole: Product access (e.g., "jira-software") - resolved to associated groups
@@ -1066,61 +1064,61 @@ class JiraConnector(BaseConnector):
         - projectLead: The project's designated lead user
         - sd.customer.portal.only: JSM portal customers (external users)
         - groupCustomField/userCustomField: Dynamic permissions based on issue fields
-        
+
         """
         permissions: List[Permission] = []
-        
+
         try:
             datasource = await self._get_fresh_datasource()
-            
+
             # Step 1: Get the permission scheme assigned to this project
             scheme_response = await datasource.get_assigned_permission_scheme(
                 projectKeyOrId=project_key,
                 expand="all"
             )
-            
+
             if scheme_response.status != HTTP_STATUS_OK:
                 self.logger.warning(f"Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
                 return []
-            
+
             scheme_data = scheme_response.json()
             scheme_id = scheme_data.get("id")
-            
+
             # Step 2: Get all permission grants in this scheme
             grants_response = await datasource.get_permission_scheme_grants(
                 schemeId=scheme_id,
                 expand="all"
             )
-            
+
             if grants_response.status != HTTP_STATUS_OK:
                 self.logger.warning(f"Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
                 return []
-            
+
             grants_data = grants_response.json()
             permission_grants = grants_data.get("permissions", [])
-            
+
             # Step 3: Filter for BROWSE_PROJECTS permission (determines who can see the project)
             relevant_permission_types = ["BROWSE_PROJECTS"]
-            
+
             seen_holders = set() 
-            
+
             for grant in permission_grants:
                 permission_name = grant.get("permission")
-                
+
                 if permission_name not in relevant_permission_types:
                     continue
-                
+
                 holder = grant.get("holder", {})
                 holder_type = holder.get("type")
                 holder_param = holder.get("parameter") 
                 holder_value = holder.get("value")    
-                
+
                 # Create unique key for deduplication
                 holder_key = f"{holder_type}:{holder_value or holder_param}"
                 if holder_key in seen_holders:
                     continue
                 seen_holders.add(holder_key)
-                
+
                 # Process different holder types and create Permission objects
                 if holder_type == "group" and holder_value:
                     # Group has BROWSE_PROJECTS permission
@@ -1129,16 +1127,14 @@ class JiraConnector(BaseConnector):
                         external_id=holder_value,  
                         type=PermissionType.READ
                     ))
-                
+
                 elif holder_type == "applicationRole":
                     role_key = holder_param 
-                    
+
                     if role_key and app_roles_mapping and role_key in app_roles_mapping:
                         role_groups = app_roles_mapping[role_key]
                         for group_info in role_groups:
                             group_id = group_info.get("groupId")
-                            group_name = group_info.get("name")
-                            
                             if group_id:
                                 # Avoid duplicate if this group was already added directly
                                 group_key = f"group:{group_id}"
@@ -1157,13 +1153,11 @@ class JiraConnector(BaseConnector):
                             external_id=fallback_name,
                             type=PermissionType.READ
                         ))
-                
+
                 elif holder_type == "user" and holder_param:
                     # Specific user has access
                     user_data = holder.get("user", {})
                     user_email = user_data.get("emailAddress")
-                    user_name = user_data.get("displayName", holder_param)
-                    
                     if user_email:
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
@@ -1172,7 +1166,7 @@ class JiraConnector(BaseConnector):
                         ))
                     else:
                         self.logger.warning(f"  {project_key}: User permission skipped - no email for accountId '{holder_param}'")
-                
+
                 elif holder_type == "anyone":
                     # All authenticated users have access handle public condition
                     permissions.append(Permission(
@@ -1180,43 +1174,43 @@ class JiraConnector(BaseConnector):
                         external_id="anyone_authenticated",
                         type=PermissionType.READ
                     ))
-                
+
                 elif holder_type == "projectRole":
                     project_role = holder.get("projectRole", {})
                     role_name = project_role.get("name", f"Role_{holder_param}")
                     role_id = holder_param or project_role.get("id")
-                    
+
                     if role_name == "atlassian-addons-project-access":
                         continue
-                    
+
                     permissions.append(Permission(
                         entity_type=EntityType.ROLE,
                         external_id=f"{project_key}_{role_id}", 
                         type=PermissionType.READ
                     ))
-                
+
                 elif holder_type == "sd.customer.portal.only":
                     # JSM Service Desk customers (portal access)
                     # These are external customers who only access via the service desk portal
                     # They don't have internal Jira accounts we sync, so skip this permission
                     # Their access is limited to their own tickets through the portal UI
                     self.logger.debug(f"  {project_key}: Skipping JSM portal customers (external users, not synced)")
-                
+
                 elif holder_type == "projectLead":
                     permissions.append(Permission(
                         entity_type=EntityType.ROLE,
                         external_id=f"{project_key}_projectLead",
                         type=PermissionType.READ
                     ))
-                
+
                 elif holder_type in ("groupCustomField", "userCustomField"):
                     continue
-                
+
                 else:
                     self.logger.warning(f"  {project_key}: Unknown holder type '{holder_type}' with param '{holder_param}' - skipping")
-            
+
             return permissions
-            
+
         except Exception as e:
             self.logger.error(f"Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
             return []
@@ -1310,11 +1304,11 @@ class JiraConnector(BaseConnector):
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
-        
+
         groups: List[Dict[str, Any]] = []
         start_at = 0
         max_results = 50 
-        
+
         while True:
             try:
                 datasource = await self._get_fresh_datasource()
@@ -1322,34 +1316,34 @@ class JiraConnector(BaseConnector):
                     startAt=start_at,
                     maxResults=max_results
                 )
-                
+
                 if response.status != HTTP_STATUS_OK:
                     self.logger.error(f"Failed to fetch groups: {response.text()}")
                     break
-                
+
                 groups_data = response.json()
                 batch_groups = groups_data.get("values", [])
-                
+
                 if not batch_groups:
                     break
-                
+
                 groups.extend(batch_groups)
-                
+
                 # Check pagination
                 is_last = groups_data.get("isLast", False)
                 if is_last:
                     break
-                
+
                 start_at += len(batch_groups)
-                
+
                 # Also break if we got less than requested (safety check)
                 if len(batch_groups) < max_results:
                     break
-                    
+
             except Exception as e:
                 self.logger.error(f"Error fetching groups at offset {start_at}: {e}")
                 break
-        
+
         self.logger.info(f"Fetched {len(groups)} total groups")
         return groups
 
@@ -1359,11 +1353,11 @@ class JiraConnector(BaseConnector):
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
-        
+
         member_emails: List[str] = []
         start_at = 0
         max_results = 50
-        
+
         while True:
             try:
                 datasource = await self._get_fresh_datasource()
@@ -1373,38 +1367,38 @@ class JiraConnector(BaseConnector):
                     startAt=start_at,
                     maxResults=max_results
                 )
-                
+
                 if response.status != HTTP_STATUS_OK:
                     self.logger.warning(f"Failed to fetch members for group {group_name}: {response.text()}")
                     break
-                
+
                 members_data = response.json()
                 batch_members = members_data.get("values", [])
-                
+
                 if not batch_members:
                     break
-                
+
                 # Extract emails from members
                 for member in batch_members:
                     email = member.get("emailAddress")
                     if email:
                         member_emails.append(email)
-                
+
                 # Check pagination
                 is_last = members_data.get("isLast", False)
                 if is_last:
                     break
-                
+
                 start_at += len(batch_members)
-                
+
                 # Also break if we got less than requested
                 if len(batch_members) < max_results:
                     break
-                    
+
             except Exception as e:
                 self.logger.error(f"Error fetching members for group {group_name}: {e}")
                 break
-        
+
         return member_emails
 
     async def _sync_project_roles(
@@ -1442,33 +1436,33 @@ class JiraConnector(BaseConnector):
         roles_to_sync: List[Tuple[AppRole, List[AppUser]]] = []
         total_roles = 0
         total_members = 0
-        
+
         for project_key in project_keys:
             try:
                 # Step 1: Get all project roles for this project
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_project_roles(projectIdOrKey=project_key)
-                
+
                 if response.status != HTTP_STATUS_OK:
                     self.logger.warning(f"Failed to fetch roles for project {project_key}: {response.status}")
                     continue
-                
+
                 roles_dict = response.json()
-                
+
                 if not roles_dict:
                     self.logger.debug(f"No roles found for project {project_key}")
                     continue
-                
+
                 # Step 2: For each role, fetch role details including actors
                 for role_name, role_url in roles_dict.items():
                     try:
                         # Skip app-only roles
                         if role_name == "atlassian-addons-project-access":
                             continue
-                        
+
                         # Extract role ID from URL
                         role_id = role_url.rstrip('/').split('/')[-1]
-                        
+
                         # Fetch role details with actors
                         role_datasource = await self._get_fresh_datasource()
                         role_response = await role_datasource.get_project_role(
@@ -1476,40 +1470,40 @@ class JiraConnector(BaseConnector):
                             id=int(role_id),
                             excludeInactiveUsers=True
                         )
-                        
+
                         if role_response.status != HTTP_STATUS_OK:
                             self.logger.warning(f"  {project_key}: Failed to fetch role {role_name}: {role_response.status}")
                             continue
-                        
+
                         role_data = role_response.json()
                         actors = role_data.get("actors", [])
-                        
+
                         # Build AppRole with external_id matching Permission format
                         app_role = AppRole(
                             app_name=Connectors.JIRA,
                             source_role_id=f"{project_key}_{role_id}",
                             name=f"{project_key} - {role_name}",
                         )
-                        
+
                         # Step 3: Extract member users from actors
                         member_users: List[AppUser] = []
-                        
+
                         for actor in actors:
                             actor_type = actor.get("type", "")
-                            
+
                             if actor_type == "atlassian-user-role-actor":
                                 # Direct user actor
                                 actor_user = actor.get("actorUser", {})
                                 account_id = actor_user.get("accountId")
                                 email = actor_user.get("emailAddress")
-                                
+
                                 # Try to find user by accountId first, then by email
                                 user = None
                                 if account_id:
                                     user = user_by_account_id.get(account_id)
                                 if not user and email:
                                     user = user_by_email.get(email.lower())
-                                
+
                                 if user:
                                     member_users.append(user)
                                 else:
@@ -1517,12 +1511,12 @@ class JiraConnector(BaseConnector):
                                         f"  {project_key}/{role_name}: User not found - "
                                         f"accountId={account_id}, email={email}"
                                     )
-                            
+
                             elif actor_type == "atlassian-group-role-actor":
                                 # Group actor - get group members from already-fetched groups
                                 group_name = actor.get("name") or actor.get("displayName")
                                 group_id = actor.get("groupId")
-                                
+
                                 # Try to find group members by group_id first, then by name
                                 group_members = []
                                 if group_id and group_id in groups_members_map:
@@ -1542,10 +1536,10 @@ class JiraConnector(BaseConnector):
                                         f"  {project_key}/{role_name}: Group actor '{group_name}' "
                                         f"(id: {group_id}) not found in synced groups"
                                     )
-                                
+
                                 # Add all group members directly to role members (USER->ROLE, not GROUP->ROLE)
                                 member_users.extend(group_members)
-                        
+
                         roles_to_sync.append((app_role, member_users))
                         total_roles += 1
                         total_members += len(member_users)
@@ -1587,37 +1581,37 @@ class JiraConnector(BaseConnector):
 
         lead_roles_to_sync: List[Tuple[AppRole, List[AppUser]]] = []
         total_leads = 0
-        
+
         # Iterate through raw project data already fetched with lead 
         for project in raw_projects:
             try:
                 project_key = project.get("key")
                 lead_data = project.get("lead")
-                
+
                 # Create AppRole for project lead (even if no lead exists - to clean up old edges)
                 app_role = AppRole(
                     app_name=Connectors.JIRA,
                     source_role_id=f"{project_key}_projectLead",
                     name=f"{project_key} - Project Lead"
                 )
-                
+
                 # Determine lead user (if any)
                 lead_user = None
                 if lead_data:
                     lead_account_id = lead_data.get("accountId")
                     lead_display_name = lead_data.get("displayName", "Unknown")
-                    
+
                     if lead_account_id:
                         # Find the lead user in synced users
                         lead_user = user_by_account_id.get(lead_account_id)
-                        
+
                         if not lead_user:
                             self.logger.warning(f"Project lead {lead_display_name} not found in synced users for {project_key}")
                     else:
                         self.logger.warning(f"No accountId for project lead in {project_key}")
                 else:
                     self.logger.debug(f"No lead for project {project_key} - syncing role to clean up old edges")
-                
+
                 # Always sync the role (even with empty members list) to ensure old edges are deleted
                 # If lead_user is None, members list will be empty, which will delete all old permission edges
                 members = [lead_user] if lead_user else []
@@ -1647,7 +1641,6 @@ class JiraConnector(BaseConnector):
 
         # If specific project keys are provided, fetch only those projects
         if project_keys is not None and project_keys:
-
             datasource = await self._get_fresh_datasource()
             for project_key in project_keys:
                 try:
@@ -1655,12 +1648,12 @@ class JiraConnector(BaseConnector):
                         projectIdOrKey=project_key,
                         expand="description,url,permissions,issueTypes,lead"
                     )
-                    
+
                     if response.status == HTTP_STATUS_OK:
                         project = response.json()
                         projects.append(project)
                         self.logger.debug(f"Successfully fetched project: {project_key}")
-                    elif response.status == 404:
+                    elif response.status == HTTP_STATUS_NOT_FOUND:
                         self.logger.warning(f"Project {project_key} not found, skipping")
                     else:
                         self.logger.warning(f"Failed to fetch project {project_key}: HTTP {response.status}")
@@ -1686,25 +1679,25 @@ class JiraConnector(BaseConnector):
 
                 projects_batch = response.json()
                 batch_projects = projects_batch.get("values", [])
-                
+
                 if not batch_projects:
                     break
-                
+
                 projects.extend(batch_projects)
 
                 # Move to next page
                 start_at += len(batch_projects)
-                
+
                 # Check if we've reached the end
                 total = projects_batch.get("total", 0)
                 is_last = projects_batch.get("isLast", False)
-                
+
                 if is_last or (total > 0 and start_at >= total):
                     break
 
         # Fetch application roles → groups mapping once (cached)
         app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
-        
+
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
         for project in projects:
             project_id = project.get("id")
@@ -1728,12 +1721,12 @@ class JiraConnector(BaseConnector):
                 description=description,
                 web_url=project.get("url"),
             )
-            
+
             # This determines which groups/users can access the project
             project_permissions = await self._fetch_project_permission_scheme(project_key, app_roles_mapping)
-            
+
             record_groups.append((record_group, project_permissions))
-            
+
             if project_permissions:
                 self.logger.info(f"Project {project_key}: {len(project_permissions)} permission grants from scheme")
 
@@ -1881,7 +1874,7 @@ class JiraConnector(BaseConnector):
     ) -> Dict[str, Any]:
         """
         Extract and process issue data from raw Jira issue dictionary.
-        
+
         Returns a dictionary with all extracted fields:
         - issue_id, issue_key, issue_name, description
         - issue_type, hierarchy_level, is_epic, is_subtask
@@ -1904,12 +1897,12 @@ class JiraConnector(BaseConnector):
         issue_type_obj = fields.get("issuetype", {})
         issue_type = issue_type_obj.get("name") if issue_type_obj else None
         hierarchy_level = issue_type_obj.get("hierarchyLevel") if issue_type_obj else None
-        
+
         # Extract parent issue information
         parent_obj = fields.get("parent")
         parent_external_id = parent_obj.get("id") if parent_obj else None
         parent_key = parent_obj.get("key") if parent_obj else None
-        
+
         # Categorize issue type based on hierarchy level
         is_epic = hierarchy_level == 1
         is_subtask = hierarchy_level == -1
@@ -1995,7 +1988,7 @@ class JiraConnector(BaseConnector):
         Build issue records with permissions from raw issue data, respecting Jira hierarchy
         """
         all_records: List[Tuple[Record, List[Permission]]] = []
-        
+
         # Use the user-facing site URL for weburl construction
         atlassian_domain = self.site_url if self.site_url else ""
 
@@ -2005,12 +1998,11 @@ class JiraConnector(BaseConnector):
         for issue in issues:
             # Extract and process issue data
             issue_data = self._extract_issue_data(issue, user_by_account_id)
-            
+
             issue_id = issue_data["issue_id"]
             issue_key = issue_data["issue_key"]
             issue_name = issue_data["issue_name"]
             description = issue_data["description"]
-            issue_type = issue_data["issue_type"]
             is_epic = issue_data["is_epic"]
             is_subtask = issue_data["is_subtask"]
             parent_external_id = issue_data["parent_external_id"]
@@ -2027,7 +2019,7 @@ class JiraConnector(BaseConnector):
 
             # Permissions: creator, reporter, and assignee
             permissions = self._build_permissions(reporter_email, assignee_email, creator_email)
-            
+
             # Get fields for attachments (needed by _fetch_issue_attachments)
             fields = issue.get("fields", {})
 
@@ -2047,13 +2039,13 @@ class JiraConnector(BaseConnector):
                 version = existing_record.version + 1
             else:
                 version = existing_record.version if existing_record else 0  
-            
+
             # Set parent relationships and record group
             external_record_group_id = project_id 
             record_group_type = RecordGroupType.JIRA_PROJECT
             parent_record_id = None
             parent_record_type = None
-            
+
             if is_epic:
                 # Epic is a Record that belongs to Project RecordGroup
                 pass
@@ -2104,7 +2096,7 @@ class JiraConnector(BaseConnector):
                 issue_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             all_records.append((issue_record, permissions))
-            
+
             try:
                 comment_records = await self._fetch_issue_comments(
                     issue_id,
@@ -2189,7 +2181,7 @@ class JiraConnector(BaseConnector):
                 total = comment_data.get("total", 0)
                 if total > 0 and start_at >= total:
                     break
-                
+
                 # Also break if we got less than requested (last page)
                 if len(comments) < DEFAULT_MAX_RESULTS:
                     break
@@ -2224,10 +2216,6 @@ class JiraConnector(BaseConnector):
                 else:
                     version = existing_record.version if existing_record else 0  # Comment unchanged
 
-                # Extract comment content (ADF to text)
-                body_adf = comment.get("body")
-                content = adf_to_text(body_adf) if body_adf else ""
-
                 # Extract author info using accountId lookup
                 author = comment.get("author", {})
                 author_account_id = author.get("accountId")
@@ -2238,7 +2226,7 @@ class JiraConnector(BaseConnector):
 
                 # Check if this comment is a reply to another comment (threaded comments)
                 parent_comment_id = comment.get("parent", {}).get("id") if comment.get("parent") else None
-                
+
                 # Determine parent: if it's a reply to a comment, parent is the comment; otherwise parent is the issue
                 if parent_comment_id:
                     # This is a reply to another comment
@@ -2317,54 +2305,51 @@ class JiraConnector(BaseConnector):
         Fetch attachments for an issue from issue fields.
         """
         attachment_records: List[Tuple[FileRecord, List[Permission]]] = []
-        
+
         try:
             # Get attachments from issue fields (already fetched in ISSUE_SEARCH_FIELDS)
             attachments = issue_fields.get("attachment", [])
-            
+
             if not attachments:
                 return []
-                        
-            # Use the user-facing site URL for weburl construction
-            atlassian_domain = self.site_url if self.site_url else ""
-            
+
             for attachment in attachments:
                 attachment_id = attachment.get("id")
                 if not attachment_id:
                     continue
-                
+
                 # Check for existing attachment record
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_name=Connectors.JIRA,
                     external_id=f"attachment_{attachment_id}"
                 )
-                
+
                 # Get attachment metadata
                 filename = attachment.get("filename", "unknown")
                 file_size = attachment.get("size", 0)
                 mime_type = attachment.get("mimeType", MimeTypes.UNKNOWN.value)
                 content_url = attachment.get("content")
-                
+
                 # Parse timestamps
                 created_str = attachment.get("created")
                 created_at = self._parse_jira_timestamp(created_str) if created_str else 0
-                
+
                 # Extract extension from filename
                 extension = None
                 if '.' in filename:
                     extension = filename.split('.')[-1].lower()
-                
+
                 # Determine version (increment if file was updated)
                 record_id = existing_record.id if existing_record else str(uuid4())
                 is_new = existing_record is None
-                
+
                 if is_new:
                     version = 0
                 elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != created_at:
                     version = existing_record.version + 1
                 else:
                     version = existing_record.version if existing_record else 0
-                
+
                 # Create FileRecord
                 attachment_record = FileRecord(
                     id=record_id,
@@ -2390,19 +2375,19 @@ class JiraConnector(BaseConnector):
                     extension=extension,
                     weburl=content_url if content_url else None,
                 )
-                
+
                 # Set indexing status based on filters
                 if self._should_set_auto_index_off(IndexingFilterKey.ISSUE_ATTACHMENTS):
                     attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-                
+
                 # Attachments inherit permissions from parent issue
                 attachment_permissions = parent_permissions.copy()
-                
+
                 attachment_records.append((attachment_record, attachment_permissions))
-            
+
             self.logger.info(f"Returning {len(attachment_records)} attachment records for issue {issue_key}")
             return attachment_records
-            
+
         except Exception as e:
             self.logger.error(f"Failed to fetch attachments for issue {issue_key}: {e}", exc_info=True)
             return []
@@ -2412,7 +2397,7 @@ class JiraConnector(BaseConnector):
         Get current filter values for storage in sync point
         """
         filter_values = {}
-        
+
         if self.sync_filters:
             # Store modified date filter
             modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
@@ -2420,36 +2405,36 @@ class JiraConnector(BaseConnector):
                 modified_after, modified_before = modified_filter.get_value(default=(None, None))
                 filter_values["modified_after"] = modified_after
                 filter_values["modified_before"] = modified_before
-            
+
             # Store created date filter
             created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
             if created_filter:
                 created_after, created_before = created_filter.get_value(default=(None, None))
                 filter_values["created_after"] = created_after
                 filter_values["created_before"] = created_before
-            
+
             # Store project keys filter
             project_keys_filter = self.sync_filters.get(SyncFilterKey.PROJECT_KEYS)
             if project_keys_filter:
                 project_keys = project_keys_filter.get_value(default=[])
                 filter_values["project_keys"] = project_keys
-        
+
         return filter_values
-    
+
     def _have_filters_changed(self, sync_point_data: Optional[Dict[str, Any]]) -> bool:
         """
         Check if current filters differ from stored filters in sync point
         """
         if not sync_point_data:
             return False  
-        
+
         stored_filters = sync_point_data.get("filters", {})
         current_filters = self._get_current_filter_values()
-        
+
         if stored_filters != current_filters:
             self.logger.info(f"Filter change detected: {stored_filters} -> {current_filters}")
             return True
-        
+
         return False
 
     def _build_permissions(
@@ -2537,28 +2522,28 @@ class JiraConnector(BaseConnector):
             raise Exception(f"Failed to fetch comment content: {response.text()}")
 
         comment_details = response.json()
-        
+
         # Extract comment body (ADF format)
         body_adf = comment_details.get("body")
         comment_text = adf_to_text(body_adf) if body_adf else ""
-        
+
         # Extract author info
         author = comment_details.get("author", {})
         author_name = author.get("displayName", "Unknown")
-        
+
         # Extract timestamps
         created = comment_details.get("created", "")
         updated = comment_details.get("updated", "")
-        
+
         # Format comment content
         header = f"Comment by {author_name}"
         if created:
             header += f" on {created}"
         if updated and updated != created:
             header += f" (updated: {updated})"
-        
+
         combined_text = f"# {header}\n\n{comment_text}"
-        
+
         return combined_text
 
     async def get_signed_url(self, record: Record) -> str:
@@ -2597,13 +2582,13 @@ class JiraConnector(BaseConnector):
                             closed_count += 1
                 except Exception as e:
                     self.logger.debug(f"Error closing transient client: {e}")
-            
+
             if closed_count > 0:
                 self.logger.debug(f"Closed {closed_count} transient HTTP client(s)")
-            
+
             # Clear the list
             self._client_refs.clear()
-            
+
             # Close main data source client
             if self.data_source and hasattr(self.data_source, 'client'):
                 client_wrapper = self.data_source.client
@@ -2640,11 +2625,11 @@ class JiraConnector(BaseConnector):
             org_id = self.data_entities_processor.org_id
             updated_records = []
             non_updated_records = []
-            
+
             # Fetch child records for parent issues to ensure comments/attachments are reindexed
             issue_records = [r for r in record_results if r.record_type == RecordType.TICKET]
             child_records_to_reindex = []
-            
+
             if issue_records:
                 child_records_to_reindex = await self._fetch_child_records_for_reindex(issue_records)
                 self.logger.info(f"Found {len(child_records_to_reindex)} child records (comments + attachments) to reindex")
@@ -2668,7 +2653,7 @@ class JiraConnector(BaseConnector):
 
             # Publish reindex events for non updated records
             all_non_updated_records = non_updated_records + child_records_to_reindex
-            
+
             if all_non_updated_records:
                 reindexable_records = []
                 skipped_count = 0
@@ -2708,19 +2693,19 @@ class JiraConnector(BaseConnector):
         This ensures that when filters change, child records also get marked for manual sync.
         """
         child_records = []
-        
+
         try:
             if not parent_issues:
                 return []
-            
+
             # Extract parent issue external IDs
             parent_issue_ids = {record.external_record_id for record in parent_issues if record.external_record_id}
-            
+
             if not parent_issue_ids:
                 return []
-            
+
             self.logger.debug(f"Fetching child records for {len(parent_issue_ids)} parent issues")
-            
+
             # Fetch all child records from database using transaction
             async with self.data_store_provider.transaction() as tx_store:
                 all_status_values = [status.value for status in IndexingStatus]
@@ -2730,7 +2715,7 @@ class JiraConnector(BaseConnector):
                     status_filters=all_status_values,
                     limit=None
                 )
-                
+
                 # Filter for child records (comments and attachments) of our parent issues
                 for record in all_records:
                     if (hasattr(record, 'parent_external_record_id') and 
@@ -2738,11 +2723,11 @@ class JiraConnector(BaseConnector):
                         # This is a child of one of our parent issues
                         if record.record_type in (RecordType.COMMENT, RecordType.FILE):
                             child_records.append(record)
-            
+
         except Exception as e:
             self.logger.error(f"Error fetching child records for reindex: {e}", exc_info=True)
             # Don't fail the entire reindex if this fails
-        
+
         return child_records
 
     async def _check_and_fetch_updated_record(
@@ -3127,7 +3112,7 @@ class JiraConnector(BaseConnector):
                 # Stream issue content
                 issue_id = record.external_record_id
                 content = await self._fetch_issue_content(issue_id)
-                
+
                 return StreamingResponse(
                     iter([content.encode('utf-8')]),
                     media_type=MimeTypes.PLAIN_TEXT.value,
@@ -3135,19 +3120,19 @@ class JiraConnector(BaseConnector):
                         "Content-Disposition": f'inline; filename="{record.external_record_id}.txt"'
                     }
                 )
-                
+
             elif record.record_type == RecordType.COMMENT:
                 # Stream comment content
                 comment_id = record.external_record_id.replace("comment_", "")
-                
+
                 # Get parent issue ID from parent_external_record_id
                 issue_id = record.parent_external_record_id
                 if not issue_id:
                     raise ValueError(f"Comment {comment_id} missing parent issue ID")
-                
+
                 # Fetch comment content using the new method
                 content = await self._fetch_comment_content(comment_id, issue_id)
-                
+
                 return StreamingResponse(
                     iter([content.encode('utf-8')]),
                     media_type=MimeTypes.PLAIN_TEXT.value,
@@ -3155,34 +3140,34 @@ class JiraConnector(BaseConnector):
                         "Content-Disposition": f'inline; filename="{record.external_record_id}.txt"'
                     }
                 )
-                
+
             elif record.record_type == RecordType.FILE:
                 # Stream attachment content
                 attachment_id = record.external_record_id.replace("attachment_", "")
-                
+
                 # Get attachment content using DataSource
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_attachment_content(
                     id=attachment_id,
                     redirect=False 
                 )
-                
+
                 if response.status != HTTP_STATUS_OK:
                     raise Exception(f"Failed to fetch attachment content: {response.text()}")
-                
+
                 # Stream the attachment content
-                async def generate_attachment():
+                async def generate_attachment() -> AsyncGenerator[bytes, None]:
                     content_bytes = response.bytes()
                     yield content_bytes
-                
+
                 # Determine filename from record name
                 filename = record.record_name if hasattr(record, 'record_name') else f"attachment_{attachment_id}"
-                
+
                 # Replace non-ASCII characters to avoid latin-1 encoding errors
                 from urllib.parse import quote
                 safe_filename = filename.encode('ascii', 'ignore').decode('ascii') or f"attachment_{attachment_id}"
                 encoded_filename = quote(filename)
-                
+
                 return StreamingResponse(
                     generate_attachment(),
                     media_type=record.mime_type if hasattr(record, 'mime_type') else MimeTypes.UNKNOWN.value,
@@ -3190,7 +3175,7 @@ class JiraConnector(BaseConnector):
                         "Content-Disposition": f'attachment; filename="{safe_filename}"; filename*=UTF-8\'\'{encoded_filename}'
                     }
                 )
-                
+
             else:
                 raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
 
