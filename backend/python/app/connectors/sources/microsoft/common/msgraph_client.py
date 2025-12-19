@@ -149,15 +149,29 @@ class MSGraphClient:
         """
         try:
             groups = []
-            async with self.rate_limiter:
-                result = await self.client.groups.get()
 
-            groups.extend(result.value)
-            while result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.groups.get_next_page(result.odata_next_link)
+            from msgraph.generated.groups.groups_request_builder import (
+                GroupsRequestBuilder,
+            )
+
+            query_params = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters(
+                top=2
+            )
+            request_configuration = RequestConfiguration(
+                query_parameters=query_params
+            )
+
+            async with self.rate_limiter:
+                result = await self.client.groups.get(request_configuration)
+
+            if result and result.value:
                 groups.extend(result.value)
 
+            while result and result.odata_next_link:
+                async with self.rate_limiter:
+                    result = await self.client.groups.with_url(result.odata_next_link).get()
+                if result and result.value:
+                    groups.extend(result.value)
 
             self.logger.info(f"Retrieved {len(groups)} groups.")
             return groups
@@ -182,12 +196,14 @@ class MSGraphClient:
             members = []
             async with self.rate_limiter:
                 result = await self.client.groups.by_group_id(group_id).members.get()
+            if result and result.value:
+                members.extend(result.value)
 
-            members.extend(result.value)
             while result.odata_next_link:
                 async with self.rate_limiter:
-                    result = await self.client.groups.by_group_id(group_id).members.get_next_page(result.odata_next_link)
-                members.extend(result.value)
+                    result = await self.client.groups.by_group_id(group_id).members.with_url(result.odata_next_link).get()
+                if result and result.value:
+                    members.extend(result.value)
 
             return members
 
@@ -208,7 +224,8 @@ class MSGraphClient:
             async with self.rate_limiter:
                 query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
                     select=['id', 'displayName', 'userPrincipalName', 'accountEnabled',
-                            'mail', 'jobTitle', 'department', 'surname']
+                            'mail', 'jobTitle', 'department', 'surname'],
+                    top=1
                 )
 
                 # Create request configuration
@@ -217,12 +234,14 @@ class MSGraphClient:
                 )
 
                 result = await self.client.users.get(request_configuration)
-                users.extend(result.value)
+                if result and result.value:
+                    users.extend(result.value)
 
                 while result.odata_next_link:
                     async with self.rate_limiter:
-                        result = await self.client.users.get_next_page(result.odata_next_link)
-                    users.extend(result.value)
+                        result = await self.client.users.with_url(result.odata_next_link).get()
+                    if result and result.value:
+                        users.extend(result.value)
                 self.logger.info(f"Retrieved {len(users)} users.")
 
             user_list: List[AppUser] = []
@@ -431,7 +450,7 @@ class MSGraphClient:
 
             while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
                 async with self.rate_limiter:
-                    result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get_next_page(result.odata_next_link)
+                    result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.with_url(result.odata_next_link).get()
                 if result and result.value:
                     permissions.extend(result.value)
 
@@ -459,7 +478,6 @@ class MSGraphClient:
             children = []
             async with self.rate_limiter:
                 result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.get()
-
             if result and result.value:
                 children.extend(result.value)
 
