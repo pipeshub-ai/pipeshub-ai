@@ -150,19 +150,8 @@ class MSGraphClient:
         try:
             groups = []
 
-            from msgraph.generated.groups.groups_request_builder import (
-                GroupsRequestBuilder,
-            )
-
-            query_params = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters(
-                top=2
-            )
-            request_configuration = RequestConfiguration(
-                query_parameters=query_params
-            )
-
             async with self.rate_limiter:
-                result = await self.client.groups.get(request_configuration)
+                result = await self.client.groups.get()
 
             if result and result.value:
                 groups.extend(result.value)
@@ -194,12 +183,13 @@ class MSGraphClient:
         """
         try:
             members = []
+
             async with self.rate_limiter:
                 result = await self.client.groups.by_group_id(group_id).members.get()
             if result and result.value:
                 members.extend(result.value)
 
-            while result.odata_next_link:
+            while result and result.odata_next_link:
                 async with self.rate_limiter:
                     result = await self.client.groups.by_group_id(group_id).members.with_url(result.odata_next_link).get()
                 if result and result.value:
@@ -224,8 +214,7 @@ class MSGraphClient:
             async with self.rate_limiter:
                 query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
                     select=['id', 'displayName', 'userPrincipalName', 'accountEnabled',
-                            'mail', 'jobTitle', 'department', 'surname'],
-                    top=1
+                            'mail', 'jobTitle', 'department', 'surname']
                 )
 
                 # Create request configuration
@@ -240,6 +229,7 @@ class MSGraphClient:
                 while result.odata_next_link:
                     async with self.rate_limiter:
                         result = await self.client.users.with_url(result.odata_next_link).get()
+
                     if result and result.value:
                         users.extend(result.value)
                 self.logger.info(f"Retrieved {len(users)} users.")
