@@ -75,13 +75,13 @@ class OCRStrategy(ABC):
                     # pix.save(f"image_{img_index + 1}_{uuid4()}.png")
 
                     pix = None  # Free memory
-                except Exception as e:
+                except Exception:
                     pass
 
             needs_ocr = (has_minimal_text and has_significant_images) or low_density
             return needs_ocr
 
-        except Exception as e:
+        except Exception:
             return True
 
 

@@ -2,10 +2,9 @@ import asyncio
 import hashlib
 from io import BytesIO
 from uuid import uuid4
-import fitz
-from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 
 import aiohttp
+import fitz
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -17,6 +16,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -385,20 +385,20 @@ class EventProcessor:
 
             if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:
                 # Check if document needs OCR before using docling
-                
+
                 self.logger.info("🔍 Checking if PDF needs OCR processing")
                 try:
                     temp_doc = fitz.open(stream=file_content, filetype="pdf")
-                    
+
                     # Check if any page needs OCR
                     needs_ocr = any(OCRStrategy.needs_ocr(page) for page in temp_doc)
                     temp_doc.close()
-                    
+
                     self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using Docling'}")
                 except Exception as e:
                     self.logger.warning(f"⚠️ Error checking OCR need: {str(e)}, defaulting to Docling")
                     needs_ocr = False
-                
+
                 if needs_ocr:
                     # Skip docling and use OCR handler directly
                     self.logger.info("🤖 PDF needs OCR, skipping Docling")

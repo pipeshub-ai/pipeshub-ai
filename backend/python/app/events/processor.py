@@ -720,7 +720,7 @@ class Processor:
             for config in ocr_configs:
                 provider = config["provider"]
                 self.logger.info(f"🔧 Checking OCR provider: {provider}")
-                
+
                 if provider == OCRProvider.VLM_OCR.value:
                     self.logger.debug("🤖 Setting up VLM OCR handler")
                     handler = OCRHandler(
@@ -751,12 +751,12 @@ class Processor:
                 # Check if multimodal LLM is available
                 self.logger.debug("🔍 Checking for multimodal LLM availability")
                 has_multimodal_llm = False
-                
+
                 try:
                     llm_configs = ai_models.get("llm", [])
                     for llm_config in llm_configs:
                         is_multimodal = (
-                            llm_config.get("isMultimodal", False) or 
+                            llm_config.get("isMultimodal", False) or
                             llm_config.get("configuration", {}).get("isMultimodal", False)
                         )
                         if is_multimodal:
@@ -765,7 +765,7 @@ class Processor:
                             break
                 except Exception as e:
                     self.logger.warning(f"⚠️ Error checking for multimodal LLM: {str(e)}")
-                
+
                 if has_multimodal_llm:
                     self.logger.debug("🤖 Setting up VLM OCR handler (multimodal LLM detected)")
                     handler = OCRHandler(self.logger, OCRProvider.VLM_OCR.value, config=self.config_service)
@@ -786,9 +786,9 @@ class Processor:
                     ocr_result = await handler.process_document(pdf_binary)
                 else:
                     raise
-            
+
             self.logger.debug("✅ OCR processing completed")
-            
+
             if provider == OCRProvider.VLM_OCR.value:
                 markdown_content = ocr_result.get("markdown", "")
                 self.logger.info(f"📝 Markdown content: {markdown_content}")
