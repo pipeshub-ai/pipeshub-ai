@@ -544,7 +544,16 @@ class JiraConnector(BaseConnector):
 
         # Separate new vs updated records
         new_records = [(r, p) for r, p in issues_with_permissions if r.version == 0]
-        updated_records = [(r, p) for r, p in issues_with_permissions if r.version > 0]
+        
+        # For updated records, only include those that were actually modified since last sync
+        if last_sync_time is not None:
+            updated_records = [
+                (r, p) for r, p in issues_with_permissions 
+                if r.version > 0 and hasattr(r, 'source_updated_at') and r.source_updated_at and r.source_updated_at > last_sync_time
+            ]
+        else:
+            # Full sync - all existing records are considered updated
+            updated_records = [(r, p) for r, p in issues_with_permissions if r.version > 0]
 
         # Process new records
         if new_records:
@@ -555,11 +564,6 @@ class JiraConnector(BaseConnector):
             await self._process_updated_records(updated_records, project.short_name, stats)
 
         stats.total_synced += len(issues_with_permissions)
-        self.logger.info(
-            f"Completed syncing {len(issues_with_permissions)} issues for project {project.short_name} "
-            f"(New: {len(new_records)}, Updated: {len(updated_records)})"
-        )
-
         return stats
 
     async def _process_new_records(
@@ -570,7 +574,6 @@ class JiraConnector(BaseConnector):
     ) -> None:
         """
         Process new records in batches.
-        Sort records so parent records (Epics) are processed before their children (Stories/Tasks).
         """
         # Sort records: records without parent_external_record_id (Epics) come first
         sorted_records = sorted(
@@ -587,10 +590,11 @@ class JiraConnector(BaseConnector):
             stats.new_count += len(batch)
             issues_count = sum(1 for r, _ in batch if isinstance(r, TicketRecord))
             comments_count = sum(1 for r, _ in batch if isinstance(r, CommentRecord))
+            files_count = sum(1 for r, _ in batch if isinstance(r, FileRecord))
 
             self.logger.info(
                 f"Synced batch {i//batch_size + 1}: {issues_count} NEW issues, "
-                f"{comments_count} NEW comments for project {project_name}"
+                f"{comments_count} NEW comments, {files_count} NEW attachments for project {project_name}"
             )
 
     async def _process_updated_records(
@@ -606,11 +610,14 @@ class JiraConnector(BaseConnector):
         async with self.data_store_provider.transaction() as tx_store:
             tickets = [r for r, _ in records_with_permissions if isinstance(r, TicketRecord)]
             comments = [r for r, _ in records_with_permissions if isinstance(r, CommentRecord)]
+            files = [r for r, _ in records_with_permissions if isinstance(r, FileRecord)]
 
             if tickets:
                 await tx_store.batch_upsert_records(tickets)
             if comments:
                 await tx_store.batch_upsert_records(comments)
+            if files:
+                await tx_store.batch_upsert_records(files)
 
         # Update permissions and notify about content updates
         for record, permissions in records_with_permissions:
@@ -618,13 +625,7 @@ class JiraConnector(BaseConnector):
             await self.data_entities_processor.on_record_content_update(record)
 
         stats.updated_count += len(records_with_permissions)
-        issues_count = sum(1 for r, _ in records_with_permissions if isinstance(r, TicketRecord))
-        comments_count = sum(1 for r, _ in records_with_permissions if isinstance(r, CommentRecord))
 
-        self.logger.info(
-            f"Updated {issues_count} existing issues, {comments_count} existing comments "
-            f"for project {project_name}"
-        )
 
     async def _update_issues_sync_checkpoint(self, stats: "SyncStats", project_count: int) -> None:
         """
@@ -654,7 +655,6 @@ class JiraConnector(BaseConnector):
 
         if deletion_check_time:
             deleted_count = await self._detect_and_handle_deletions(deletion_check_time)
-            self.logger.info(f"Processed {deleted_count} deleted issues")
 
             # Update audit sync checkpoint
             await self.issues_sync_point.update_sync_point(
@@ -670,11 +670,6 @@ class JiraConnector(BaseConnector):
         1. If enable_manual_sync = True → always return True (set AUTO_INDEX_OFF, ignore other INDEXING filters)
         2. If enable_manual_sync = False → check the specific indexing filter using is_enabled()
 
-        Args:
-            filter_key: The indexing filter key to check (e.g., IndexingFilterKey.ISSUES)
-
-        Returns:
-            True if record should have AUTO_INDEX_OFF status, False otherwise
         """
         if not self.indexing_filters:
             return False  # No filters configured, allow auto-indexing
@@ -837,7 +832,7 @@ class JiraConnector(BaseConnector):
                         issue_key = object_item.get("name")
                         if issue_key:
                             deleted_issue_keys.append(issue_key)
-                            self.logger.debug(f"🗑️ Audit: Issue {issue_key} deleted at {record.get('created')}")
+                            self.logger.debug(f"Audit: Issue {issue_key} deleted at {record.get('created')}")
 
                 # Check pagination
                 total = audit_data.get("total", 0)
@@ -857,7 +852,7 @@ class JiraConnector(BaseConnector):
         Handle deletion of an issue and its related entities (comments, attachments).
         """
         try:
-            self.logger.info(f"🗑️ Handling deletion of issue {issue_key}")
+            self.logger.info(f"Handling deletion of issue {issue_key}")
 
             issue_id = None
             try:
@@ -1192,7 +1187,6 @@ class JiraConnector(BaseConnector):
                 elif holder_type == "sd.customer.portal.only":
                     # JSM Service Desk customers (portal access)
                     # These are external customers who only access via the service desk portal
-                    # They don't have internal Jira accounts we sync, so skip this permission
                     # Their access is limited to their own tickets through the portal UI
                     self.logger.debug(f"  {project_key}: Skipping JSM portal customers (external users, not synced)")
 
@@ -1613,7 +1607,6 @@ class JiraConnector(BaseConnector):
                     self.logger.debug(f"No lead for project {project_key} - syncing role to clean up old edges")
 
                 # Always sync the role (even with empty members list) to ensure old edges are deleted
-                # If lead_user is None, members list will be empty, which will delete all old permission edges
                 members = [lead_user] if lead_user else []
                 lead_roles_to_sync.append((app_role, members))
                 total_leads += 1
@@ -1626,7 +1619,6 @@ class JiraConnector(BaseConnector):
         # Sync all project lead roles in batch
         if lead_roles_to_sync:
             await self.data_entities_processor.on_new_app_roles(lead_roles_to_sync)
-            self.logger.info(f"Synced {total_leads} project lead roles")
         else:
             self.logger.info("No project leads to sync")
 
@@ -2173,7 +2165,6 @@ class JiraConnector(BaseConnector):
             # Collect unique deleted attachment IDs from changelog
             deleted_attachment_ids: Set[str] = set()
             # Track filenames removed from description that couldn't be matched to current attachments
-            # (e.g., attachment already deleted from Jira, so not in fields.attachment anymore)
             unmatched_removed_filenames: Set[str] = set()
             has_description_change = False
 
@@ -2660,7 +2651,6 @@ class JiraConnector(BaseConnector):
                 filename = attachment.get("filename", "unknown")
                 file_size = attachment.get("size", 0)
                 mime_type = attachment.get("mimeType", MimeTypes.UNKNOWN.value)
-                content_url = attachment.get("content")
 
                 # Parse timestamps
                 created_str = attachment.get("created")
@@ -2681,6 +2671,11 @@ class JiraConnector(BaseConnector):
                     version = existing_record.version + 1
                 else:
                     version = existing_record.version if existing_record else 0
+
+                # Construct web URL for attachment
+                weburl = None
+                if self.site_url:
+                    weburl = f"{self.site_url}/rest/api/3/attachment/content/{attachment_id}"
 
                 # Create FileRecord
                 attachment_record = FileRecord(
@@ -2705,7 +2700,7 @@ class JiraConnector(BaseConnector):
                     is_file=True,
                     size_in_bytes=file_size,
                     extension=extension,
-                    weburl=content_url if content_url else None,
+                    weburl=weburl,
                 )
 
                 # Set indexing status based on filters
@@ -2778,7 +2773,6 @@ class JiraConnector(BaseConnector):
         """
         Build simple permissions list for an issue.
         Creator, reporter, and assignee get OWNER permission.
-        Note: Creator is immutable, reporter can be changed.
         """
         permissions: List[Permission] = []
         processed_emails: set = set()
@@ -3375,7 +3369,6 @@ class JiraConnector(BaseConnector):
             filename = attachment_data.get("filename", "unknown")
             file_size = attachment_data.get("size", 0)
             mime_type = attachment_data.get("mimeType", MimeTypes.UNKNOWN.value)
-            content_url = attachment_data.get("content")
 
             # Extract extension
             extension = None
@@ -3384,6 +3377,11 @@ class JiraConnector(BaseConnector):
 
             # Increment version
             version = record.version + 1 if hasattr(record, 'version') else 1
+
+            # Construct web URL for attachment
+            weburl = None
+            if self.site_url:
+                weburl = f"{self.site_url}/rest/api/3/attachment/content/{attachment_id}"
 
             # Create updated FileRecord preserving record ID
             attachment_record = FileRecord(
@@ -3408,7 +3406,7 @@ class JiraConnector(BaseConnector):
                 is_file=True,
                 size_in_bytes=file_size,
                 extension=extension,
-                weburl=content_url if content_url else None,
+                weburl=weburl,
             )
 
             # Get parent issue to fetch permissions (creator, reporter, and assignee)
