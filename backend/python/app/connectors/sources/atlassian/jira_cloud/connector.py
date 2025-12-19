@@ -3480,7 +3480,7 @@ class JiraConnector(BaseConnector):
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_attachment_content(
                     id=attachment_id,
-                    redirect=False 
+                    redirect=False
                 )
 
                 if response.status != HTTP_STATUS_OK:
