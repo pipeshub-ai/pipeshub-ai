@@ -149,15 +149,19 @@ class MSGraphClient:
         """
         try:
             groups = []
+
             async with self.rate_limiter:
                 result = await self.client.groups.get()
 
-            groups.extend(result.value)
-            while result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.groups.get_next_page(result.odata_next_link)
-                groups.extend(result.value)
+            while result:
+                if result.value:
+                    groups.extend(result.value)
 
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.groups.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             self.logger.info(f"Retrieved {len(groups)} groups.")
             return groups
@@ -183,11 +187,15 @@ class MSGraphClient:
             async with self.rate_limiter:
                 result = await self.client.groups.by_group_id(group_id).members.get()
 
-            members.extend(result.value)
-            while result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.groups.by_group_id(group_id).members.get_next_page(result.odata_next_link)
-                members.extend(result.value)
+            while result:
+                if result.value:
+                    members.extend(result.value)
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.groups.by_group_id(group_id).members.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             return members
 
@@ -211,19 +219,23 @@ class MSGraphClient:
                             'mail', 'jobTitle', 'department', 'surname']
                 )
 
-                # Create request configuration
                 request_configuration = RequestConfiguration(
                     query_parameters=query_params
                 )
 
                 result = await self.client.users.get(request_configuration)
-                users.extend(result.value)
 
-                while result.odata_next_link:
-                    async with self.rate_limiter:
-                        result = await self.client.users.get_next_page(result.odata_next_link)
+            while result:
+                if result.value:
                     users.extend(result.value)
-                self.logger.info(f"Retrieved {len(users)} users.")
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.users.with_url(result.odata_next_link).get()
+                else:
+                    break
+
+            self.logger.info(f"Retrieved {len(users)} users.")
 
             user_list: List[AppUser] = []
             for user in users:
@@ -426,14 +438,16 @@ class MSGraphClient:
             async with self.rate_limiter:
                 result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get()
 
-            if result and result.value:
-                permissions.extend(result.value)
-
-            while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get_next_page(result.odata_next_link)
-                if result and result.value:
+            while result:
+                if result.value:
                     permissions.extend(result.value)
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        # Use with_url to handle pagination correctly
+                        result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             self.logger.info(f"Retrieved {len(permissions)} permissions for file ID {item_id}.")
             return permissions
@@ -460,15 +474,15 @@ class MSGraphClient:
             async with self.rate_limiter:
                 result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.get()
 
-            if result and result.value:
-                children.extend(result.value)
-
-            # Handle pagination
-            while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.with_url(result.odata_next_link).get()
-                if result and result.value:
+            while result:
+                if result.value:
                     children.extend(result.value)
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             self.logger.info(f"Retrieved {len(children)} children for folder {folder_id}")
             return children
