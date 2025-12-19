@@ -175,6 +175,9 @@ class IndexingFilterKey(str, Enum):
     Common indexing filter keys for record types.
     These control what record types get indexed (boolean filters).
     """
+    # Master control for manual sync mode
+    ENABLE_MANUAL_SYNC = "enable_manual_sync"
+
     # Container types
     SPACES = "spaces"
     FOLDERS = "folders"
@@ -676,7 +679,33 @@ class FilterCollection(BaseModel):
             - Strings: True if non-empty
             - Numbers: True if non-zero
         """
+        # Get the filter being checked
         f = self.get(key)
+
+        # Convert key to string for comparison
+        key_str = key.value if isinstance(key, Enum) else key
+
+        # If checking enable_manual_sync itself, return its value directly
+        if key_str == "enable_manual_sync":
+            if f is None:
+                return default
+            if f.is_empty():
+                return default
+            if f.type == FilterType.BOOLEAN:
+                return bool(f.value)
+            return True
+
+        # For other indexing filters, check if manual sync is enabled
+        # Only apply override if enable_manual_sync filter exists and is explicitly enabled
+        manual_sync_filter = self.get("enable_manual_sync")
+        if (manual_sync_filter is not None
+            and not manual_sync_filter.is_empty()
+            and manual_sync_filter.type == FilterType.BOOLEAN
+            and manual_sync_filter.value is True):
+            # Manual sync is explicitly ON: no auto-indexing
+            return False
+
+        # Normal logic: return the specific filter's value
         if f is None:
             return default
         if f.is_empty():

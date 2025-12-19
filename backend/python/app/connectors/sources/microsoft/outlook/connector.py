@@ -28,6 +28,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     DocumentationLink,
 )
@@ -155,6 +156,7 @@ class OutlookCredentials:
             filter_type=FilterType.DATETIME,
             category=FilterCategory.SYNC
         ))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(FilterField(
             name="mails",
             display_name="Index Emails",

@@ -180,12 +180,12 @@ export class OrgController {
         await adminUserCredentials.save();
         await org.save();
       }
-
       prometheusService.recordActivity(
         ORG_CREATED_ACTIVITY,
         adminUser._id?.toString(),
         org._id?.toString(),
         contactEmail,
+        adminFullName,
         req.context?.requestId,
         req.method,
         req.path,

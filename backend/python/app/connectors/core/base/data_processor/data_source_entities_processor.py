@@ -316,6 +316,10 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
+            if not records_with_permissions:
+                self.logger.warning("on_new_records received an empty list; skipping processing.")
+                return
+
             records_to_publish = []
 
             async with self.data_store_provider.transaction() as tx_store:
@@ -398,6 +402,10 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
         try:
+            if not record_groups:
+                self.logger.warning("on_new_record_groups received an empty list; skipping processing.")
+                return
+
             async with self.data_store_provider.transaction() as tx_store:
                 for record_group, permissions in record_groups:
                     record_group.org_id = self.org_id
@@ -574,6 +582,10 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_app_users(self, users: List[AppUser]) -> None:
         try:
+            if not users:
+                self.logger.warning("on_new_app_users received an empty list; skipping processing.")
+                return
+
             async with self.data_store_provider.transaction() as tx_store:
                 await tx_store.batch_upsert_app_users(users)
 
@@ -587,6 +599,10 @@ class DataSourceEntitiesProcessor:
         This follows the logic of 'on_new_record_groups'.
         """
         try:
+            if not user_groups:
+                self.logger.warning("on_new_user_groups received an empty list; skipping processing.")
+                return
+
             async with self.data_store_provider.transaction() as tx_store:
                 for user_group, members in user_groups:
                     # Set the org_id on the object, as it's needed for the doc
@@ -659,6 +675,10 @@ class DataSourceEntitiesProcessor:
         from users to these roles.
         """
         try:
+            if not roles:
+                self.logger.warning("on_new_app_roles received an empty list; skipping processing.")
+                return
+
             async with self.data_store_provider.transaction() as tx_store:
                 for role, members in roles:
                     # Set the org_id on the object, as it's needed for the doc

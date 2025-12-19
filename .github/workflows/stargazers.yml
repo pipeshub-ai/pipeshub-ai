@@ -1,0 +1,35 @@
+name: Notify Recent Stargazers and Forkers
+
+on:
+  schedule:
+    # Runs every 24 hours at 9 AM UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  notify-github-activity:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Fetch and notify stargazers and forkers
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          REPO_OWNER: pipeshub-ai
+          REPO_NAME: pipeshub-ai
+        run: |
+          python .github/scripts/notify_github_activity.py

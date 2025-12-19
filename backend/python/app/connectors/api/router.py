@@ -71,7 +71,6 @@ from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesPa
 from app.services.featureflag.config.config import CONFIG
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
-from app.utils.llm import get_llm
 from app.utils.logger import create_logger
 from app.utils.oauth_config import get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -465,8 +464,6 @@ async def download_file(
 
         payload = signed_url_handler.validate_token(token)
         user_id = payload.user_id
-        user = await arango_service.get_user_by_user_id(user_id)
-        user_email = user.get("email")
 
         # Verify file_id matches the token
         if payload.record_id != record_id:
@@ -514,82 +511,56 @@ async def download_file(
                 if not file:
                     raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found")
                 mime_type = file.get("mimeType", "application/octet-stream")
+                google_workspace_export_formats = {
+                    "application/vnd.google-apps.spreadsheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # Excel format
+                    "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # Word format
+                    "application/vnd.google-apps.presentation": "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # PowerPoint format
+                }
 
-                if mime_type == "application/vnd.google-apps.presentation":
-                    logger.info("🚀 Processing Google Slides")
-                    google_slides_parser = await get_google_slides_parser(request)
-                    await google_slides_parser.connect_service(
-                        user_email, org_id, user_id, app_name=connector.lower()
-                    )
-                    result = await google_slides_parser.process_presentation(file_id)
+                if mime_type in google_workspace_export_formats:
+                    async def file_stream(export_mime_type) -> AsyncGenerator[bytes, None]:
+                        file_buffer = io.BytesIO()
+                        try:
+                            logger.info(f"Exporting Google Workspace file ({mime_type}) to {export_mime_type}")
+                            request = request = drive_service.files().export_media(fileId=file_id,mimeType=export_mime_type)
+                            downloader = MediaIoBaseDownload(file_buffer, request)
 
-                    # Convert result to JSON and return as StreamingResponse
-                    json_data = json.dumps(result).encode("utf-8")
-                    return StreamingResponse(
-                        iter([json_data]), media_type="application/json"
-                    )
+                            done = False
+                            while not done:
+                                status, done = downloader.next_chunk()
+                                logger.info(f"Download {int(status.progress() * 100)}%.")
 
-                if mime_type == "application/vnd.google-apps.document":
-                    logger.info("🚀 Processing Google Docs")
-                    google_docs_parser = await get_google_docs_parser(request)
-                    await google_docs_parser.connect_service(
-                        user_email, org_id, user_id, app_name=connector.lower()
-                    )
-                    content = await google_docs_parser.parse_doc_content(file_id)
-                    all_content, headers, footers = (
-                        google_docs_parser.order_document_content(content)
-                    )
-                    result = {
-                        "all_content": all_content,
-                        "headers": headers,
-                        "footers": footers,
-                    }
+                            # Reset buffer position to start
+                            file_buffer.seek(0)
 
-                    # Convert result to JSON and return as StreamingResponse
-                    json_data = json.dumps(result).encode("utf-8")
-                    return StreamingResponse(
-                        iter([json_data]), media_type="application/json"
-                    )
+                            # Stream the response with content type from metadata
+                            logger.info("Initiating streaming response...")
+                            yield file_buffer.read()
 
-                if mime_type == "application/vnd.google-apps.spreadsheet":
-                    logger.info("🚀 Processing Google Sheets")
-                    google_sheets_parser = await get_google_sheets_parser(request)
-                    await google_sheets_parser.connect_service(
-                        user_email, org_id, user_id, app_name=connector.lower()
-                    )
-                    llm, _ = await get_llm(config_service)
-                    # List and process spreadsheets
-                    parsed_result = await google_sheets_parser.parse_spreadsheet(
-                        file_id
-                    )
-                    all_sheet_results = []
-                    for sheet_idx, sheet in enumerate(parsed_result["sheets"], 1):
-                        sheet_name = sheet["name"]
-
-                        # Process sheet with summaries
-                        sheet_data = (
-                            await google_sheets_parser.process_sheet_with_summaries(
-                                llm, sheet_name, file_id
+                        except Exception as download_error:
+                            logger.error(f"Download failed: {repr(download_error)}")
+                            if hasattr(download_error, "response"):
+                                logger.error(
+                                    f"Response status: {download_error.response.status_code}"
+                                )
+                                logger.error(
+                                    f"Response content: {download_error.response.content}"
+                                )
+                            raise HTTPException(
+                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                detail=f"File download failed: {repr(download_error)}",
                             )
-                        )
-                        if sheet_data is None:
-                            continue
-
-                        all_sheet_results.append(sheet_data)
-
-                    result = {
-                        "parsed_result": parsed_result,
-                        "all_sheet_results": all_sheet_results,
+                        finally:
+                            file_buffer.close()
+                    headers = {
+                        "Content-Disposition": f'attachment; filename="{record.record_name}"'
                     }
 
-                    # Convert result to JSON and return as StreamingResponse
-                    json_data = json.dumps(result).encode("utf-8")
-                    logger.info("Streaming Google Sheets result")
                     return StreamingResponse(
-                        iter([json_data]), media_type="application/json"
+                        file_stream(google_workspace_export_formats[mime_type]), media_type=google_workspace_export_formats[mime_type], headers=headers
                     )
 
-                # Enhanced logging for regular file download
+                # Enhanced logging for regular file download as a default fallback
                 logger.info(f"Starting binary file download for file_id: {file_id}")
 
                 async def file_stream() -> AsyncGenerator[bytes, None]:
